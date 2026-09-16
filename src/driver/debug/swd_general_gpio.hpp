@@ -567,6 +567,16 @@ class SwdGeneralGPIO final : public Swd
       const bool PARITY_BIT = (Parity32(DATA) & 0x1u) != 0u;
       WriteBit(PARITY_BIT);
 
+      // Trailing idle clocks after a write data phase: keep SWDIO driven LOW and
+      // clock the target so it completes/settles the (possibly posted) write before
+      // the next request start bit. Without this, a transfer immediately following an
+      // AP write in the same DAP_Transfer batch samples ACK at the wrong phase (JUNK).
+      swdio_.Write(false);
+      for (uint32_t k = 0; k < WRITE_TRAILING_IDLE_CLOCKS; ++k)
+      {
+        GenOneClk();
+      }
+
       swdio_.Write(true);
       swclk_.Write(false);
     }
@@ -644,6 +654,13 @@ class SwdGeneralGPIO final : public Swd
       const bool PARITY_BIT = (Parity32(DATA) & 0x1u) != 0u;
       WriteBitWithoutDelay(PARITY_BIT);
 
+      // Trailing idle clocks after a write data phase (see delay-path note).
+      swdio_.Write(false);
+      for (uint32_t k = 0; k < WRITE_TRAILING_IDLE_CLOCKS; ++k)
+      {
+        GenOneClkWithoutDelay();
+      }
+
       swdio_.Write(true);
       swclk_.Write(false);
     }
@@ -658,6 +675,8 @@ class SwdGeneralGPIO final : public Swd
       64u;  ///< 线复位时钟周期数。Line reset clock cycles.
   static constexpr uint32_t BYTE_BITS = 8u;  ///< 每字节比特数。Bits per byte.
   static constexpr uint32_t ACK_BITS = 3u;   ///< ACK 比特数。ACK bits.
+  static constexpr uint32_t WRITE_TRAILING_IDLE_CLOCKS =
+      3u;  ///< Idle clocks (SWDIO low) after a write data phase to settle posted writes.
 
   static constexpr uint8_t JTAG_TO_SWD_SEQ0 =
       0x9Eu;  ///< JTAG->SWD 序列字节 0。JTAG-to-SWD sequence byte 0.
