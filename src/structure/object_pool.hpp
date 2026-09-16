@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -43,13 +44,24 @@ concept PoolIndexQueue =
  * @brief 基于空闲索引队列的 RAII 槽池。
  * @brief RAII slot pool backed by a free-index queue.
  *
- * 该池使用一个索引队列管理空闲槽位；成功获取后返回 move-only `Handle`，其析构会
- * 自动把槽位索引归还到空闲队列。这样上层只依赖四类队列共享的最小 typed 接口。
+ * 成功申请建立一个共享引用；最后一个引用释放时归还索引，不析构或清空负载。
+ * Handle 可写，ConstHandle 只读；计数不提供负载读写同步。运行操作不分配内存。
+ * 每槽引用数不得超过 UINT32_MAX。池及外部槽存储必须比全部句柄活得更久。
+ * 构造和析构需要静止状态，不能在 ISR 执行。同一句柄对象的并发访问须由调用方同步。
  *
- * This pool uses one index queue to manage free slots. Successful acquisition
- * returns one move-only `Handle`, whose destructor automatically returns the
- * slot index back to the free queue. This keeps the upper layer dependent only
- * on the minimal typed interface shared by the queue family.
+ * Acquire creates one shared reference; final release returns the index without
+ * destroying or clearing the payload. Handle permits writes, ConstHandle is
+ * read-only; counting does not synchronize payload access. Runtime operations
+ * allocate no memory. Each slot must have at most UINT32_MAX references. Pool and
+ * external storage outlive all handles. Construction/destruction require quiescence
+ * outside ISR. Concurrent operations on the same handle require synchronization.
+ *
+ * 同一池的申请不得并发或重入。普通队列需外部串行化队列访问；SPSC 只有一个最终归还方；
+ * MPMC 允许并发归还。ISR 支持还取决于平台原子实现，不保证单次操作的固定耗时。
+ * Acquisitions on a pool must not overlap or reenter. Ordinary queues require
+ * externally serialized queue access; SPSC permits one final-return producer;
+ * MPMC permits concurrent returns. ISR use requires suitable target atomics and
+ * does not imply a fixed per-operation latency bound.
  *
  * @tparam Data 槽内对象类型。 Slot object type.
  * @tparam FreeQueue 空闲索引队列类型。 Free-index queue type.
@@ -70,162 +82,205 @@ class BasicObjectPool
                 "BasicObjectPool requires an unsigned index queue");
 
   /**
-   * @class Handle
-   * @brief 对象池槽位的 move-only RAII 句柄。
-   * @brief Move-only RAII handle for one object-pool slot.
-   *
-   * 句柄持有一个槽位索引及所属 pool 指针；析构时会自动把索引归还到空闲队列。
-   * The handle stores one slot index plus its owning pool pointer, and returns
-   * the index to the free queue automatically on destruction.
+   * @brief 对象及其引用计数的常驻存储。 Resident payload and reference-count storage.
+   * @note 外部存储须提供 Slot 数组，并保持到池及所有句柄使用结束。
+   *       External Slot arrays must outlive pool use and all handles.
    */
-  class Handle
+  class Slot
   {
    public:
-    /**
-     * @brief 构造一个空 handle。
-     * @brief Construct an empty handle.
-     */
-    Handle() = default;
+    /// @brief 默认构造负载。 Default-construct the payload.
+    Slot()
+      requires std::is_default_constructible_v<Data>
+    = default;
 
-    /**
-     * @brief 用指定 pool 和槽位索引构造 handle。
-     * @brief Construct a handle from the given pool and slot index.
-     * @param pool 所属对象池。 Owning object pool.
-     * @param index 槽位索引。 Slot index.
-     */
-    Handle(BasicObjectPool* pool, IndexType index) : pool_(pool), index_(index) {}
+    /// @brief 用参数原地构造负载。 Construct the payload in place from arguments.
+    template <typename... Args>
+      requires std::is_constructible_v<Data, Args...>
+    explicit Slot(std::in_place_t, Args&&... args) : data_(std::forward<Args>(args)...)
+    {
+    }
 
-    /// @brief 禁止拷贝构造。 Non-copyable.
-    Handle(const Handle&) = delete;
-    /// @brief 禁止拷贝赋值。 Non-copy-assignable.
-    Handle& operator=(const Handle&) = delete;
+    Slot(const Slot&) = delete;
+    Slot& operator=(const Slot&) = delete;
+    Slot(Slot&&) = delete;
+    Slot& operator=(Slot&&) = delete;
 
-    /**
-     * @brief 移动构造 handle，并转移槽位所有权。
-     * @brief Move-construct the handle and transfer slot ownership.
-     * @param other 被转移的源 handle。 Source handle being moved from.
-     */
-    Handle(Handle&& other) noexcept
+   private:
+    friend class BasicObjectPool;
+    std::atomic<uint32_t> references_{0};
+    Data data_;
+  };
+
+ private:
+  /// @brief 同一共享所有权的访问限定实现。 Access-qualified shared ownership.
+  template <bool IsConst>
+  class BasicHandle
+  {
+    using AccessType = std::conditional_t<IsConst, const Data, Data>;
+
+   public:
+    /// @brief 构造空句柄。 Construct an empty handle.
+    BasicHandle() = default;
+
+    /// @brief 复制现有引用。 Retain an existing reference.
+    BasicHandle(const BasicHandle& other) noexcept
+        : pool_(other.pool_), index_(other.index_)
+    {
+      Retain();
+    }
+
+    /// @brief 复制为只读引用。 Copy a mutable reference into a read-only handle.
+    template <bool OtherConst>
+      requires(IsConst && !OtherConst)
+    BasicHandle(const BasicHandle<OtherConst>& other) noexcept
+        : pool_(other.pool_), index_(other.index_)
+    {
+      Retain();
+    }
+
+    /// @brief 转移引用并清空源句柄。 Transfer ownership and empty the source.
+    BasicHandle(BasicHandle&& other) noexcept
         : pool_(std::exchange(other.pool_, nullptr)),
           index_(std::exchange(other.index_, IndexType{}))
     {
     }
 
-    /**
-     * @brief 移动赋值 handle，并转移槽位所有权。
-     * @brief Move-assign the handle and transfer slot ownership.
-     * @param other 被转移的源 handle。 Source handle being moved from.
-     * @return 当前 handle 的引用。 Reference to this handle.
-     */
-    Handle& operator=(Handle&& other) noexcept
+    /// @brief 转移为只读引用。 Transfer mutable ownership into a read-only handle.
+    template <bool OtherConst>
+      requires(IsConst && !OtherConst)
+    BasicHandle(BasicHandle<OtherConst>&& other) noexcept
+        : pool_(std::exchange(other.pool_, nullptr)),
+          index_(std::exchange(other.index_, IndexType{}))
     {
-      if (this == &other)
-      {
-        return *this;
-      }
+    }
 
-      Reset();
-      pool_ = std::exchange(other.pool_, nullptr);
-      index_ = std::exchange(other.index_, IndexType{});
+    /// @brief 替换引用，先保留源再释放旧引用。 Retain source before releasing old
+    /// ownership.
+    BasicHandle& operator=(const BasicHandle& other) noexcept
+    {
+      if (pool_ != other.pool_ || index_ != other.index_)
+      {
+        BasicHandle copy(other);
+        Swap(copy);
+      }
       return *this;
     }
 
-    /**
-     * @brief 析构 handle，并自动归还槽位。
-     * @brief Destroy the handle and return the slot automatically.
-     */
-    ~Handle() { Reset(); }
+    /// @brief 从可写句柄复制赋值。 Copy-assign from a mutable handle.
+    template <bool OtherConst>
+      requires(IsConst && !OtherConst)
+    BasicHandle& operator=(const BasicHandle<OtherConst>& other) noexcept
+    {
+      if (pool_ != other.pool_ || index_ != other.index_)
+      {
+        BasicHandle copy(other);
+        Swap(copy);
+      }
+      return *this;
+    }
 
-    /**
-     * @brief 判断当前 handle 是否持有有效槽位。
-     * @brief Return whether this handle currently owns a valid slot.
-     * @return 持有有效槽位返回 `true`，否则返回 `false`。
-     *         Returns `true` when this handle owns a valid slot, otherwise `false`.
-     */
+    /// @brief 转移赋值并释放旧引用。 Move-assign and release previous ownership.
+    BasicHandle& operator=(BasicHandle&& other) noexcept
+    {
+      if (this != &other)
+      {
+        BasicHandle moved(std::move(other));
+        Swap(moved);
+      }
+      return *this;
+    }
+
+    /// @brief 从可写句柄转移赋值。 Move-assign from a mutable handle.
+    template <bool OtherConst>
+      requires(IsConst && !OtherConst)
+    BasicHandle& operator=(BasicHandle<OtherConst>&& other) noexcept
+    {
+      BasicHandle moved(std::move(other));
+      Swap(moved);
+      return *this;
+    }
+
+    /// @brief 释放本引用；最后一个引用归还槽位。 Release; the final reference returns the
+    /// slot.
+    ~BasicHandle() { Reset(); }
+
+    /// @brief 是否持有引用。 Whether this handle owns a reference.
     [[nodiscard]] bool Valid() const { return pool_ != nullptr; }
 
-    /**
-     * @brief 返回当前槽位对象的可写引用。
-     * @brief Return a writable reference to the current slot object.
-     * @return 当前槽位对象引用。 Reference to the current slot object.
-     */
-    [[nodiscard]] Data& Get()
+    /// @brief 按句柄权限访问负载，句柄必须有效。 Access payload; requires a valid handle.
+    [[nodiscard]] AccessType& Get()
     {
-      ASSERT(pool_ != nullptr);
-      return pool_->slots_[index_];
+      ASSERT(Valid());
+      return pool_->UnsafeAt(index_);
     }
 
-    /**
-     * @brief 返回当前槽位对象的只读引用。
-     * @brief Return a read-only reference to the current slot object.
-     * @return 当前槽位对象常量引用。 Const reference to the current slot object.
-     */
+    /// @brief 保留旧接口的 const 只读访问。 Preserve const-qualified read-only access.
     [[nodiscard]] const Data& Get() const
     {
-      ASSERT(pool_ != nullptr);
-      return pool_->slots_[index_];
+      ASSERT(Valid());
+      return pool_->UnsafeAt(index_);
     }
 
-    /**
-     * @brief 以指针形式访问当前槽位对象。
-     * @brief Access the current slot object as a pointer.
-     * @return 指向当前槽位对象的指针。 Pointer to the current slot object.
-     */
-    [[nodiscard]] Data* operator->() { return &Get(); }
-
-    /**
-     * @brief 以只读指针形式访问当前槽位对象。
-     * @brief Access the current slot object as a const pointer.
-     * @return 指向当前槽位对象的只读指针。 Const pointer to the current slot object.
-     */
+    /// @brief 按句柄权限返回负载指针。 Return an access-qualified payload pointer.
+    [[nodiscard]] AccessType* operator->() { return &Get(); }
+    /// @brief 返回只读负载指针。 Return a read-only payload pointer.
     [[nodiscard]] const Data* operator->() const { return &Get(); }
-
-    /**
-     * @brief 解引用当前槽位对象。
-     * @brief Dereference the current slot object.
-     * @return 当前槽位对象引用。 Reference to the current slot object.
-     */
-    [[nodiscard]] Data& operator*() { return Get(); }
-
-    /**
-     * @brief 只读解引用当前槽位对象。
-     * @brief Dereference the current slot object as const.
-     * @return 当前槽位对象常量引用。 Const reference to the current slot object.
-     */
+    /// @brief 按句柄权限解引用。 Dereference with this handle's access qualification.
+    [[nodiscard]] AccessType& operator*() { return Get(); }
+    /// @brief 只读解引用。 Dereference read-only.
     [[nodiscard]] const Data& operator*() const { return Get(); }
 
-    /**
-     * @brief 返回当前持有的槽位索引。
-     * @brief Return the currently owned slot index.
-     * @return 当前槽位索引。 Current slot index.
-     */
+    /// @brief 返回有效句柄的槽索引。 Return the slot index of a valid handle.
     [[nodiscard]] IndexType Index() const
     {
-      ASSERT(pool_ != nullptr);
+      ASSERT(Valid());
       return index_;
     }
 
-    /**
-     * @brief 主动归还当前槽位，并使 handle 失效。
-     * @brief Return the current slot explicitly and invalidate the handle.
-     */
+    /// @brief 清空句柄并释放引用；空句柄无操作。 Empty and release; empty handles are a
+    /// no-op.
     void Reset()
     {
-      if (pool_ == nullptr)
+      BasicObjectPool* pool = std::exchange(pool_, nullptr);
+      const IndexType index = std::exchange(index_, IndexType{});
+      if (pool != nullptr)
       {
-        return;
+        pool->Release(index);
       }
-
-      [[maybe_unused]] const ErrorCode ec = pool_->Release(index_);
-      DEV_ASSERT(ec == ErrorCode::OK);
-      pool_ = nullptr;
-      index_ = IndexType{};
     }
 
    private:
-    BasicObjectPool* pool_ = nullptr;  ///< 所属对象池。 Owning object pool.
-    IndexType index_ = {};             ///< 当前槽位索引。 Current slot index.
+    friend class BasicObjectPool;
+    template <bool>
+    friend class BasicHandle;
+
+    BasicHandle(BasicObjectPool* pool, IndexType index) : pool_(pool), index_(index) {}
+
+    void Retain() noexcept
+    {
+      if (pool_ != nullptr)
+      {
+        pool_->Retain(index_);
+      }
+    }
+
+    void Swap(BasicHandle& other) noexcept
+    {
+      std::swap(pool_, other.pool_);
+      std::swap(index_, other.index_);
+    }
+
+    BasicObjectPool* pool_ = nullptr;
+    IndexType index_ = {};
   };
+
+ public:
+  /// @brief 可复制的可写共享句柄。 Copyable mutable shared handle.
+  using Handle = BasicHandle<false>;
+  /// @brief 可复制的只读共享句柄，只接受可写到只读转换。
+  ///        Copyable read-only shared handle; conversion is mutable-to-const only.
+  using ConstHandle = BasicHandle<true>;
 
   /**
    * @brief 用内部 queue 和内部 slots 构造 pool。
@@ -248,11 +303,11 @@ class BasicObjectPool
    * @param slot_count 槽位数量。 Number of slots.
    * @param slots 外部槽数组。 Caller-provided slot storage.
    *
-   * @note 调用方必须保证 `slots` 指向至少 `slot_count` 个 `Data` 槽位。
+   * @note 调用方必须保证 `slots` 指向至少 `slot_count` 个 `Slot` 槽位。
    *       The caller must ensure that `slots` points to at least `slot_count`
-   *       `Data` slots.
+   *       `Slot` slots.
    */
-  BasicObjectPool(size_t slot_count, Data* slots) : slot_count_(slot_count), slots_(slots)
+  BasicObjectPool(size_t slot_count, Slot* slots) : slot_count_(slot_count), slots_(slots)
   {
     ASSERT(slot_count_ > 0);
     ASSERT(slots_ != nullptr);
@@ -293,11 +348,11 @@ class BasicObjectPool
    *       The caller-provided `free_queue` must be empty and dedicated to this pool.
    * @note 调用方必须保证 `free_queue` 的容量至少为 `slot_count`。
    *       The caller must ensure that `free_queue` capacity is at least `slot_count`.
-   * @note 调用方必须保证 `slots` 指向至少 `slot_count` 个 `Data` 槽位。
+   * @note 调用方必须保证 `slots` 指向至少 `slot_count` 个 `Slot` 槽位。
    *       The caller must ensure that `slots` points to at least `slot_count`
-   *       `Data` slots.
+   *       `Slot` slots.
    */
-  BasicObjectPool(FreeQueue& free_queue, size_t slot_count, Data* slots)
+  BasicObjectPool(FreeQueue& free_queue, size_t slot_count, Slot* slots)
       : free_queue_(&free_queue), slot_count_(slot_count), slots_(slots)
   {
     ASSERT(slot_count_ > 0);
@@ -354,6 +409,8 @@ class BasicObjectPool
     }
 
     DEV_ASSERT(static_cast<size_t>(index) < slot_count_);
+    DEV_ASSERT(slots_[index].references_.load(std::memory_order_relaxed) == 0U);
+    slots_[index].references_.store(1U, std::memory_order_relaxed);
     handle = Handle(this, index);
     return ErrorCode::OK;
   }
@@ -387,7 +444,7 @@ class BasicObjectPool
   [[nodiscard]] Data& UnsafeAt(size_t index)
   {
     ASSERT(index < slot_count_);
-    return slots_[index];
+    return slots_[index].data_;
   }
 
   /**
@@ -405,20 +462,37 @@ class BasicObjectPool
   [[nodiscard]] const Data& UnsafeAt(size_t index) const
   {
     ASSERT(index < slot_count_);
-    return slots_[index];
+    return slots_[index].data_;
   }
 
  private:
-  /**
-   * @brief 把指定槽位索引归还到空闲队列。
-   * @brief Return the given slot index back to the free queue.
-   * @param index 待归还的槽位索引。 Slot index to return.
-   * @return 底层空闲队列返回的结果码。 Result code returned by the underlying free queue.
-   */
-  ErrorCode Release(IndexType index)
+  /// @brief 保留已存活的引用。 Retain an existing live reference.
+  /// @pre 调用方须保证新增引用不会使计数溢出；断言不是运行时溢出防护。
+  ///      The caller must prevent count overflow; assertions are not a runtime guard.
+  void Retain(IndexType index) noexcept
   {
     DEV_ASSERT(static_cast<size_t>(index) < slot_count_);
-    return free_queue_->Push(index);
+    [[maybe_unused]] const uint32_t previous =
+        slots_[index].references_.fetch_add(1U, std::memory_order_relaxed);
+    DEV_ASSERT(previous > 0U);
+    ASSERT(previous < std::numeric_limits<uint32_t>::max());
+  }
+
+  /// @brief 释放引用，只有最后一个引用归还索引。 Only the final release returns the
+  /// index.
+  void Release(IndexType index)
+  {
+    DEV_ASSERT(static_cast<size_t>(index) < slot_count_);
+    const uint32_t previous =
+        slots_[index].references_.fetch_sub(1U, std::memory_order_acq_rel);
+    DEV_ASSERT(previous > 0U);
+    if (previous == 1U)
+    {
+      // 归还发布后可能立即复用；此后不能再访问槽位。
+      // Publication permits immediate reuse; do not access the slot afterward.
+      [[maybe_unused]] const ErrorCode ec = free_queue_->Push(index);
+      DEV_ASSERT(ec == ErrorCode::OK);
+    }
   }
 
   /**
@@ -439,7 +513,7 @@ class BasicObjectPool
    */
   void AllocateOwnedSlots()
   {
-    slots_ = new Data[slot_count_];
+    slots_ = new Slot[slot_count_];
     owns_slots_ = true;
   }
 
@@ -465,7 +539,7 @@ class BasicObjectPool
   FreeQueue* free_queue_ =
       nullptr;               ///< 空闲索引队列指针。 Pointer to the free-index queue.
   const size_t slot_count_;  ///< 槽位总数。 Total slot count.
-  Data* slots_ = nullptr;    ///< 槽数组指针。 Pointer to slot storage.
+  Slot* slots_ = nullptr;    ///< 槽数组指针。 Pointer to slot storage.
   bool owns_free_queue_ =
       false;  ///< 是否拥有内部 queue。 Whether this pool owns the free queue.
   bool owns_slots_ =

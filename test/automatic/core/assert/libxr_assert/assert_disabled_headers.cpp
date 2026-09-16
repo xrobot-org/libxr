@@ -21,6 +21,13 @@ void ExercisePool()
   Pool pool(4);
   typename Pool::Handle handle;
   (void)pool.Acquire(handle);
+  typename Pool::Handle copy = handle;
+  typename Pool::ConstHandle reader = copy;
+  reader = std::move(handle);
+  typename Pool::ConstHandle reader_copy(reader);
+  copy.Reset();
+  reader.Reset();
+  reader_copy.Reset();
   handle.Reset();
 }
 
