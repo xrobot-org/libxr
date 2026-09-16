@@ -4,11 +4,11 @@ target_sources(${PROJECT_NAME} PRIVATE ${${PROJECT_NAME}_DRIVER_SOURCES})
 
 target_include_directories(${PROJECT_NAME} PUBLIC ${CMAKE_CURRENT_LIST_DIR})
 
-find_package(PkgConfig REQUIRED)
+find_package(PkgConfig QUIET)
 
 find_library(WPA_CLIENT_LIB wpa_client)
 
-if(WPA_CLIENT_LIB)
+if(WPA_CLIENT_LIB AND PkgConfig_FOUND)
   message(STATUS "wpa_client found.")
   target_compile_definitions(xr PUBLIC HAVE_WPA_CLIENT)
   target_link_libraries(xr PUBLIC ${WPA_CLIENT_LIB})
@@ -24,7 +24,12 @@ else()
   )
 endif()
 
-pkg_check_modules(LIBUDEV REQUIRED libudev)
-
-target_include_directories(${PROJECT_NAME} SYSTEM PUBLIC ${LIBUDEV_INCLUDE_DIRS})
-target_link_libraries(${PROJECT_NAME} PUBLIC ${LIBUDEV_LIBRARIES})
+if(PkgConfig_FOUND)
+  pkg_check_modules(LIBUDEV QUIET libudev)
+endif()
+if(LIBUDEV_FOUND)
+  target_include_directories(${PROJECT_NAME} SYSTEM PUBLIC ${LIBUDEV_INCLUDE_DIRS})
+  target_link_libraries(${PROJECT_NAME} PUBLIC ${LIBUDEV_LIBRARIES})
+else()
+  message(STATUS "libudev development files not found; Linux SPI/GPIO build continues without udev linkage.")
+endif()
