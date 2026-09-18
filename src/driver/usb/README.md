@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img src="https://github.com/Jiu-xiao/LibXR_CppCodeGenerator/raw/main/imgs/XRobot.jpeg" width="300">
+<img src="https://github.com/xrobot-org/LibXR_CppCodeGenerator/raw/main/imgs/XRobot.jpeg" width="300">
 
 A truly tiny and beautiful, ultra-fast and modern USB stack for embedded systems.
 
@@ -14,7 +14,7 @@ A truly tiny and beautiful, ultra-fast and modern USB stack for embedded systems
 
 ## Introduction
 
-XRUSB is a standalone, modern C++ USB protocol stack. It is provided both as a [LibXR](https://github.com/Jiu-xiao/libxr) subtree and as an independent repository. XRUSB focuses on portability, high performance, and easy integration.
+XRUSB is a standalone, modern C++ USB protocol stack. It is provided both as a [LibXR](https://github.com/xrobot-org/libxr) subtree and as an independent repository. XRUSB focuses on portability, high performance, and easy integration.
 
 ## Key Features
 

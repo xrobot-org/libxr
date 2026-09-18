@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img src="https://github.com/Jiu-xiao/LibXR_CppCodeGenerator/raw/main/imgs/XRobot.jpeg" width="300">
+<img src="https://github.com/xrobot-org/LibXR_CppCodeGenerator/raw/main/imgs/XRobot.jpeg" width="300">
 
 真正小巧、美观、超快且现代的嵌入式系统 USB 堆栈。
 
@@ -14,7 +14,7 @@
 
 ## 介绍
 
-XRUSB是一个独立的现代 C++ USB 协议栈。以subtree的形式作为[LibXR](https://github.com/Jiu-xiao/libxr)的一部分，同时也提供独立仓库。XRUSB专注于可移植性、高性能和简单集成。
+XRUSB是一个独立的现代 C++ USB 协议栈。以subtree的形式作为[LibXR](https://github.com/xrobot-org/libxr)的一部分，同时也提供独立仓库。XRUSB专注于可移植性、高性能和简单集成。
 
 ## 主要特性
 

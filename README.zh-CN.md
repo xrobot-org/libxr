@@ -2,21 +2,21 @@
 
 <div align="center">
 
-<img src="https://github.com/Jiu-xiao/LibXR_CppCodeGenerator/raw/main/imgs/XRobot.jpeg" width="300">
+<img src="https://github.com/xrobot-org/LibXR_CppCodeGenerator/raw/main/imgs/XRobot.jpeg" width="300">
 
 致力于成为最佳的嵌入式开发框架
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 [![Documentation](https://img.shields.io/badge/docs-online-brightgreen)](https://xrobot.work/libxr/)
-[![GitHub Issues](https://img.shields.io/github/issues/Jiu-xiao/libxr)](https://github.com/Jiu-xiao/libxr/issues)
-[![C/C++ CI](https://github.com/Jiu-xiao/libxr/actions/workflows/check.yml/badge.svg)](https://github.com/Jiu-xiao/libxr/actions/workflows/check.yml)
-[![Generate and Deploy Doxygen Docs](https://github.com/Jiu-xiao/libxr/actions/workflows/doxygen.yml/badge.svg)](https://github.com/Jiu-xiao/libxr/actions/workflows/doxygen.yml)
-[![CI/CD - Python Package](https://github.com/Jiu-xiao/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml/badge.svg)](https://github.com/Jiu-xiao/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml)
+[![GitHub Issues](https://img.shields.io/github/issues/Jiu-xiao/libxr)](https://github.com/xrobot-org/libxr/issues)
+[![C/C++ CI](https://github.com/xrobot-org/libxr/actions/workflows/check.yml/badge.svg)](https://github.com/xrobot-org/libxr/actions/workflows/check.yml)
+[![Generate and Deploy Doxygen Docs](https://github.com/xrobot-org/libxr/actions/workflows/doxygen.yml/badge.svg)](https://github.com/xrobot-org/libxr/actions/workflows/doxygen.yml)
+[![CI/CD - Python Package](https://github.com/xrobot-org/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml/badge.svg)](https://github.com/xrobot-org/LibXR_CppCodeGenerator/actions/workflows/python-publish.yml)
 [![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FJiu-xiao%2Flibxr.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FJiu-xiao%2Flibxr?ref=badge_shield)
 
 </div>
 
-[English](https://github.com/Jiu-xiao/libxr/blob/main/README.md) | [中文](https://github.com/Jiu-xiao/libxr/blob/main/README.zh-CN.md)
+[English](https://github.com/xrobot-org/libxr/blob/main/README.md) | [中文](https://github.com/xrobot-org/libxr/blob/main/README.zh-CN.md)
 
 ## 本库适用于哪些人
 
