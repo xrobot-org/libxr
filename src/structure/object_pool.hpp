@@ -15,17 +15,17 @@ namespace LibXR
  * @class ObjectPool
  * @brief 带引用计数的固定槽对象池 / Fixed-slot object pool with reference counting.
  *
- * 成功申请建立一个引用；句柄可以复制，最后一个引用释放时槽位回到空闲栈。
- * 槽内对象随池构造、随池析构，释放时不析构也不清空，下一个申请方自行写入。
- * `Handle` 可写，`ConstHandle` 只读，只能从可写转换为只读；计数不同步负载读写。
- * 运行期操作不分配内存。每槽引用数不得超过 UINT32_MAX。
+ * 写独占、读共享：`Acquire` 得到只能移动的可写 `Handle`；写完后移动为可复制的只读
+ * `ConstHandle` 分发，最后一个引用释放时槽位回到空闲栈。槽内对象随池构造、随池析构，
+ * 释放时不析构也不清空，下一个申请方自行写入。运行期操作不分配内存。每槽引用数不得
+ * 超过 UINT32_MAX。
  *
- * Acquire creates one reference. Handles are copyable, and the final release
- * returns the slot to the free stack. Payloads are constructed and destroyed with
- * the pool; release neither destroys nor clears them, so the next acquirer writes
- * its own data. `Handle` permits writes and `ConstHandle` is read-only; conversion
- * is mutable-to-const only. Counting does not synchronize payload access. Runtime
- * operations allocate no memory. Each slot must have at most UINT32_MAX references.
+ * One writer, shared readers: `Acquire` yields a move-only writable `Handle`; after
+ * writing, move it into a copyable read-only `ConstHandle` to distribute the slot.
+ * The final release returns the slot to the free stack. Payloads are constructed and
+ * destroyed with the pool; release neither destroys nor clears them, so the next
+ * acquirer writes its own data. Runtime operations allocate no memory. Each slot
+ * must have at most UINT32_MAX references.
  *
  * 同一池同一时刻只能有一个申请方：申请不得重叠或重入，调试构建会检查。释放可以在
  * 任意线程或 ISR 中并发进行，且不会失败。不同句柄对象可以并发使用，同一句柄对象的
@@ -85,105 +85,56 @@ class ObjectPool
     Data data_;
   };
 
- private:
-  /// @brief 同一共享所有权的访问限定实现 / Access-qualified shared ownership.
-  template <bool IsConst>
-  class BasicHandle
-  {
-    using AccessType = std::conditional_t<IsConst, const Data, Data>;
+ public:
+  class ConstHandle;
 
+  /**
+   * @class Handle
+   * @brief 可写句柄：独占一个槽位，只能移动。
+   *        Writable handle: exclusive owner of one slot, move-only.
+   *
+   * `Acquire` 得到可写句柄；写完后移动为 `ConstHandle` 共享出去。
+   * `Acquire` yields a writable handle; after writing, move it into a `ConstHandle`
+   * to share the slot.
+   */
+  class Handle
+  {
    public:
     /// @brief 构造空句柄 / Construct an empty handle.
-    BasicHandle() = default;
+    Handle() = default;
 
-    /// @brief 复制现有引用 / Retain an existing reference.
-    BasicHandle(const BasicHandle& other) noexcept
-        : pool_(other.pool_), index_(other.index_)
-    {
-      Retain();
-    }
+    /// @brief 禁止拷贝构造 / Non-copyable.
+    Handle(const Handle&) = delete;
+    /// @brief 禁止拷贝赋值 / Non-copy-assignable.
+    Handle& operator=(const Handle&) = delete;
 
-    /// @brief 复制为只读引用 / Copy a mutable reference into a read-only handle.
-    template <bool OtherConst>
-      requires(IsConst && !OtherConst)
-    BasicHandle(const BasicHandle<OtherConst>& other) noexcept
-        : pool_(other.pool_), index_(other.index_)
-    {
-      Retain();
-    }
-
-    /// @brief 转移引用并清空源句柄 / Transfer ownership and empty the source.
-    BasicHandle(BasicHandle&& other) noexcept
+    /// @brief 转移槽位并清空源句柄 / Transfer the slot and empty the source.
+    Handle(Handle&& other) noexcept
         : pool_(std::exchange(other.pool_, nullptr)),
           index_(std::exchange(other.index_, IndexType{}))
     {
     }
 
-    /// @brief 转移为只读引用 / Transfer mutable ownership into a read-only handle.
-    template <bool OtherConst>
-      requires(IsConst && !OtherConst)
-    BasicHandle(BasicHandle<OtherConst>&& other) noexcept
-        : pool_(std::exchange(other.pool_, nullptr)),
-          index_(std::exchange(other.index_, IndexType{}))
-    {
-    }
-
-    /// @brief 先保留源引用再释放旧引用 / Retain the source before releasing the old
-    /// reference.
-    BasicHandle& operator=(const BasicHandle& other) noexcept
-    {
-      if (pool_ != other.pool_ || index_ != other.index_)
-      {
-        BasicHandle copy(other);
-        Swap(copy);
-      }
-      return *this;
-    }
-
-    /// @brief 从可写句柄复制赋值 / Copy-assign from a mutable handle.
-    template <bool OtherConst>
-      requires(IsConst && !OtherConst)
-    BasicHandle& operator=(const BasicHandle<OtherConst>& other) noexcept
-    {
-      if (pool_ != other.pool_ || index_ != other.index_)
-      {
-        BasicHandle copy(other);
-        Swap(copy);
-      }
-      return *this;
-    }
-
-    /// @brief 转移赋值并释放旧引用 / Move-assign and release the old reference.
-    BasicHandle& operator=(BasicHandle&& other) noexcept
+    /// @brief 转移槽位并释放原有槽位 / Transfer the slot and release the previous one.
+    Handle& operator=(Handle&& other) noexcept
     {
       if (this != &other)
       {
-        BasicHandle moved(std::move(other));
-        Swap(moved);
+        Reset();
+        pool_ = std::exchange(other.pool_, nullptr);
+        index_ = std::exchange(other.index_, IndexType{});
       }
       return *this;
     }
 
-    /// @brief 从可写句柄转移赋值 / Move-assign from a mutable handle.
-    template <bool OtherConst>
-      requires(IsConst && !OtherConst)
-    BasicHandle& operator=(BasicHandle<OtherConst>&& other) noexcept
-    {
-      BasicHandle moved(std::move(other));
-      Swap(moved);
-      return *this;
-    }
+    /// @brief 释放槽位 / Release the slot.
+    ~Handle() { Reset(); }
 
-    /// @brief 释放本引用；最后一个引用归还槽位 / Release; the final reference returns
-    /// the slot.
-    ~BasicHandle() { Reset(); }
-
-    /// @brief 是否持有引用 / Whether this handle owns a reference.
+    /// @brief 是否持有槽位 / Whether this handle owns a slot.
     [[nodiscard]] bool Valid() const { return pool_ != nullptr; }
 
-    /// @brief 按句柄权限访问负载，句柄必须有效 / Access the payload; requires a valid
-    /// handle.
-    [[nodiscard]] AccessType& Get()
+    /// @brief 访问负载，句柄必须有效 / Access the payload; requires a valid handle.
+    [[nodiscard]] Data& Get()
     {
       ASSERT(Valid());
       return pool_->slots_[index_].data_;
@@ -197,12 +148,134 @@ class ObjectPool
       return pool_->slots_[index_].data_;
     }
 
-    /// @brief 按句柄权限返回负载指针 / Return an access-qualified payload pointer.
-    [[nodiscard]] AccessType* operator->() { return &Get(); }
+    /// @brief 返回负载指针 / Return the payload pointer.
+    [[nodiscard]] Data* operator->() { return &Get(); }
     /// @brief 返回只读负载指针 / Return a read-only payload pointer.
     [[nodiscard]] const Data* operator->() const { return &Get(); }
-    /// @brief 按句柄权限解引用 / Dereference with this handle's access qualification.
-    [[nodiscard]] AccessType& operator*() { return Get(); }
+    /// @brief 解引用 / Dereference.
+    [[nodiscard]] Data& operator*() { return Get(); }
+    /// @brief 只读解引用 / Dereference read-only.
+    [[nodiscard]] const Data& operator*() const { return Get(); }
+
+    /// @brief 返回有效句柄的槽索引 / Return the slot index of a valid handle.
+    [[nodiscard]] IndexType Index() const
+    {
+      ASSERT(Valid());
+      return index_;
+    }
+
+    /// @brief 清空句柄并释放槽位；空句柄无操作 / Empty and release; no-op on an empty
+    /// handle.
+    void Reset()
+    {
+      ObjectPool* pool = std::exchange(pool_, nullptr);
+      const IndexType index = std::exchange(index_, IndexType{});
+      if (pool != nullptr)
+      {
+        pool->Release(index);
+      }
+    }
+
+   private:
+    friend class ObjectPool;
+    friend class ConstHandle;
+
+    Handle(ObjectPool* pool, IndexType index) : pool_(pool), index_(index) {}
+
+    ObjectPool* pool_ = nullptr;
+    IndexType index_ = {};
+  };
+
+  /**
+   * @class ConstHandle
+   * @brief 只读句柄：共享一个槽位，可以复制。
+   *        Read-only handle: shares one slot, copyable.
+   *
+   * 只能由 `Handle` 移动得到或由其他 `ConstHandle` 复制得到；复制增加引用，最后一个
+   * 引用释放时槽位回到池中。
+   * Obtained only by moving a `Handle` or copying another `ConstHandle`. Copies add
+   * references; the final release returns the slot to the pool.
+   */
+  class ConstHandle
+  {
+   public:
+    /// @brief 构造空句柄 / Construct an empty handle.
+    ConstHandle() = default;
+
+    /// @brief 复制引用 / Copy the reference.
+    ConstHandle(const ConstHandle& other) noexcept
+        : pool_(other.pool_), index_(other.index_)
+    {
+      if (pool_ != nullptr)
+      {
+        pool_->Retain(index_);
+      }
+    }
+
+    /// @brief 转移引用并清空源句柄 / Transfer the reference and empty the source.
+    ConstHandle(ConstHandle&& other) noexcept
+        : pool_(std::exchange(other.pool_, nullptr)),
+          index_(std::exchange(other.index_, IndexType{}))
+    {
+    }
+
+    /// @brief 接过可写句柄的槽位，源句柄变空 / Take over a writable handle's slot;
+    /// the source becomes empty.
+    ConstHandle(Handle&& writer) noexcept
+        : pool_(std::exchange(writer.pool_, nullptr)),
+          index_(std::exchange(writer.index_, IndexType{}))
+    {
+    }
+
+    /// @brief 复制赋值：先保留新引用再释放旧引用 / Copy-assign: retain the new reference
+    /// before releasing the old one.
+    ConstHandle& operator=(const ConstHandle& other) noexcept
+    {
+      if (pool_ != other.pool_ || index_ != other.index_)
+      {
+        ConstHandle copy(other);
+        Swap(copy);
+      }
+      return *this;
+    }
+
+    /// @brief 转移赋值并释放旧引用 / Move-assign and release the old reference.
+    ConstHandle& operator=(ConstHandle&& other) noexcept
+    {
+      if (this != &other)
+      {
+        ConstHandle moved(std::move(other));
+        Swap(moved);
+      }
+      return *this;
+    }
+
+    /// @brief 接过可写句柄的槽位并释放旧引用 / Take over a writable handle's slot and
+    /// release the old reference.
+    ConstHandle& operator=(Handle&& writer) noexcept
+    {
+      ConstHandle moved(std::move(writer));
+      Swap(moved);
+      return *this;
+    }
+
+    /// @brief 释放本引用；最后一个引用归还槽位 / Release; the final reference returns
+    /// the slot.
+    ~ConstHandle() { Reset(); }
+
+    /// @brief 是否持有引用 / Whether this handle owns a reference.
+    [[nodiscard]] bool Valid() const { return pool_ != nullptr; }
+
+    /// @brief 只读访问负载，句柄必须有效 / Read-only payload access; requires a valid
+    /// handle.
+    [[nodiscard]] const Data& Get() const
+    {
+      ASSERT(Valid());
+      return pool_->slots_[index_].data_;
+    }
+
+    /// @brief 返回只读负载指针 / Return a read-only payload pointer.
+    [[nodiscard]] const Data* operator->() const { return &Get(); }
     /// @brief 只读解引用 / Dereference read-only.
     [[nodiscard]] const Data& operator*() const { return Get(); }
 
@@ -226,21 +299,7 @@ class ObjectPool
     }
 
    private:
-    friend class ObjectPool;
-    template <bool>
-    friend class BasicHandle;
-
-    BasicHandle(ObjectPool* pool, IndexType index) : pool_(pool), index_(index) {}
-
-    void Retain() noexcept
-    {
-      if (pool_ != nullptr)
-      {
-        pool_->Retain(index_);
-      }
-    }
-
-    void Swap(BasicHandle& other) noexcept
+    void Swap(ConstHandle& other) noexcept
     {
       std::swap(pool_, other.pool_);
       std::swap(index_, other.index_);
@@ -249,13 +308,6 @@ class ObjectPool
     ObjectPool* pool_ = nullptr;
     IndexType index_ = {};
   };
-
- public:
-  /// @brief 可复制的可写共享句柄 / Copyable mutable shared handle.
-  using Handle = BasicHandle<false>;
-  /// @brief 可复制的只读共享句柄，只接受可写到只读转换。
-  ///        Copyable read-only shared handle; conversion is mutable-to-const only.
-  using ConstHandle = BasicHandle<true>;
 
   /**
    * @brief 用内部槽数组构造池 / Construct the pool with internal slots.

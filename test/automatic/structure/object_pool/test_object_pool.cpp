@@ -47,9 +47,20 @@ void RunSharedHandleChecks()
 {
   using Handle = typename Pool::Handle;
   using ConstHandle = typename Pool::ConstHandle;
-  static_assert(std::is_copy_constructible_v<Handle>);
+  // One writer: Handle is move-only.
+  static_assert(!std::is_copy_constructible_v<Handle>);
+  static_assert(!std::is_copy_assignable_v<Handle>);
+  static_assert(std::is_nothrow_move_constructible_v<Handle>);
+  static_assert(std::is_nothrow_move_assignable_v<Handle>);
+  // Shared readers: ConstHandle is copyable and only takes a Handle by move.
+  static_assert(std::is_copy_constructible_v<ConstHandle>);
   static_assert(std::is_copy_assignable_v<ConstHandle>);
-  static_assert(std::is_convertible_v<Handle, ConstHandle>);
+  static_assert(std::is_constructible_v<ConstHandle, Handle&&>);
+  static_assert(std::is_assignable_v<ConstHandle&, Handle&&>);
+  static_assert(!std::is_constructible_v<ConstHandle, Handle&>);
+  static_assert(!std::is_constructible_v<ConstHandle, const Handle&>);
+  static_assert(!std::is_assignable_v<ConstHandle&, Handle&>);
+  static_assert(!std::is_assignable_v<ConstHandle&, const Handle&>);
   static_assert(!std::is_constructible_v<Handle, ConstHandle>);
   static_assert(!std::is_assignable_v<Handle&, const ConstHandle&>);
   static_assert(!std::is_assignable_v<Handle&, ConstHandle&&>);
@@ -71,14 +82,17 @@ void RunSharedHandleChecks()
   owner->value = 123;
   const auto index = owner.Index();
   const Payload* address = &owner.Get();
-  Handle copy = owner;
-  ConstHandle reader = owner;
-  owner.Reset();
-  copy.Reset();
+
+  // Moving the writer keeps the single reference.
+  Handle moved_owner(std::move(owner));
+  TEST_ASSERT(!owner.Valid() && moved_owner.Valid());
+  ConstHandle reader = std::move(moved_owner);
+  TEST_ASSERT(!moved_owner.Valid());
   TEST_ASSERT(pool.EmptySize() == 1U);
   TEST_ASSERT(reader.Index() == index && &reader.Get() == address);
   TEST_ASSERT(reader->value == 123);
 
+  // Copies extend the slot's lifetime until the last one is released.
   ConstHandle reader_copy(reader);
   reader.Reset();
   Handle other;
@@ -97,49 +111,51 @@ void RunSharedHandleChecks()
 
   // Self-assignment and same-slot aliases must not lose the final reference.
   TEST_ASSERT(pool.Acquire(owner) == LibXR::ErrorCode::OK);
-  auto& self = owner;
-  owner = self;
-  owner = std::move(self);
-  copy = owner;
-  owner = copy;
-  copy = std::move(owner);
-  TEST_ASSERT(!owner.Valid() && copy.Valid());
-  reader = copy;
-  reader = copy;
-  reader = std::move(copy);
-  TEST_ASSERT(!copy.Valid() && reader.Valid());
+  auto& owner_self = owner;
+  owner = std::move(owner_self);
+  TEST_ASSERT(owner.Valid());
+  reader = std::move(owner);
+  TEST_ASSERT(!owner.Valid() && reader.Valid());
+  ConstHandle alias = reader;
+  reader = alias;
+  alias = reader;
   auto& reader_self = reader;
   reader = reader_self;
   reader = std::move(reader_self);
+  TEST_ASSERT(reader.Valid());
+  alias.Reset();
   TEST_ASSERT(pool.EmptySize() == 1U);
   reader.Reset();
   TEST_ASSERT(pool.EmptySize() == 2U);
 
-  // Cross-pool assignment releases the old destination, not the source's slot.
+  // Assignment across pools releases the old destination, not the source's slot.
   Pool second_pool(2);
+  Handle second_owner;
   TEST_ASSERT(pool.Acquire(owner) == LibXR::ErrorCode::OK);
-  TEST_ASSERT(second_pool.Acquire(copy) == LibXR::ErrorCode::OK);
-  owner = copy;
+  TEST_ASSERT(second_pool.Acquire(second_owner) == LibXR::ErrorCode::OK);
+  owner = std::move(second_owner);
   TEST_ASSERT(pool.EmptySize() == 2U && second_pool.EmptySize() == 1U);
-  copy.Reset();
-  TEST_ASSERT(second_pool.EmptySize() == 1U);
   owner = Handle{};
   TEST_ASSERT(second_pool.EmptySize() == 2U);
 
   TEST_ASSERT(pool.Acquire(owner) == LibXR::ErrorCode::OK);
-  TEST_ASSERT(second_pool.Acquire(copy) == LibXR::ErrorCode::OK);
-  reader = owner;
-  reader = std::move(copy);
-  TEST_ASSERT(!copy.Valid());
-  owner.Reset();
+  TEST_ASSERT(second_pool.Acquire(second_owner) == LibXR::ErrorCode::OK);
+  reader = std::move(owner);
+  ConstHandle second_reader = std::move(second_owner);
+  reader = second_reader;
   TEST_ASSERT(pool.EmptySize() == 2U && second_pool.EmptySize() == 1U);
+  second_reader.Reset();
+  TEST_ASSERT(second_pool.EmptySize() == 1U);
   ConstHandle empty;
   reader = empty;
   TEST_ASSERT(second_pool.EmptySize() == 2U);
+
+  // Converting an empty writer yields an empty reader.
   Handle empty_owner;
-  ConstHandle empty_copy(empty_owner);
   ConstHandle empty_move(std::move(empty_owner));
-  TEST_ASSERT(!empty_copy.Valid() && !empty_move.Valid());
+  TEST_ASSERT(!empty_move.Valid());
+  reader = std::move(empty_owner);
+  TEST_ASSERT(!reader.Valid());
 }
 
 struct LifetimePayload
@@ -243,8 +259,9 @@ void RunSameSlotReleaseChecks()
     const auto index = owner.Index();
     TEST_ASSERT(index != held_slot.Index());
     owner->value = static_cast<int>(round);
-    for (auto& reader : readers) reader = owner;
-    owner.Reset();
+    Pool::ConstHandle frame = std::move(owner);
+    for (auto& reader : readers) reader = frame;
+    frame.Reset();
     TEST_ASSERT(pool.EmptySize() == 0U);
 
     // All workers now decrement the same counter, without ordering their releases.
@@ -282,8 +299,9 @@ void RunConcurrentReturnChecks()
     Pool::Handle owner;
     TEST_ASSERT(pool.Acquire(owner) == LibXR::ErrorCode::OK);
     owner->value = static_cast<int>(owner.Index());
-    first[i] = owner;
-    second[i] = std::move(owner);
+    Pool::ConstHandle frame = std::move(owner);
+    first[i] = frame;
+    second[i] = std::move(frame);
   }
 
   // Phase one leaves even-slot final returns to worker1 and odd ones to worker2.
