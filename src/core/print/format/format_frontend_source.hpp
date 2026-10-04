@@ -11,11 +11,11 @@ template <size_t FieldCount>
 struct SourceAnalysis
 {
   std::array<size_t, FieldCount>
-      argument_order{};  ///< source-ordered argument references /
-                         ///< 按源串顺序引用的参数索引
+      argument_order{};  ///< 按源串顺序引用的参数索引
+                         ///< source-ordered argument references
   size_t required_argument_count =
-      0;  ///< minimum call-site argument count / 调用点至少需要的参数个数
-  Error error = Error::None;  ///< first source-only parse error / 首个仅源串解析错误
+      0;  ///< 调用点至少需要的参数个数 / minimum call-site argument count
+  Error error = Error::None;  ///< 首个仅源串解析错误 / first source-only parse error
 };
 
 /**
@@ -27,12 +27,12 @@ struct SourceAnalysis
 template <size_t MaxFieldCount>
 struct SourceAnalysisScratch
 {
-  std::array<size_t, MaxFieldCount> order{};  ///< conservative field-order scratch buffer
-                                              ///< / 按字段顺序记录参数索引的临时缓冲区
-  size_t field_count = 0;  ///< parsed replacement-field count / 已解析的替换字段数量
+  std::array<size_t, MaxFieldCount> order{};  ///< 按字段顺序记录参数索引的临时缓冲区
+                                              ///< conservative field-order scratch buffer
+  size_t field_count = 0;  ///< 已解析的替换字段数量 / parsed replacement-field count
   size_t required_argument_count =
-      0;  ///< minimum call-site argument count / 调用点至少需要的参数个数
-  Error error = Error::None;  ///< first parse error / 首个解析错误
+      0;  ///< 调用点至少需要的参数个数 / minimum call-site argument count
+  Error error = Error::None;  ///< 首个解析错误 / first parse error
 
   [[nodiscard]] consteval Error Text(size_t, size_t) const { return Error::None; }
 

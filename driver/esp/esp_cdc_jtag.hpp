@@ -10,9 +10,10 @@
 #include "soc/soc_caps.h"
 #include "uart.hpp"
 
-#if SOC_USB_SERIAL_JTAG_SUPPORTED &&                                      \
-    ((defined(CONFIG_IDF_TARGET_ESP32C3) && CONFIG_IDF_TARGET_ESP32C3) || \
-     (defined(CONFIG_IDF_TARGET_ESP32C6) && CONFIG_IDF_TARGET_ESP32C6))
+#if (SOC_USB_SERIAL_JTAG_SUPPORTED &&                                        \
+     ((defined(CONFIG_IDF_TARGET_ESP32C3) && CONFIG_IDF_TARGET_ESP32C3) ||   \
+      (defined(CONFIG_IDF_TARGET_ESP32C6) && CONFIG_IDF_TARGET_ESP32C6))) || \
+    defined(__DOXYGEN__)
 
 namespace LibXR
 {

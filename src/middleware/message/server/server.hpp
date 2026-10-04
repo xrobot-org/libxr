@@ -18,10 +18,11 @@ namespace LibXR
  * @note 当前兼容规则：
  *       收到的 packet payload 短于 topic
  * 固定大小时，仅保证前缀部分有效，后半段保持未定义； 长于 topic
- * 固定大小时，仅保留前缀部分，其余字节直接截断。 Current compatibility rule: when an
- * incoming packet payload is shorter than the topic's fixed size, only the leading prefix
- * is guaranteed valid and the remaining tail stays unspecified; when it is longer, only
- * the prefix matching the topic size is kept and the rest is truncated.
+ * 固定大小时，仅保留前缀部分，其余字节直接截断。
+ *       Current compatibility rule: when an incoming packet payload is shorter than the
+ *       topic's fixed size, only the leading prefix is guaranteed valid and the remaining
+ *       tail stays unspecified; when it is longer, only the prefix matching the topic
+ *       size is kept and the rest is truncated.
  */
 class Topic::Server
 {
@@ -32,10 +33,10 @@ class Topic::Server
    */
   enum class Status : uint8_t
   {
-    WAIT_START,     ///< 正在找下一包前缀。Searching for the next packet prefix.
-    WAIT_TOPIC,     ///< 已读到前缀，正在等完整头。Prefix received; waiting for the full
+    WAIT_START,     ///< 正在找下一包前缀 / Searching for the next packet prefix.
+    WAIT_TOPIC,     ///< 已读到前缀，正在等完整头 / Prefix received; waiting for the full
                     ///< header.
-    WAIT_DATA_CRC,  ///< 头已接受，正在等 payload 和尾 CRC。Header accepted; waiting for
+    WAIT_DATA_CRC,  ///< 头已接受，正在等 payload 和尾 CRC / Header accepted; waiting for
                     ///< payload plus trailing CRC.
   };
 
@@ -86,9 +87,9 @@ class Topic::Server
    */
   enum class ParseResult : uint8_t
   {
-    NEED_MORE,  ///< 当前包还没收全。Current packet is still incomplete.
-    DROPPED,    ///< 当前包被丢弃。Current packet is dropped.
-    DELIVERED   ///< 当前包已发布。Current packet is delivered.
+    NEED_MORE,  ///< 当前包还没收全 / Current packet is still incomplete.
+    DROPPED,    ///< 当前包被丢弃 / Current packet is dropped.
+    DELIVERED   ///< 当前包已发布 / Current packet is delivered.
   };
 
   /**
@@ -133,17 +134,17 @@ class Topic::Server
    */
   void ResetParser();
 
-  Status status_ = Status::WAIT_START;  ///< 当前 parser 阶段。Current parser stage.
-  uint32_t data_len_ =
-      0;  ///< 当前包头声明的 payload 长度。Payload length declared by the current header.
-  RBTree<uint32_t> topic_map_;  ///< 从 topic 名称 CRC32 到 topic 句柄的映射。Map from
+  Status status_ = Status::WAIT_START;  ///< 当前 parser 阶段 / Current parser stage.
+  uint32_t data_len_ = 0;  ///< 当前包头声明的 payload 长度 / Payload length declared by
+                           ///< the current header.
+  RBTree<uint32_t> topic_map_;  ///< 从 topic 名称 CRC32 到 topic 句柄的映射 / Map from
                                 ///< topic-name CRC32 to topic handle.
-  QueueBase queue_;             ///< 输入字节 FIFO。Input byte FIFO.
-  RawData parse_buff_;  ///< 当前包头和 payload 的暂存缓冲区。Staging buffer holding the
+  QueueBase queue_;             ///< 输入字节 FIFO / Input byte FIFO.
+  RawData parse_buff_;  ///< 当前包头和 payload 的暂存缓冲区 / Staging buffer holding the
                         ///< current header and payload.
   TopicHandle current_topic_ =
-      nullptr;  ///< 当前包命中的目标 topic。Target topic matched by the current packet.
-  MicrosecondTimestamp current_timestamp_;  ///< 当前包头里的时间戳。Timestamp carried by
+      nullptr;  ///< 当前包命中的目标 topic / Target topic matched by the current packet.
+  MicrosecondTimestamp current_timestamp_;  ///< 当前包头里的时间戳 / Timestamp carried by
                                             ///< the current packet header.
 };
 }  // namespace LibXR

@@ -137,32 +137,27 @@ int RunLatencyCase(uint64_t count_override = 0)
   const uint64_t start_ns = NowNs();
   for (uint64_t seq = 1; seq <= count; ++seq)
   {
-    Data data;
-    while (publisher.CreateData(data) != LibXR::ErrorCode::OK)
+    auto fill = [seq](BenchFrame<PayloadBytes>& frame)
     {
-      ++create_retries;
-      sched_yield();
-    }
-
-    auto* frame = data.GetData();
-    frame->seq = seq;
-    frame->pub_ns = NowNs();
-    if constexpr (TouchPayload)
+      frame.seq = seq;
+      frame.pub_ns = NowNs();
+      if constexpr (TouchPayload)
+      {
+        std::memset(frame.payload.data(), static_cast<int>(seq & 0xFFU),
+                    frame.payload.size());
+      }
+      else if constexpr (PayloadBytes > 0)
+      {
+        frame.payload[0] = static_cast<uint8_t>(seq & 0xFFU);
+        frame.payload[PayloadBytes - 1U] = static_cast<uint8_t>((seq >> 8U) & 0xFFU);
+      }
+      frame.checksum = ComputeChecksum(frame);
+    };
+    if (!PublishWithRetry(publisher, fill, create_retries, publish_retries, "latency"))
     {
-      std::memset(frame->payload.data(), static_cast<int>(seq & 0xFFU),
-                  frame->payload.size());
-    }
-    else if constexpr (PayloadBytes > 0)
-    {
-      frame->payload[0] = static_cast<uint8_t>(seq & 0xFFU);
-      frame->payload[PayloadBytes - 1U] = static_cast<uint8_t>((seq >> 8U) & 0xFFU);
-    }
-    frame->checksum = ComputeChecksum(*frame);
-
-    while (publisher.Publish(data) != LibXR::ErrorCode::OK)
-    {
-      ++publish_retries;
-      sched_yield();
+      std::fprintf(stderr, "latency publish failed for payload=%zu seq=%" PRIu64 "\n",
+                   PayloadBytes, seq);
+      return 1;
     }
 
     uint64_t latency_ns = 0;

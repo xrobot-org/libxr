@@ -466,6 +466,7 @@ void CH32UART::StartTxDma(bool in_isr)
   dma_tx_channel_->CNTR = size;
   tx_busy_.Set();
   DMA_Cmd(dma_tx_channel_, ENABLE);
+  UNUSED(in_isr);
 }
 
 void CH32UART::HandleRxData(bool in_isr)
@@ -568,7 +569,6 @@ void CH32UART::TxDmaIRQHandler()
 
 /**
  * @brief 清除接收 DMA 中断标志并通知后端 / Clear RX DMA flags and notify the backend.
- * @param id 串口编号 / UART identifier.
  */
 void CH32UART::RxDmaIRQHandler()
 {

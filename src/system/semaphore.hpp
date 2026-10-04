@@ -25,7 +25,7 @@ class Semaphore
   /**
    * @brief  构造一个信号量对象
    *         Constructs a semaphore object
-   * @param  init_count 信号量的初始值 Initial count of the semaphore
+   * @param  init_count 信号量的初始值 / Initial count of the semaphore
    *
    * @details
    * 信号量的初始值 `init_count` 定义了可用资源的初始数量。
@@ -58,7 +58,7 @@ class Semaphore
   /**
    * @brief  从中断回调中释放（增加）信号量
    *         Releases (increments) the semaphore from an ISR (Interrupt Service Routine)
-   * @param  in_isr 是否在 ISR（中断服务例程）中调用 Whether it is called from an ISR
+   * @param  in_isr 是否在 ISR（中断服务例程）中调用 / Whether it is called from an ISR
    *
    * @details
    * 该方法在中断服务程序（ISR）中使用，确保安全地增加信号量。
@@ -73,8 +73,11 @@ class Semaphore
   /**
    * @brief  等待（减少）信号量
    *         Waits (decrements) the semaphore
-   * @param  timeout 超时时间（默认无限等待） Timeout period (default is infinite wait)
-   * @return 操作结果 ErrorCode indicating success or timeout
+   * @param  timeout 超时时间（毫秒），默认 `UINT32_MAX` / Timeout in milliseconds,
+   *         default `UINT32_MAX`
+   * @return 获得信号量返回 `ErrorCode::OK`，超时返回 `ErrorCode::TIMEOUT`；
+   *         ThreadX 后端出错时返回 `ErrorCode::FAILED` / `ErrorCode::OK` when acquired,
+   *         `ErrorCode::TIMEOUT` on timeout; `ErrorCode::FAILED` on a ThreadX error
    *
    * @details
    * 该方法尝试减少信号量的值，表示线程正在占用一个资源。
@@ -90,7 +93,7 @@ class Semaphore
   /**
    * @brief  获取当前信号量的值
    *         Gets the current value of the semaphore
-   * @return 当前信号量值 The current semaphore value
+   * @return 当前信号量值 / The current semaphore value
    *
    * @details
    * 该方法返回信号量当前的计数值，表示可用资源的数量。
@@ -101,7 +104,7 @@ class Semaphore
   size_t Value();
 
  private:
-  libxr_semaphore_handle semaphore_handle_;  ///< 信号量句柄 Semaphore handle
+  libxr_semaphore_handle semaphore_handle_;  ///< 信号量句柄 / Semaphore handle
 };
 
 }  // namespace LibXR

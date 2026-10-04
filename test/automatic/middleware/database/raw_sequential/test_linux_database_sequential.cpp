@@ -2,10 +2,13 @@
  * @file test_linux_database_sequential.cpp
  * @brief DatabaseRawSequential 读写测试 / DatabaseRawSequential read and write tests.
  *
- * 检查多键反复更新和重新打开后的值，并确认 Flash 读、写、擦除失败会终止操作。
- * Check repeated key updates, persisted values and fatal handling of Flash read, write
- * and erase failures.
+ * 检查多键反复更新和重新打开后的值，确认 Flash 读、写、擦除失败会终止操作，并在每一次
+ * Flash 操作处掉电后检查值。
+ * Check repeated key updates, persisted values, fatal handling of Flash read, write and
+ * erase failures, and the values after a power cut at every Flash operation.
  */
+
+#include <memory>
 
 #include "middleware/database/linux_database_test_common.hpp"
 #include "test_assert.hpp"
@@ -175,8 +178,30 @@ void RunLinuxDatabaseSequentialFailureTests()
   TestDatabaseSequentialEraseFailureRequires();
 }
 
+namespace
+{
+
+using namespace LinuxDatabaseTestCommon;
+
+void TestDatabaseSequentialPowerCut()
+{
+  // 每次保存先写备份块再写主块：任何一次 Flash 操作处掉电（包括编程被打断在中间），
+  // 键保持旧值或新值。擦除被打断在中间时块尾的校验字节可能仍读作有效，这一后端无法
+  // 识别，不在此模拟。
+  // Every save writes the backup block before the main block: a power cut at any Flash
+  // operation, including a program cut part-way, leaves each key at its old or new
+  // value. An erase cut part-way can leave the trailing checksum byte reading as valid,
+  // which this backend cannot detect, so it is not simulated here.
+  RunPowerCutCases([](Flash& flash)
+                   { return std::make_unique<DatabaseRawSequential>(flash, 256); },
+                   XR_DB_MIN_ERASE_SIZE, 8, 4 + (3 * 6), 0);
+}
+
+}  // namespace
+
 void test_linux_database_sequential()
 {
   RunLinuxDatabaseSequentialSmokeTests();
   RunLinuxDatabaseSequentialFailureTests();
+  TestDatabaseSequentialPowerCut();
 }

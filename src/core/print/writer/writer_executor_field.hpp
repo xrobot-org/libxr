@@ -7,8 +7,8 @@
 
 /**
  * @brief 将一段原始文本直接写入输出端 / Write one raw text chunk directly into the sink
- * @param text Text chunk to write. / 待写出的文本片段。
- * @return Returns the sink write result. / 返回 sink 写出结果。
+ * @param text 待写出的文本片段 / Text chunk to write.
+ * @return 返回 sink 写出结果 / Returns the sink write result.
  */
 template <OutputSink Sink>
 ErrorCode Writer::Executor<Sink>::WriteRaw(std::string_view text)

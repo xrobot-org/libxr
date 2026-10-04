@@ -10,8 +10,8 @@ namespace LibXR::Debug::SwdProtocol
  */
 enum class Port : uint8_t
 {
-  DP = 0,  ///< Debug Port / 调试端口
-  AP = 1,  ///< Access Port / 访问端口
+  DP = 0,  ///< 调试端口 / Debug Port
+  AP = 1,  ///< 访问端口 / Access Port
 };
 
 /**
@@ -19,8 +19,8 @@ enum class Port : uint8_t
  */
 enum class Pin : uint8_t
 {
-  SWCLK = 0,  ///< SWCLK / SWCLK
-  SWDIO = 1,  ///< SWDIO / SWDIO
+  SWCLK = 0,  ///< SWCLK
+  SWDIO = 1,  ///< SWDIO
 };
 
 /**
@@ -32,9 +32,9 @@ enum class Pin : uint8_t
 enum class Ack : uint8_t
 {
   NO_ACK = 0x0,    ///< 无应答 / No ACK
-  OK = 0x1,        ///< OK / OK
-  WAIT = 0x2,      ///< WAIT / WAIT
-  FAULT = 0x4,     ///< FAULT / FAULT
+  OK = 0x1,        ///< OK
+  WAIT = 0x2,      ///< WAIT
+  FAULT = 0x4,     ///< FAULT
   PROTOCOL = 0x7,  ///< 协议错误（非法 ACK）/ Protocol error (invalid ACK)
 };
 
@@ -55,7 +55,7 @@ struct Request
  */
 struct Response
 {
-  Ack ack = Ack::PROTOCOL;  ///< ACK / ACK
+  Ack ack = Ack::PROTOCOL;  ///< ACK
   uint32_t rdata = 0;  ///< 读数据（仅读响应有效）/ Read data (valid for read responses)
   bool parity_ok = true;  ///< 奇偶校验是否正确 / Whether parity is OK
 };
@@ -65,10 +65,10 @@ struct Response
  */
 enum class DpReadReg : uint8_t
 {
-  IDCODE = 0,     ///< IDCODE / IDCODE
-  CTRL_STAT = 1,  ///< CTRL/STAT / CTRL/STAT
-  SELECT = 2,     ///< SELECT / SELECT
-  RDBUFF = 3,     ///< RDBUFF / RDBUFF
+  IDCODE = 0,     ///< IDCODE
+  CTRL_STAT = 1,  ///< CTRL/STAT
+  SELECT = 2,     ///< SELECT
+  RDBUFF = 3,     ///< RDBUFF
 };
 
 /**
@@ -76,9 +76,9 @@ enum class DpReadReg : uint8_t
  */
 enum class DpWriteReg : uint8_t
 {
-  ABORT = 0,      ///< ABORT / ABORT
-  CTRL_STAT = 1,  ///< CTRL/STAT / CTRL/STAT
-  SELECT = 2,     ///< SELECT / SELECT
+  ABORT = 0,      ///< ABORT
+  CTRL_STAT = 1,  ///< CTRL/STAT
+  SELECT = 2,     ///< SELECT
 };
 
 /**
@@ -87,23 +87,19 @@ enum class DpWriteReg : uint8_t
  * @note C++17 起建议用 inline constexpr，避免头文件多重定义问题。
  *       Prefer inline constexpr in C++17+ to avoid multiple definition in headers.
  */
-inline constexpr uint32_t DP_ABORT_DAPABORT = (1u << 0);    ///< DAPABORT / DAPABORT
-inline constexpr uint32_t DP_ABORT_STKCMPCLR = (1u << 1);   ///< STKCMPCLR / STKCMPCLR
-inline constexpr uint32_t DP_ABORT_STKERRCLR = (1u << 2);   ///< STKERRCLR / STKERRCLR
-inline constexpr uint32_t DP_ABORT_WDERRCLR = (1u << 3);    ///< WDERRCLR / WDERRCLR
-inline constexpr uint32_t DP_ABORT_ORUNERRCLR = (1u << 4);  ///< ORUNERRCLR / ORUNERRCLR
+inline constexpr uint32_t DP_ABORT_DAPABORT = (1u << 0);    ///< DAPABORT
+inline constexpr uint32_t DP_ABORT_STKCMPCLR = (1u << 1);   ///< STKCMPCLR
+inline constexpr uint32_t DP_ABORT_STKERRCLR = (1u << 2);   ///< STKERRCLR
+inline constexpr uint32_t DP_ABORT_WDERRCLR = (1u << 3);    ///< WDERRCLR
+inline constexpr uint32_t DP_ABORT_ORUNERRCLR = (1u << 4);  ///< ORUNERRCLR
 
 /**
  * @brief DP CTRL/STAT 寄存器位定义 / DP CTRL/STAT register bit definitions
  */
-inline constexpr uint32_t DP_CTRLSTAT_CDBGPWRUPREQ =
-    (1u << 28);  ///< CDBGPWRUPREQ / CDBGPWRUPREQ
-inline constexpr uint32_t DP_CTRLSTAT_CDBGPWRUPACK =
-    (1u << 29);  ///< CDBGPWRUPACK / CDBGPWRUPACK
-inline constexpr uint32_t DP_CTRLSTAT_CSYSPWRUPREQ =
-    (1u << 30);  ///< CSYSPWRUPREQ / CSYSPWRUPREQ
-inline constexpr uint32_t DP_CTRLSTAT_CSYSPWRUPACK =
-    (1u << 31);  ///< CSYSPWRUPACK / CSYSPWRUPACK
+inline constexpr uint32_t DP_CTRLSTAT_CDBGPWRUPREQ = (1u << 28);  ///< CDBGPWRUPREQ
+inline constexpr uint32_t DP_CTRLSTAT_CDBGPWRUPACK = (1u << 29);  ///< CDBGPWRUPACK
+inline constexpr uint32_t DP_CTRLSTAT_CSYSPWRUPREQ = (1u << 30);  ///< CSYSPWRUPREQ
+inline constexpr uint32_t DP_CTRLSTAT_CSYSPWRUPACK = (1u << 31);  ///< CSYSPWRUPACK
 
 /**
  * @brief 构造 SELECT 寄存器值 / Build SELECT register value

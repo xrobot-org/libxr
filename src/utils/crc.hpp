@@ -240,7 +240,7 @@ class CRC32
       GenerateTable();
     }
 
-    if (len < 2)
+    if (len < sizeof(uint32_t))
     {
       return false;
     }

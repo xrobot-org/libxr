@@ -103,9 +103,9 @@ bool CacheSyncDmaBuffer(const void* addr, size_t size, bool cache_to_mem)
   }
 #endif
 
-  // descriptor. M2C 不接受 UNALIGNED；RX 调用方传入完整且按 cache line 对齐的
-  // descriptor。
+  // M2C 不接受 UNALIGNED；RX 调用方传入完整且按 cache line 对齐的 descriptor。
   // M2C does not accept UNALIGNED; RX callers pass a complete cache-line-aligned
+  // descriptor.
   int flags = cache_to_mem ? (CACHE_SYNC_FLAG_DIR_C2M | CACHE_SYNC_FLAG_UNALIGNED)
                            : CACHE_SYNC_FLAG_DIR_M2C;
 

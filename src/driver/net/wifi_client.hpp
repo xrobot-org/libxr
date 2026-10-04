@@ -47,7 +47,7 @@ class WifiClient : public NetworkInterface
   enum class Security
   {
     OPEN,             ///< 开放网络 / Open network
-    WPA2_PSK,         ///< WPA2-PSK / WPA2-PSK
+    WPA2_PSK,         ///< WPA2-PSK
     WPA2_ENTERPRISE,  ///< WPA2 企业认证 / WPA2 Enterprise
     UNKNOWN,          ///< 未知类型 / Unknown type
   };

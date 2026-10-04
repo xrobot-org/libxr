@@ -50,10 +50,10 @@ class Writer::CodeReader
    * @brief 读取紧跟在 `GenericField` 类型字节后的 4 字节字段载荷 / Read the 4-byte field
    * payload that follows one `GenericField` type byte
    *
-   * The opcode and semantic type bytes are read separately. This call only
-   * consumes flags, fill, width, and precision, in that order.
    * 操作码与语义类型字节由外层单独读取；本函数只继续读取后续
    * flags、fill、width、precision 这 4 个字节，顺序固定。
+   * The opcode and semantic type bytes are read separately. This call only
+   * consumes flags, fill, width, and precision, in that order.
    * @return 返回解码后的运行期字段规格 / Returns the decoded runtime field spec
    */
   [[nodiscard]] Spec ReadSpec();
@@ -69,8 +69,8 @@ class Writer::CodeReader
    * @brief 读取指向尾部文本池的偏移和长度 / Read an offset-size pair pointing into the
    * trailing text pool
    *
-   * The offset is already rebased against the final code blob base.
    * 该偏移已经按最终代码块起点完成重定位。
+   * The offset is already rebased against the final code blob base.
    * @return 返回尾部文本池中被引用的文本片段 / Returns the referenced text span inside
    * the trailing text pool
    */

@@ -13,8 +13,8 @@
 namespace LibXR::USB
 {
 /**
- * @brief USB configuration descriptor attribute bits (bmAttributes)
- *        配置描述符属性位（bmAttributes）
+ * @brief 配置描述符属性位（bmAttributes）
+ *        USB configuration descriptor attribute bits (bmAttributes)
  */
 constexpr uint8_t CFG_BUS_POWERED = 0x80;    ///< 总线供电 / Bus-powered
 constexpr uint8_t CFG_SELF_POWERED = 0x40;   ///< 自供电 / Self-powered
@@ -129,7 +129,16 @@ class ConfigDescriptorItem : public BosCapabilityProvider
    * @brief 可选：设置接口备用设置 / Optional: set interface alternate setting
    * @param itf 接口号 / Interface number
    * @param alt 备用设置 / Alternate setting
-   * @return OK：成功；NOT_SUPPORT：不支持 / OK: success; NOT_SUPPORT: not supported
+   * @return OK：已切换，设备核心随后以 ZLP 完成 SET_INTERFACE；
+   *         返回其他错误码时，设备核心 STALL 该请求。实现可以返回
+   *         NOT_SUPPORT（没有该备用设置）、NOT_FOUND（接口号不属于本类）
+   *         或 BUSY（当前状态不允许切换）等。默认实现只接受备用设置 0。
+   *         OK: switched, and the device core completes SET_INTERFACE with a ZLP;
+   *         for any other code the device core stalls the request. Implementations
+   *         may return, for example, NOT_SUPPORT (no such alternate setting),
+   *         NOT_FOUND (the interface number does not belong to this class) or BUSY
+   *         (the current state does not allow a switch). The default implementation
+   *         accepts only alternate setting 0.
    */
   virtual ErrorCode SetAltSetting(uint8_t itf, uint8_t alt)
   {
@@ -141,7 +150,12 @@ class ConfigDescriptorItem : public BosCapabilityProvider
    * @brief 可选：获取接口备用设置 / Optional: get interface alternate setting
    * @param itf 接口号 / Interface number
    * @param alt 输出：备用设置 / Output: alternate setting
-   * @return OK：成功；NOT_SUPPORT：不支持 / OK: success; NOT_SUPPORT: not supported
+   * @return OK：已写入 alt；其他错误码表示未写入。设备核心不检查返回值，
+   *         GET_INTERFACE 总是回复 alt，调用前 alt 为 0。默认实现返回 NOT_SUPPORT。
+   *         OK: alt was written; any other code means it was not. The device core
+   *         does not check the return value and always answers GET_INTERFACE with
+   *         alt, which it sets to 0 before the call. The default implementation
+   *         returns NOT_SUPPORT.
    */
   virtual ErrorCode GetAltSetting(uint8_t itf, uint8_t& alt)
   {

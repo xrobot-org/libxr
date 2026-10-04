@@ -10,8 +10,9 @@
 #include "usb/core/ep_pool.hpp"
 #include "usb/device/dev_core.hpp"
 
-#if SOC_USB_OTG_SUPPORTED && defined(CONFIG_IDF_TARGET_ESP32S3) && \
-    CONFIG_IDF_TARGET_ESP32S3
+#if (SOC_USB_OTG_SUPPORTED && defined(CONFIG_IDF_TARGET_ESP32S3) && \
+     CONFIG_IDF_TARGET_ESP32S3) ||                                  \
+    defined(__DOXYGEN__)
 
 namespace LibXR
 {
@@ -53,7 +54,7 @@ class ESP32USBDevice : public USB::EndpointPool, public USB::DeviceCore
      * @brief 使用同一块 buffer 同时生成 IN/OUT endpoint / Create both IN and OUT
      * endpoints from one shared buffer
      */
-    explicit EPConfig(RawData buffer) : buffer(buffer) {}
+    EPConfig(RawData buffer) : buffer(buffer) {}
 
     /**
      * @brief 使用同一块 buffer 生成单方向 endpoint / Create a single-direction endpoint

@@ -2,8 +2,8 @@
 
 #include <cstdint>
 
+#include "ch32_can_caps.hpp"
 #include "libxr.hpp"
-#include DEF2STR(LIBXR_CH32_CONFIG_FILE)
 
 /**
  * @brief CH32 CAN 实例编号 / CH32 CAN instance identifier
@@ -16,7 +16,7 @@ typedef enum
 #if defined(CAN1)
   CH32_CAN1,
 #endif
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
   CH32_CAN2,
 #endif
   CH32_CAN_NUMBER,
@@ -47,7 +47,7 @@ static constexpr uint32_t CH32_CAN_RCC_PERIPH_MAP[] = {
 #if defined(CAN1)
     RCC_APB1Periph_CAN1,
 #endif
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
     RCC_APB1Periph_CAN2,
 #endif
 };
@@ -56,7 +56,7 @@ static constexpr IRQn_Type CH32_CAN_TX_IRQ_MAP[] = {
 #if defined(CAN1)
     USB_HP_CAN1_TX_IRQn,
 #endif
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
     CAN2_TX_IRQn,
 #endif
 };
@@ -65,7 +65,7 @@ static constexpr IRQn_Type CH32_CAN_RX0_IRQ_MAP[] = {
 #if defined(CAN1)
     USB_LP_CAN1_RX0_IRQn,
 #endif
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
     CAN2_RX0_IRQn,
 #endif
 };
@@ -74,7 +74,7 @@ static constexpr IRQn_Type CH32_CAN_RX1_IRQ_MAP[] = {
 #if defined(CAN1)
     CAN1_RX1_IRQn,
 #endif
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
     CAN2_RX1_IRQn,
 #endif
 };
@@ -83,7 +83,7 @@ static constexpr IRQn_Type CH32_CAN_SCE_IRQ_MAP[] = {
 #if defined(CAN1)
     CAN1_SCE_IRQn,
 #endif
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
     CAN2_SCE_IRQn,
 #endif
 };

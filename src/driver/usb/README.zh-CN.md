@@ -2,23 +2,23 @@
 
 <div align="center">
 
-<img src="https://github.com/Jiu-xiao/LibXR_CppCodeGenerator/raw/main/imgs/XRobot.jpeg" width="300">
+<img src="https://github.com/xrobot-org/LibXR_CppCodeGenerator/raw/master/imgs/XRobot.jpeg" width="300">
 
-真正小巧、美观、超快且现代的嵌入式系统 USB 堆栈。
+面向嵌入式系统的 C++20 USB 设备协议栈。
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
-[![Documentation](https://img.shields.io/badge/docs-online-brightgreen)](https://jiu-xiao.github.io/libxr/)
+[![Documentation](https://img.shields.io/badge/docs-online-brightgreen)](https://xrobot.work/libxr/)
 [![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FJiu-xiao%2Flibxr.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FJiu-xiao%2Flibxr?ref=badge_shield)
 
 </div>
 
 ## 介绍
 
-XRUSB是一个独立的现代 C++ USB 协议栈。以subtree的形式作为[LibXR](https://github.com/Jiu-xiao/libxr)的一部分，同时也提供独立仓库。XRUSB专注于可移植性、高性能和简单集成。
+XRUSB 是 [LibXR](https://github.com/xrobot-org/libxr) 的 USB 设备协议栈，位于 `src/driver/usb`，专注于可移植性、高性能和简单集成。
 
 ## 主要特性
 
-* 现代 C++ 实现: 采用 C++ 17 标准编写，使用类和模板模块化封装，便于扩展。
+* 现代 C++ 实现: 采用 C++20 标准编写，使用类和模板模块化封装，便于扩展。
 
 * 无锁数据结构：所有传输和事件处理都无锁且线程安全，效率极高。
 
@@ -36,7 +36,7 @@ XRUSB是一个独立的现代 C++ USB 协议栈。以subtree的形式作为[LibX
 
 ## 设备驱动
 
-本仓库只包含平台无关的协议栈代码，具体的平台驱动请到 libxr 对应路径查看，例如：
+`src/driver/usb` 只包含平台无关的协议栈代码，平台设备驱动位于 `driver/<平台>/`，例如：
 
 - `driver/st/stm32_usb_ep.cpp`
 - `driver/ch/ch32_usb_endpoint_otghs.cpp`
@@ -44,7 +44,7 @@ XRUSB是一个独立的现代 C++ USB 协议栈。以subtree的形式作为[LibX
 
 说明：
 
-- 下表中的 `USB-DEVICE` 指 XRUSB 使用的原生 USB 设备控制器路径。
+- [平台外设支持列表](../../../doc/support.md) 中的 `USB-DEVICE` 指 XRUSB 使用的原生 USB 设备控制器路径。
 - 当前主线 libxr 中，ESP32-C3 / ESP32-C6 通过 `driver/esp/esp_cdc_jtag.*` 提供 `CDC-JTAG`；这是独立的 USB Serial/JTAG UART 后端，不属于 XRUSB 的通用设备控制器路径。
 
 ## 支持进度
@@ -57,7 +57,7 @@ XRUSB是一个独立的现代 C++ USB 协议栈。以subtree的形式作为[LibX
 | HID        | 支持            | 仅提供标准键盘/鼠标与遥控器，其他类型需要自行派生 |
 | UAC        | 支持            | 目前仅实现了UAC1.0的麦克风                        |
 | GSUSB      | 支持(CAN/FDCAN) | 适用于 Linux 平台的免驱 SocketCAN                 |
-| DAPLINK V2 | 支持(仅SWD接口) | 可在Keil/OpenOCD使用                              |
+| DAPLINK V2 | 支持(SWD 与 JTAG) | 可在Keil/OpenOCD使用                              |
 
 ### 主机协议栈
 
@@ -74,7 +74,7 @@ TODO
 | ESP32-S3 | USB_OTG_FS | 支持 (Device) | ESP32-S3                   |
 | CH32  | USB_DEVICE_FS | 支持          | CH32V203                   |
 | CH32  | USB_OTG_FS    | 支持 (Device) | CH32V307/CH32V203/CH32V208 |
-| CH32  | USB_OTG_HS    | 支持          | CH32V307                   |
+| CH32  | USB_OTG_HS    | 支持 (Device) | CH32V307                   |
 
 说明：
 
@@ -82,4 +82,4 @@ TODO
 
 ## 文档
 
-与[LibXR文档](https://xrobot-org.github.io/docs/xrusb)一起发布
+与[LibXR文档](https://xrobot.work/docs/xrusb)一起发布

@@ -10,11 +10,11 @@ namespace LibXR
  */
 enum class Topic::ASyncSubscriberState : uint32_t
 {
-  IDLE = 0,     ///< 当前没有等待，也没有待消费的新数据。No wait is pending and no unread
+  IDLE = 0,     ///< 当前没有等待，也没有待消费的新数据 / No wait is pending and no unread
                 ///< data is buffered.
-  WAITING = 1,  ///< 等待下一次发布填充本地缓冲区。Waiting for the next publish to fill
+  WAITING = 1,  ///< 等待下一次发布填充本地缓冲区 / Waiting for the next publish to fill
                 ///< the local buffer.
-  DATA_READY = UINT32_MAX  ///< 本地缓冲区已有一份待消费的新数据。One unread fresh sample
+  DATA_READY = UINT32_MAX  ///< 本地缓冲区已有一份待消费的新数据 / One unread fresh sample
                            ///< is buffered locally.
 };
 
@@ -24,16 +24,16 @@ enum class Topic::ASyncSubscriberState : uint32_t
  */
 struct Topic::ASyncBlock : public Topic::SuberBlock
 {
-  void* buff_addr;  ///< 长期存在的本地接收对象地址。Long-lived local receive object
+  void* buff_addr;  ///< 长期存在的本地接收对象地址 / Long-lived local receive object
                     ///< address.
   void (*copy_payload)(
       void* dst,
-      void* payload_addr);  ///< 按订阅精确类型执行负载拷贝的适配函数。Adapter that copies
-                            ///< one payload using the subscriber's exact type.
+      void* payload_addr);  ///< 按订阅精确类型执行负载拷贝的适配函数 / Adapter that
+                            ///< copies one payload using the subscriber's exact type.
   MicrosecondTimestamp
-      timestamp;  ///< 最近接收的消息时间戳。Latest received message timestamp.
+      timestamp;  ///< 最近接收的消息时间戳 / Latest received message timestamp.
   std::atomic<ASyncSubscriberState> state =
-      ASyncSubscriberState::IDLE;  ///< 当前异步订阅状态。Current async subscriber state.
+      ASyncSubscriberState::IDLE;  ///< 当前异步订阅状态 / Current async subscriber state.
 };
 
 /**
@@ -178,6 +178,6 @@ class Topic::ASyncSubscriber
   }
 
   LockFreeList::Node<ASyncBlock>* block_ =
-      nullptr;  ///< 订阅者数据块。Subscriber data block.
+      nullptr;  ///< 订阅者数据块 / Subscriber data block.
 };
 }  // namespace LibXR

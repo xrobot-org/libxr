@@ -102,3 +102,45 @@
 | WIFI Client | ❌ |
 | SmartConfig | ❌ |
 | Bluetooth | ❌ |
+
+## HPM Support
+
+| `Peripheral` | HPM5301/HPM5361 |
+| ------------ | --------------- |
+| POWER | ❌ |
+| GPIO | ✅ |
+| FLASH | ❌ |
+| UART | 🔄 |
+| SPI | 🔄 |
+| I2C | ✅ |
+| CAN | 🔄 |
+| CANFD | 🔄 |
+| ADC | ❌ |
+| DAC | ❌ |
+| PWM | ✅ |
+| USB-DEVICE | ❌ |
+| WDG | ❌ |
+
+## MSPM0 Support
+
+| `Peripheral` | MSPM0G3507 |
+| ------------ | ---------- |
+| POWER | ❌ |
+| GPIO | ✅ |
+| FLASH | ❌ |
+| UART | ✅ |
+| SPI | ✅ |
+| I2C | ✅ |
+| CAN | ❌ |
+| CANFD | ❌ |
+| ADC | ❌ |
+| DAC | ❌ |
+| PWM | ✅ |
+| USB-DEVICE | 🚫 |
+| WDG | ❌ |
+
+## Webots and WebAssembly Support
+
+Webots（`LIBXR_DRIVER=webots`）与 WebAssembly（`LIBXR_DRIVER=webasm`）的驱动层只提供 `Timebase`，上表中的外设都没有驱动。
+
+The driver layers of Webots (`LIBXR_DRIVER=webots`) and WebAssembly (`LIBXR_DRIVER=webasm`) provide only `Timebase`; none of the peripherals in the tables above has a driver there.

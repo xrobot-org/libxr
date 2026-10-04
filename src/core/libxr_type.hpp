@@ -14,7 +14,7 @@ namespace Detail
 {
 /**
  * @brief 仅裁掉数组末尾的一个 `\\0`；其余字节按原始数据保留。
- * @brief Trim at most one trailing `\\0` from a bounded char array and keep all
+ *        Trim at most one trailing `\\0` from a bounded char array and keep all
  *        preceding bytes untouched.
  */
 template <size_t N>
@@ -28,6 +28,17 @@ template <size_t N>
 {
   return (data[N - 1] == '\0') ? (N - 1) : N;
 }
+
+/**
+ * @brief `std::string` 或 `std::string_view`（忽略 cv 和引用）。通用对象构造函数会取这类
+ *        对象本身的字节而不是文本，因此它们不能隐式转换为 `RawData` / `ConstRawData`。
+ *        `std::string` or `std::string_view`, ignoring cv and reference. The generic
+ *        object constructors would view the object's own bytes instead of the text, so
+ *        these types do not convert implicitly to `RawData` / `ConstRawData`.
+ */
+template <typename T>
+concept StdStringOrView = std::is_same_v<std::remove_cvref_t<T>, std::string> ||
+                          std::is_same_v<std::remove_cvref_t<T>, std::string_view>;
 }  // namespace Detail
 
 /**
@@ -60,16 +71,28 @@ class RawData
   RawData() = default;
 
   /**
-   * @brief 从可写对象构造视图 / Construct a view from a writable object
-   * @tparam DataType 对象类型 / Object type
+   * @brief 从可写对象构造视图，大小为 `sizeof(DataType)` / Construct a view from a
+   *        writable object; the size is `sizeof(DataType)`
+   * @tparam DataType 对象类型，不能是 `std::string` 或 `std::string_view` / Object type;
+   *         must not be `std::string` or `std::string_view`
    * @param data 被引用对象 / Referenced object
    */
   template <typename DataType>
     requires(!std::is_const_v<DataType> &&
-             !std::is_same_v<std::remove_cvref_t<DataType>, RawData>)
+             !std::is_same_v<std::remove_cvref_t<DataType>, RawData> &&
+             !Detail::StdStringOrView<DataType>)
   RawData(DataType& data) : addr_(&data), size_(sizeof(DataType))
   {
   }
+
+  /**
+   * @brief 禁止 `std::string` 隐式转换为 `RawData`；文本视图须显式写 `RawData(text)`。
+   *        Implicit conversion from `std::string` is deleted; write `RawData(text)` for
+   *        a text view.
+   */
+  template <typename Text>
+    requires(std::is_same_v<Text, std::string>)
+  RawData(Text&) = delete;  // 用 RawData(text) / Use RawData(text)
 
   /**
    * @brief 拷贝构造函数。
@@ -162,18 +185,31 @@ class ConstRawData
   ConstRawData() = default;
 
   /**
-   * @brief 从任意对象构造只读视图 / Construct a read-only view from any object
-   * @tparam DataType 对象类型 / Object type
+   * @brief 从任意对象构造只读视图，大小为 `sizeof(DataType)` / Construct a read-only
+   *        view from any object; the size is `sizeof(DataType)`
+   * @tparam DataType 对象类型，不能是指针、`std::string` 或 `std::string_view` / Object
+   *         type; must not be a pointer, `std::string` or `std::string_view`
    * @param data 被引用对象 / Referenced object
    */
   template <typename DataType>
     requires(!std::is_pointer_v<std::remove_cvref_t<DataType>> &&
              !std::is_same_v<std::remove_cvref_t<DataType>, ConstRawData> &&
-             !std::is_same_v<std::remove_cvref_t<DataType>, RawData>)
+             !std::is_same_v<std::remove_cvref_t<DataType>, RawData> &&
+             !Detail::StdStringOrView<DataType>)
   ConstRawData(const DataType& data)
       : addr_(reinterpret_cast<const DataType*>(&data)), size_(sizeof(DataType))
   {
   }
+
+  /**
+   * @brief 禁止 `std::string` / `std::string_view` 隐式转换为 `ConstRawData`；文本视图须
+   *        显式写 `ConstRawData(text)`。
+   *        Implicit conversion from `std::string` / `std::string_view` is deleted; write
+   *        `ConstRawData(text)` for a text view.
+   */
+  template <typename Text>
+    requires(Detail::StdStringOrView<Text>)
+  ConstRawData(const Text&) = delete;  // 用 ConstRawData(text) / Use ConstRawData(text)
 
   /**
    * @brief 拷贝构造函数。
@@ -196,9 +232,9 @@ class ConstRawData
 
   /**
    * @brief 从 `char*` / `const char*` 文本指针构造
-   * `ConstRawData`，数据大小为字符串长度（不含 `\0`）。 Constructs `ConstRawData` from a
-   * `char*` / `const char*` text pointer, with size set to the string length (excluding
-   * `\0`).
+   * `ConstRawData`，数据大小为字符串长度（不含 `\0`）。
+   * Constructs `ConstRawData` from a `char*` / `const char*` text pointer, with size set
+   * to the string length (excluding `\0`).
    *
    * @param data C 风格字符串指针。
    *             A C-style string pointer.
@@ -235,7 +271,7 @@ class ConstRawData
 
   /**
    * @brief 从字符数组构造 `ConstRawData`；若最后一个字符是 `\\0`，仅忽略这一尾随终止符。
-   * @brief Constructs `ConstRawData` from a character array; if the last element
+   *        Constructs `ConstRawData` from a character array; if the last element
    *        is `\\0`, only that trailing terminator is ignored.
    *
    * @tparam N 数组大小。

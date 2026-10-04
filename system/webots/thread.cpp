@@ -51,14 +51,14 @@ void Thread::Sleep(uint32_t milliseconds)
   }
 }
 
-void Thread::SleepUntil(MillisecondTimestamp& last_waskup_time, uint32_t time_to_sleep)
+void Thread::SleepUntil(MillisecondTimestamp& last_wakeup_time, uint32_t time_to_sleep)
 {
-  last_waskup_time = last_waskup_time + time_to_sleep;
+  last_wakeup_time = last_wakeup_time + time_to_sleep;
 
-  while (MonotonicTime::NowMilliseconds() < last_waskup_time)
+  while (MonotonicTime::NowMilliseconds() < last_wakeup_time)
   {
     ConditionVarWait(MonotonicTime::WaitSliceMilliseconds(
-        MonotonicTime::RemainingMilliseconds(last_waskup_time)));
+        MonotonicTime::RemainingMilliseconds(last_wakeup_time)));
   }
 }
 

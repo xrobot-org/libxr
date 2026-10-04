@@ -10,9 +10,9 @@ namespace LibXR
  */
 struct Topic::QueueBlock : public Topic::SuberBlock
 {
-  SPSCQueueBase* queue;  ///< 指向订阅队列基类。Pointer to the subscribed queue base.
+  SPSCQueueBase* queue;  ///< 指向订阅队列基类 / Pointer to the subscribed queue base.
   void (*fun)(MicrosecondTimestamp, void*,
-              QueueBlock&);  ///< 把一条发布转发进队列。Adapter that forwards one publish
+              QueueBlock&);  ///< 把一条发布转发进队列 / Adapter that forwards one publish
                              ///< into the queue.
 };
 
@@ -184,6 +184,6 @@ class Topic::QueuedSubscriber
 
  private:
   LockFreeList::Node<QueueBlock>* block_ =
-      nullptr;  ///< 订阅者数据块。Subscriber data block.
+      nullptr;  ///< 订阅者数据块 / Subscriber data block.
 };
 }  // namespace LibXR

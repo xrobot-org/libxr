@@ -16,13 +16,13 @@ void Thread::Sleep(uint32_t milliseconds)
   }
 }
 
-void Thread::SleepUntil(MillisecondTimestamp& last_waskup_time, uint32_t time_to_sleep)
+void Thread::SleepUntil(MillisecondTimestamp& last_wakeup_time, uint32_t time_to_sleep)
 {
-  while (uint32_t(Timebase::GetMilliseconds()) - last_waskup_time < time_to_sleep)
+  while (uint32_t(Timebase::GetMilliseconds()) - last_wakeup_time < time_to_sleep)
   {
     Timer::RefreshTimerInIdle();
   }
-  last_waskup_time = last_waskup_time + time_to_sleep;
+  last_wakeup_time = last_wakeup_time + time_to_sleep;
 }
 
 uint32_t Thread::GetTime() { return Timebase::GetMilliseconds(); }

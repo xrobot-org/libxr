@@ -187,4 +187,43 @@ void RunTransformEulerOrderTests()
   eulr_new = quat.ToEulerAngleYZX();
   TEST_ASSERT(equal(eulr_new(0), eulr(0)) && equal(eulr_new(1), eulr(1)) &&
               equal(eulr_new(2), eulr(2)));
+
+  // 再用三组互不相等的角度检查六种顺序的往返；上面的 yaw 为 π/4，atan2 两个参数互换时
+  // 结果也相同，测不出参数顺序。
+  // Round trips of all six orders with three sets of distinct angles; the yaw above is
+  // π/4, where swapped atan2 arguments give the same result, so it cannot catch them.
+  const LibXR::EulerAngle<> angle_sets[] = {
+      {0.3, -0.5, 1.1}, {-0.7, 0.2, -1.3}, {1.2, 0.9, -0.4}};
+  for (const auto& angles : angle_sets)
+  {
+    auto same = [&](const LibXR::EulerAngle<>& got)
+    {
+      return equal(got(0), angles(0)) && equal(got(1), angles(1)) &&
+             equal(got(2), angles(2));
+    };
+
+    rot = angles.ToRotationMatrixZYX();
+    quat = angles.ToQuaternionZYX();
+    TEST_ASSERT(same(rot.ToEulerAngleZYX()) && same(quat.ToEulerAngleZYX()));
+
+    rot = angles.ToRotationMatrixZXY();
+    quat = angles.ToQuaternionZXY();
+    TEST_ASSERT(same(rot.ToEulerAngleZXY()) && same(quat.ToEulerAngleZXY()));
+
+    rot = angles.ToRotationMatrixYXZ();
+    quat = angles.ToQuaternionYXZ();
+    TEST_ASSERT(same(rot.ToEulerAngleYXZ()) && same(quat.ToEulerAngleYXZ()));
+
+    rot = angles.ToRotationMatrixXYZ();
+    quat = angles.ToQuaternionXYZ();
+    TEST_ASSERT(same(rot.ToEulerAngleXYZ()) && same(quat.ToEulerAngleXYZ()));
+
+    rot = angles.ToRotationMatrixXZY();
+    quat = angles.ToQuaternionXZY();
+    TEST_ASSERT(same(rot.ToEulerAngleXZY()) && same(quat.ToEulerAngleXZY()));
+
+    rot = angles.ToRotationMatrixYZX();
+    quat = angles.ToQuaternionYZX();
+    TEST_ASSERT(same(rot.ToEulerAngleYZX()) && same(quat.ToEulerAngleYZX()));
+  }
 }

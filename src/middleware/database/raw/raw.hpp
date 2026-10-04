@@ -11,20 +11,20 @@ namespace LibXR
 
 /**
  * @brief 适用于最小写入单元受限的 Flash 存储的数据库实现
- *        (Database implementation for Flash storage with minimum write unit
- *        restrictions).
+ *        Database implementation for Flash storage with minimum write unit
+ *        restrictions.
  *
+ * 此类提供适用于 Flash 存储的键值存储管理，该存储要求数据以固定大小块写入。
  * This class provides key-value storage management for Flash memory that
  * requires data to be written in fixed-size blocks.
- * 此类提供适用于 Flash 存储的键值存储管理，该存储要求数据以固定大小块写入。
  *
  * @note 若底层 Flash 读写擦失败，当前实现视为不可恢复故障并直接触发 `REQUIRE`。
  *       If the underlying Flash read, write, or erase operation fails, the
  *       current implementation treats it as an unrecoverable fault and triggers
  *       `REQUIRE` immediately.
  *
- * @tparam MinWriteSize Flash 的最小写入单元大小 (Minimum write unit size for Flash
- *         storage).
+ * @tparam MinWriteSize Flash 的最小写入单元大小 / Minimum write unit size for Flash
+ *         storage.
  * @note 这个头本身只是类壳；真正的布局、底层 IO、块操作、键操作和生命周期流程分别
  *       拆在同目录的几个类内片段头里。
  *       This header is only the class shell; the actual layout definitions,

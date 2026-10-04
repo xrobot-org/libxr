@@ -343,7 +343,7 @@ constexpr std::size_t HOST_FRAME_CLASSIC_TS_SIZE =
 
 /** @brief FD：header + 64 data / FD: header + 64 data */
 constexpr std::size_t HOST_FRAME_FD_SIZE = sizeof(uint32_t) + sizeof(uint32_t) + 4 + 64;
-/** @brief FD + timestamp / FD + timestamp */
+/** @brief FD + timestamp */
 constexpr std::size_t HOST_FRAME_FD_TS_SIZE = HOST_FRAME_FD_SIZE + sizeof(uint32_t);
 
 }  // namespace LibXR::USB::GsUsb

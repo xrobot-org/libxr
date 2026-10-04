@@ -112,7 +112,7 @@ class CDCBase : public DeviceClass
                             ///< (fixed to SERIAL_STATE)
     uint16_t wValue;        ///< 值（固定为 0） / Value (fixed to 0)
     uint16_t wIndex;        ///< 接口号 / Interface number
-    uint16_t wLength;       ///< 数据长度（固定为2）| Data length (fixed to 2)
+    uint16_t wLength;       ///< 数据长度（固定为2） / Data length (fixed to 2)
     uint16_t serialState;   ///< 串行状态位图 / Serial state bitmap
   };
   LIBXR_PACKED_END
@@ -133,6 +133,8 @@ class CDCBase : public DeviceClass
    * @param data_in_ep_num 数据输入端点号 / Data IN endpoint number
    * @param data_out_ep_num 数据输出端点号 / Data OUT endpoint number
    * @param comm_ep_num 通信端点号 / Communication endpoint number
+   * @param control_interface_string 控制接口字符串 / Control interface string
+   * @param data_interface_string 数据接口字符串 / Data interface string
    */
   CDCBase(Endpoint::EPNumber data_in_ep_num, Endpoint::EPNumber data_out_ep_num,
           Endpoint::EPNumber comm_ep_num,

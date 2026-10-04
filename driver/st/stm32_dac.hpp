@@ -32,11 +32,11 @@ class STM32DAC : public DAC
   ErrorCode Write(float voltage) override;
 
  private:
-  DAC_HandleTypeDef* hdac_;  ///< DAC 外设句柄 DAC device handle
-  uint32_t channel_;         ///< DAC 通道 DAC channel
-  float vref_;               ///< DAC 参考电压 DAC reference voltage
-  uint32_t align_;           ///< DAC 对齐方式 DAC alignment
-  uint16_t resolution_;      ///< DAC 分辨率 DAC resolution
+  DAC_HandleTypeDef* hdac_;  ///< DAC 外设句柄 / DAC device handle
+  uint32_t channel_;         ///< DAC 通道 / DAC channel
+  float vref_;               ///< DAC 参考电压 / DAC reference voltage
+  uint32_t align_;           ///< DAC 对齐方式 / DAC alignment
+  uint16_t resolution_;      ///< DAC 分辨率 / DAC resolution
 };
 
 }  // namespace LibXR

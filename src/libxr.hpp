@@ -1,6 +1,5 @@
 #pragma once
 
-#include "app_framework.hpp"
 #include "async.hpp"
 #include "database.hpp"
 #include "double_buffer.hpp"
@@ -39,8 +38,7 @@
 #include "transform.hpp"
 
 /**
- * @brief LibXR 命名空间
- * @brief LibXR namespace
+ * @brief LibXR 命名空间 / LibXR namespace
  */
 namespace LibXR
 {

@@ -27,7 +27,7 @@ class MSPM0Timebase : public Timebase
   /**
    * @brief 同步毫秒计数器。
    *        Synchronize the millisecond counter.
-   * @param ticks 新的毫秒计数值。New millisecond tick value.
+   * @param ticks 新的毫秒计数值 / New millisecond tick value.
    */
   static void Sync(uint32_t ticks);
 

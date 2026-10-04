@@ -27,9 +27,9 @@ class Quaternion;
  * @brief 三维空间中的位置向量 / 3D position vector
  *
  * 该类基于 Eigen::Matrix<Scalar, 3, 1>，用于表示三维坐标中的位置，并支持基本的
- * 旋转、缩放和转换运算。 This class extends Eigen::Matrix<Scalar, 3, 1> to
- * represent a position in 3D space, supporting basic rotation, scaling, and
- * transformation operations.
+ * 旋转、缩放和转换运算。
+ * This class extends Eigen::Matrix<Scalar, 3, 1> to represent a position in 3D space,
+ * supporting basic rotation, scaling, and transformation operations.
  *
  * @tparam Scalar 数值类型（默认使用 DefaultScalar） / Numeric type (default:
  * DefaultScalar)
@@ -54,8 +54,8 @@ class Position : public Eigen::Matrix<Scalar, 3, 1>
   Position(Scalar x, Scalar y, Scalar z) : Eigen::Matrix<Scalar, 3, 1>(x, y, z) {}
 
   /**
-   * @brief 复制构造函数 / Copy constructor
-   * @param p 另一个 Position 实例 / Another Position instance
+   * @brief 从 Eigen 3x1 向量构造 / Constructs from an Eigen 3x1 vector
+   * @param p Eigen 3x1 向量 / Eigen 3x1 vector
    */
   Position(const Eigen::Matrix<Scalar, 3, 1>& p) : Eigen::Matrix<Scalar, 3, 1>(p) {}
 
@@ -66,10 +66,10 @@ class Position : public Eigen::Matrix<Scalar, 3, 1>
   Position(const Position& p) : Eigen::Matrix<Scalar, 3, 1>(p) {}
 
   /**
-   * @brief 乘以旋转矩阵 / Multiply by a rotation matrix
-   * @tparam Rotation 旋转矩阵类型 / Rotation matrix type
-   * @param R 旋转矩阵 / Rotation matrix
-   * @return 旋转后的 Position / Rotated Position
+   * @brief 从 3 元素数组构造 / Constructs from a 3-element array
+   * @tparam T 元素类型，可为 Scalar、float 或 double / Element type: Scalar, float or
+   * double
+   * @param data 存储 (x, y, z) 的数组 / Array storing (x, y, z)
    */
   template <typename T, std::enable_if_t<std::is_same<T, Scalar>::value ||
                                              std::is_same<T, float>::value ||
@@ -94,9 +94,8 @@ class Position : public Eigen::Matrix<Scalar, 3, 1>
   }
 
   /**
-   * @brief 赋值运算符，将 Eigen 向量赋值给 Position / Assignment operator to assign an
-   * Eigen vector to Position
-   * @param p Eigen 3x1 向量 / Eigen 3x1 vector
+   * @brief 拷贝赋值运算符 / Copy assignment operator
+   * @param p 另一个 Position / Another Position object
    * @return 赋值后的 Position / Updated Position object
    */
   Position& operator=(const Position& p)
@@ -112,10 +111,13 @@ class Position : public Eigen::Matrix<Scalar, 3, 1>
   }
 
   /**
-   * @brief 赋值运算符，将另一个 Position 赋值给当前对象 / Assignment operator to assign
-   * another Position to this object
-   * @param p 另一个 Position / Another Position object
-   * @return 赋值后的 Position / Updated Position object
+   * @brief 返回旋转作用于当前向量的结果 R * p，不修改当前对象 / Returns the rotated
+   * vector R * p without modifying this object
+   * @tparam Rotation 旋转类型：RotationMatrix、Eigen 3x3 矩阵、Quaternion 或 Eigen
+   * 四元数 / Rotation type: RotationMatrix, Eigen 3x3 matrix, Quaternion or Eigen
+   * quaternion
+   * @param R 旋转 / Rotation
+   * @return 旋转后的向量 / Rotated vector
    */
   template <
       typename Rotation,
@@ -179,7 +181,7 @@ class Position : public Eigen::Matrix<Scalar, 3, 1>
    */
   const Position& operator/=(const Eigen::Matrix<Scalar, 3, 3>& R)
   {
-    *this = R.transpose() * Eigen::Map<const Eigen::Matrix<Scalar, 3, 1>>(this->data_);
+    *this = R.transpose() * Eigen::Map<const Eigen::Matrix<Scalar, 3, 1>>(this->data());
     return *this;
   }
 
@@ -191,7 +193,7 @@ class Position : public Eigen::Matrix<Scalar, 3, 1>
    */
   const Position& operator/=(const Eigen::Quaternion<Scalar>& q)
   {
-    *this = q.conjugate() * Eigen::Map<const Eigen::Matrix<Scalar, 3, 1>>(this->data_);
+    *this = q.conjugate() * Eigen::Map<const Eigen::Matrix<Scalar, 3, 1>>(this->data());
     return *this;
   }
 
@@ -257,9 +259,9 @@ class Axis : public Eigen::Matrix<Scalar, 3, 1>
    * @brief 通过 (x, y, z) 坐标值构造轴向量。
    *        Constructs an axis vector using (x, y, z) coordinates.
    *
-   * @param x X 轴分量。 The X-axis component.
-   * @param y Y 轴分量。 The Y-axis component.
-   * @param z Z 轴分量。 The Z-axis component.
+   * @param x X 轴分量 / The X-axis component.
+   * @param y Y 轴分量 / The Y-axis component.
+   * @param z Z 轴分量 / The Z-axis component.
    */
   Axis(Scalar x, Scalar y, Scalar z) : Eigen::Matrix<Scalar, 3, 1>(x, y, z) {}
 
@@ -267,7 +269,7 @@ class Axis : public Eigen::Matrix<Scalar, 3, 1>
    * @brief 拷贝构造函数，复制另一个 `Axis` 对象。
    *        Copy constructor to duplicate another `Axis` object.
    *
-   * @param p 要复制的 `Axis` 对象。 The `Axis` object to be copied.
+   * @param p 要复制的 `Axis` 对象 / The `Axis` object to be copied.
    */
   Axis(const Axis& p) : Eigen::Matrix<Scalar, 3, 1>(p) {}
 
@@ -275,7 +277,7 @@ class Axis : public Eigen::Matrix<Scalar, 3, 1>
    * @brief 返回 X 轴单位向量 (1,0,0)。
    *        Returns the unit vector along the X-axis (1,0,0).
    *
-   * @return X 轴单位向量。 The unit vector along the X-axis.
+   * @return X 轴单位向量 / The unit vector along the X-axis.
    */
   static Axis X() { return Axis(1., 0., 0.); }
 
@@ -283,7 +285,7 @@ class Axis : public Eigen::Matrix<Scalar, 3, 1>
    * @brief 返回 Y 轴单位向量 (0,1,0)。
    *        Returns the unit vector along the Y-axis (0,1,0).
    *
-   * @return Y 轴单位向量。 The unit vector along the Y-axis.
+   * @return Y 轴单位向量 / The unit vector along the Y-axis.
    */
   static Axis Y() { return Axis(0., 1., 0.); }
 
@@ -291,7 +293,7 @@ class Axis : public Eigen::Matrix<Scalar, 3, 1>
    * @brief 返回 Z 轴单位向量 (0,0,1)。
    *        Returns the unit vector along the Z-axis (0,0,1).
    *
-   * @return Z 轴单位向量。 The unit vector along the Z-axis.
+   * @return Z 轴单位向量 / The unit vector along the Z-axis.
    */
   static Axis Z() { return Axis(0., 0., 1.); }
 
@@ -324,7 +326,7 @@ class Axis : public Eigen::Matrix<Scalar, 3, 1>
    * 该操作检查自赋值，并确保数据正确拷贝。
    * This operation checks for self-assignment and ensures correct data copying.
    *
-   * @param p 赋值的 `Axis` 对象。 The `Axis` object to be assigned.
+   * @param p 赋值的 `Axis` 对象 / The `Axis` object to be assigned.
    * @return 返回赋值后的 `Axis` 对象引用。
    *         Returns a reference to the assigned `Axis` object.
    */
@@ -342,38 +344,58 @@ class Axis : public Eigen::Matrix<Scalar, 3, 1>
 
 /**
  * @class EulerAngle
- * @brief 表示欧拉角的类，用于描述3D旋转。Class representing Euler angles for 3D rotation.
- * @tparam Scalar 数据类型，如 float 或 double。Data type, such as float or double.
+ * @brief 表示欧拉角的类，用于描述3D旋转。
+ *        Class representing Euler angles for 3D rotation.
+ *
+ * 三个分量依次为 roll（绕 X 轴）、pitch（绕 Y 轴）和 yaw（绕 Z 轴），单位为弧度。
+ * `ToRotationMatrixABC()` 返回 R_A·R_B·R_C，其中 R_X、R_Y、R_Z 是绕对应坐标轴分别转过
+ * roll、pitch、yaw 的基本旋转矩阵，例如 `ToRotationMatrixXYZ()` 等于
+ * Rx(roll)·Ry(pitch)·Rz(yaw)。作用于列向量时，这相当于先绕 A 轴、再绕转动后的 B 轴、
+ * 最后绕转动后的 C 轴的内旋，也相当于依次绕固定的 C、B、A 轴的外旋。默认顺序 ZYX 即
+ * 先 yaw、再 pitch、最后 roll 的内旋。`ToQuaternionABC()` 表示同一个旋转；
+ * `RotationMatrix` 和 `Quaternion` 的 `ToEulerAngleABC()` 按同一约定求回三个角。
+ *
+ * The three components are roll (about X), pitch (about Y) and yaw (about Z), in
+ * radians. `ToRotationMatrixABC()` returns R_A·R_B·R_C, where R_X, R_Y and R_Z are the
+ * elementary rotations by roll, pitch and yaw about the corresponding axes; for example
+ * `ToRotationMatrixXYZ()` equals Rx(roll)·Ry(pitch)·Rz(yaw). Applied to column vectors,
+ * this is an intrinsic rotation about A, then the rotated B, then the rotated C, which
+ * is the same as an extrinsic rotation about the fixed axes C, B and A in that order.
+ * The default order ZYX is the intrinsic yaw, pitch, roll sequence. `ToQuaternionABC()`
+ * represents the same rotation, and `ToEulerAngleABC()` of `RotationMatrix` and
+ * `Quaternion` recovers the angles under the same convention.
+ *
+ * @tparam Scalar 数据类型，如 float 或 double / Data type, such as float or double.
  */
 template <typename Scalar>
 class EulerAngle
 {
  public:
-  Scalar data_[3];  ///< 存储欧拉角的数组。Array storing Euler angles.
+  Scalar data_[3];  ///< 存储欧拉角的数组 / Array storing Euler angles.
 
-  /// @brief 默认构造函数，初始化所有角度为零。Default constructor initializing all angles
-  /// to zero.
+  /// @brief 默认构造函数，初始化所有角度为零。
+  /// Default constructor initializing all angles to zero.
   EulerAngle() : data_{0, 0, 0} {}
 
   /**
-   * @brief 使用指定角度构造欧拉角对象。Constructs an Euler angle object with given
-   * angles.
-   * @param roll 绕 X 轴的角度。Angle about the X-axis.
-   * @param pitch 绕 Y 轴的角度。Angle about the Y-axis.
-   * @param yaw 绕 Z 轴的角度。Angle about the Z-axis.
+   * @brief 使用指定角度构造欧拉角对象。
+   * Constructs an Euler angle object with given angles.
+   * @param roll 绕 X 轴的角度 / Angle about the X-axis.
+   * @param pitch 绕 Y 轴的角度 / Angle about the Y-axis.
+   * @param yaw 绕 Z 轴的角度 / Angle about the Z-axis.
    */
   EulerAngle(Scalar roll, Scalar pitch, Scalar yaw) : data_{roll, pitch, yaw} {}
 
   /**
-   * @brief 通过 Eigen 3D 向量构造欧拉角对象。Constructs an Euler angle object using an
-   * Eigen 3D vector.
-   * @param p 含有 (roll, pitch, yaw) 的向量。Vector containing (roll, pitch, yaw).
+   * @brief 通过 Eigen 3D 向量构造欧拉角对象。
+   * Constructs an Euler angle object using an Eigen 3D vector.
+   * @param p 含有 (roll, pitch, yaw) 的向量 / Vector containing (roll, pitch, yaw).
    */
   EulerAngle(const Eigen::Matrix<Scalar, 3, 1>& p) : data_{p.x(), p.y(), p.z()} {}
 
   /**
-   * @brief 拷贝构造函数。Copy constructor.
-   * @param p 另一个 EulerAngle 对象。Another EulerAngle object.
+   * @brief 拷贝构造函数 / Copy constructor.
+   * @param p 另一个 EulerAngle 对象 / Another EulerAngle object.
    */
   EulerAngle(const EulerAngle& p) : data_{p.data_[0], p.data_[1], p.data_[2]} {}
 
@@ -385,11 +407,11 @@ class EulerAngle
   const Scalar& Yaw() const noexcept { return data_[2]; }
 
   /**
-   * @brief 通过 3 元素数组构造欧拉角对象。Constructs an Euler angle object using a
-   * 3-element array.
-   * @tparam T 数据类型，支持 Scalar、float 或 double。Data type, supporting Scalar,
-   * float, or double.
-   * @param data 存储 (roll, pitch, yaw) 的数组。Array storing (roll, pitch, yaw).
+   * @brief 通过 3 元素数组构造欧拉角对象。
+   * Constructs an Euler angle object using a 3-element array.
+   * @tparam T 数据类型，支持 Scalar、float 或 double。
+   * Data type, supporting Scalar, float, or double.
+   * @param data 存储 (roll, pitch, yaw) 的数组 / Array storing (roll, pitch, yaw).
    */
   template <typename T, std::enable_if_t<std::is_same<T, Scalar>::value ||
                                              std::is_same<T, float>::value ||
@@ -399,17 +421,17 @@ class EulerAngle
   {
   }
 
-  /// @brief 转换为 Eigen 3D 向量。Converts to an Eigen 3D vector.
+  /// @brief 转换为 Eigen 3D 向量 / Converts to an Eigen 3D vector.
   operator Eigen::Matrix<Scalar, 3, 1>() const
   {
     return Eigen::Map<const Eigen::Matrix<Scalar, 3, 1>>(data_);
   }
 
-  /// @brief 获取欧拉角的某个分量。Retrieves a specific Euler angle component.
+  /// @brief 获取欧拉角的某个分量 / Retrieves a specific Euler angle component.
   Scalar operator()(int i) const { return data_[i]; }
 
-  /// @brief 赋值运算符，从 Eigen 3D 向量赋值。Assignment operator from an Eigen 3D
-  /// vector.
+  /// @brief 赋值运算符，从 Eigen 3D 向量赋值。
+  /// Assignment operator from an Eigen 3D vector.
   EulerAngle& operator=(const Eigen::Matrix<Scalar, 3, 1>& p)
   {
     data_[0] = p(0);
@@ -418,8 +440,8 @@ class EulerAngle
     return *this;
   }
 
-  /// @brief 赋值运算符，从另一个 EulerAngle 赋值。Assignment operator from another
-  /// EulerAngle.
+  /// @brief 赋值运算符，从另一个 EulerAngle 赋值。
+  /// Assignment operator from another EulerAngle.
   EulerAngle& operator=(const EulerAngle& p)
   {
     if (this != &p)
@@ -431,8 +453,8 @@ class EulerAngle
     return *this;
   }
 
-  /// @brief 转换为旋转矩阵，默认使用 ZYX 顺序。Converts to a rotation matrix using the
-  /// ZYX order by default.
+  /// @brief 转换为旋转矩阵，默认使用 ZYX 顺序。
+  /// Converts to a rotation matrix using the ZYX order by default.
   Eigen::Matrix<Scalar, 3, 3> ToRotationMatrix() const { return ToRotationMatrixZYX(); }
 
   Eigen::Matrix<Scalar, 3, 3> ToRotationMatrixZYX() const
@@ -501,6 +523,8 @@ class EulerAngle
         .finished();
   }
 
+  /// @brief 转换为四元数，默认使用 ZYX 顺序。
+  /// Converts to a quaternion using the ZYX order by default.
   Eigen::Quaternion<Scalar> ToQuaternion() const { return ToQuaternionZYX(); }
 
 #if 0
@@ -547,8 +571,8 @@ class EulerAngle
   }
 #endif
 
-  /// @brief 转换为四元数，默认使用 ZYX 顺序。Converts to a quaternion using the ZYX order
-  /// by default.
+  /// @brief 按 XYZ 顺序转换为四元数。
+  /// Converts to a quaternion using the XYZ order.
   Eigen::Quaternion<Scalar> ToQuaternionXYZ() const
   {
     return Eigen::Quaternion<Scalar>(ToRotationMatrixXYZ());
@@ -611,7 +635,15 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
    * @brief 通过 9 个矩阵元素的值构造旋转矩阵。
    *        Constructs a rotation matrix using 9 matrix elements.
    *
-   * @param r00-r22 矩阵各元素值。 Elements of the matrix.
+   * @param r00 第 0 行第 0 列元素 / Element at row 0, column 0
+   * @param r01 第 0 行第 1 列元素 / Element at row 0, column 1
+   * @param r02 第 0 行第 2 列元素 / Element at row 0, column 2
+   * @param r10 第 1 行第 0 列元素 / Element at row 1, column 0
+   * @param r11 第 1 行第 1 列元素 / Element at row 1, column 1
+   * @param r12 第 1 行第 2 列元素 / Element at row 1, column 2
+   * @param r20 第 2 行第 0 列元素 / Element at row 2, column 0
+   * @param r21 第 2 行第 1 列元素 / Element at row 2, column 1
+   * @param r22 第 2 行第 2 列元素 / Element at row 2, column 2
    */
   RotationMatrix(Scalar r00, Scalar r01, Scalar r02, Scalar r10, Scalar r11, Scalar r12,
                  Scalar r20, Scalar r21, Scalar r22)
@@ -624,7 +656,7 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
    * @brief 通过 Eigen 3x3 矩阵构造旋转矩阵。
    *        Constructs a rotation matrix from an Eigen 3x3 matrix.
    *
-   * @param R 3x3 旋转矩阵。 The 3x3 rotation matrix.
+   * @param R 3x3 旋转矩阵 / The 3x3 rotation matrix.
    */
   RotationMatrix(const Eigen::Matrix<Scalar, 3, 3>& R) : Eigen::Matrix<Scalar, 3, 3>{R} {}
 
@@ -632,7 +664,7 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
    * @brief 通过 Eigen 四元数构造旋转矩阵。
    *        Constructs a rotation matrix from an Eigen quaternion.
    *
-   * @param q Eigen 四元数。 The Eigen quaternion.
+   * @param q Eigen 四元数 / The Eigen quaternion.
    */
   RotationMatrix(const Eigen::Quaternion<Scalar>& q)
       : Eigen::Matrix<Scalar, 3, 3>{q.toRotationMatrix()}
@@ -643,7 +675,7 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
    * @brief 通过 `Quaternion` 四元数构造旋转矩阵。
    *        Constructs a rotation matrix from a `Quaternion` object.
    *
-   * @param q `Quaternion` 四元数。 The `Quaternion` object.
+   * @param q `Quaternion` 四元数 / The `Quaternion` object.
    */
   RotationMatrix(const Quaternion<Scalar>& q) { *this = q.ToRotationMatrix(); }
 
@@ -671,7 +703,7 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
    * @brief 计算旋转矩阵的转置（逆矩阵）。
    *        Computes the transpose (inverse) of the rotation matrix.
    *
-   * @return 旋转矩阵的转置。 The transposed rotation matrix.
+   * @return 旋转矩阵的转置 / The transposed rotation matrix.
    */
   Eigen::Matrix<Scalar, 3, 3> operator-() const { return this->transpose(); }
 
@@ -680,7 +712,7 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
    *        Overloaded assignment operator to assign a `RotationMatrix` to the current
    * object.
    *
-   * @param R 需要赋值的旋转矩阵。 The rotation matrix to be assigned.
+   * @param R 需要赋值的旋转矩阵 / The rotation matrix to be assigned.
    * @return 返回赋值后的 `RotationMatrix` 对象引用。
    *         Returns a reference to the assigned `RotationMatrix` object.
    */
@@ -736,8 +768,8 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
    * @brief 计算旋转矩阵与三维向量的乘积。
    *        Computes the product of the rotation matrix and a 3D vector.
    *
-   * @param p 输入的三维位置向量。 The input 3D position vector.
-   * @return 旋转后的三维向量。 The rotated 3D vector.
+   * @param p 输入的三维位置向量 / The input 3D position vector.
+   * @return 旋转后的三维向量 / The rotated 3D vector.
    */
   Eigen::Matrix<Scalar, 3, 1> operator*(const Eigen::Matrix<Scalar, 3, 1>& p) const
   {
@@ -748,8 +780,8 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
    * @brief 计算两个旋转矩阵的乘积。
    *        Computes the product of two rotation matrices.
    *
-   * @param rhs 另一个旋转矩阵。 The second rotation matrix.
-   * @return 两个旋转矩阵的乘积。 The product of the two rotation matrices.
+   * @param rhs 另一个旋转矩阵 / The second rotation matrix.
+   * @return 两个旋转矩阵的乘积 / The product of the two rotation matrices.
    */
   RotationMatrix operator*(const RotationMatrix& rhs) const
   {
@@ -768,7 +800,7 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
    * This method calls `ToEulerAngleZYX()`, converting to Euler angles
    * in the ZYX (yaw-pitch-roll) order.
    *
-   * @return 三个欧拉角（roll, pitch, yaw）。 The three Euler angles (roll, pitch, yaw).
+   * @return 三个欧拉角（roll, pitch, yaw） / The three Euler angles (roll, pitch, yaw).
    */
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngle() const { return ToEulerAngleZYX(); }
 
@@ -821,7 +853,7 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
     const Eigen::Matrix<Scalar, 3, 3>& r = (*this);
 
     Scalar roll = std::asin(r(2, 1));
-    Scalar yaw = std::atan2(r(1, 1), -r(0, 1));
+    Scalar yaw = std::atan2(-r(0, 1), r(1, 1));
     Scalar pitch = std::atan2(-r(2, 0), r(2, 2));
 
     return Eigen::Matrix<Scalar, 3, 1>(roll, pitch, yaw);
@@ -1047,8 +1079,9 @@ class Quaternion : public Eigen::Quaternion<Scalar>
    *        Get the Euler angles representation of the quaternion (default ZYX order)
    *
    * 该方法将四元数转换为欧拉角，表示旋转顺序为 ZYX（即先绕 Z 轴旋转，再绕 Y 轴，最后绕 X
-   * 轴）。 This method converts the quaternion into Euler angles using the ZYX rotation
-   * order (first rotate around the Z-axis, then Y-axis, and finally the X-axis).
+   * 轴）。
+   * This method converts the quaternion into Euler angles using the ZYX rotation order
+   * (first rotate around the Z-axis, then Y-axis, and finally the X-axis).
    *
    * @return 计算得到的欧拉角向量 (roll, pitch, yaw) / Computed Euler angles vector (roll,
    * pitch, yaw)
@@ -1133,28 +1166,28 @@ class Quaternion : public Eigen::Quaternion<Scalar>
 
 /**
  * @class Transform
- * @brief 表示三维空间中的刚体变换，包括旋转和位移。Represents rigid body transformations
- * in 3D space, including rotation and translation.
- * @tparam Scalar 数据类型，默认为 DefaultScalar。Data type, defaulting to DefaultScalar.
+ * @brief 表示三维空间中的刚体变换，包括旋转和位移。
+ * Represents rigid body transformations in 3D space, including rotation and translation.
+ * @tparam Scalar 数据类型，默认为 DefaultScalar / Data type, defaulting to DefaultScalar.
  */
 template <typename Scalar = DefaultScalar>
 class Transform
 {
  public:
-  Quaternion<Scalar> rotation;   ///< 旋转部分，使用四元数表示。Rotation component
+  Quaternion<Scalar> rotation;   ///< 旋转部分，使用四元数表示 / Rotation component
                                  ///< represented by a quaternion.
-  Position<Scalar> translation;  ///< 平移部分，使用三维向量表示。Translation component
+  Position<Scalar> translation;  ///< 平移部分，使用三维向量表示 / Translation component
                                  ///< represented by a 3D vector.
 
-  /// @brief 默认构造函数，创建单位变换。Default constructor creating an identity
-  /// transformation.
+  /// @brief 默认构造函数，创建单位变换。
+  /// Default constructor creating an identity transformation.
   Transform() = default;
 
   /**
-   * @brief 使用给定的旋转和位移构造变换。Constructs a transformation with the given
-   * rotation and translation.
-   * @param rotation 旋转四元数。Rotation quaternion.
-   * @param translation 平移向量。Translation vector.
+   * @brief 使用给定的旋转和位移构造变换。
+   * Constructs a transformation with the given rotation and translation.
+   * @param rotation 旋转四元数 / Rotation quaternion.
+   * @param translation 平移向量 / Translation vector.
    */
   Transform(const Quaternion<Scalar>& rotation, const Position<Scalar>& translation)
       : rotation(rotation), translation(translation)
@@ -1162,10 +1195,10 @@ class Transform
   }
 
   /**
-   * @brief 赋值运算符，将旋转部分设置为给定的四元数。Assignment operator setting the
-   * rotation component to the given quaternion.
-   * @param q 旋转四元数。Rotation quaternion.
-   * @return 当前 Transform 对象的引用。Reference to the current Transform object.
+   * @brief 赋值运算符，将旋转部分设置为给定的四元数。
+   * Assignment operator setting the rotation component to the given quaternion.
+   * @param q 旋转四元数 / Rotation quaternion.
+   * @return 当前 Transform 对象的引用 / Reference to the current Transform object.
    */
   Transform& operator=(const Quaternion<Scalar>& q)
   {
@@ -1174,22 +1207,23 @@ class Transform
   }
 
   /**
-   * @brief 赋值运算符，将旋转部分设置为给定的旋转轴-角度表示。Assignment operator setting
-   * the rotation component using an axis-angle representation.
-   * @param a 旋转轴-角度对象。Axis-angle representation.
-   * @return 当前 Transform 对象的引用。Reference to the current Transform object.
+   * @brief 赋值运算符，将旋转部分设置为给定的旋转轴-角度表示。
+   * Assignment operator setting the rotation component using an axis-angle
+   * representation.
+   * @param a 旋转轴-角度对象 / Axis-angle representation.
+   * @return 当前 Transform 对象的引用 / Reference to the current Transform object.
    */
   Transform& operator=(const Eigen::AngleAxis<Scalar>& a)
   {
-    rotation = a;
+    rotation = Eigen::Quaternion<Scalar>(a);
     return *this;
   }
 
   /**
-   * @brief 赋值运算符，将平移部分设置为给定的位移。Assignment operator setting the
-   * translation component to the given position.
-   * @param p 平移向量。Translation vector.
-   * @return 当前 Transform 对象的引用。Reference to the current Transform object.
+   * @brief 赋值运算符，将平移部分设置为给定的位移。
+   * Assignment operator setting the translation component to the given position.
+   * @param p 平移向量 / Translation vector.
+   * @return 当前 Transform 对象的引用 / Reference to the current Transform object.
    */
   Transform& operator=(const Position<Scalar>& p)
   {
@@ -1198,10 +1232,10 @@ class Transform
   }
 
   /**
-   * @brief 计算当前变换与另一个变换的组合。Computes the composition of the current
-   * transformation with another transformation.
-   * @param t 另一个变换。Another transformation.
-   * @return 组合后的变换。Resulting transformation.
+   * @brief 计算当前变换与另一个变换的组合。
+   * Computes the composition of the current transformation with another transformation.
+   * @param t 另一个变换 / Another transformation.
+   * @return 组合后的变换 / Resulting transformation.
    */
   Transform operator+(const Transform& t) const
   {
@@ -1210,14 +1244,16 @@ class Transform
   }
 
   /**
-   * @brief 计算当前变换与另一个变换的相对变换。Computes the relative transformation
-   * between the current transformation and another transformation.
-   * @param t 另一个变换。Another transformation.
-   * @return 计算得到的相对变换。Resulting relative transformation.
+   * @brief 计算当前变换与另一个变换的相对变换。
+   * Computes the relative transformation between the current transformation and another
+   * transformation.
+   * @param t 另一个变换 / Another transformation.
+   * @return 计算得到的相对变换 / Resulting relative transformation.
    */
   Transform operator-(const Transform& t) const
   {
-    return Transform(rotation / t.rotation, translation - t.translation);
+    return Transform(rotation / t.rotation,
+                     Eigen::Matrix<Scalar, 3, 1>(translation - t.translation));
   }
 };
 

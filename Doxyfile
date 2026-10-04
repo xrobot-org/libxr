@@ -1,19 +1,19 @@
 PROJECT_NAME = "libxr"
-PROJECT_NUMBER = "1.0"
 OUTPUT_DIRECTORY = "./doc"
 GENERATE_HTML = YES
 GENERATE_LATEX = NO
 GENERATE_XML = NO
-INPUT = "driver" "system/linux" "src" "doc" "lib/doxygen-awesome-css"
-FILE_PATTERNS = "*.cpp" "*.hpp" "*.h"
+INPUT = "README.md" "driver" "system/linux" "src" "doc"
+FILE_PATTERNS = "*.cpp" "*.hpp" "*.h" "*.md"
+USE_MDFILE_AS_MAINPAGE = ./README.md
 RECURSIVE = YES
-EXCLUDE = "cmake" "CMakeLists.txt" "LICENSE" "log.txt"
+EXCLUDE = "cmake" "CMakeLists.txt" "LICENSE" "log.txt" "src/core/print/writer"
 EXCLUDE_PATTERNS = "*/cmake/*" "*/doc/html/*" "*/log/*" "*/test/*"
 IMAGE_PATH = "./"
 OUTPUT_LANGUAGE = English
 INPUT_ENCODING = UTF-8
 EXTRACT_ALL = NO
-EXTRACT_PRIVATE = YES
+EXTRACT_PRIVATE = NO
 EXTRACT_STATIC = YES
 SOURCE_BROWSER = YES
 INLINE_SOURCES = YES
@@ -30,7 +30,6 @@ GENERATE_MAN = NO
 GENERATE_RTF = NO
 GENERATE_PERLMOD = NO
 DOT_GRAPH_MAX_NODES = 1024
-OPTIMIZE_OUTPUT_FOR_C = YES
 EXPAND_ONLY_PREDEF = YES
 PREDEFINED = "__DOXYGEN__" \
     "HAL_ADC_MODULE_ENABLED" \
@@ -41,16 +40,19 @@ PREDEFINED = "__DOXYGEN__" \
     "HAL_TIM_MODULE_ENABLED" \
     "HAL_SPI_MODULE_ENABLED" \
     "HAL_UART_MODULE_ENABLED" \
-    "HAL_TIM_MODULE_ENABLED" \
     "HAL_PCD_MODULE_ENABLED" \
     "HAL_IWDG_MODULE_ENABLED" \
+    "HAL_FLASH_MODULE_ENABLED" \
+    "HAL_DAC_MODULE_ENABLED" \
+    "USB_OTG_FS" \
+    "USB_OTG_HS" \
+    "HAVE_WPA_CLIENT" \
+    "LIBXR_PRINT_ENABLE_FLOAT=1" \
     "LIBXR_DEFAULT_SCALAR=double"
 HAVE_DOT = YES
 DOT_IMAGE_FORMAT = svg
-DOT_TRANSPARENT = YES
-CLASS_DIAGRAMS = YES
 SORT_GROUP_NAMES = YES
-PROJECT_BRIEF = "Want to be the best embedded framework"
+PROJECT_BRIEF = "Embedded C++ framework for bare-metal, RTOS and Linux"
 DISABLE_INDEX = NO
 FULL_SIDEBAR = NO
 

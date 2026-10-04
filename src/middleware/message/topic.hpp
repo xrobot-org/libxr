@@ -60,11 +60,11 @@ class Topic
    */
   enum class LockState : uint32_t
   {
-    UNLOCKED = 0,  ///< 当前未持有发布锁。The publish path is currently unlocked.
-    LOCKED = 1,  ///< 当前通过原子快路径持有发布权。The publish path is locked through the
-                 ///< atomic fast path.
-    USE_MUTEX = UINT32_MAX  ///< 当前主题改走互斥量串行化。This topic currently serializes
-                            ///< publishers through a mutex.
+    UNLOCKED = 0,  ///< 当前未持有发布锁 / The publish path is currently unlocked.
+    LOCKED = 1,    ///< 当前通过原子快路径持有发布权 / The publish path is locked through
+                   ///< the atomic fast path.
+    USE_MUTEX = UINT32_MAX  ///< 当前主题改走互斥量串行化 / This topic currently
+                            ///< serializes publishers through a mutex.
   };
 
  public:
@@ -81,16 +81,16 @@ class Topic
   struct Block
   {
     std::atomic<LockState>
-        busy;             ///< 发布路径串行化状态。Publish-path serialization state.
-    LockFreeList subers;  ///< 已挂接订阅者链表。List of attached subscribers.
+        busy;             ///< 发布路径串行化状态 / Publish-path serialization state.
+    LockFreeList subers;  ///< 已挂接订阅者链表 / List of attached subscribers.
     TypeID::ID
-        payload_type_id;    ///< 精确 payload 类型标识。Exact payload type identifier.
-    uint32_t payload_size;  ///< 该 topic 固定 payload 字节数。Fixed payload size in bytes
-                            ///< of this topic.
-    uint32_t payload_alignment;  ///< 该 topic payload 所需对齐。Required payload
+        payload_type_id;    ///< 精确 payload 类型标识 / Exact payload type identifier.
+    uint32_t payload_size;  ///< 该 topic 固定 payload 字节数 / Fixed payload size in
+                            ///< bytes of this topic.
+    uint32_t payload_alignment;  ///< 该 topic payload 所需对齐 / Required payload
                                  ///< alignment of this topic.
-    uint32_t crc32;              ///< 主题名 CRC32 键。CRC32 key of the topic name.
-    Mutex* mutex;  ///< 多发布者主题使用的互斥量。Mutex used by multi-publisher topics.
+    uint32_t crc32;              ///< 主题名 CRC32 键 / CRC32 key of the topic name.
+    Mutex* mutex;  ///< 多发布者主题使用的互斥量 / Mutex used by multi-publisher topics.
   };
 
 #ifndef __DOXYGEN__
@@ -109,11 +109,11 @@ class Topic
   template <typename Data>
   class PackedData;
   static constexpr uint8_t PACKET_PREFIX =
-      0x5A;  ///< 打包消息前缀字节。Packed-message prefix byte.
+      0x5A;  ///< 打包消息前缀字节 / Packed-message prefix byte.
   static constexpr uint8_t PACKET_VERSION =
-      0x01;  ///< 打包消息协议版本。Packed-message protocol version.
+      0x01;  ///< 打包消息协议版本 / Packed-message protocol version.
   static constexpr size_t PACK_BASE_SIZE =
-      17;  ///< 固定非 payload 开销：16 字节头 + 1 字节尾 CRC8。Fixed non-payload
+      17;  ///< 固定非 payload 开销：16 字节头 + 1 字节尾 CRC8 / Fixed non-payload
            ///< overhead: 16-byte header plus 1-byte trailing CRC8.
 #endif
 
@@ -134,8 +134,8 @@ class Topic
   struct MessageView
   {
     static_assert(TopicPayload<Data>);
-    MicrosecondTimestamp timestamp;  ///< 消息时间戳。Message timestamp.
-    Data* data;  ///< 指向本次发布 payload 对象的指针。Pointer to the payload object of
+    MicrosecondTimestamp timestamp;  ///< 消息时间戳 / Message timestamp.
+    Data* data;  ///< 指向本次发布 payload 对象的指针 / Pointer to the payload object of
                  ///< this publish.
   };
 
@@ -152,8 +152,8 @@ class Topic
    */
   struct RawMessageView
   {
-    MicrosecondTimestamp timestamp;  ///< 消息时间戳。Message timestamp.
-    ConstRawData payload;  ///< 本次发布 payload 的只读字节视图。Read-only byte view of
+    MicrosecondTimestamp timestamp;  ///< 消息时间戳 / Message timestamp.
+    ConstRawData payload;  ///< 本次发布 payload 的只读字节视图 / Read-only byte view of
                            ///< this publish payload.
   };
 
@@ -167,8 +167,8 @@ class Topic
   struct Message
   {
     static_assert(TopicPayload<Data>);
-    MicrosecondTimestamp timestamp;  ///< 消息时间戳。Message timestamp.
-    Data data;                       ///< payload 对象副本。Copied payload object.
+    MicrosecondTimestamp timestamp;  ///< 消息时间戳 / Message timestamp.
+    Data data;                       ///< payload 对象副本 / Copied payload object.
   };
 
   /**
@@ -213,7 +213,7 @@ class Topic
     Domain(const char* name);
 
     RBTree<uint32_t>::Node<RBTree<uint32_t>>*
-        node_;  ///< 该域在全局域表里的节点。This domain's node inside the global domain
+        node_;  ///< 该域在全局域表里的节点 / This domain's node inside the global domain
                 ///< tree.
   };
 
@@ -223,10 +223,10 @@ class Topic
    */
   enum class SuberType : uint8_t
   {
-    SYNC,      ///< 同步等待型订阅者。Synchronous wait-based subscriber.
-    ASYNC,     ///< 异步本地缓冲型订阅者。Asynchronous local-buffer subscriber.
-    QUEUE,     ///< 队列转发型订阅者。Queue-forwarding subscriber.
-    CALLBACK,  ///< 回调执行型订阅者。Callback-executing subscriber.
+    SYNC,      ///< 同步等待型订阅者 / Synchronous wait-based subscriber.
+    ASYNC,     ///< 异步本地缓冲型订阅者 / Asynchronous local-buffer subscriber.
+    QUEUE,     ///< 队列转发型订阅者 / Queue-forwarding subscriber.
+    CALLBACK,  ///< 回调执行型订阅者 / Callback-executing subscriber.
   };
 
   /**
@@ -235,7 +235,7 @@ class Topic
    */
   struct SuberBlock
   {
-    SuberType type;  ///< 订阅块的具体种类。Concrete kind of this subscriber block.
+    SuberType type;  ///< 订阅块的具体种类 / Concrete kind of this subscriber block.
   };
 
   /**
@@ -339,6 +339,11 @@ class Topic
    * @param domain 可选主题域 / Optional topic domain
    * @param multi_publisher 是否允许多发布者串行化 / Whether to allow serialized
    * multi-publisher use
+   * @note 同名 topic 已存在但类型契约不同，或它以单发布者创建而本次要求多发布者时，
+   *       在所有构建类型中进入致命错误。
+   *       If a topic with this name exists with a different type contract, or was
+   *       created for a single publisher while multi_publisher is requested, a fatal
+   *       error is raised in every build type.
    */
   Topic(const char* name, TypeID::ID payload_type_id, size_t payload_size,
         size_t payload_alignment, Domain* domain = nullptr, bool multi_publisher = false);
@@ -386,6 +391,9 @@ class Topic
    * @param multi_publisher 是否允许多发布者串行化 / Whether to allow serialized
    *        multi-publisher use
    * @return topic 句柄 / Topic handle
+   * @note 已有 topic 的冲突检查与构造函数相同，在所有构建类型中生效。
+   *       Conflicts with an existing topic are checked as in the constructor, in every
+   *       build type.
    */
   template <typename Data>
   static TopicHandle FindOrCreate(const char* name, Domain* domain = nullptr,
@@ -395,10 +403,10 @@ class Topic
     auto topic = Find(name, domain);
     if (topic != nullptr)
     {
-      CheckSubscriberType<Data>(Topic(topic));
-      if (multi_publisher && !topic->data_.mutex)
+      RequireTypeContract(topic, TypeID::GetID<Data>(), sizeof(Data), alignof(Data));
+      if (multi_publisher)
       {
-        ASSERT(false);
+        RequireMultiPublisher(topic);
       }
     }
     else
@@ -607,12 +615,12 @@ class Topic
   uint32_t GetKey() const;
 
  private:
-  TopicHandle block_ = nullptr;  ///< 当前 topic 视图绑定的状态块。Runtime state block
+  TopicHandle block_ = nullptr;  ///< 当前 topic 视图绑定的状态块 / Runtime state block
                                  ///< bound to the current topic view.
 
   static inline RBTree<uint32_t>* domain_ =
-      nullptr;  ///< 全局 topic 域注册表。Global registry of topic domains.
-  static inline Domain* def_domain_ = nullptr;  ///< 缺省 topic 域。Default topic domain.
+      nullptr;  ///< 全局 topic 域注册表 / Global registry of topic domains.
+  static inline Domain* def_domain_ = nullptr;  ///< 缺省 topic 域 / Default topic domain.
 
   /**
    * @brief 确保全局域注册表已创建 / Ensure the global domain registry exists
@@ -644,20 +652,60 @@ class Topic
   }
 
   /**
-   * @brief 断言订阅者看到的精确 payload 类型与 topic 契约一致 / Assert that the exact
+   * @brief 检查订阅者看到的精确 payload 类型与 topic 契约一致 / Check that the exact
    *        payload type seen by a subscriber matches the topic contract
    * @tparam Data 订阅类型 / Subscriber payload type
    * @param topic 目标 topic 视图 / Target topic view
+   * @note 类型检查在所有构建类型中生效，见 `RequireTypeContract()`。
+   *       The type check is active in every build type; see `RequireTypeContract()`.
    */
   template <typename Data>
   static void CheckSubscriberType(Topic topic)
   {
     CheckTopicPayload<Data>();
     ASSERT(topic.block_ != nullptr);
-    ASSERT(topic.block_->data_.payload_type_id == TypeID::GetID<Data>());
-    ASSERT(topic.block_->data_.payload_size == sizeof(Data));
-    ASSERT(topic.block_->data_.payload_alignment == alignof(Data));
+    RequireTypeContract(topic.block_, TypeID::GetID<Data>(), sizeof(Data), alignof(Data));
   }
+
+  /**
+   * @brief 初始化期检查 topic 类型契约，在所有构建类型中生效 / Check one topic type
+   *        contract at initialization time, active in every build type
+   * @param topic 目标 topic 句柄 / Target topic handle
+   * @param payload_type_id 调用方要求的精确 payload 类型标识 / Exact payload type ID
+   *        required by the caller
+   * @param payload_size 调用方要求的 payload 字节数 / Payload size required by the
+   *        caller
+   * @param payload_alignment 调用方要求的 payload 对齐 / Payload alignment required by
+   *        the caller
+   * @note 不一致时断言失败并进入致命错误；topic 句柄和两边的类型标识可在栈帧中查看。
+   *       On mismatch, the assertion fails and raises a fatal error; the topic handle
+   *       and both type IDs can be inspected in the stack frames.
+   */
+  static void RequireTypeContract(TopicHandle topic, TypeID::ID payload_type_id,
+                                  size_t payload_size, size_t payload_alignment);
+
+  /**
+   * @brief 初始化期检查回调 payload 类型，在所有构建类型中生效 / Check one callback
+   *        payload type at initialization time, active in every build type
+   * @param topic 目标 topic 句柄 / Target topic handle
+   * @param payload_type_id 回调要求的精确 payload 类型标识 / Exact payload type ID
+   *        required by the callback
+   * @note 不一致时断言失败并进入致命错误；topic 句柄和两边的类型标识可在栈帧中查看。
+   *       On mismatch, the assertion fails and raises a fatal error; the topic handle
+   *       and both type IDs can be inspected in the stack frames.
+   */
+  static void RequireCallbackType(TopicHandle topic, TypeID::ID payload_type_id);
+
+  /**
+   * @brief 初始化期检查已有 topic 能否多发布者使用，在所有构建类型中生效 / Check at
+   *        initialization time that one existing topic allows multiple publishers,
+   *        active in every build type
+   * @param topic 目标 topic 句柄 / Target topic handle
+   * @note 该 topic 以单发布者创建时断言失败并进入致命错误。
+   *       If the topic was created for a single publisher, the assertion fails and
+   *       raises a fatal error.
+   */
+  static void RequireMultiPublisher(TopicHandle topic);
 
   /**
    * @brief 为订阅者分配一个长期存在的本地接收对象 / Allocate one long-lived local

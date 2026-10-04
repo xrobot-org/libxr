@@ -4,8 +4,7 @@
 
 using namespace LibXR;
 
-// STDIO compiled-format bridge.
-// STDIO 编译格式桥接层。
+// STDIO 编译格式桥接层 / STDIO compiled-format bridge.
 STDIO::CompiledSink::CompiledSink(WritePort::Stream& stream) : stream_(stream) {}
 
 ErrorCode STDIO::CompiledSink::Write(std::string_view chunk)
@@ -91,11 +90,11 @@ int STDIO::FinishWriteSession(WritePort::Stream& stream, size_t retained_size,
 {
   ASSERT(write_mutex_ != nullptr);
 
+  // 基于 Stream 的 STDIO 现在明确采用“前缀保留”语义：格式化失败时，
+  // 本会话已保留的字节仍然提交，不再尝试伪回滚。
   // Stream-backed STDIO is now explicitly prefix-preserving on formatting
   // failure: any bytes already retained in this session are committed instead
   // of being pseudo-rolled-back.
-  // 基于 Stream 的 STDIO 现在明确采用“前缀保留”语义：格式化失败时，
-  // 本会话已保留的字节仍然提交，不再尝试伪回滚。
   auto ec = stream.Commit();
 
   write_mutex_->Unlock();

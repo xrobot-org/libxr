@@ -3,8 +3,9 @@
  * @brief 已知输入电压下的 ADC 连续读数测试 / ADC sampling test at a known input voltage.
  *
  * 每次读数都必须有效且处于允许误差内，返回最小值、最大值和平均值。
+ * 调用方提供稳定电压，测试不控制信号源。
  * Require every reading to be finite and within tolerance; return min, max and mean.
- * 调用方提供稳定电压，测试不控制信号源。The caller supplies a stable voltage.
+ * The caller supplies a stable voltage.
  */
 #pragma once
 

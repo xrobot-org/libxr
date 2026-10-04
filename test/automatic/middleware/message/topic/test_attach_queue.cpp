@@ -2,10 +2,13 @@
  * @file test_attach_queue.cpp
  * @brief 共享 Topic 的连接与队列测试 / Shared Topic attachment and queue tests.
  *
- * 检查 LinuxSharedTopic 的连接、槽位占用、满队列处理和旧唤醒提示。
- * Check LinuxSharedTopic attachment, slot occupancy, full queues and stale wake hints.
+ * 检查 LinuxSharedTopic 的连接、槽位占用、满队列处理、旧唤醒提示，以及 Publish()
+ * 返回 FULL 后的重试方式。
+ * Check LinuxSharedTopic attachment, slot occupancy, full queues, stale wake hints and
+ * how to retry after Publish() returns FULL.
  */
 
+#include <initializer_list>
 #include <thread>
 
 #include "linux_shm_topic_test_common.hpp"
@@ -187,5 +190,84 @@ void RunAttachQueueScenarios()
     AssertFrame(*recv_data.GetData(), 213);
     recv_data.Reset();
   }
+
+  // Publish() 返回 FULL 时已经释放句柄：对同一句柄重试只得到 STATE_ERR，重新
+  // CreateData() 后才能再发布。槽位数与队列长度相同（4），队列最多存 3 个描述符。
+  // Publish() has released the handle when it returns FULL: retrying on the same handle
+  // only gets STATE_ERR, and publishing again needs a new CreateData(). Slot count and
+  // queue length are both 4, so the queue holds at most 3 descriptors.
+  UNUSED(SharedTopic::Remove(topic_name));
+  MakeTopicName(topic_name, sizeof(topic_name), "linux_shm_publish_retry");
+  UNUSED(SharedTopic::Remove(topic_name));
+
+  {
+    LibXR::LinuxSharedTopicConfig config;
+    config.slot_num = 4;
+    config.subscriber_num = 1;
+    config.queue_num = 4;
+
+    SharedTopic publisher(topic_name, config);
+    TEST_ASSERT(publisher.Valid());
+
+    SharedSubscriber subscriber(topic_name);
+    TEST_ASSERT(subscriber.Valid());
+
+    auto publish_fresh = [&publisher](uint32_t seq)
+    {
+      SharedData data;
+      const LibXR::ErrorCode create_ans = publisher.CreateData(data);
+      if (create_ans != LibXR::ErrorCode::OK)
+      {
+        return create_ans;
+      }
+      FillFrame(*data.GetData(), seq);
+      return publisher.Publish(data);
+    };
+
+    // 订阅者持有第一条消息的槽位，另外三条占满队列，四个槽位全部在用。
+    // The subscriber holds the slot of the first message and three more fill the queue,
+    // so all four slots are in use.
+    TEST_ASSERT(publish_fresh(301) == LibXR::ErrorCode::OK);
+    SharedData held;
+    TEST_ASSERT(subscriber.Wait(held, SHORT_WAIT_MS) == LibXR::ErrorCode::OK);
+    AssertFrame(*held.GetData(), 301);
+    TEST_ASSERT(publish_fresh(302) == LibXR::ErrorCode::OK);
+    TEST_ASSERT(publish_fresh(303) == LibXR::ErrorCode::OK);
+    TEST_ASSERT(publish_fresh(304) == LibXR::ErrorCode::OK);
+
+    SharedData data;
+    TEST_ASSERT(publisher.CreateData(data) == LibXR::ErrorCode::FULL);
+    TEST_ASSERT(!data.Valid());
+
+    // 订阅者放回槽位但队列仍满：CreateData() 成功，Publish() 返回 FULL 并释放句柄。
+    // The subscriber returns its slot while the queue stays full: CreateData() succeeds,
+    // and Publish() returns FULL and releases the handle.
+    held.Reset();
+    TEST_ASSERT(publisher.CreateData(data) == LibXR::ErrorCode::OK);
+    FillFrame(*data.GetData(), 305);
+    TEST_ASSERT(publisher.Publish(data) == LibXR::ErrorCode::FULL);
+    TEST_ASSERT(!data.Valid());
+    TEST_ASSERT(publisher.GetPublishFailedNum() == 1);
+    TEST_ASSERT(publisher.Publish(data) == LibXR::ErrorCode::STATE_ERR);
+    TEST_ASSERT(publisher.GetPublishFailedNum() == 1);
+
+    // 订阅者取走一条后，重新申请并填写的句柄可以发布。
+    // After the subscriber takes one message, a newly acquired and filled handle
+    // publishes.
+    SharedData recv_data;
+    TEST_ASSERT(subscriber.Wait(recv_data, SHORT_WAIT_MS) == LibXR::ErrorCode::OK);
+    AssertFrame(*recv_data.GetData(), 302);
+    recv_data.Reset();
+    TEST_ASSERT(publish_fresh(305) == LibXR::ErrorCode::OK);
+
+    for (uint32_t seq : {303U, 304U, 305U})
+    {
+      TEST_ASSERT(subscriber.Wait(recv_data, SHORT_WAIT_MS) == LibXR::ErrorCode::OK);
+      AssertFrame(*recv_data.GetData(), seq);
+      recv_data.Reset();
+    }
+    TEST_ASSERT(subscriber.GetPendingNum() == 0);
+  }
+  UNUSED(SharedTopic::Remove(topic_name));
 }
 }  // namespace LinuxShmTopicTest

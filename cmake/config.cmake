@@ -28,8 +28,12 @@ elseif(NOT _xr_system)
       set(_xr_driver "linux")
     endif()
   elseif(CMAKE_HOST_SYSTEM_NAME MATCHES "Windows")
-    set(_xr_system "windows")
-    set(_xr_driver "windows")
+    message(
+      FATAL_ERROR
+        "LibXR has no Windows system or driver layer. Set LIBXR_SYSTEM and "
+        "LIBXR_DRIVER for the target platform with its cross toolchain file, or build "
+        "the Linux host version under WSL or in ghcr.io/xrobot-org/docker-image-linux."
+    )
   else()
     message(FATAL_ERROR "Unknown system.")
   endif()

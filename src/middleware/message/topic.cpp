@@ -133,13 +133,11 @@ Topic::Topic(const char* name, TypeID::ID payload_type_id, size_t payload_size,
 
   if (topic)
   {
-    ASSERT(topic->data_.payload_type_id == payload_type_id);
-    ASSERT(topic->data_.payload_size == payload_size);
-    ASSERT(topic->data_.payload_alignment == payload_alignment);
+    RequireTypeContract(topic, payload_type_id, payload_size, payload_alignment);
 
-    if (multi_publisher && !topic->data_.mutex)
+    if (multi_publisher)
     {
-      ASSERT(false);
+      RequireMultiPublisher(topic);
     }
 
     block_ = topic;
@@ -168,6 +166,24 @@ Topic::Topic(const char* name, TypeID::ID payload_type_id, size_t payload_size,
 }
 
 Topic::Topic(TopicHandle topic) : block_(topic) {}
+
+void Topic::RequireTypeContract(TopicHandle topic, TypeID::ID payload_type_id,
+                                size_t payload_size, size_t payload_alignment)
+{
+  const auto& data = topic->data_;
+  REQUIRE(data.payload_type_id == payload_type_id && data.payload_size == payload_size &&
+          data.payload_alignment == payload_alignment);
+}
+
+void Topic::RequireCallbackType(TopicHandle topic, TypeID::ID payload_type_id)
+{
+  REQUIRE(topic->data_.payload_type_id == payload_type_id);
+}
+
+void Topic::RequireMultiPublisher(TopicHandle topic)
+{
+  REQUIRE(topic->data_.mutex != nullptr);
+}
 
 Topic::TopicHandle Topic::Find(const char* name, Domain* domain)
 {

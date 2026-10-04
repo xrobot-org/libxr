@@ -2,8 +2,7 @@
 
 /**
  * @file queue.hpp
- * @brief 队列模块聚合入口。
- * @brief Aggregate entry of the queue module.
+ * @brief 队列模块聚合入口 / Aggregate entry of the queue module.
  *
  * 该头文件聚合 LibXR 当前公开的三种强类型队列：普通 FIFO、SPSC 和 MPMC。
  * 调用方若只需要统一引入队列族，可直接包含本头文件。

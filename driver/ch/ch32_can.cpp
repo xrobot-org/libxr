@@ -6,7 +6,7 @@ using namespace LibXR;
 
 CH32CAN* CH32CAN::map[CH32_CAN_NUMBER] = {nullptr};
 
-#if defined(CAN1) && !defined(CAN2)
+#if defined(CAN1) && defined(RCC_APB1Periph_USB)
 static void can1_rx0_thunk()
 {
   if (auto* can = LibXR::CH32CAN::map[CH32_CAN1])
@@ -53,7 +53,7 @@ static inline void ch32_can_enable_nvic(ch32_can_id_t id, uint8_t fifo)
       break;
 #endif
 
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
     case CH32_CAN2:
       NVIC_EnableIRQ(CAN2_TX_IRQn);
       break;
@@ -74,7 +74,7 @@ static inline void ch32_can_enable_nvic(ch32_can_id_t id, uint8_t fifo)
         break;
 #endif
 
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
       case CH32_CAN2:
         NVIC_EnableIRQ(CAN2_RX0_IRQn);
         break;
@@ -93,7 +93,7 @@ static inline void ch32_can_enable_nvic(ch32_can_id_t id, uint8_t fifo)
         break;
 #endif
 
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
       case CH32_CAN2:
         NVIC_EnableIRQ(CAN2_RX1_IRQn);
         break;
@@ -114,7 +114,7 @@ static inline void ch32_can_enable_nvic(ch32_can_id_t id, uint8_t fifo)
       break;
 #endif
 
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
     case CH32_CAN2:
       NVIC_EnableIRQ(CAN2_SCE_IRQn);
       break;
@@ -130,16 +130,12 @@ CH32CAN::CH32CAN(ch32_can_id_t id, uint32_t queue_size)
 {
   if constexpr (LibXR::CH32UsbCanShared::usb_can_share_enabled())
   {
-#if defined(CAN1) && !defined(CAN2)
-    const bool USB_ALREADY_INITED =
-        LibXR::CH32UsbCanShared::usb_inited.load(std::memory_order_acquire);
-    // 在 USB/CAN 共享中断拓扑下，CAN1 必须先于 USB 初始化。
-    // On shared USB/CAN interrupt configurations, CAN1 must initialize before USB.
-    ASSERT(USB_ALREADY_INITED == false);
-#endif
+    // 端点地址在 Stop 后仍有效，不能在分配 PMA 后扩大 CAN 过滤器占用。
+    // Endpoint addresses survive Stop; reserve CAN filters before allocating PMA.
+    REQUIRE(!LibXR::CH32UsbCanShared::usb_pma_configured.load(std::memory_order_acquire));
   }
 
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
   if (id == CH32_CAN1)
   {
     filter_bank_ = 0;
@@ -163,12 +159,20 @@ CH32CAN::CH32CAN(ch32_can_id_t id, uint32_t queue_size)
   // 打开外设时钟。
   // Enable the peripheral clock.
   RCC_APB1PeriphClockCmd(CH32_CAN_RCC_PERIPH_MAP[id_], ENABLE);
+#if LIBXR_CH32_HAS_CAN2
+  if (id_ == CH32_CAN2)
+  {
+    // CAN2 的共享过滤器寄存器位于 CAN1，不能依赖应用先创建 CAN1 对象。
+    // CAN2 filter registers belong to CAN1, even in a CAN2-only application.
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_CAN1, ENABLE);
+  }
+#endif
 
   // 在调用 SetConfig() 之前，保持 CAN 处于初始化模式。
   // Keep CAN in initialization mode until SetConfig() is called.
   (void)CAN_OperatingModeRequest(instance_, CAN_OperatingMode_Initialization);
 
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
   // 在双 CAN 变体上，配置默认的共享过滤器分界点。
   // On dual-CAN variants, configure the default shared filter split point.
   CAN_SlaveStartBank(CH32_CAN_DEFAULT_SLAVE_START_BANK);
@@ -199,20 +203,28 @@ ErrorCode CH32CAN::Init()
 
   CAN_FilterInit(&f);
 
-  EnableIRQs();
-
-  // 为当前 CAN 实例打开 NVIC。
-  // Enable NVIC for this CAN instance.
-  ch32_can_enable_nvic(id_, fifo_);
-
-  if constexpr (LibXR::CH32UsbCanShared::usb_can_share_enabled())
+  // 在放行中断源之前发布回调，防止已有 pending 中断进入空分发器。
+  // Publish callbacks before enabling an interrupt source with pending events.
+  if constexpr (LibXR::CH32UsbCanShared::usb_can_irq_share_enabled())
   {
-#if defined(CAN1) && !defined(CAN2)
-    LibXR::CH32UsbCanShared::register_can1_rx0(&can1_rx0_thunk);
-    LibXR::CH32UsbCanShared::register_can1_tx(&can1_tx_thunk);
-    LibXR::CH32UsbCanShared::can1_inited.store(true, std::memory_order_release);
+#if defined(CAN1) && defined(RCC_APB1Periph_USB)
+    if (id_ == CH32_CAN1)
+    {
+      LibXR::CH32UsbCanShared::register_can1_rx0(&can1_rx0_thunk);
+      LibXR::CH32UsbCanShared::register_can1_tx(&can1_tx_thunk);
+      LibXR::CH32UsbCanShared::can1_inited.store(true, std::memory_order_release);
+    }
+#if LIBXR_CH32_HAS_CAN2
+    else if (id_ == CH32_CAN2)
+    {
+      LibXR::CH32UsbCanShared::can2_inited.store(true, std::memory_order_release);
+    }
+#endif
 #endif
   }
+
+  EnableIRQs();
+  ch32_can_enable_nvic(id_, fifo_);
 
   return ErrorCode::OK;
 }
@@ -801,7 +813,7 @@ extern "C" void CAN1_SCE_IRQHandler(void)
 }
 #endif
 
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
 // NOLINTNEXTLINE(readability-identifier-naming)
 extern "C" void CAN2_TX_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 // NOLINTNEXTLINE(readability-identifier-naming)

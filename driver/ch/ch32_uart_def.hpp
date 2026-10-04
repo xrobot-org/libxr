@@ -197,7 +197,11 @@ static constexpr uint32_t CH32_UART_RCC_PERIPH_MAP_DMA[] = {
     RCC_AHBPeriph_DMA2,
 #endif
 #if defined(UART4)
+#if defined(CH32V20x_D6) || defined(CH32V20x_D8) || defined(CH32V20x_D8W)
+    RCC_AHBPeriph_DMA1,
+#else
     RCC_AHBPeriph_DMA2,
+#endif
 #endif
 #if defined(UART5)
     RCC_AHBPeriph_DMA2,
@@ -248,10 +252,11 @@ static constexpr uint32_t CH32_UART_TX_DMA_IT_MAP[] = {
     0,
 #endif
 #if defined(UART4)
-#if defined(DMA2_IT_TC5)
+#if !(defined(CH32V20x_D6) || defined(CH32V20x_D8) || defined(CH32V20x_D8W)) && \
+    defined(DMA2_IT_TC5)
     DMA2_IT_TC5,
 #else
-    DMA1_IT_TC1
+    DMA1_IT_TC1,
 #endif
 #endif
 #if defined(UART5)
@@ -303,10 +308,11 @@ static constexpr uint32_t CH32_UART_RX_DMA_IT_TC_MAP[] = {
     0,
 #endif
 #if defined(UART4)
-#if defined(DMA2_IT_TC3)
+#if !(defined(CH32V20x_D6) || defined(CH32V20x_D8) || defined(CH32V20x_D8W)) && \
+    defined(DMA2_IT_TC3)
     DMA2_IT_TC3,
 #else
-    DMA1_IT_TC8
+    DMA1_IT_TC8,
 #endif
 #endif
 #if defined(UART5)
@@ -358,10 +364,11 @@ static constexpr uint32_t CH32_UART_RX_DMA_IT_HT_MAP[] = {
     0,
 #endif
 #if defined(UART4)
-#if defined(DMA2_IT_HT3)
+#if !(defined(CH32V20x_D6) || defined(CH32V20x_D8) || defined(CH32V20x_D8W)) && \
+    defined(DMA2_IT_HT3)
     DMA2_IT_HT3,
 #else
-    DMA1_IT_HT8
+    DMA1_IT_HT8,
 #endif
 #endif
 #if defined(UART5)
@@ -413,10 +420,11 @@ static DMA_Channel_TypeDef* const CH32_UART_TX_DMA_CHANNEL_MAP[] = {
     NULL,
 #endif
 #if defined(UART4)
-#if defined(DMA2_Channel5)
+#if !(defined(CH32V20x_D6) || defined(CH32V20x_D8) || defined(CH32V20x_D8W)) && \
+    defined(DMA2_Channel5)
     DMA2_Channel5,
 #else
-    DMA1_Channel1
+    DMA1_Channel1,
 #endif
 #endif
 #if defined(UART5)
@@ -468,10 +476,11 @@ static DMA_Channel_TypeDef* const CH32_UART_RX_DMA_CHANNEL_MAP[] = {
     NULL,
 #endif
 #if defined(UART4)
-#if defined(DMA2_Channel3)
+#if !(defined(CH32V20x_D6) || defined(CH32V20x_D8) || defined(CH32V20x_D8W)) && \
+    defined(DMA2_Channel3)
     DMA2_Channel3,
 #else
-    DMA1_Channel8
+    DMA1_Channel8,
 #endif
 #endif
 #if defined(UART5)

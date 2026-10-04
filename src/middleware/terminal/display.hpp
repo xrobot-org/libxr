@@ -87,21 +87,21 @@ void UpdateDisplayPosition()
 /**
  * @brief  检查是否可以显示字符
  *         Checks if a character can be displayed
- * @return bool 是否可以显示字符 Whether the character can be displayed
+ * @return bool 是否可以显示字符 / Whether the character can be displayed
  */
 bool CanDisplayChar() { return input_line_.EmptySize() > 1; }
 
 /**
  * @brief  检查是否可以删除字符
  *         Checks if a character can be deleted
- * @return bool 是否可以删除字符 Whether the character can be deleted
+ * @return bool 是否可以删除字符 / Whether the character can be deleted
  */
 bool CanDeleteChar() { return input_line_.Size() + offset_ > 0; }
 
 /**
  * @brief  向输入行中添加字符，支持在光标位置插入
  *         Adds a character to the input line, supports insertion at the cursor position
- * @param  data 要添加的字符 The character to add
+ * @param  data 要添加的字符 / The character to add
  */
 void AddCharToInputLine(char data)
 {
@@ -120,7 +120,7 @@ void AddCharToInputLine(char data)
  * @brief  在终端上显示字符，并根据历史记录模式进行相应操作
  *         Displays a character on the terminal and updates accordingly if history mode
  * is active
- * @param  data 要显示的字符 The character to display
+ * @param  data 要显示的字符 / The character to display
  */
 void DisplayChar(char data)
 {
@@ -147,6 +147,10 @@ void DisplayChar(char data)
     {
       UpdateDisplayPosition();
     }
+  }
+  else
+  {
+    line_truncated_ = true;
   }
 }
 
@@ -222,6 +226,31 @@ void ShowHeader()
 }
 
 /**
+ * @brief  输出输入行被截断的提示
+ *         Prints the notice that the input line was truncated
+ *
+ * @note 提示写明保留的字符数，即模板参数 `MAX_LINE_SIZE`，随后换行。
+ *       The notice names the kept character count, the template parameter
+ *       `MAX_LINE_SIZE`, and ends with a line feed.
+ */
+void ShowTruncatedLineNotice()
+{
+  char digits[20];
+  size_t pos = sizeof(digits);
+  size_t value = MAX_LINE_SIZE;
+  do
+  {
+    digits[--pos] = static_cast<char>('0' + value % 10);
+    value /= 10;
+  } while (value != 0);
+
+  write_stream_ << ConstRawData("Line truncated to ")
+                << ConstRawData(&digits[pos], sizeof(digits) - pos)
+                << ConstRawData(" characters (MAX_LINE_SIZE).");
+  LineFeed();
+}
+
+/**
  * @brief  清除当前行
  *         Clears the current line
  */
@@ -258,9 +287,9 @@ void ShowHistory()
 }
 
 /**
- * @brief  将历史命令复制到输入行，并重置历史索引和光标偏移
- *         Copies the history command to the input line and resets history index and
- * cursor offset
+ * @brief  将历史命令复制到输入行，并重置历史索引、光标偏移和截断标记
+ *         Copies the history command to the input line and resets the history index,
+ *         the cursor offset and the truncation mark
  */
 void CopyHistoryToInputLine()
 {
@@ -273,6 +302,7 @@ void CopyHistoryToInputLine()
   input_line_[input_line_.Size()] = '\0';
   history_index_ = -1;
   offset_ = 0;
+  line_truncated_ = false;
 }
 
 /**

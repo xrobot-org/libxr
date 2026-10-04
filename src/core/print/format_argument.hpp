@@ -13,14 +13,14 @@
 namespace LibXR::Print::Detail::FormatArgument
 {
 /**
- * @brief Internal C++ argument-type utilities shared by compile-time matching
- *        and runtime packing.
  * @brief 编译期参数匹配与运行期参数打包共用的内部 C++ 参数类型工具。
+ *        Internal C++ argument-type utilities shared by compile-time matching
+ *        and runtime packing.
  *
+ * 此命名空间内的内容全部属于实现细节，不应泄漏到公开 LibXR::Print 接口中。
  * Everything in this namespace is implementation detail and should not leak into
  * the public LibXR::Print surface.
- * 此命名空间内的内容全部属于实现细节，不应泄漏到公开 LibXR::Print 接口中。
- * @tparam T Source C++ argument type being classified. / 待归类的源 C++ 实参类型。
+ * @tparam T 待归类的源 C++ 实参类型 / Source C++ argument type being classified.
  */
 template <typename T>
 struct TypeTraits
@@ -58,11 +58,11 @@ struct TypeTraits
   static constexpr bool is_long_double = std::is_same_v<Decayed, long double>;
 
   /**
-   * @brief 判断当前 C++ 实参类型是否满足某条编译期匹配规则。 / Returns whether this C++
+   * @brief 判断当前 C++ 实参类型是否满足某条编译期匹配规则 / Returns whether this C++
    * argument type satisfies one compile-time rule.
-   * @param rule Compile-time matching rule to test. / 待测试的编译期匹配规则。
-   * @return Returns `true` when the current type satisfies `rule`, otherwise
-   *         `false`. / 当前类型满足 `rule` 时返回 `true`，否则返回 `false`。
+   * @param rule 待测试的编译期匹配规则 / Compile-time matching rule to test.
+   * @return 当前类型满足 `rule` 时返回 `true`，否则返回 `false`。
+   *         Returns `true` when the current type satisfies `rule`, otherwise `false`.
    */
   [[nodiscard]] static consteval bool MatchesRule(FormatArgumentRule rule)
   {

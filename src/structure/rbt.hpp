@@ -9,54 +9,54 @@ namespace LibXR
 {
 /**
  * @brief 红黑树实现，支持泛型键和值，并提供线程安全操作
- *        (Red-Black Tree implementation supporting generic keys and values with
- * thread-safe operations).
+ *        Red-Black Tree implementation supporting generic keys and values with
+ * thread-safe operations.
  *
+ * 该类实现了自平衡二叉查找树（红黑树），以提供高效的插入、删除和查找操作。
  * This class implements a self-balancing binary search tree (Red-Black Tree)
  * to provide efficient insert, delete, and search operations.
- * 该类实现了自平衡二叉查找树（红黑树），以提供高效的插入、删除和查找操作。
  *
- * @tparam Key 用作节点键的类型 (Type used as node key).
+ * @tparam Key 用作节点键的类型 / Type used as node key.
  */
 template <typename Key>
 class RBTree
 {
  public:
   /**
-   * @brief 定义红黑树节点的颜色 (Enumeration for node colors in Red-Black Tree).
+   * @brief 定义红黑树节点的颜色 / Enumeration for node colors in Red-Black Tree.
    */
   enum class RbtColor : uint8_t
   {
-    RED,   ///< 红色节点 (Red node).
-    BLACK  ///< 黑色节点 (Black node).
+    RED,   ///< 红色节点 / Red node.
+    BLACK  ///< 黑色节点 / Black node.
   };
 
   /**
-   * @brief 红黑树的基本节点结构 (Base node structure of the Red-Black Tree).
+   * @brief 红黑树的基本节点结构 / Base node structure of the Red-Black Tree.
    */
   class BaseNode
   {
    public:
-    Key key;                     ///< 节点键值 (Key associated with the node).
-    RbtColor color;              ///< 节点颜色 (Color of the node).
-    BaseNode* left = nullptr;    ///< 左子节点 (Left child node).
-    BaseNode* right = nullptr;   ///< 右子节点 (Right child node).
-    BaseNode* parent = nullptr;  ///< 父节点 (Parent node).
-    size_t size;                 ///< 节点大小 (Size of the node).
+    Key key;                     ///< 节点键值 / Key associated with the node.
+    RbtColor color;              ///< 节点颜色 / Color of the node.
+    BaseNode* left = nullptr;    ///< 左子节点 / Left child node.
+    BaseNode* right = nullptr;   ///< 右子节点 / Right child node.
+    BaseNode* parent = nullptr;  ///< 父节点 / Parent node.
+    size_t size;                 ///< 节点大小 / Size of the node.
 
    protected:
     /**
-     * @brief 基本节点构造函数 (Constructor for BaseNode).
-     * @param size 节点数据大小 (Size of the node's data).
+     * @brief 基本节点构造函数 / Constructor for BaseNode.
+     * @param size 节点数据大小 / Size of the node's data.
      */
     explicit BaseNode(size_t size) : size(size) {}
   };
 
   /**
    * @brief 红黑树的泛型数据节点，继承自 `BaseNode`
-   *        (Generic data node for Red-Black Tree, inheriting from `BaseNode`).
+   *        Generic data node for Red-Black Tree, inheriting from `BaseNode`.
    *
-   * @tparam Data 存储的数据类型 (Type of data stored in the node).
+   * @tparam Data 存储的数据类型 / Type of data stored in the node.
    */
   template <typename Data>
   class Node : public BaseNode
@@ -64,21 +64,21 @@ class RBTree
    public:
     /**
      * @brief 默认构造函数，初始化数据为空
-     *        (Default constructor initializing an empty node).
+     *        Default constructor initializing an empty node.
      */
     Node() : BaseNode(sizeof(Data)), data_{} {}
 
     /**
      * @brief 使用指定数据构造节点
-     *        (Constructor initializing a node with the given data).
-     * @param data 要存储的数据 (Data to store in the node).
+     *        Constructor initializing a node with the given data.
+     * @param data 要存储的数据 / Data to store in the node.
      */
     explicit Node(const Data& data) : BaseNode(sizeof(Data)), data_(data) {}
 
     /**
-     * @brief 通过参数列表构造节点 (Constructor initializing a node using arguments list).
-     * @tparam Args 参数类型 (Types of arguments for data initialization).
-     * @param args 数据构造参数 (Arguments used for constructing the data).
+     * @brief 通过参数列表构造节点 / Constructor initializing a node using arguments list.
+     * @tparam Args 参数类型 / Types of arguments for data initialization.
+     * @param args 数据构造参数 / Arguments used for constructing the data.
      */
     template <typename... Args>
     explicit Node(Args... args) : BaseNode(sizeof(Data)), data_{args...}
@@ -95,13 +95,13 @@ class RBTree
     const Data* operator->() const { return &data_; }
     Data& operator*() { return data_; }
 
-    Data data_;  ///< 存储的数据 (Stored data).
+    Data data_;  ///< 存储的数据 / Stored data.
   };
 
   /**
-   * @brief 构造函数，初始化红黑树 (Constructor initializing the Red-Black Tree).
-   * @param compare_fun 比较函数指针，用于键值比较 (Comparison function pointer for key
-   * comparison).
+   * @brief 构造函数，初始化红黑树 / Constructor initializing the Red-Black Tree.
+   * @param compare_fun 比较函数指针，用于键值比较 / Comparison function pointer for key
+   * comparison.
    */
   explicit RBTree(int (*compare_fun)(const Key&, const Key&)) : compare_fun_(compare_fun)
   {
@@ -109,12 +109,12 @@ class RBTree
   }
 
   /**
-   * @brief 搜索红黑树中的节点 (Search for a node in the Red-Black Tree).
-   * @tparam Data 存储的数据类型 (Type of data stored in the node).
-   * @tparam LimitMode 结构大小检查模式 (Size limit check mode).
-   * @param key 要搜索的键 (Key to search for).
+   * @brief 搜索红黑树中的节点 / Search for a node in the Red-Black Tree.
+   * @tparam Data 存储的数据类型 / Type of data stored in the node.
+   * @tparam LimitMode 结构大小检查模式 / Size limit check mode.
+   * @param key 要搜索的键 / Key to search for.
    * @return 指向找到的节点的指针，如果未找到返回 `nullptr`
-   *         (Pointer to the found node, or `nullptr` if not found).
+   *         Pointer to the found node, or `nullptr` if not found.
    */
   template <typename Data, SizeLimitMode LimitMode = SizeLimitMode::MORE>
   Node<Data>* Search(const Key& key)
@@ -133,8 +133,8 @@ class RBTree
   }
 
   /**
-   * @brief 从树中删除指定节点 (Delete a specified node from the tree).
-   * @param node 要删除的节点 (Node to be deleted).
+   * @brief 从树中删除指定节点 / Delete a specified node from the tree.
+   * @param node 要删除的节点 / Node to be deleted.
    */
   void Delete(BaseNode& node)
   {
@@ -226,10 +226,10 @@ class RBTree
   }
 
   /**
-   * @brief 在树中插入新节点 (Insert a new node into the tree).
-   * @tparam KeyType 插入键的类型 (Type of the key to insert).
-   * @param node 要插入的节点 (Node to insert).
-   * @param key 节点键 (Key of the node).
+   * @brief 在树中插入新节点 / Insert a new node into the tree.
+   * @tparam KeyType 插入键的类型 / Type of the key to insert.
+   * @param node 要插入的节点 / Node to insert.
+   * @param key 节点键 / Key of the node.
    */
   template <typename KeyType>
   void Insert(BaseNode& node, KeyType&& key)
@@ -245,8 +245,8 @@ class RBTree
   }
 
   /**
-   * @brief 获取树中的节点数量 (Get the number of nodes in the tree).
-   * @return 树中节点的数量 (Number of nodes in the tree).
+   * @brief 获取树中的节点数量 / Get the number of nodes in the tree.
+   * @return 树中节点的数量 / Number of nodes in the tree.
    */
   uint32_t GetNum()
   {
@@ -260,12 +260,12 @@ class RBTree
   /**
    * @brief 遍历红黑树并执行用户提供的操作 (Traverse the Red-Black Tree and apply a
    * user-defined function).
-   * @tparam Data 存储的数据类型 (Type of data stored in the node).
-   * @tparam Func 用户定义的操作函数 (User-defined function to apply).
-   * @tparam LimitMode 结构大小检查模式 (Size limit check mode).
-   * @param func 作用于每个节点的函数 (Function applied to each node).
+   * @tparam Data 存储的数据类型 / Type of data stored in the node.
+   * @tparam Func 用户定义的操作函数 / User-defined function to apply.
+   * @tparam LimitMode 结构大小检查模式 / Size limit check mode.
+   * @param func 作用于每个节点的函数 / Function applied to each node.
    * @return 操作结果，成功返回 `ErrorCode::OK`
-   *         (Operation result: `ErrorCode::OK` on success).
+   *         Operation result: `ErrorCode::OK` on success.
    */
   template <typename Data, typename Func, SizeLimitMode LimitMode = SizeLimitMode::MORE>
   ErrorCode Foreach(Func func)
@@ -278,10 +278,10 @@ class RBTree
 
   /**
    * @brief 获取红黑树的下一个中序遍历节点
-   *        (Get the next node in in-order traversal).
-   * @tparam Data 存储的数据类型 (Type of data stored in the node).
-   * @param node 当前节点 (Current node).
-   * @return 指向下一个节点的指针 (Pointer to the next node).
+   *        Get the next node in in-order traversal.
+   * @tparam Data 存储的数据类型 / Type of data stored in the node.
+   * @param node 当前节点 / Current node.
+   * @return 指向下一个节点的指针 / Pointer to the next node.
    */
   template <typename Data>
   Node<Data>* ForeachDisc(Node<Data>* node)
@@ -324,10 +324,10 @@ class RBTree
   }
 
  private:
-  BaseNode* root_ = nullptr;  ///< 红黑树的根节点 (Root node of the Red-Black Tree).
-  LibXR::Mutex mutex_;        ///< 互斥锁，确保线程安全 (Mutex for thread-safety).
+  BaseNode* root_ = nullptr;  ///< 红黑树的根节点 / Root node of the Red-Black Tree.
+  LibXR::Mutex mutex_;        ///< 互斥锁，确保线程安全 / Mutex for thread-safety.
   int (*compare_fun_)(const Key&,
-                      const Key&);  ///< 键值比较函数 (Function for key comparison).
+                      const Key&);  ///< 键值比较函数 / Function for key comparison.
 
   void RbtreeInsert(BaseNode& node)
   {

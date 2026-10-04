@@ -148,10 +148,12 @@ class ESP32GPIO : public GPIO
         break;
       case Direction::OUTPUT_PUSH_PULL:
         gpio_hal_input_disable(&hal, gpio_num_);
+        gpio_hal_matrix_out_default(&hal, gpio_num_);
         gpio_hal_output_enable(&hal, gpio_num_);
         break;
       case Direction::OUTPUT_OPEN_DRAIN:
         gpio_hal_input_enable(&hal, gpio_num_);
+        gpio_hal_matrix_out_default(&hal, gpio_num_);
         gpio_hal_output_enable(&hal, gpio_num_);
         gpio_hal_od_enable(&hal, gpio_num_);
         break;

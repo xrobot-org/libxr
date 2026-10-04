@@ -584,7 +584,7 @@ uint32_t STM32SPI::GetMaxBusSpeed() const
   }
 #endif
 
-  // 大多数系列：SPI1/4/5/6/7/8 → APB2；SPI2/3 → APB1
+  // 大多数系列：SPI1/4/5/6/7/8 → APB2； / SPI2/3 → APB1
   if (
 #ifdef SPI1
       inst == SPI1 ||

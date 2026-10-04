@@ -9,7 +9,8 @@
 #define LIBXR_STM32_UART_GPDMA 1
 #endif
 
-#if defined(LIBXR_STM32_UART_GPDMA) && defined(HAL_UART_MODULE_ENABLED)
+#if (defined(LIBXR_STM32_UART_GPDMA) && defined(HAL_UART_MODULE_ENABLED)) || \
+    defined(__DOXYGEN__)
 
 #if !defined(HAL_DMA_MODULE_ENABLED) || !defined(DMA_LINKEDLIST_CIRCULAR) || \
     !defined(DMA_GPDMA_LINEAR_NODE) || !defined(IS_GPDMA_INSTANCE)

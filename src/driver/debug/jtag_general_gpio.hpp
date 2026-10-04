@@ -43,13 +43,13 @@ class JtagGeneralGPIO final : public Jtag
 
  public:
   /**
-   * @brief 构造函数。Constructor.
-   * @param tck 用作 TCK 的 GPIO。GPIO used as TCK.
-   * @param tms 用作 TMS 的 GPIO。GPIO used as TMS.
-   * @param tdi 用作 TDI 的 GPIO。GPIO used as TDI.
-   * @param tdo 用作 TDO 的 GPIO。GPIO used as TDO.
-   * @param loops_per_us 每个 us 的循延时环次数。Loops per us of delay.
-   * @param default_hz 默认 TCK 频率（Hz）。Default TCK frequency (Hz).
+   * @brief 构造函数 / Constructor.
+   * @param tck 用作 TCK 的 GPIO / GPIO used as TCK.
+   * @param tms 用作 TMS 的 GPIO / GPIO used as TMS.
+   * @param tdi 用作 TDI 的 GPIO / GPIO used as TDI.
+   * @param tdo 用作 TDO 的 GPIO / GPIO used as TDO.
+   * @param loops_per_us 每个 us 的循延时环次数 / Loops per us of delay.
+   * @param default_hz 默认 TCK 频率（Hz） / Default TCK frequency (Hz).
    */
   explicit JtagGeneralGPIO(TckGpioType& tck, TmsGpioType& tms, TdiGpioType& tdi,
                            TdoGpioType& tdo, uint32_t loops_per_us,

@@ -173,9 +173,11 @@ class alignas(LibXR::CONCURRENCY_ALIGNMENT) SPSCQueueBase
    * @brief 按字节批量入队多个 payload / Enqueue multiple payloads by bytes
    * @param data 指向 payload 数组的字节指针 / Byte pointer to the payload array
    * @param count payload 个数 / Number of payloads
-   * @return 成功返回 `ErrorCode::OK`；队列满返回 `ErrorCode::FULL`
-   *         Returns `ErrorCode::OK` on success; returns `ErrorCode::FULL` when
-   *         the queue is full
+   * @return 成功返回 `ErrorCode::OK`；队列满返回 `ErrorCode::FULL`；
+   *         `count` 不为 0 且 `data` 为空时返回 `ErrorCode::PTR_NULL`
+   *         Returns `ErrorCode::OK` on success; returns `ErrorCode::FULL` when the queue
+   *         is full; returns `ErrorCode::PTR_NULL` when `data` is null and `count`
+   *         is not 0
    */
   ErrorCode PushBatchBytes(const void* data, size_t count)
   {
@@ -468,9 +470,11 @@ class alignas(LibXR::CONCURRENCY_ALIGNMENT) SPSCQueueBase
    *        / Peek multiple payloads by bytes without dequeuing them
    * @param data 用于接收 payload 的字节缓冲区 / Byte buffer receiving payloads
    * @param count payload 个数 / Number of payloads
-   * @return 成功返回 `ErrorCode::OK`；元素不足返回 `ErrorCode::EMPTY`
-   *         Returns `ErrorCode::OK` on success; returns `ErrorCode::EMPTY` when
-   *         there are not enough payloads available
+   * @return 成功返回 `ErrorCode::OK`；元素不足返回 `ErrorCode::EMPTY`；
+   *         `count` 不为 0 且 `data` 为空时返回 `ErrorCode::PTR_NULL`
+   *         Returns `ErrorCode::OK` on success; returns `ErrorCode::EMPTY` when there are
+   *         not enough payloads available; returns `ErrorCode::PTR_NULL` when `data` is
+   *         null and `count` is not 0
    */
   ErrorCode PeekBatchBytes(void* data, size_t count)
   {
@@ -583,13 +587,13 @@ class alignas(LibXR::CONCURRENCY_ALIGNMENT) SPSCQueueBase
    */
   IndexType Increment(IndexType index) const { return (index + 1) % RingCapacity(); }
 
-  /// @brief 禁止拷贝构造。 Non-copyable.
+  /// @brief 禁止拷贝构造 / Non-copyable.
   SPSCQueueBase(const SPSCQueueBase&);
-  /// @brief 禁止拷贝赋值。 Non-copy-assignable.
+  /// @brief 禁止拷贝赋值 / Non-copy-assignable.
   SPSCQueueBase& operator=(const SPSCQueueBase&);
-  /// @brief 禁止移动构造。 Non-movable.
+  /// @brief 禁止移动构造 / Non-movable.
   SPSCQueueBase(SPSCQueueBase&&);
-  /// @brief 禁止移动赋值。 Non-move-assignable.
+  /// @brief 禁止移动赋值 / Non-move-assignable.
   SPSCQueueBase& operator=(SPSCQueueBase&&);
 
   /**
@@ -631,17 +635,17 @@ class alignas(LibXR::CONCURRENCY_ALIGNMENT) SPSCQueueBase
     return lhs * rhs;
   }
 
-  const size_t element_size_;  ///< 单个 payload 的字节数。 Byte size of one payload.
-  const size_t capacity_;      ///< 队列容量。 Queue capacity.
-  const size_t payload_alloc_align_;  ///< 整体分配对齐。 Allocation alignment for the
+  const size_t element_size_;  ///< 单个 payload 的字节数 / Byte size of one payload.
+  const size_t capacity_;      ///< 队列容量 / Queue capacity.
+  const size_t payload_alloc_align_;  ///< 整体分配对齐 / Allocation alignment for the
                                       ///< payload buffer.
-  const size_t payload_stride_;  ///< 相邻 payload 槽位之间的步长。 Byte stride between
+  const size_t payload_stride_;  ///< 相邻 payload 槽位之间的步长 / Byte stride between
                                  ///< adjacent payload slots.
-  std::byte* payloads_;          ///< payload 字节缓冲区。 Byte buffer storing payloads.
+  std::byte* payloads_;          ///< payload 字节缓冲区 / Byte buffer storing payloads.
 
   alignas(LibXR::CONCURRENCY_ALIGNMENT) std::atomic<
-      IndexType> head_;  ///< 下一个待出队的环形下标。 Next ring index to dequeue.
+      IndexType> head_;  ///< 下一个待出队的环形下标 / Next ring index to dequeue.
   alignas(LibXR::CONCURRENCY_ALIGNMENT) std::atomic<
-      IndexType> tail_;  ///< 下一个待入队的环形下标。 Next ring index to enqueue.
+      IndexType> tail_;  ///< 下一个待入队的环形下标 / Next ring index to enqueue.
 };
 }  // namespace LibXR

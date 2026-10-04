@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    name: build (${{ matrix.build_type }}, DEV_ASSERT=${{ matrix.dev_assert }})
+    name: build (${{ matrix.generator }}, ${{ matrix.build_type }}, DEV_ASSERT=${{ matrix.dev_assert }})
 
     strategy:
       fail-fast: false
@@ -15,20 +15,26 @@ jobs:
         include:
           - build_type: Debug
             dev_assert: "ON"
+            generator: Unix Makefiles
           - build_type: Release
             dev_assert: "ON"
+            generator: Unix Makefiles
           - build_type: Release
             dev_assert: "OFF"
+            generator: Unix Makefiles
+          - build_type: Debug
+            dev_assert: "ON"
+            generator: Ninja
 
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
     - name: setup deps
-      run: sudo apt-get update && sudo apt-get install -y libwpa-client-dev libnm-dev libudev-dev
+      run: sudo apt-get update && sudo apt-get install -y libwpa-client-dev libnm-dev libudev-dev ninja-build
     - name: configure
-      run: cmake -S . -B build -DLIBXR_TEST_BUILD=ON -DLIBXR_DEV_ASSERT_BUILD=${{ matrix.dev_assert }} -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-    - name: make
+      run: cmake -S . -B build -G "${{ matrix.generator }}" -DLIBXR_TEST_BUILD=ON -DLIBXR_DEV_ASSERT_BUILD=${{ matrix.dev_assert }} -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+    - name: build
       run: cd build && cmake --build . -j"$(nproc)"
     - name: automatic tests
       run: ctest --test-dir build --output-on-failure --no-tests=error
@@ -50,6 +56,28 @@ jobs:
       shell: bash
       run: |
         tools/format_cpp_files.sh --check
+
+  doxygen-warnings:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: install doxygen 1.12.0
+      shell: bash
+      run: |
+        set -euo pipefail
+        tarball=doxygen-1.12.0.linux.bin.tar.gz
+        wget --tries=5 --waitretry=10 --retry-connrefused --timeout=30 \
+          -O "${RUNNER_TEMP}/${tarball}" \
+          "https://github.com/doxygen/doxygen/releases/download/Release_1_12_0/${tarball}"
+        echo "3c42c3f3fb206732b503862d9c9c11978920a8214f223a3950bbf2520be5f647  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
+        tar xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}"
+        echo "${RUNNER_TEMP}/doxygen-1.12.0/bin" >> "${GITHUB_PATH}"
+    - name: check Doxygen warnings against the baseline
+      shell: bash
+      run: |
+        tools/check_doxygen_warnings.sh
 
   cmake-format:
 

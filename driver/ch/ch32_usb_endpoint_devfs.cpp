@@ -277,21 +277,33 @@ void CH32EndpointDevFs::ResetPMAAllocator()
 
   g_pma_next = PMA_ALLOC_BASE;
   g_pma_next = static_cast<uint16_t>((g_pma_next + 1U) & ~1U);
-  ASSERT(g_pma_next <= g_pma_limit);
+  REQUIRE(g_pma_next <= g_pma_limit);
 }
 
 static inline uint16_t alloc_pma(size_t bytes)
 {
-  const uint16_t ADDR = g_pma_next;
-  const uint16_t INC = static_cast<uint16_t>((bytes + 1U) & ~1U);
+  // 首次 USB reset 前也可能分配端点，必须立即使用当前 CAN 预留后的上限。
+  // Init may allocate endpoints before the first USB bus reset.
+  g_pma_limit = LibXR::CH32UsbCanShared::usb_pma_limit_bytes();
+  // PMA 最大只有 512 字节；先拒绝超大缓冲，避免对齐长度收窄到 uint16_t 时回绕。
+  // PMA is at most 512 bytes. Reject before narrowing the aligned size to uint16_t,
+  // so an oversized endpoint buffer cannot wrap the allocation increment.
+  REQUIRE(bytes <= g_pma_limit);
+  if (bytes > g_pma_limit)
+  {
+    return 0;
+  }
 
-  const uint32_t END = static_cast<uint32_t>(ADDR) + static_cast<uint32_t>(INC);
-  ASSERT(END <= g_pma_limit);
+  const uint16_t ADDR = g_pma_next;
+  const uint32_t INC = (static_cast<uint32_t>(bytes) + 1U) & ~1U;
+  const uint32_t END = static_cast<uint32_t>(ADDR) + INC;
+  REQUIRE(END <= g_pma_limit);
   if (END > g_pma_limit)
   {
     return 0;
   }
 
+  LibXR::CH32UsbCanShared::usb_pma_configured.store(true, std::memory_order_release);
   g_pma_next = static_cast<uint16_t>(END);
   return ADDR;
 }
@@ -345,7 +357,7 @@ void CH32EndpointDevFs::Configure(const Config& cfg)
   if (pma_addr_ == 0 || pma_addr_ < PMA_ALLOC_BASE)
   {
     const uint16_t ADDR = alloc_pma(BUF.size_);
-    ASSERT(ADDR >= PMA_ALLOC_BASE);
+    REQUIRE(ADDR >= PMA_ALLOC_BASE);
     if (ADDR < PMA_ALLOC_BASE)
     {
       return;

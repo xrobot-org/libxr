@@ -91,11 +91,11 @@ namespace FieldSelection
 }
 
 /**
- * @brief 为一个运行期语义类型选择参数打包存储类别。 / Chooses the packed storage kind for
+ * @brief 为一个运行期语义类型选择参数打包存储类别 / Chooses the packed storage kind for
  * one runtime semantic type.
- * @param type Runtime semantic type. / 运行期语义类型。
- * @return Returns the packed storage kind used by that runtime type. /
- *         返回该运行期类型使用的参数打包存储类别。
+ * @param type 运行期语义类型 / Runtime semantic type.
+ * @return 返回该运行期类型使用的参数打包存储类别。
+ *         Returns the packed storage kind used by that runtime type.
  */
 [[nodiscard]] consteval FormatPackKind SelectPackKind(FormatType type)
 {
@@ -148,11 +148,11 @@ namespace FieldSelection
 }
 
 /**
- * @brief 为一个已解析转换选择它消耗的编译期参数匹配规则。 / Chooses which compile-time
+ * @brief 为一个已解析转换选择它消耗的编译期参数匹配规则 / Chooses which compile-time
  * argument rule one parsed conversion consumes.
- * @param conversion Parsed printf conversion. / 已解析的 printf 转换项。
- * @return Returns the compile-time argument rule consumed by this conversion. /
- *         返回该转换项消耗的编译期参数匹配规则。
+ * @param conversion 已解析的 printf 转换项 / Parsed printf conversion.
+ * @return 返回该转换项消耗的编译期参数匹配规则。
+ *         Returns the compile-time argument rule consumed by this conversion.
  */
 [[nodiscard]] consteval FormatArgumentRule SelectArgumentRule(
     const Conversion& conversion)
@@ -194,12 +194,12 @@ namespace FieldSelection
 }
 
 /**
- * @brief 在解析后校验与目标相关的格式选择约束。 / Validates target-dependent
+ * @brief 在解析后校验与目标相关的格式选择约束 / Validates target-dependent
  * format-selection constraints after parsing.
- * @param conversion Parsed printf conversion. / 已解析的 printf 转换项。
- * @return Returns `Error::None` when the conversion is legal on the current
- *         target/profile, otherwise the first target-dependent error. /
- *         当前目标与配置允许该转换时返回 `Error::None`；否则返回首个目标相关错误。
+ * @param conversion 已解析的 printf 转换项 / Parsed printf conversion.
+ * @return 当前目标与配置允许该转换时返回 `Error::None`；否则返回首个目标相关错误。
+ *         Returns `Error::None` when the conversion is legal on the current
+ *         target/profile, otherwise the first target-dependent error.
  */
 [[nodiscard]] consteval Error ValidateConversion(const Conversion& conversion)
 {
@@ -222,11 +222,11 @@ namespace FieldSelection
 }
 
 /**
- * @brief 为一个已解析 printf 转换构造共享 FormatField 记录。 / Builds the shared
+ * @brief 为一个已解析 printf 转换构造共享 FormatField 记录 / Builds the shared
  * FormatField record for one parsed printf conversion.
- * @param conversion Parsed printf conversion. / 已解析的 printf 转换项。
- * @return Returns the shared `FormatField` record consumed by the compile-time
- *         backend. / 返回共享编译后端要消费的 `FormatField` 记录。
+ * @param conversion 已解析的 printf 转换项 / Parsed printf conversion.
+ * @return 返回共享编译后端要消费的 `FormatField` 记录。
+ *         Returns the shared `FormatField` record consumed by the compile-time backend.
  */
 [[nodiscard]] consteval FormatField BuildFormatField(const Conversion& conversion)
 {

@@ -35,9 +35,9 @@ class Event
   /**
    * @brief 为特定事件注册回调函数。
    *        Registers a callback function for a specific event.
-   * @param event 要注册回调的事件 ID。 The event ID to register the callback for.
-   * @param cb    事件触发时执行的回调函数。 The callback function to be executed when the
-   * event occurs.
+   * @param event 要注册回调的事件 ID / The event ID to register the callback for.
+   * @param cb    事件触发时执行的回调函数。
+   * The callback function to be executed when the event occurs.
    *
    * @note 包含动态内存分配。
    *       Contains dynamic memory allocation.
@@ -48,7 +48,7 @@ class Event
    * @brief 触发与特定事件关联的所有回调函数（非中断上下文）。
    *        Triggers all callbacks associated with a specific event (non-interrupt
    * context).
-   * @param event 要激活的事件 ID。 The event ID to activate.
+   * @param event 要激活的事件 ID / The event ID to activate.
    */
   void Active(uint32_t event);
 
@@ -57,11 +57,11 @@ class Event
    *        Triggers all callbacks associated with a specific event from a callback-safe
    * path.
    *
-   * @param list 在非回调函数中获取的事件回调链表指针。 The event callback list pointer
-   * obtained from the non-callback function.
-   * @param event 要激活的事件 ID。 The event ID to activate.
-   * @param in_isr 当前 callback-safe 路径是否实际位于 ISR。 Whether the current
-   * callback-safe path is actually in ISR context.
+   * @param list 在非回调函数中获取的事件回调链表指针。
+   * The event callback list pointer obtained from the non-callback function.
+   * @param event 要激活的事件 ID / The event ID to activate.
+   * @param in_isr 当前 callback-safe 路径是否实际位于 ISR。
+   * Whether the current callback-safe path is actually in ISR context.
    *
    * @note 默认值为 true，用于兼容旧代码中“FromCallback 等价于 ISR=true”的调用习惯。
    *       The default remains true for backward compatibility with older callers that
@@ -73,9 +73,9 @@ class Event
    * @brief 获取指定事件的回调链表指针（必须在非中断上下文中调用）。
    *        Returns the callback list pointer for the given event (must be called outside
    * ISR).
-   * @param event 要查询的事件 ID。 The event ID to search.
-   * @return 回调链表指针，如果未注册则主动创建。 The callback list pointer, if not
-   * registered, it is actively created.
+   * @param event 要查询的事件 ID / The event ID to search.
+   * @return 回调链表指针，如果未注册则主动创建。
+   * The callback list pointer, if not registered, it is actively created.
    * @note 当前 Event 只支持“查找或创建”回调链表，不提供删除或替换某个事件链表的接口；
    *       因此在 Event 对象存活期间，这个函数返回的链表指针保持稳定。
    *       The current Event API only supports finding or creating a callback
@@ -89,9 +89,9 @@ class Event
    * @brief 将源事件绑定到当前事件实例中的目标事件。
    *        Binds an event from a source Event instance to a target event in the current
    * instance.
-   * @param sources       包含原始事件的源 Event 实例。 The source Event instance.
-   * @param source_event  源事件实例中的事件 ID。 The source event ID.
-   * @param target_event  当前实例中的目标事件 ID。 The target event ID in this instance.
+   * @param sources       包含原始事件的源 Event 实例 / The source Event instance.
+   * @param source_event  源事件实例中的事件 ID / The source event ID.
+   * @param target_event  当前实例中的目标事件 ID / The target event ID in this instance.
    *
    * @note 包含动态内存分配。
    *       Contains dynamic memory allocation.
@@ -118,12 +118,12 @@ class Event
    */
   struct Block
   {
-    uint32_t event;  ///< 与该回调关联的事件 ID。 Event ID associated with this callback.
+    uint32_t event;  ///< 与该回调关联的事件 ID / Event ID associated with this callback.
     Callback
-        cb;  ///< 关联该事件的回调函数。 Callback function associated with this event.
+        cb;  ///< 关联该事件的回调函数 / Callback function associated with this event.
   };
 
-  RBTree<uint32_t> rbt_;  ///< 用于管理已注册事件的红黑树。 Red-black tree for managing
+  RBTree<uint32_t> rbt_;  ///< 用于管理已注册事件的红黑树 / Red-black tree for managing
                           ///< registered events.
 };
 

@@ -2,9 +2,10 @@
  * @file test_input.cpp
  * @brief Terminal 输入处理测试 / Terminal input handling tests.
  *
- * 通过 Pipe 输入按键，检查 CRLF 只执行一次、历史切换，以及移动光标后插入字符。
- * Feed keys through a Pipe to check single execution for CRLF, history navigation and
- * cursor-based insertion.
+ * 通过 Pipe 输入按键，检查 CRLF 只执行一次、历史切换、移动光标后插入字符，以及超长行的
+ * 截断提示。
+ * Feed keys through a Pipe to check single execution for CRLF, history navigation,
+ * cursor-based insertion and the notice for an overlong line.
  */
 
 #include "middleware/terminal/terminal_session_test_common.hpp"
@@ -81,10 +82,38 @@ void TestInputCrLfAndHistory()
   TEST_ASSERT(two_count == 3);
 }
 
+void TestOverlongLineNotice()
+{
+  // 超过 MAX_LINE_SIZE（默认 32）的字符不回显；回车时先输出截断提示，再执行保留的部分。
+  // Characters beyond MAX_LINE_SIZE (32 by default) are not echoed; Enter prints the
+  // truncation notice before the kept part runs.
+  TerminalFixture fixture;
+
+  const std::string kept(32, 'a');
+  const std::string typed = kept + "bcdefgh";
+  auto echo = fixture.SendText(typed.c_str());
+  TEST_ASSERT(echo.find(kept) != std::string::npos);
+  TEST_ASSERT(echo.find('b') == std::string::npos);
+
+  auto result = fixture.SendText("\n");
+  const auto notice = result.find("Line truncated to 32 characters (MAX_LINE_SIZE).\r\n");
+  TEST_ASSERT(notice != std::string::npos);
+  const auto not_found = result.find("Command not found.");
+  TEST_ASSERT(not_found != std::string::npos && not_found > notice);
+
+  // 下一行没有超长，不再提示。
+  // The next line is within the limit, so no notice is printed.
+  fixture.SendText("abc");
+  auto normal = fixture.SendText("\n");
+  TEST_ASSERT(normal.find("Line truncated") == std::string::npos);
+  TEST_ASSERT(normal.find("Command not found.") != std::string::npos);
+}
+
 }  // namespace
 
 void test_terminal_input()
 {
   TestInputCrLfAndHistory();
   TestMidLineInputEditing();
+  TestOverlongLineNotice();
 }

@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <sched.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -348,6 +349,72 @@ bool WaitForSubscriberAttach(TopicType& topic, uint32_t expected_num,
     return false;
   }
   return true;
+}
+
+/// 一条消息的重试期限，与订阅子进程的等待超时相同 / Retry deadline for one message, the
+/// same as the wait timeout of the subscriber child.
+inline constexpr uint64_t PUBLISH_RETRY_TIMEOUT_NS = 5000ULL * 1000ULL * 1000ULL;
+
+/**
+ * @brief 申请槽位、填写并发布一条消息 / Acquire a slot, fill it and publish one message.
+ *
+ * Publish() 返回 FULL 时已经释放句柄，所以每次重试都重新调用 CreateData() 并重新填写。
+ * CreateData() 和 Publish() 只在返回 FULL 时重试；遇到其他错误码，或超过
+ * PUBLISH_RETRY_TIMEOUT_NS 仍未发布时，输出原因并返回 false。
+ * Publish() has released the handle when it returns FULL, so every retry calls
+ * CreateData() again and refills the payload. CreateData() and Publish() are retried only
+ * on FULL; on any other error code, or when the message is still unpublished after
+ * PUBLISH_RETRY_TIMEOUT_NS, the reason is printed and false is returned.
+ *
+ * @param fill 填写 payload 的函数，每次申请到槽位后调用 /
+ *        Function that fills the payload, called after every successful acquisition.
+ */
+template <typename TopicType, typename FillFn>
+bool PublishWithRetry(TopicType& publisher, FillFn&& fill, uint64_t& create_retries,
+                      uint64_t& publish_retries, const char* case_label)
+{
+  const uint64_t deadline_ns = NowNs() + PUBLISH_RETRY_TIMEOUT_NS;
+  while (true)
+  {
+    typename TopicType::Data data;
+    const LibXR::ErrorCode create_ans = publisher.CreateData(data);
+    if (create_ans == LibXR::ErrorCode::OK)
+    {
+      fill(*data.GetData());
+      const LibXR::ErrorCode publish_ans = publisher.Publish(data);
+      if (publish_ans == LibXR::ErrorCode::OK)
+      {
+        return true;
+      }
+      if (publish_ans != LibXR::ErrorCode::FULL)
+      {
+        std::fprintf(stderr, "%s Publish failed: error %d\n", case_label,
+                     static_cast<int>(publish_ans));
+        return false;
+      }
+      ++publish_retries;
+    }
+    else if (create_ans == LibXR::ErrorCode::FULL)
+    {
+      ++create_retries;
+    }
+    else
+    {
+      std::fprintf(stderr, "%s CreateData failed: error %d\n", case_label,
+                   static_cast<int>(create_ans));
+      return false;
+    }
+
+    if (NowNs() > deadline_ns)
+    {
+      std::fprintf(stderr,
+                   "%s publish retry timeout: create_retry=%" PRIu64
+                   " publish_retry=%" PRIu64 "\n",
+                   case_label, create_retries, publish_retries);
+      return false;
+    }
+    sched_yield();
+  }
 }
 
 int RunStandardBenchmarksSmoke();

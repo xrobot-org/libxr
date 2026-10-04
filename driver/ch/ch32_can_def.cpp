@@ -14,7 +14,7 @@ ch32_can_id_t CH32_CAN_GetID(CAN_TypeDef* addr)
     return CH32_CAN1;
   }
 #endif
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
   else if (addr == CAN2)
   {
     return CH32_CAN2;
@@ -32,7 +32,7 @@ CAN_TypeDef* CH32_CAN_GetInstanceID(ch32_can_id_t id)
     case CH32_CAN1:
       return CAN1;
 #endif
-#if defined(CAN2)
+#if LIBXR_CH32_HAS_CAN2
     case CH32_CAN2:
       return CAN2;
 #endif

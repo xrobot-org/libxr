@@ -235,30 +235,8 @@ else()
   target_compile_definitions(${PROJECT_NAME} PUBLIC EIGEN_NO_IO)
 endif()
 
-if(XROBOT_MODULES_DIR)
-  file(
-    GLOB _xr_module_dirs CONFIGURE_DEPENDS
-    RELATIVE ${XROBOT_MODULES_DIR}
-    ${XROBOT_MODULES_DIR}/*
-  )
-  list(SORT _xr_module_dirs)
-
-  foreach(_xr_mod IN LISTS _xr_module_dirs)
-    if(IS_DIRECTORY "${XROBOT_MODULES_DIR}/${_xr_mod}")
-      if(EXISTS "${XROBOT_MODULES_DIR}/${_xr_mod}/CMakeLists.txt")
-        message(STATUS "[XRobot] Including module: ${_xr_mod}")
-        include("${XROBOT_MODULES_DIR}/${_xr_mod}/CMakeLists.txt")
-      endif()
-    endif()
-  endforeach()
-
-  get_property(_xr_module_deps GLOBAL PROPERTY XR_MODULE_DEPS)
-  if(_xr_module_deps)
-    list(REMOVE_DUPLICATES _xr_module_deps)
-    list(SORT _xr_module_deps)
-    target_link_libraries(${PROJECT_NAME} PUBLIC ${_xr_module_deps})
-  endif()
-endif()
+# XRobot integration. A BSP enables it by setting XROBOT_MODULES_DIR to <BSP root>/Modules.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/XRobot.cmake)
 
 if(LIBXR_TEST_BUILD)
   enable_testing()

@@ -86,8 +86,6 @@ add_executable(
   core/rw/write_stream/test_write_stream.cpp
   driver/uart/test_uart.cpp
   driver/timebase/test_timebase.cpp
-  middleware/app_framework/application/test_application.cpp
-  middleware/app_framework/hardware/test_hardware.cpp
   middleware/database/database/test_database.cpp
   middleware/database/raw/raw/test_linux_database_raw.cpp
   middleware/database/raw_sequential/test_linux_database_sequential.cpp
@@ -154,6 +152,25 @@ set_tests_properties(
                              "${PROJECT_SOURCE_DIR}"
 )
 
+# Stack::Insert 对不可平凡复制的元素类型必须编译失败。目标不参与默认构建，由测试单独构建，
+# 并检查输出中有 static_assert 的报错文字。
+# Stack::Insert must not compile for an element type that is not trivially copyable. The
+# target is left out of the default build; the test builds it and checks the output for
+# the static_assert message.
+add_library(
+  test_stack_insert_nontrivial OBJECT EXCLUDE_FROM_ALL
+  structure/stack/stack_insert_nontrivial.cpp
+)
+target_link_libraries(test_stack_insert_nontrivial PRIVATE xr)
+add_test(NAME stack_insert_nontrivial
+         COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --config $<CONFIG>
+                 --target test_stack_insert_nontrivial
+)
+set_tests_properties(
+  stack_insert_nontrivial PROPERTIES PASS_REGULAR_EXPRESSION
+                                     "requires a trivially copyable element type" TIMEOUT 120
+)
+
 add_library(
   test_print_config_matrix OBJECT
   core/print/print/test_float_disabled.cpp
@@ -174,3 +191,15 @@ target_include_directories(
   PRIVATE core/print/print $<TARGET_PROPERTY:xr,INTERFACE_INCLUDE_DIRECTORIES>
           "${CMAKE_CURRENT_SOURCE_DIR}/../../lib/Eigen"
 )
+
+# XRobot 生成头文件的内容检查（cmake/XRobotFreshness.cmake）；只运行 CMake 脚本，不编译代码。
+# The content check of the XRobot generated header (cmake/XRobotFreshness.cmake); it runs a
+# CMake script and compiles nothing.
+add_test(
+  NAME xrobot_freshness
+  COMMAND
+    "${CMAKE_COMMAND}" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/xrobot_freshness"
+    "-DCHECK=${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/XRobotFreshness.cmake" -P
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xrobot_freshness.cmake"
+)
+set_tests_properties(xrobot_freshness PROPERTIES TIMEOUT 60)

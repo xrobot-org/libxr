@@ -33,31 +33,31 @@ namespace LibXR
 {
 /**
  * @enum LinuxSharedSubscriberMode
- * @brief 订阅者接收模式。Receive mode of a Linux shared subscriber.
+ * @brief 订阅者接收模式 / Receive mode of a Linux shared subscriber.
  */
 enum class LinuxSharedSubscriberMode : uint8_t
 {
-  BROADCAST_FULL = 0,  ///< 广播到该订阅者，满队列时报错。Broadcast and fail on full.
-  BROADCAST_DROP_OLD =
-      1,           ///< 广播到该订阅者，满队列时丢最旧。Broadcast and drop oldest on full.
-  BALANCE_RR = 2,  ///< 参与 RR 负载均衡组。Participate in the RR balanced group.
+  BROADCAST_FULL = 0,      ///< 广播到该订阅者，满队列时报错 / Broadcast and fail on full.
+  BROADCAST_DROP_OLD = 1,  ///< 广播到该订阅者，满队列时丢最旧 / Broadcast and drop oldest
+                           ///< on full.
+  BALANCE_RR = 2,          ///< 参与 RR 负载均衡组 / Participate in the RR balanced group.
 };
 
 /**
  * @struct LinuxSharedTopicConfig
- * @brief Linux 共享 Topic 的创建配置。Creation config for Linux shared topics.
+ * @brief Linux 共享 Topic 的创建配置 / Creation config for Linux shared topics.
  */
 struct LinuxSharedTopicConfig
 {
-  uint32_t slot_num = 64;       ///< 共享 payload 槽位数。Number of shared payload slots.
-  uint32_t subscriber_num = 8;  ///< 最大订阅者数量。Maximum number of subscribers.
+  uint32_t slot_num = 64;       ///< 共享 payload 槽位数 / Number of shared payload slots.
+  uint32_t subscriber_num = 8;  ///< 最大订阅者数量 / Maximum number of subscribers.
   uint32_t queue_num =
-      64;  ///< 每订阅者描述符队列长度。Descriptor queue length per subscriber.
+      64;  ///< 每订阅者描述符队列长度 / Descriptor queue length per subscriber.
 };
 
 /**
  * @class LinuxSharedTopic
- * @brief Linux 主机进程间共享 Topic。Linux-host shared-memory topic.
+ * @brief Linux 主机进程间共享 Topic / Linux-host shared-memory topic.
  *
  * 该类提供 Linux 主机上的固定大小进程间消息通道，使用共享内存保存 payload，
  * 使用原子变量和 futex 完成发布/接收同步。在 `Webots` 系统配置下仍复用这套实现，
@@ -67,8 +67,8 @@ struct LinuxSharedTopicConfig
  * `Webots` system configuration it still reuses this implementation, but timeout behavior
  * follows the `Webots` system time model.
  *
- * @tparam TopicData 话题数据类型，必须为平凡可拷贝类型。Topic data type, must be
- * trivially copyable.
+ * @tparam TopicData 话题数据类型，必须为平凡可拷贝类型。
+ * Topic data type, must be trivially copyable.
  */
 template <typename TopicData>
 class LinuxSharedTopic : public Topic
@@ -104,15 +104,15 @@ class LinuxSharedTopic : public Topic
     using Data = SharedData;
 
     /**
-     * @brief 默认构造函数，创建空订阅者。Default constructor creating an empty
-     * subscriber.
+     * @brief 默认构造函数，创建空订阅者。
+     * Default constructor creating an empty subscriber.
      */
     Subscriber() = default;
 
     /**
-     * @brief 通过主题名附着并创建订阅者。Attach and create a subscriber by topic name.
-     * @param name 主题名称。Topic name.
-     * @param mode 订阅模式。Subscriber mode.
+     * @brief 通过主题名附着并创建订阅者 / Attach and create a subscriber by topic name.
+     * @param name 主题名称 / Topic name.
+     * @param mode 订阅模式 / Subscriber mode.
      *
      * @note 包含动态内存分配。
      *       Contains dynamic memory allocation.
@@ -151,10 +151,10 @@ class LinuxSharedTopic : public Topic
     }
 
     /**
-     * @brief 基于现有共享 Topic 创建订阅者。Create a subscriber from an existing shared
-     * topic.
-     * @param topic 已打开的共享 Topic。Opened shared topic.
-     * @param mode 订阅模式。Subscriber mode.
+     * @brief 基于现有共享 Topic 创建订阅者。
+     * Create a subscriber from an existing shared topic.
+     * @param topic 已打开的共享 Topic / Opened shared topic.
+     * @param mode 订阅模式 / Subscriber mode.
      */
     explicit Subscriber(
         LinuxSharedTopic& topic,
@@ -164,7 +164,7 @@ class LinuxSharedTopic : public Topic
     }
 
     /**
-     * @brief 析构函数，自动释放订阅者占用的状态。Destructor releasing subscriber state.
+     * @brief 析构函数，自动释放订阅者占用的状态 / Destructor releasing subscriber state.
      */
     ~Subscriber() { Reset(); }
 
@@ -199,18 +199,18 @@ class LinuxSharedTopic : public Topic
     }
 
     /**
-     * @brief 检查订阅者是否有效。Checks whether the subscriber is valid.
-     * @return true 订阅者有效。Subscriber is valid.
-     * @return false 订阅者无效。Subscriber is invalid.
+     * @brief 检查订阅者是否有效 / Checks whether the subscriber is valid.
+     * @return true 订阅者有效 / Subscriber is valid.
+     * @return false 订阅者无效 / Subscriber is invalid.
      */
     bool Valid() const { return topic_ != nullptr && subscriber_index_ != INVALID_INDEX; }
 
     /**
      * @brief 等待一条消息，并把当前订阅者切到该 payload。
      *        Wait for one message and bind the subscriber to that payload.
-     * @param timeout_ms 超时时间，默认无限等待。Timeout in milliseconds, default is wait
-     * forever.
-     * @return 错误码。Error code indicating the wait result.
+     * @param timeout_ms 超时时间，默认无限等待。
+     * Timeout in milliseconds, default is wait forever.
+     * @return 错误码 / Error code indicating the wait result.
      */
     ErrorCode Wait(uint32_t timeout_ms = UINT32_MAX)
     {
@@ -260,10 +260,10 @@ class LinuxSharedTopic : public Topic
     /**
      * @brief 等待一条消息，并通过句柄返回该 payload。
      *        Wait for one message and return the payload through a handle.
-     * @param data 输出句柄。Output data handle.
-     * @param timeout_ms 超时时间，默认无限等待。Timeout in milliseconds, default is wait
-     * forever.
-     * @return 错误码。Error code indicating the wait result.
+     * @param data 输出句柄 / Output data handle.
+     * @param timeout_ms 超时时间，默认无限等待。
+     * Timeout in milliseconds, default is wait forever.
+     * @return 错误码 / Error code indicating the wait result.
      */
     ErrorCode Wait(SharedData& data, uint32_t timeout_ms = UINT32_MAX)
     {
@@ -314,7 +314,7 @@ class LinuxSharedTopic : public Topic
     }
 
     /**
-     * @brief 获取当前持有的消息数据指针。Get the pointer to the currently held payload.
+     * @brief 获取当前持有的消息数据指针 / Get the pointer to the currently held payload.
      * @return 当前消息指针；若未持有消息则返回 nullptr。
      *         Pointer to current payload, or nullptr if none is held.
      */
@@ -329,17 +329,17 @@ class LinuxSharedTopic : public Topic
     }
 
     /**
-     * @brief 获取当前消息序号。Get the sequence number of the current message.
+     * @brief 获取当前消息序号 / Get the sequence number of the current message.
      */
     uint64_t GetSequence() const { return current_sequence_; }
 
     /**
-     * @brief 获取当前消息时间戳。Get the timestamp of the current message.
+     * @brief 获取当前消息时间戳 / Get the timestamp of the current message.
      */
     MicrosecondTimestamp GetTimestamp() const { return current_timestamp_; }
 
     /**
-     * @brief 获取当前待消费描述符数量。Get the number of queued pending descriptors.
+     * @brief 获取当前待消费描述符数量 / Get the number of queued pending descriptors.
      */
     uint32_t GetPendingNum() const
     {
@@ -359,8 +359,8 @@ class LinuxSharedTopic : public Topic
     }
 
     /**
-     * @brief 获取该订阅者累计丢弃消息数。Get the accumulated drop count of this
-     * subscriber.
+     * @brief 获取该订阅者累计丢弃消息数。
+     * Get the accumulated drop count of this subscriber.
      */
     uint64_t GetDropNum() const
     {
@@ -374,7 +374,7 @@ class LinuxSharedTopic : public Topic
     }
 
     /**
-     * @brief 释放当前持有的消息槽位。Release the currently held payload slot.
+     * @brief 释放当前持有的消息槽位 / Release the currently held payload slot.
      */
     void Release()
     {
@@ -391,8 +391,8 @@ class LinuxSharedTopic : public Topic
     }
 
     /**
-     * @brief 注销订阅者并释放所有持有资源。Unregister the subscriber and release owned
-     * resources.
+     * @brief 注销订阅者并释放所有持有资源。
+     * Unregister the subscriber and release owned resources.
      */
     void Reset()
     {
@@ -494,7 +494,7 @@ class LinuxSharedTopic : public Topic
 
   /**
    * @class SharedData
-   * @brief 共享 Topic payload 句柄。Payload handle for Linux shared topics.
+   * @brief 共享 Topic payload 句柄 / Payload handle for Linux shared topics.
    *
    * 该句柄可由发布者通过 `CreateData()` 获得，也可由订阅者通过 `Wait(data)` 获得。
    * 句柄析构或 `Reset()` 时会自动回收对应槽位。
@@ -505,13 +505,13 @@ class LinuxSharedTopic : public Topic
   {
    public:
     /**
-     * @brief 默认构造函数，创建空句柄。Default constructor creating an empty handle.
+     * @brief 默认构造函数，创建空句柄 / Default constructor creating an empty handle.
      */
     SharedData() = default;
 
     /**
-     * @brief 析构函数，自动回收句柄持有的槽位。Destructor automatically releasing the
-     * held slot.
+     * @brief 析构函数，自动回收句柄持有的槽位。
+     * Destructor automatically releasing the held slot.
      */
     ~SharedData() { Reset(); }
 
@@ -521,7 +521,7 @@ class LinuxSharedTopic : public Topic
     SharedData(SharedData&& other) noexcept { *this = std::move(other); }
 
     /**
-     * @brief 移动赋值，转移槽位所有权。Move assignment transferring slot ownership.
+     * @brief 移动赋值，转移槽位所有权 / Move assignment transferring slot ownership.
      */
     SharedData& operator=(SharedData&& other) noexcept
     {
@@ -547,22 +547,22 @@ class LinuxSharedTopic : public Topic
     }
 
     /**
-     * @brief 检查句柄是否有效。Checks whether the handle is valid.
+     * @brief 检查句柄是否有效 / Checks whether the handle is valid.
      */
     bool Valid() const { return topic_ != nullptr && slot_index_ != INVALID_INDEX; }
 
     /**
-     * @brief 检查句柄是否为空。Checks whether the handle is empty.
+     * @brief 检查句柄是否为空 / Checks whether the handle is empty.
      */
     bool Empty() const { return !Valid(); }
 
     /**
-     * @brief 获取消息序号。Get the sequence number of the held message.
+     * @brief 获取消息序号 / Get the sequence number of the held message.
      */
     uint64_t GetSequence() const { return sequence_; }
 
     /**
-     * @brief 获取消息时间戳。Get the held message timestamp.
+     * @brief 获取消息时间戳 / Get the held message timestamp.
      */
     MicrosecondTimestamp GetTimestamp() const
     {
@@ -574,7 +574,7 @@ class LinuxSharedTopic : public Topic
     }
 
     /**
-     * @brief 获取可写数据指针。Get a writable pointer to the payload.
+     * @brief 获取可写数据指针 / Get a writable pointer to the payload.
      * @return 数据指针；若句柄无效则返回 nullptr。
      *         Payload pointer, or nullptr if the handle is invalid.
      */
@@ -588,7 +588,7 @@ class LinuxSharedTopic : public Topic
     }
 
     /**
-     * @brief 获取数据指针。Get a pointer to the payload.
+     * @brief 获取数据指针 / Get a pointer to the payload.
      * @return 数据指针；若句柄无效则返回 nullptr。
      *         Payload pointer, or nullptr if the handle is invalid.
      */
@@ -602,7 +602,7 @@ class LinuxSharedTopic : public Topic
     }
 
     /**
-     * @brief 释放句柄持有的槽位。Release the slot held by this handle.
+     * @brief 释放句柄持有的槽位 / Release the slot held by this handle.
      */
     void Reset()
     {
@@ -639,8 +639,8 @@ class LinuxSharedTopic : public Topic
   };
 
   /**
-   * @brief 以附着模式打开已有共享 Topic。Open an existing shared topic in attach mode.
-   * @param topic_name 主题名称。Topic name.
+   * @brief 以附着模式打开已有共享 Topic / Open an existing shared topic in attach mode.
+   * @param topic_name 主题名称 / Topic name.
    */
   explicit LinuxSharedTopic(const char* topic_name)
       : LinuxSharedTopic(topic_name, DEFAULT_DOMAIN_NAME)
@@ -674,10 +674,10 @@ class LinuxSharedTopic : public Topic
   }
 
   /**
-   * @brief 以发布者模式创建或接管共享 Topic。Create or take over a shared topic as
-   * publisher.
-   * @param topic_name 主题名称。Topic name.
-   * @param config 创建配置。Creation config.
+   * @brief 以发布者模式创建或接管共享 Topic。
+   * Create or take over a shared topic as publisher.
+   * @param topic_name 主题名称 / Topic name.
+   * @param config 创建配置 / Creation config.
    */
   LinuxSharedTopic(const char* topic_name, const LinuxSharedTopicConfig& config)
       : LinuxSharedTopic(topic_name, DEFAULT_DOMAIN_NAME, config)
@@ -714,12 +714,12 @@ class LinuxSharedTopic : public Topic
 
   /**
    * @typedef SyncSubscriber
-   * @brief 同步订阅者别名。Alias of the synchronous shared subscriber.
+   * @brief 同步订阅者别名 / Alias of the synchronous shared subscriber.
    */
   using SyncSubscriber = Subscriber;
 
   /**
-   * @brief 析构函数，关闭共享 Topic。Destructor closing the shared topic.
+   * @brief 析构函数，关闭共享 Topic / Destructor closing the shared topic.
    */
   ~LinuxSharedTopic() { Close(); }
 
@@ -730,18 +730,18 @@ class LinuxSharedTopic : public Topic
   LinuxSharedTopic& operator=(LinuxSharedTopic&&) = delete;
 
   /**
-   * @brief 检查共享 Topic 是否已成功打开。Checks whether the shared topic is opened
-   * successfully.
+   * @brief 检查共享 Topic 是否已成功打开。
+   * Checks whether the shared topic is opened successfully.
    */
   bool Valid() const { return open_ok_; }
 
   /**
-   * @brief 获取打开阶段的错误码。Get the error code from the open stage.
+   * @brief 获取打开阶段的错误码 / Get the error code from the open stage.
    */
   ErrorCode GetError() const { return open_status_; }
 
   /**
-   * @brief 获取当前活跃订阅者数量。Get the current number of active subscribers.
+   * @brief 获取当前活跃订阅者数量 / Get the current number of active subscribers.
    */
   uint32_t GetSubscriberNum() const
   {
@@ -762,10 +762,10 @@ class LinuxSharedTopic : public Topic
   }
 
   /**
-   * @brief 为发布者申请一个可写 payload 槽位。Acquire a writable payload slot for the
-   * publisher.
-   * @param data 输出句柄。Output payload handle.
-   * @return 错误码。Error code indicating the acquisition result.
+   * @brief 为发布者申请一个可写 payload 槽位。
+   * Acquire a writable payload slot for the publisher.
+   * @param data 输出句柄 / Output payload handle.
+   * @return 错误码 / Error code indicating the acquisition result.
    */
   ErrorCode CreateData(SharedData& data)
   {
@@ -806,9 +806,9 @@ class LinuxSharedTopic : public Topic
   }
 
   /**
-   * @brief 复制一份数据并发布。Copy one payload and publish it.
-   * @param data 待发布的数据。Payload to publish.
-   * @return 错误码。Error code indicating the publish result.
+   * @brief 复制一份数据并发布 / Copy one payload and publish it.
+   * @param data 待发布的数据 / Payload to publish.
+   * @return 错误码 / Error code indicating the publish result.
    */
   ErrorCode Publish(const TopicData& data)
   {
@@ -837,7 +837,7 @@ class LinuxSharedTopic : public Topic
   }
 
   /**
-   * @brief 发布一个已申请好的 payload 句柄。Publish a pre-acquired payload handle.
+   * @brief 发布一个已申请好的 payload 句柄 / Publish a pre-acquired payload handle.
    */
   ErrorCode Publish(SharedData&& data) { return PublishData<false>(data); }
 
@@ -847,7 +847,22 @@ class LinuxSharedTopic : public Topic
   }
 
   /**
-   * @brief 发布一个已申请好的 payload 句柄。Publish a pre-acquired payload handle.
+   * @brief 发布一个已申请好的 payload 句柄 / Publish a pre-acquired payload handle.
+   * @param data 由本 Topic 的 CreateData() 申请的句柄 / Handle acquired by CreateData()
+   *        of this Topic.
+   * @return OK：已发布（没有订阅者时直接丢弃）；FULL：订阅者队列已满或没有可选的
+   *         BALANCE_RR 订阅者；STATE_ERR：句柄无效或不属于本 Topic。
+   *         OK: published (dropped when there is no subscriber); FULL: a subscriber
+   *         queue is full or no BALANCE_RR subscriber can be selected; STATE_ERR: the
+   *         handle is invalid or belongs to another Topic.
+   *
+   * @note 除 STATE_ERR 外，每次返回时句柄都已交出或释放槽位，包括返回 FULL 时，此后
+   *       `data.Valid()` 为 false。返回 FULL 后重试须重新调用 CreateData() 并重新填写
+   *       数据；对同一句柄再次调用 Publish() 只会返回 STATE_ERR。
+   *       Except for STATE_ERR, the handle has handed over or released its slot on
+   *       every return, FULL included, and `data.Valid()` is false afterwards. A retry
+   *       after FULL calls CreateData() again and refills the payload; calling Publish()
+   *       again on the same handle only returns STATE_ERR.
    */
   ErrorCode Publish(SharedData& data) { return PublishData<false>(data); }
 
@@ -857,7 +872,7 @@ class LinuxSharedTopic : public Topic
   }
 
   /**
-   * @brief 获取累计发布失败次数。Get the accumulated publish failure count.
+   * @brief 获取累计发布失败次数 / Get the accumulated publish failure count.
    */
   uint64_t GetPublishFailedNum() const
   {
@@ -869,9 +884,9 @@ class LinuxSharedTopic : public Topic
   }
 
   /**
-   * @brief 删除对应的共享内存对象。Remove the backing shared-memory object.
-   * @param topic_name 主题名称。Topic name.
-   * @return 错误码。Error code indicating the removal result.
+   * @brief 删除对应的共享内存对象 / Remove the backing shared-memory object.
+   * @param topic_name 主题名称 / Topic name.
+   * @return 错误码 / Error code indicating the removal result.
    */
   static ErrorCode Remove(const char* topic_name)
   {

@@ -1,42 +1,42 @@
 #pragma once
 
 /**
- * @brief 通用浮点文本格式化器使用的数学辅助函数。 / Math helpers used by the generic
+ * @brief 通用浮点文本格式化器使用的数学辅助函数 / Math helpers used by the generic
  * float text formatter.
  */
 
 /**
  * @brief 浮点文本输出归一化过程中使用的十进制缩放对 / Decimal-scale pair used while
  * normalizing one float for text output.
- * @tparam Float Float type. / 浮点类型。
+ * @tparam Float 浮点类型 / Float type.
  */
 template <typename Float>
 struct Writer::DecimalScale
 {
-  int exponent = 0;  ///< decimal exponent / 十进制指数
-  Float scale = 1;   ///< 10 ^ exponent / 10 的 exponent 次幂
+  int exponent = 0;  ///< 十进制指数 / decimal exponent
+  Float scale = 1;   ///< 10 的 exponent 次幂 / 10 ^ exponent
 };
 
 /**
  * @brief 科学计数法归一化后的尾数数字、缩放因子与十进制指数 / Rounded mantissa digits,
  * scale factor, and decimal exponent after scientific normalization.
- * @tparam Float Float type. / 浮点类型。
+ * @tparam Float 浮点类型 / Float type.
  */
 template <typename Float>
 struct Writer::ScientificDigits
 {
   Float digits =
-      0;  ///< rounded mantissa scaled to integer digits / 舍入后按整数位缩放的尾数
-  Float scale = 1;   ///< 10 ^ precision applied to the mantissa / 施加到尾数上的 10 的
-                     ///< precision 次幂
-  int exponent = 0;  ///< decimal exponent / 十进制指数
+      0;  ///< 舍入后按整数位缩放的尾数 / rounded mantissa scaled to integer digits
+  Float scale = 1;   ///< 施加到尾数上的 10 的 precision 次幂
+                     ///< 10 ^ precision applied to the mantissa
+  int exponent = 0;  ///< 十进制指数 / decimal exponent
 };
 
 /**
  * @brief 返回 10 的指定十进制指数次幂 / Returns 10 raised to the given decimal exponent.
- * @tparam Float Float type. / 浮点类型。
- * @param exponent Decimal exponent. / 十进制指数。
- * @return Returns the corresponding power of ten. / 返回对应的十进制幂。
+ * @tparam Float 浮点类型 / Float type.
+ * @param exponent 十进制指数 / Decimal exponent.
+ * @return 返回对应的十进制幂 / Returns the corresponding power of ten.
  */
 template <typename Float>
 Float Writer::Power10(int exponent)
@@ -71,12 +71,12 @@ Float Writer::Power10(int exponent)
 
 /**
  * @brief 把一个值舍入到指定小数位 / Round one value to the requested decimal precision.
- * @tparam Float Float type. / 浮点类型。
- * @param value Finite non-negative value. / 有限非负值。
- * @param precision Decimal places to retain. / 保留的小数位数。
- * @return Rounded value, or +infinity if scaling would overflow (input is
- *         expected to be a non-negative magnitude). /
- *         返回舍入后的值；若缩放溢出且输入为非负数，则返回 +infinity。
+ * @tparam Float 浮点类型 / Float type.
+ * @param value 有限非负值 / Finite non-negative value.
+ * @param precision 保留的小数位数 / Decimal places to retain.
+ * @return 返回舍入后的值；若缩放溢出且输入为非负数，则返回 +infinity。
+ *         Rounded value, or +infinity if scaling would overflow (input is
+ *         expected to be a non-negative magnitude).
  */
 template <typename Float>
 Float Writer::RoundDecimal(Float value, uint8_t precision)
@@ -98,13 +98,13 @@ Float Writer::RoundDecimal(Float value, uint8_t precision)
 /**
  * @brief 把一个值归一化为科学计数法的尾数数字与十进制指数 / Normalize one value into
  * scientific-notation mantissa digits and a decimal exponent.
- * @tparam Float Float type. / 浮点类型。
- * @param value Finite non-negative value. / 有限非负值。
- * @param precision Significant fractional digits to retain in the mantissa. /
- * 尾数中保留的有效小数位数。
- * @return Rounded mantissa, its scale, and the decimal exponent (carry-out
- *         adjusts the exponent when rounding overflows one digit). /
- *         返回舍入后的尾数、缩放因子与十进制指数；若舍入进位溢出一位，会相应调整指数。
+ * @tparam Float 浮点类型 / Float type.
+ * @param value 有限非负值 / Finite non-negative value.
+ * @param precision 尾数中保留的有效小数位数。
+ * Significant fractional digits to retain in the mantissa.
+ * @return 返回舍入后的尾数、缩放因子与十进制指数；若舍入进位溢出一位，会相应调整指数。
+ *         Rounded mantissa, its scale, and the decimal exponent (carry-out
+ *         adjusts the exponent when rounding overflows one digit).
  */
 template <typename Float>
 Writer::ScientificDigits<Float> Writer::RoundScientificDigits(Float value,
@@ -129,10 +129,10 @@ Writer::ScientificDigits<Float> Writer::RoundScientificDigits(Float value,
 /**
  * @brief 将一个浮点值归一化为十进制指数与缩放因子 / Normalizes one float into a decimal
  * exponent plus scale pair.
- * @tparam Float Float type. / 浮点类型。
- * @param value Finite positive magnitude. / 有限正数绝对值。
- * @return Returns the normalized decimal scale description. /
- *         返回规范化后的十进制缩放描述。
+ * @tparam Float 浮点类型 / Float type.
+ * @param value 有限正数绝对值 / Finite positive magnitude.
+ * @return 返回规范化后的十进制缩放描述。
+ *         Returns the normalized decimal scale description.
  */
 template <typename Float>
 Writer::DecimalScale<Float> Writer::NormalizeDecimal(Float value)
@@ -170,11 +170,10 @@ Writer::DecimalScale<Float> Writer::NormalizeDecimal(Float value)
 /**
  * @brief 在当前缩放位提取一个十进制数字并推进剩余值 / Extracts one decimal digit at the
  * current scale and advances the remainder.
- * @tparam Float Float type. / 浮点类型。
- * @param value Remaining normalized value; reduced in place. / 剩余规范化值；
- *        会原地减少。
- * @param scale Current decimal scale. / 当前十进制权重。
- * @return Returns the extracted decimal digit. / 返回提取出的十进制数字。
+ * @tparam Float 浮点类型 / Float type.
+ * @param value 剩余规范化值；会原地减少 / Remaining normalized value; reduced in place.
+ * @param scale 当前十进制权重 / Current decimal scale.
+ * @return 返回提取出的十进制数字 / Returns the extracted decimal digit.
  */
 template <typename Float>
 uint8_t Writer::ExtractDigit(Float& value, Float scale)

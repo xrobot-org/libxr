@@ -18,6 +18,10 @@
 void test_timer_semantics()
 {
   TEST_ASSERT(LibXR::Timer::list_ == nullptr);
+  // 第一次 Add 之前的 Refresh 不创建任务列表和调度线程。
+  // A Refresh before the first Add creates neither the task list nor a scheduler thread.
+  LibXR::Timer::Refresh();
+  TEST_ASSERT(LibXR::Timer::list_ == nullptr);
   // 预先设置列表，让 Add 不创建调度线程；后面的 Refresh 全由本测试逐步调用。
   // Provide the list so Add does not start a scheduler; this test drives every Refresh.
   LibXR::LockFreeList list;

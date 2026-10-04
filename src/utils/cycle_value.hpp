@@ -258,7 +258,7 @@ class CycleValue
   Scalar Value() const { return value_; }
 
  private:
-  Scalar value_;  ///< 存储的角度值。 The stored angle value.
+  Scalar value_;  ///< 存储的角度值 / The stored angle value.
 };
 
 }  // namespace LibXR

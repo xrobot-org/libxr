@@ -4,6 +4,10 @@
 
 Two tests cover fixed-register reads and write/readback of writable registers. Both use blocking, polling and callback completion, starting the next operation only after the current one completes.
 
+另有 `TestI2CConfig()`，通过固定寄存器读数和耗时检查时钟配置。
+
+`TestI2CConfig()` separately checks clock configuration through fixed-register data and read duration.
+
 ## 准备设备 / Prepare the device
 
 调用方初始化 I2C 总线、从机、系统时间基和中断／DMA 资源，并独占总线。确认供电、共地和 SDA/SCL 上拉电平符合两端要求。
@@ -66,6 +70,40 @@ The final three arguments are `settle_ms`, `timeout_ms` and `iterations`, defaul
 
 Success leaves the second pattern in place. If old values must be preserved, the calling application saves them before testing, then restores and verifies them after success. Failure stops immediately; restoration after a failed test is not guaranteed.
 
+## 配置和耗时 / Configuration and timing
+
+`TestI2CConfig()` 应用调用方指定的时钟配置，使用 BLOCK `MemRead()` 反复读取固定寄存器，检查数据和总耗时。寄存器、预期值及缓冲区沿用固定读取测试的要求。它不写寄存器数据，已有的写入回读测试仍单独调用。
+
+`TestI2CConfig()` applies a caller-supplied clock configuration, repeatedly reads a fixed register with BLOCK `MemRead()`, and checks data and total duration. Use the same register, expected-byte and buffer requirements as the fixed-read test. It does not write register data; call the existing write/readback test separately.
+
+```cpp
+uint64_t CheckI2CConfig(LibXR::I2C& bus, LibXR::I2C::Configuration config,
+                        uint16_t device, uint16_t reg,
+                        LibXR::I2C::MemAddrLength address_length,
+                        LibXR::ConstRawData expected, LibXR::RawData buffer,
+                        uint64_t min_us, uint64_t max_us)
+{
+  return LibXR::Test::TestI2CConfig(bus, config, device, reg, address_length,
+                                   expected, buffer, min_us, max_us);
+}
+```
+
+调用前总线须空闲，微秒时间基须已初始化且分辨率足够。后端和从机都必须支持所选时钟；不支持配置会触发测试断言，不会跳过后当作成功。
+
+Start with an idle bus and a ready microsecond timebase of sufficient resolution. Both backend and slave must support the selected clock. An unsupported configuration fails the test rather than being skipped as a success.
+
+每次从 `MemRead()` 前计时到完整读取返回，最后累加这些区间。接收区预填和数据核对都在计时外，不添加逐次休眠。最后两个可选参数是 `iterations`（默认 100 次读取）和 `timeout_ms`（传给每次 BLOCK 操作，默认 1000 ms）。后端内部同步调用的超时行为以其实现为准。函数返回实测总微秒数，并保留新配置。
+
+Measure each interval from before `MemRead()` through its completed return, then sum the intervals. Receive-buffer preparation and data checks stay outside; no per-read sleep is added. The final optional arguments are `iterations` (100 reads by default) and `timeout_ms` (passed to each BLOCK operation, default 1000 ms). Timeout handling inside synchronous backend calls depends on their implementation. The function returns measured total microseconds and retains the new configuration.
+
+上下限由调用方在运行前给出，计算时包含从机和寄存器寻址、ACK/NACK、起停条件，以及器件时钟拉伸和软件开销。不能只用有效数据长度除以时钟频率，也不能从实测结果反推范围。选择能区分快慢设置的范围，按 A、A、B、A 调用即可检查重复设置、切换和恢复。
+
+Set bounds before running, accounting for slave/register addressing, ACK/NACK, start/stop conditions, device clock stretching and software overhead. Payload length divided by clock frequency alone is insufficient; do not derive limits from the observed result. Choose windows that distinguish the selected speeds and call with A, A, B, A to check repeated setup, switching and restoration.
+
+固定寄存器短读适合检查常用控制路径，但不能由此宣称长包 DMA 已验证。传输耗时包含器件和软件延迟，不是精确的 SCL 频率测量。
+
+Short fixed-register reads check the exercised control path, not long-transfer DMA. Duration includes device and software delays and is not a precise SCL frequency measurement.
+
 ## 检查内容 / Checks
 
 每次读取前，接收区填入预期值的反码，防止未复制数据却误通过。阻塞方式检查调用结果；轮询方式等待 `DONE` 并拒绝 `ERROR`；回调方式检查成功结果及观测到的回调次数。最后逐字节比较数据，任何错误都立即触发始终生效的 `TEST_ASSERT`，不重试。
@@ -76,6 +114,6 @@ Before each read, fill the receive area with inverted expected bytes so missing 
 
 Callbacks may run inline during submission or later in a task or ISR. The test does not assume one callback context; callbacks only update atomic counts and an error flag, while diagnostics run in the calling thread. A callback is created once and reused across rounds; no threads or notification objects are created in the loop. A failed test stops rather than returning with an operation pending.
 
-CI 不自动运行这项设备测试。寄存器读写通过，只证明相应路径；它不代表长包 DMA、普通 `Read/Write`、总线速率或异常恢复已经验证。设备型号、具体地址、寄存器与接线留在调用工程中。
+CI 不自动运行这些设备测试。`TestI2CMemRead()` 和 `TestI2CMemWriteRead()` 通过，只证明相应读写路径；它们不检查总线速率。所有结果都不能直接推广到未执行的长包 DMA、普通 `Read/Write` 或异常恢复。设备型号、具体地址、寄存器与接线留在调用工程中。
 
-CI does not run this device test automatically. Passing register read/write checks only validates the exercised paths; it does not establish long-transfer DMA, plain `Read/Write`, bus speed or error recovery. Keep device models, addresses, registers and wiring in the calling project.
+CI does not run these device tests automatically. `TestI2CMemRead()` and `TestI2CMemWriteRead()` validate the exercised read/write paths, not bus speed. Results do not extend to untested long-transfer DMA, plain `Read/Write` or error recovery. Keep device models, addresses, registers and wiring in the calling project.

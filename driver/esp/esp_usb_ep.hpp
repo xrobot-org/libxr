@@ -2,8 +2,9 @@
 
 #include "usb/core/ep.hpp"
 
-#if SOC_USB_OTG_SUPPORTED && defined(CONFIG_IDF_TARGET_ESP32S3) && \
-    CONFIG_IDF_TARGET_ESP32S3
+#if (SOC_USB_OTG_SUPPORTED && defined(CONFIG_IDF_TARGET_ESP32S3) && \
+     CONFIG_IDF_TARGET_ESP32S3) ||                                  \
+    defined(__DOXYGEN__)
 
 namespace LibXR
 {

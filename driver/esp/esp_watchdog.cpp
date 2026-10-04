@@ -5,14 +5,15 @@
 #include "esp_private/periph_ctrl.h"
 #include "hal/mwdt_ll.h"
 #include "hal/timer_ll.h"
+#include "soc/rtc.h"
 
 namespace LibXR
 {
 namespace
 {
 
-constexpr uint32_t WDT_TICK_US = 500;
-constexpr uint32_t WDT_TICKS_PER_MS = 1000 / WDT_TICK_US;
+constexpr uint32_t MWDT_TICK_US = 500;
+constexpr uint32_t MWDT_TICKS_PER_MS = 1000 / MWDT_TICK_US;
 
 bool GetMwdtGroupInfo(wdt_inst_t instance, int* group_id, periph_module_t* periph)
 {
@@ -104,7 +105,20 @@ ErrorCode ESP32Watchdog::ApplyConfiguration()
     return ErrorCode::INIT_ERR;
   }
 
-  const uint64_t ticks64 = static_cast<uint64_t>(timeout_ms_) * WDT_TICKS_PER_MS;
+  uint64_t ticks64 = 0U;
+  if (instance_ == WDT_RWDT)
+  {
+    const uint32_t slow_clock_hz = rtc_clk_slow_freq_get_hz();
+    if (slow_clock_hz == 0U)
+    {
+      return ErrorCode::INIT_ERR;
+    }
+    ticks64 = static_cast<uint64_t>(timeout_ms_) * slow_clock_hz / 1000U;
+  }
+  else
+  {
+    ticks64 = static_cast<uint64_t>(timeout_ms_) * MWDT_TICKS_PER_MS;
+  }
   if ((ticks64 == 0) || (ticks64 > UINT32_MAX))
   {
     return ErrorCode::NOT_SUPPORT;

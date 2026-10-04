@@ -39,7 +39,7 @@ void GetArgs()
 /**
  * @brief  将路径字符串解析为目录对象
  *         Converts a path string into a directory object
- * @param  path 目录路径字符串 The directory path string
+ * @param  path 目录路径字符串 / The directory path string
  * @return RamFS::Dir* 解析出的目录指针，若找不到则返回 nullptr
  *         Pointer to the resolved directory, or nullptr if not found
  *
@@ -98,7 +98,7 @@ RamFS::Dir* Path2Dir(char* path)
 /**
  * @brief  将路径字符串解析为文件对象
  *         Converts a path string into a file object
- * @param  path 文件路径字符串 The file path string
+ * @param  path 文件路径字符串 / The file path string
  * @return RamFS::File* 解析出的文件指针，若找不到则返回 nullptr
  *         Pointer to the resolved file, or nullptr if not found
  *

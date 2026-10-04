@@ -14,15 +14,6 @@
 namespace LibXR
 {
 
-/**
- * @brief 闪存扇区描述 / Flash sector descriptor
- */
-struct FlashSector
-{
-  uint32_t address;  ///< 扇区起始地址 / Sector start address
-  uint32_t size;     ///< 扇区大小（字节） / Sector size in bytes
-};
-
 #if defined(FLASH_BANK_2) && defined(FLASH_BANK_1)
 // NOLINTNEXTLINE
 inline uint32_t STM32FlashBankOf(uint32_t addr)
@@ -44,6 +35,30 @@ inline uint32_t STM32FlashBankOf(uint32_t) { return FLASH_BANK_1; }
 // NOLINTNEXTLINE
 inline uint32_t STM32FlashBankOf(uint32_t) { return 1; }
 #endif
+
+/**
+ * @brief 由 HAL 的 `FLASH_TYPEPROGRAM_*` 宏确定的最小写入单位（字节） / Minimum write
+ *        unit in bytes, determined from the HAL `FLASH_TYPEPROGRAM_*` macros
+ */
+// NOLINTNEXTLINE
+constexpr size_t STM32FlashMinWriteSize()
+{
+#ifdef FLASH_TYPEPROGRAM_BYTE
+  return 1;
+#elif defined(FLASH_TYPEPROGRAM_HALFWORD)
+  return 2;
+#elif defined(FLASH_TYPEPROGRAM_WORD)
+  return 4;
+#elif defined(FLASH_TYPEPROGRAM_DOUBLEWORD)
+  return 8;
+#elif defined(FLASH_TYPEPROGRAM_FLASHWORD)
+  return FLASH_NB_32BITWORD_IN_FLASHWORD * 4;
+#elif defined(FLASH_TYPEPROGRAM_QUADWORD)
+  return 16;
+#else
+#error "No supported FLASH_TYPEPROGRAM_xxx defined"
+#endif
+}
 
 #ifndef __DOXYGEN__
 
@@ -102,39 +117,61 @@ typename std::enable_if<HasFlashBank<T>::value>::type SetBanks(T& init, uint32_t
 
 /**
  * @brief STM32 闪存驱动实现 / STM32 flash driver implementation
+ * @pre 擦写调用及相关缓存控制由调用方串行化；等待期间 HAL tick 必须能推进。
+ *      The caller serializes erase/program calls and related cache control; the HAL
+ *      tick must advance during waits.
+ * @note 擦写期间暂时关闭相关缓存；进入擦写流程后，成功或失败返回均恢复缓存开关并锁定
+ * Flash。
+ * Related caches are temporarily disabled during erase/program operations. Once the
+ * operation starts, success and failure returns restore the original cache enable state
+ * and lock Flash.
+ * @note 扇区表须从 Flash 起始地址开始，按地址用若干段列出整片 Flash 的扇区或页；一段可以
+ * 跨 bank。擦除时按地址判断所在 bank，H5、H7 和使用 Page 字段的系列按 bank 内序号擦除，
+ * F2/F4/F7 按跨 bank 的扇区号擦除。不支持 bank 交换（SWAP_BANK、BFB2 等选项字节）。
+ * The sector table must list the sectors or pages of the whole Flash in address order as
+ * runs, starting at the Flash base; a run may cross a bank boundary. Erase takes the bank
+ * from the address; H5, H7 and the families with a Page field erase by the number within
+ * the bank, F2/F4/F7 by the sector number across both banks. Bank swap (SWAP_BANK, BFB2
+ * and similar option bytes) is not supported.
  */
 class STM32Flash : public Flash
 {
  public:
   /**
-   * @brief 构造闪存对象 / Construct flash object
-   * @param sectors 扇区列表 / Sector list
-   * @param sector_count 扇区数量 / Number of sectors
-   * @param start_sector 起始扇区索引 / Start sector index
-   *
+   * @brief 最小写入单位（字节），由 HAL 的 `FLASH_TYPEPROGRAM_*` 宏确定；可直接作为
+   *        `DatabaseRaw` 的模板参数 / Minimum write unit in bytes, determined from the
+   *        HAL `FLASH_TYPEPROGRAM_*` macros; usable directly as the `DatabaseRaw`
+   *        template argument
    */
-  STM32Flash(const FlashSector* sectors, size_t sector_count, size_t start_sector);
+  static constexpr size_t MIN_WRITE_SIZE = STM32FlashMinWriteSize();
 
   /**
-   * @brief 构造并使用末尾扇区 / Construct using tail sectors
-   *
-   * @param sectors 扇区列表 / Sector list
-   * @param sector_count 扇区数量 / Number of sectors
+   * @brief 构造闪存对象 / Construct flash object
+   * @param regions 扇区表 / Sector table
+   * @param region_count 扇区表的段数 / Number of runs in the sector table
+   * @param start_address 存储区的起始地址，须正好是某个扇区的起点；存储区一直到 Flash
+   *        末尾 / Start address of the storage area; must be exactly the start of a
+   *        sector; the area extends to the end of the Flash
    */
-  STM32Flash(const FlashSector* sectors, size_t sector_count)
-      : STM32Flash(sectors, sector_count, sector_count - 1)
-  {
-  }
+  STM32Flash(const FlashRegion* regions, size_t region_count, uint32_t start_address);
+
+  /**
+   * @brief 用末尾两个扇区构造，供 DatabaseRaw 的主块和备份块使用 / Construct with the
+   *        last two sectors, for the main and backup blocks of DatabaseRaw
+   * @param regions 扇区表 / Sector table
+   * @param region_count 扇区表的段数 / Number of runs in the sector table
+   */
+  STM32Flash(const FlashRegion* regions, size_t region_count);
 
   ErrorCode Erase(size_t offset, size_t size) override;
 
   ErrorCode Write(size_t offset, ConstRawData data) override;
 
  private:
-  const FlashSector* sectors_;
+  const FlashRegion* regions_;
   uint32_t base_address_;
   uint32_t program_type_;
-  size_t sector_count_;
+  size_t region_count_;
 
   static constexpr uint32_t DetermineProgramType()
   {
@@ -150,25 +187,6 @@ class STM32Flash : public Flash
     return FLASH_TYPEPROGRAM_FLASHWORD;
 #elif defined(FLASH_TYPEPROGRAM_QUADWORD)
     return FLASH_TYPEPROGRAM_QUADWORD;
-#else
-#error "No supported FLASH_TYPEPROGRAM_xxx defined"
-#endif
-  }
-
-  static constexpr size_t DetermineMinWriteSize()
-  {
-#ifdef FLASH_TYPEPROGRAM_BYTE
-    return 1;
-#elif defined(FLASH_TYPEPROGRAM_HALFWORD)
-    return 2;
-#elif defined(FLASH_TYPEPROGRAM_WORD)
-    return 4;
-#elif defined(FLASH_TYPEPROGRAM_DOUBLEWORD)
-    return 8;
-#elif defined(FLASH_TYPEPROGRAM_FLASHWORD)
-    return FLASH_NB_32BITWORD_IN_FLASHWORD * 4;
-#elif defined(FLASH_TYPEPROGRAM_QUADWORD)
-    return 16;
 #else
 #error "No supported FLASH_TYPEPROGRAM_xxx defined"
 #endif

@@ -30,7 +30,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/jiu-xiao/libxr-docs:latest
+      image: ghcr.io/xrobot-org/libxr-docs:latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4

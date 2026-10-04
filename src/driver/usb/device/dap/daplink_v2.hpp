@@ -27,7 +27,10 @@ static constexpr bool kEnableJtag = true;
 #endif
 
 /**
- * @brief CMSIS-DAP v2 (Bulk) USB class (SWD-only, optional nRESET control).
+ * @brief CMSIS-DAP v2（Bulk）USB 类，支持 SWD 和 JTAG（daplink_v2_profile_swd.hpp
+ *        可关闭 JTAG），可选 nRESET 控制 / CMSIS-DAP v2 (Bulk) USB class with SWD and
+ *        JTAG (JTAG can be disabled with daplink_v2_profile_swd.hpp), optional
+ *        nRESET control.
  *
  *
  * @tparam SwdPort SWD link type
@@ -372,8 +375,8 @@ class DapLinkV2Class : public DeviceClass
   }
 
   // CMSIS-DAP status bytes
-  static constexpr uint8_t DAP_OK = 0x00u;     ///< DAP_OK / DAP_OK
-  static constexpr uint8_t DAP_ERROR = 0xFFu;  ///< DAP_ERROR / DAP_ERROR
+  static constexpr uint8_t DAP_OK = 0x00u;     ///< DAP_OK
+  static constexpr uint8_t DAP_ERROR = 0xFFu;  ///< DAP_ERROR
 
   // Unknown command response: single byte 0xFF.
   static inline ErrorCode BuildUnknownCmdResponse(uint8_t* resp, uint16_t cap,
@@ -4124,8 +4127,7 @@ class DapLinkV2Class : public DeviceClass
   static_assert((RESP_QUEUE_DEPTH & (RESP_QUEUE_DEPTH - 1u)) == 0u,
                 "Response queue depth must be power-of-two");
 
-  static constexpr uint8_t WINUSB_VENDOR_CODE =
-      0x20;  ///< WinUSB vendor code / WinUSB vendor code
+  static constexpr uint8_t WINUSB_VENDOR_CODE = 0x20;  ///< WinUSB vendor code
 
   // REG_MULTI_SZ: "<GUID>\0\0" (UTF-16LE). GUID_STR_UTF16_BYTES should already include
   // the first UTF-16 NUL.
@@ -4161,13 +4163,10 @@ class DapLinkV2Class : public DeviceClass
    */
   struct WinUsbMsOs20DescSet
   {
-    LibXR::USB::WinUsbMsOs20::MsOs20SetHeader set;  ///< Set header / Set header
-    LibXR::USB::WinUsbMsOs20::MsOs20SubsetHeaderConfiguration
-        cfg;  ///< Config subset / Config subset
-    LibXR::USB::WinUsbMsOs20::MsOs20SubsetHeaderFunction
-        func;  ///< Function subset / Function subset
-    LibXR::USB::WinUsbMsOs20::MsOs20FeatureCompatibleId
-        compat;  ///< CompatibleId feature / CompatibleId feature
+    LibXR::USB::WinUsbMsOs20::MsOs20SetHeader set;                  ///< Set header
+    LibXR::USB::WinUsbMsOs20::MsOs20SubsetHeaderConfiguration cfg;  ///< Config subset
+    LibXR::USB::WinUsbMsOs20::MsOs20SubsetHeaderFunction func;      ///< Function subset
+    LibXR::USB::WinUsbMsOs20::MsOs20FeatureCompatibleId compat;  ///< CompatibleId feature
 
     /**
      * @brief DeviceInterfaceGUIDs registry property
@@ -4175,7 +4174,7 @@ class DapLinkV2Class : public DeviceClass
     struct RegProp
     {
       LibXR::USB::WinUsbMsOs20::MsOs20FeatureRegPropertyHeader
-          header;  ///< RegProperty header / RegProperty header
+          header;  ///< RegProperty header
       uint8_t name[LibXR::USB::WinUsbMsOs20::
                        PROP_NAME_DEVICE_INTERFACE_GUIDS_BYTES];  ///< Property name /
                                                                  ///< Property name
@@ -4194,9 +4193,9 @@ class DapLinkV2Class : public DeviceClass
 
   LibXR::GPIO* nreset_gpio_ = nullptr;  ///< Optional nRESET GPIO
 
-  uint8_t swj_shadow_ = static_cast<uint8_t>(
-      DapLinkV2Def::DAP_SWJ_SWDIO_TMS |
-      DapLinkV2Def::DAP_SWJ_NRESET);  ///< Shadow SWJ pin levels / Shadow SWJ pin levels
+  uint8_t swj_shadow_ =
+      static_cast<uint8_t>(DapLinkV2Def::DAP_SWJ_SWDIO_TMS |
+                           DapLinkV2Def::DAP_SWJ_NRESET);  ///< Shadow SWJ pin levels
 
   bool last_nreset_level_high_ = true;  ///< Last nRESET level (high = release)
 
@@ -4208,11 +4207,11 @@ class DapLinkV2Class : public DeviceClass
 
   const char* interface_string_ = nullptr;  ///< Interface string
 
-  Endpoint::EPNumber data_in_ep_num_;   ///< Bulk IN EP number / Bulk IN EP number
-  Endpoint::EPNumber data_out_ep_num_;  ///< Bulk OUT EP number / Bulk OUT EP number
+  Endpoint::EPNumber data_in_ep_num_;   ///< Bulk IN EP number
+  Endpoint::EPNumber data_out_ep_num_;  ///< Bulk OUT EP number
 
-  Endpoint* ep_data_in_ = nullptr;   ///< Bulk IN endpoint / Bulk IN endpoint
-  Endpoint* ep_data_out_ = nullptr;  ///< Bulk OUT endpoint / Bulk OUT endpoint
+  Endpoint* ep_data_in_ = nullptr;   ///< Bulk IN endpoint
+  Endpoint* ep_data_out_ = nullptr;  ///< Bulk OUT endpoint
 
   bool inited_ = false;        ///< Initialized flag
   uint8_t interface_num_ = 0;  ///< Interface number
@@ -4224,18 +4223,17 @@ class DapLinkV2Class : public DeviceClass
    */
   struct DapLinkV2DescBlock
   {
-    InterfaceDescriptor intf;   ///< Interface descriptor / Interface descriptor
-    EndpointDescriptor ep_out;  ///< OUT endpoint descriptor / OUT endpoint descriptor
-    EndpointDescriptor ep_in;   ///< IN endpoint descriptor / IN endpoint descriptor
+    InterfaceDescriptor intf;   ///< Interface descriptor
+    EndpointDescriptor ep_out;  ///< OUT endpoint descriptor
+    EndpointDescriptor ep_in;   ///< IN endpoint descriptor
   } desc_block_{};
   LIBXR_PACKED_END
 
  private:
   LibXR::USB::WinUsbMsOs20::MsOs20BosCapability winusb_msos20_cap_{
-      LibXR::ConstRawData{nullptr, 0},
-      WINUSB_VENDOR_CODE};  ///< WinUSB BOS capability / WinUSB BOS capability
+      LibXR::ConstRawData{nullptr, 0}, WINUSB_VENDOR_CODE};  ///< WinUSB BOS capability
 
-  uint32_t match_mask_ = 0xFFFFFFFFu;  ///< Match mask / Match mask
+  uint32_t match_mask_ = 0xFFFFFFFFu;  ///< Match mask
 
   LibXR::Callback<LibXR::ConstRawData&> on_data_out_cb_ =
       LibXR::Callback<LibXR::ConstRawData&>::Create(OnDataOutCompleteStatic, this);

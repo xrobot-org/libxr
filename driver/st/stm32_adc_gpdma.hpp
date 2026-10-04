@@ -12,7 +12,7 @@
 #define LIBXR_STM32_ADC_GPDMA 1
 #endif
 
-#if defined(LIBXR_STM32_ADC_GPDMA)
+#if defined(LIBXR_STM32_ADC_GPDMA) || defined(__DOXYGEN__)
 namespace LibXR
 {
 /**

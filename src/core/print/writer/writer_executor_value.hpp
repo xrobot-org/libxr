@@ -140,10 +140,10 @@ ErrorCode Writer::Executor<Sink>::WriteUnsignedDigits(std::string_view prefix,
  * @param value 待写出的整数值 / Integer value to write
  * @return 返回共享整数字段路径的写出结果 / Returns the shared integer-field write result
  *
- * This bridge does not format digits itself; it only maps one runtime integer
- * semantic type onto the shared compile-time radix/case helper above.
  * 这个桥接函数本身不直接格式化数字；它只负责把运行期整数语义类型映射到上面的
  * 编译期进制/大小写共享辅助路径。
+ * This bridge does not format digits itself; it only maps one runtime integer
+ * semantic type onto the shared compile-time radix/case helper above.
  */
 template <OutputSink Sink>
 template <FormatType Type, std::unsigned_integral UInt>
@@ -299,8 +299,8 @@ ErrorCode Writer::Executor<Sink>::WriteFloat(FormatType type, const Spec& spec, 
 /**
  * @brief 写出一个原始 uint32 十进制快路径字段 / Writes one raw uint32 decimal fast-path
  * field.
- * @param value Unsigned value to write. / 待写出的无符号值。
- * @return Returns the sink write result. / 返回 sink 写出结果。
+ * @param value 待写出的无符号值 / Unsigned value to write.
+ * @return 返回 sink 写出结果 / Returns the sink write result.
  */
 template <OutputSink Sink>
 ErrorCode Writer::Executor<Sink>::WriteU32Dec(uint32_t value)
@@ -313,8 +313,8 @@ ErrorCode Writer::Executor<Sink>::WriteU32Dec(uint32_t value)
 /**
  * @brief 写出一个原始 int32 十进制快路径字段 / Writes one raw int32 decimal fast-path
  * field.
- * @param value Signed value to write. / 待写出的有符号值。
- * @return Returns the sink write result. / 返回 sink 写出结果。
+ * @param value 待写出的有符号值 / Signed value to write.
+ * @return 返回 sink 写出结果 / Returns the sink write result.
  */
 template <OutputSink Sink>
 ErrorCode Writer::Executor<Sink>::WriteI32Dec(int32_t value)
@@ -339,10 +339,10 @@ ErrorCode Writer::Executor<Sink>::WriteI32Dec(int32_t value)
 /**
  * @brief 写出一个原始 uint32 多进制快路径字段 / Writes one raw uint32 base-specific
  * fast-path field.
- * @tparam Base Integer radix. / 整数进制。
- * @tparam UpperCase Whether hexadecimal digits are uppercase. / 十六进制数字是否大写。
- * @param value Unsigned value to write. / 待写出的无符号值。
- * @return Returns the sink write result. / 返回 sink 写出结果。
+ * @tparam Base 整数进制 / Integer radix.
+ * @tparam UpperCase 十六进制数字是否大写 / Whether hexadecimal digits are uppercase.
+ * @param value 待写出的无符号值 / Unsigned value to write.
+ * @return 返回 sink 写出结果 / Returns the sink write result.
  */
 template <OutputSink Sink>
 template <uint8_t Base, bool UpperCase>
@@ -375,8 +375,8 @@ ErrorCode Writer::Executor<Sink>::WriteU32ZeroPadWidth(uint8_t width, uint32_t v
 
 /**
  * @brief 写出一个原始字符串快路径字段 / Writes one raw string fast-path field.
- * @param text String payload to write. / 待写出的字符串载荷。
- * @return Returns the sink write result. / 返回 sink 写出结果。
+ * @param text 待写出的字符串载荷 / String payload to write.
+ * @return 返回 sink 写出结果 / Returns the sink write result.
  */
 template <OutputSink Sink>
 ErrorCode Writer::Executor<Sink>::WriteStringRaw(std::string_view text)
@@ -386,8 +386,8 @@ ErrorCode Writer::Executor<Sink>::WriteStringRaw(std::string_view text)
 
 /**
  * @brief 写出一个原始字符快路径字段 / Writes one raw character fast-path field.
- * @param ch Character payload to write. / 待写出的字符载荷。
- * @return Returns the sink write result. / 返回 sink 写出结果。
+ * @param ch 待写出的字符载荷 / Character payload to write.
+ * @return 返回 sink 写出结果 / Returns the sink write result.
  */
 template <OutputSink Sink>
 ErrorCode Writer::Executor<Sink>::WriteCharacterRaw(char ch)

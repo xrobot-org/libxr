@@ -10,9 +10,10 @@ namespace LibXR
  * @brief 电源管理器基类 / Abstract base class for Power Manager
  *
  * 该类定义了电源管理的基本接口，所有电源管理模块应继承此类并实现具体的 `Reset` 和
- * `Shutdown` 方法。 This class defines the basic interface for power management. All
- * power management modules should inherit from this class and implement the `Reset` and
- * `Shutdown` methods.
+ * `Shutdown` 方法。
+ * This class defines the basic interface for power management. All power management
+ * modules should inherit from this class and implement the `Reset` and `Shutdown`
+ * methods.
  */
 class PowerManager
 {

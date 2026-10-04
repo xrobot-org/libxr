@@ -54,11 +54,11 @@ class SwdGeneralGPIO final : public Swd
 
  public:
   /**
-   * @brief 构造函数。Constructor.
-   * @param swclk 用作 SWCLK 的 GPIO。GPIO used as SWCLK.
-   * @param swdio 用作 SWDIO 的 GPIO。GPIO used as SWDIO.
-   * @param loops_per_us 每个 us 的循延时环次数。Loops per us of delay.
-   * @param default_hz 默认 SWCLK 频率（Hz）。Default SWCLK frequency (Hz).
+   * @brief 构造函数 / Constructor.
+   * @param swclk 用作 SWCLK 的 GPIO / GPIO used as SWCLK.
+   * @param swdio 用作 SWDIO 的 GPIO / GPIO used as SWDIO.
+   * @param loops_per_us 每个 us 的循延时环次数 / Loops per us of delay.
+   * @param default_hz 默认 SWCLK 频率（Hz） / Default SWCLK frequency (Hz).
    */
   explicit SwdGeneralGPIO(SwclkGpioType& swclk, SwdioGpioType& swdio,
                           uint32_t loops_per_us, uint32_t default_hz = DEFAULT_CLOCK_HZ)
@@ -143,8 +143,8 @@ class SwdGeneralGPIO final : public Swd
     InvalidateSelectCache();
 
     // 安全状态：Safe state:
-    // - SWCLK 高电平（历史行为）。SWCLK high (legacy).
-    // - SWDIO 上拉输入（不驱动）。SWDIO input with pull-up (no drive).
+    // - SWCLK 高电平（历史行为） / SWCLK high (legacy).
+    // - SWDIO 上拉输入（不驱动） / SWDIO input with pull-up (no drive).
     swclk_.Write(true);
     (void)SetSwdioSampleMode();
   }
@@ -152,8 +152,8 @@ class SwdGeneralGPIO final : public Swd
   ErrorCode LineReset() override
   {
     InvalidateSelectCache();
-    // SWD 线复位：SWDIO = 1 持续 >= 50 个周期；此处使用 64 个周期。SWD line reset: SWDIO
-    // = 1 for >= 50 cycles; here use 64 cycles.
+    // SWD 线复位：SWDIO = 1 持续 >= 50 个周期；此处使用 64 个周期。
+    // SWD line reset: SWDIO = 1 for >= 50 cycles; here use 64 cycles.
     (void)SetSwdioDriveMode();
     swdio_.Write(true);
     for (uint32_t i = 0; i < LINE_RESET_CYCLES; ++i)
@@ -203,9 +203,9 @@ class SwdGeneralGPIO final : public Swd
 
   void IdleClocks(uint32_t cycles) override
   {
-    // CMSIS-DAP 空闲周期插入。CMSIS-DAP idle cycles insertion.
-    // 保留历史序列：周期内驱动 SWDIO 高电平，结束后拉低。Keep the legacy sequence: drive
-    // SWDIO high during cycles, then pull low.
+    // CMSIS-DAP 空闲周期插入 / CMSIS-DAP idle cycles insertion.
+    // 保留历史序列：周期内驱动 SWDIO 高电平，结束后拉低。
+    // Keep the legacy sequence: drive SWDIO high during cycles, then pull low.
     (void)SetSwdioDriveMode();
     swdio_.Write(true);
 
@@ -239,10 +239,10 @@ class SwdGeneralGPIO final : public Swd
       const bool BIT = (((data_lsb_first[i / 8u] >> (i & 7u)) & 0x01u) != 0u);
       swdio_.Write(BIT);
 
-      // Match the DAP_Transfer request path: one bit owns one complete
-      // low-high clock cycle. Do not add an un-timed low pulse after every bit.
       // 匹配 DAP_Transfer 请求路径：每个 bit 只产生一个完整低-高时钟周期，
       // 不在每 bit 末尾额外插入无定时低脉冲。
+      // Match the DAP_Transfer request path: one bit owns one complete
+      // low-high clock cycle. Do not add an un-timed low pulse after every bit.
       GenOneClk();
     }
     swclk_.Write(false);
@@ -309,8 +309,8 @@ class SwdGeneralGPIO final : public Swd
     const uint8_t A3 = (addr2b >> 1) & 0x1u;
     const uint8_t PAR = static_cast<uint8_t>((apndp ^ rnw ^ A2 ^ A3) & 0x1u);
 
-    // 请求字节位域：start(1), APnDP, RnW, A2, A3, PAR, stop(0), park(1)。Request bit
-    // fields: start(1), APnDP, RnW, A2, A3, PAR, stop(0), park(1).
+    // 请求字节位域：start(1), APnDP, RnW, A2, A3, PAR, stop(0), park(1)。
+    // Request bit fields: start(1), APnDP, RnW, A2, A3, PAR, stop(0), park(1).
     return static_cast<uint8_t>((1u << 0) | (static_cast<uint8_t>(apndp) << 1) |
                                 (static_cast<uint8_t>(rnw) << 2) |
                                 (static_cast<uint8_t>(A2) << 3) |
@@ -326,7 +326,7 @@ class SwdGeneralGPIO final : public Swd
     x &= 0xFu;
     static constexpr uint8_t LUT[16] = {
         0, 1, 1, 0, 1, 0, 0, 1,
-        1, 0, 0, 1, 0, 1, 1, 0};  ///< 奇偶校验查找表（4-bit 折叠）。Parity lookup table
+        1, 0, 0, 1, 0, 1, 1, 0};  ///< 奇偶校验查找表（4-bit 折叠） / Parity lookup table
                                   ///< (4-bit fold).
     return LUT[x];
   }
@@ -351,13 +351,13 @@ class SwdGeneralGPIO final : public Swd
  private:
   /**
    * @enum SwdioMode
-   * @brief SWDIO 管脚当前模式。Current SWDIO pin mode.
+   * @brief SWDIO 管脚当前模式 / Current SWDIO pin mode.
    */
   enum class SwdioMode : uint8_t
   {
-    UNKNOWN = 0,  ///< 未知/未初始化。Unknown / uninitialized.
-    DRIVE,        ///< 输出驱动阶段。Drive phase.
-    SAMPLE_IN,    ///< 输入采样阶段。Sample phase.
+    UNKNOWN = 0,  ///< 未知/未初始化 / Unknown / uninitialized.
+    DRIVE,        ///< 输出驱动阶段 / Drive phase.
+    SAMPLE_IN,    ///< 输入采样阶段 / Sample phase.
   };
 
   ErrorCode SetSwdioDriveMode()
@@ -383,10 +383,10 @@ class SwdGeneralGPIO final : public Swd
   {
     if (swdio_mode_ != SwdioMode::SAMPLE_IN)
     {
-      // Sampling should always leave SWDIO as a pulled-up input so the line has a
-      // defined idle level before the target actively drives ACK/data.
       // 采样阶段统一把 SWDIO 置为上拉输入，这样目标开始驱动 ACK/数据之前，
       // 总线空闲电平始终有明确定义。
+      // Sampling should always leave SWDIO as a pulled-up input so the line has a
+      // defined idle level before the target actively drives ACK/data.
       const ErrorCode EC =
           swdio_.SetConfig({SwdioGpioType::Direction::INPUT, SwdioGpioType::Pull::UP});
       if (EC != ErrorCode::OK)
@@ -653,28 +653,28 @@ class SwdGeneralGPIO final : public Swd
 
  private:
   static constexpr uint32_t DEFAULT_CLOCK_HZ =
-      500'000u;  ///< 默认 SWCLK 频率（Hz）。Default SWCLK frequency (Hz).
+      500'000u;  ///< 默认 SWCLK 频率（Hz） / Default SWCLK frequency (Hz).
   static constexpr uint32_t LINE_RESET_CYCLES =
-      64u;  ///< 线复位时钟周期数。Line reset clock cycles.
-  static constexpr uint32_t BYTE_BITS = 8u;  ///< 每字节比特数。Bits per byte.
-  static constexpr uint32_t ACK_BITS = 3u;   ///< ACK 比特数。ACK bits.
+      64u;  ///< 线复位时钟周期数 / Line reset clock cycles.
+  static constexpr uint32_t BYTE_BITS = 8u;  ///< 每字节比特数 / Bits per byte.
+  static constexpr uint32_t ACK_BITS = 3u;   ///< ACK 比特数 / ACK bits.
 
   static constexpr uint8_t JTAG_TO_SWD_SEQ0 =
-      0x9Eu;  ///< JTAG->SWD 序列字节 0。JTAG-to-SWD sequence byte 0.
+      0x9Eu;  ///< JTAG->SWD 序列字节 0 / JTAG-to-SWD sequence byte 0.
   static constexpr uint8_t JTAG_TO_SWD_SEQ1 =
-      0xE7u;  ///< JTAG->SWD 序列字节 1。JTAG-to-SWD sequence byte 1.
+      0xE7u;  ///< JTAG->SWD 序列字节 1 / JTAG-to-SWD sequence byte 1.
 
-  SwclkGpioType& swclk_;  ///< SWCLK GPIO。GPIO for SWCLK.
-  SwdioGpioType& swdio_;  ///< SWDIO GPIO。GPIO for SWDIO.
+  SwclkGpioType& swclk_;  ///< SWCLK GPIO / GPIO for SWCLK.
+  SwdioGpioType& swdio_;  ///< SWDIO GPIO / GPIO for SWDIO.
 
-  uint32_t clock_hz_ = 0u;  ///< 当前 SWCLK 频率（Hz）。Current SWCLK frequency (Hz).
+  uint32_t clock_hz_ = 0u;  ///< 当前 SWCLK 频率（Hz） / Current SWCLK frequency (Hz).
 
   uint32_t loops_per_us_ = 0u;       // 手调系数：BusyLoop 每微秒大约需要的迭代数
   uint32_t half_period_ns_ = 0u;     // 当前半周期（ns）
   uint32_t half_period_loops_ = 0u;  // 当前半周期对应的 BusyLoop 迭代数
 
   SwdioMode swdio_mode_ =
-      SwdioMode::UNKNOWN;  ///< SWDIO 当前模式缓存。Cached current SWDIO mode.
+      SwdioMode::UNKNOWN;  ///< SWDIO 当前模式缓存 / Cached current SWDIO mode.
 };
 
 }  // namespace LibXR::Debug

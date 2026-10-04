@@ -3,13 +3,13 @@
 
 using namespace LibXR;
 
+// WCH GCC15 对当前已验证可用的 CH32V2/V3 自擦写路径代码形状很敏感。
+// 这里把擦除/写入热循环放到明确的 noinline 边界后面，
+// 但解锁、降频、清标志这些外围时序仍留在原来的调用点。
 // WCH GCC15 is sensitive to the exact self-programming code shape on the
 // currently validated CH32V2/V3 flash paths.
 // Keep the erase/write hot loops behind hard noinline boundaries, but leave the
 // surrounding unlock/clock/flag choreography in the original call sites.
-// WCH GCC15 对当前已验证可用的 CH32V2/V3 自擦写路径代码形状很敏感。
-// 这里把擦除/写入热循环放到明确的 noinline 边界后面，
-// 但解锁、降频、清标志这些外围时序仍留在原来的调用点。
 extern "C" LIBXR_NOINLINE ErrorCode CH32FlashWriteHotPath(uint32_t start_addr,
                                                           uint32_t end_addr,
                                                           const uint8_t* src);
@@ -36,6 +36,43 @@ constexpr size_t ch32_flash_write_page_size = 0x13Cu;
 
 static CH32FlashHotPaths g_ch32_flash_hot_paths;
 static void InitHotPathsOnce();
+
+/** @brief 扇区表的结束地址 / End address of the sector table */
+uint32_t TableEnd(const FlashRegion* regions, size_t region_count)
+{
+  const auto& last = regions[region_count - 1];
+  return last.address + last.sector_size * last.sector_count;
+}
+
+/** @brief 从 address 开始的扇区的字节数 / Size of the sector starting at address */
+uint32_t SectorSizeAt(const FlashRegion* regions, size_t region_count, uint32_t address)
+{
+  for (size_t i = 0; i < region_count; ++i)
+  {
+    const auto& region = regions[i];
+    if (address >= region.address &&
+        address - region.address < region.sector_size * region.sector_count)
+    {
+      REQUIRE((address - region.address) % region.sector_size == 0U);
+      return region.sector_size;
+    }
+  }
+  REQUIRE(false);
+  return 0U;
+}
+
+/** @brief 倒数第二个扇区的地址 / Address of the second-to-last sector */
+uint32_t SecondToLastSector(const FlashRegion* regions, size_t region_count)
+{
+  const auto& last = regions[region_count - 1];
+  if (last.sector_count >= 2U)
+  {
+    return last.address + last.sector_size * (last.sector_count - 2U);
+  }
+  REQUIRE(region_count >= 2U);
+  const auto& previous = regions[region_count - 2];
+  return previous.address + previous.sector_size * (previous.sector_count - 1U);
+}
 }  // namespace
 
 // 访问时钟切半
@@ -119,21 +156,26 @@ class FlashAccessSession
 
 inline void CH32Flash::ClearFlashFlagsOnce() { flash_clear_flags_once(); }
 
-CH32Flash::CH32Flash(const FlashSector* sectors, size_t sector_count, size_t start_sector)
-    : Flash(sectors[start_sector - 1].size, MinWriteSize(),
-            {reinterpret_cast<void*>(sectors[start_sector - 1].address),
-             sectors[sector_count - 1].address - sectors[start_sector - 1].address +
-                 sectors[sector_count - 1].size}),
-      sectors_(sectors),
-      base_address_(sectors[start_sector - 1].address),
-      sector_count_(sector_count)
+CH32Flash::CH32Flash(const FlashRegion* regions, size_t region_count,
+                     uint32_t start_address)
+    : Flash(SectorSizeAt(regions, region_count, start_address), MinWriteSize(),
+            {reinterpret_cast<void*>(start_address),
+             TableEnd(regions, region_count) - start_address}),
+      regions_(regions),
+      base_address_(start_address),
+      region_count_(region_count)
 {
-  // `Flash` 基类看到的是从 `start_sector` 开始的一整段连续逻辑窗口，
-  // `sectors_` 仍保留原始物理扇区表，用于范围检查和地址换算。
-  // The `Flash` base class sees one contiguous logical window starting at
-  // `start_sector`, while `sectors_` still preserves the physical sector table
-  // for bounds checks and address translation.
+  // `Flash` 基类看到的是从 `start_address` 到 Flash 末尾的一整段连续窗口，
+  // `regions_` 仍保留整片 Flash 的扇区表，用于范围检查。
+  // The `Flash` base class sees one contiguous window from `start_address` to the end of
+  // the Flash, while `regions_` still holds the whole Flash's sector table for bounds
+  // checks.
   InitHotPathsOnce();
+}
+
+CH32Flash::CH32Flash(const FlashRegion* regions, size_t region_count)
+    : CH32Flash(regions, region_count, SecondToLastSector(regions, region_count))
+{
 }
 
 ErrorCode CH32Flash::Erase(size_t offset, size_t size)
@@ -227,12 +269,12 @@ extern "C" LIBXR_NOINLINE ErrorCode CH32FlashWriteHotPath(uint32_t start_addr,
     ec = write_page(aligned_begin, aligned_end, src + (aligned_begin - start_addr));
   }
 
-  // Tail begins after the already-consumed head/body segments.
-  // For single-page unaligned writes, `head_end` may already reach `end_addr`,
-  // so the tail must start from `head_end` instead of replaying the same span.
   // 尾段必须从已经消费完的 head/body 之后开始。
   // 对“同页内的非对齐小写入”，`head_end` 可能已经等于 `end_addr`，
   // 这里不能再从 `start_addr` 重放同一段。
+  // Tail begins after the already-consumed head/body segments.
+  // For single-page unaligned writes, `head_end` may already reach `end_addr`,
+  // so the tail must start from `head_end` instead of replaying the same span.
   const uint32_t tail_begin = has_full_pages ? aligned_end : head_end;
   if (ec == ErrorCode::OK && tail_begin < end_addr)
   {
@@ -245,22 +287,21 @@ extern "C" LIBXR_NOINLINE ErrorCode CH32FlashWriteHotPath(uint32_t start_addr,
 bool CH32Flash::IsInRange(uint32_t addr, size_t size) const
 {
   const uint32_t BEGIN = base_address_;
-  const uint32_t LIMIT =
-      sectors_[sector_count_ - 1].address + sectors_[sector_count_ - 1].size;
+  const uint32_t LIMIT = TableEnd(regions_, region_count_);
   const uint32_t END = addr + static_cast<uint32_t>(size);
   return (addr >= BEGIN) && (END <= LIMIT) && (END >= addr);
 }
 
 namespace
 {
+// 已验证的 CH32 flash 热路径机器码 blob 直接常驻 SRAM。
+// 这条 review 线当前的实测覆盖包含 CH32V2/V3 目标。
+// `.S` 仍保留在树里作为可读参考，运行时不再依赖重新汇编再 memcpy。
 // Verified CH32 flash hot-path machine code blob kept directly in SRAM.
 // The current validated coverage includes CH32V2/V3 targets exercised in this
 // review line.
 // `.S` remains in the tree as a readable source/reference for future toolchain
 // refreshes, but runtime no longer depends on reassembling and memcpy-ing it.
-// 已验证的 CH32 flash 热路径机器码 blob 直接常驻 SRAM。
-// 这条 review 线当前的实测覆盖包含 CH32V2/V3 目标。
-// `.S` 仍保留在树里作为可读参考，运行时不再依赖重新汇编再 memcpy。
 // clang-format off
 alignas(routine_align) static uint8_t g_ch32_flash_erase_hot[ch32_flash_erase_hot_path_size] = {
     0x63, 0x79, 0xb5, 0x04, 0x01, 0x76, 0x7d, 0x16, 0xb7, 0x26, 0x02, 0x40, 0x37, 0x08,

@@ -33,8 +33,7 @@ class Writer::Executor
   [[nodiscard]] ErrorCode Run();
 
  private:
-  // Raw sink and generic field-writing helpers.
-  // 原始输出与通用字段写出辅助函数。
+  // 原始输出与通用字段写出辅助函数 / Raw sink and generic field-writing helpers.
   [[nodiscard]] ErrorCode WriteRaw(std::string_view text);
   [[nodiscard]] ErrorCode WritePadding(char fill, size_t count);
   [[nodiscard]] ErrorCode WriteTextField(std::string_view text, const Spec& spec);
@@ -87,45 +86,45 @@ class Writer::Executor
 #endif
 
   /**
-   * @brief 单个原始 uint32_t 十进制字段的快路径。 / Fast path for one raw uint32_t
+   * @brief 单个原始 uint32_t 十进制字段的快路径 / Fast path for one raw uint32_t
    * decimal field.
    */
   [[nodiscard]] ErrorCode WriteU32Dec(uint32_t value);
 
   /**
-   * @brief 单个原始 int32_t 十进制字段的快路径。 / Fast path for one raw int32_t decimal
+   * @brief 单个原始 int32_t 十进制字段的快路径 / Fast path for one raw int32_t decimal
    * field.
    */
   [[nodiscard]] ErrorCode WriteI32Dec(int32_t value);
 
   /**
-   * @brief 单个原始 uint32_t 非十进制字段的快路径。 / Fast path for one raw uint32_t
+   * @brief 单个原始 uint32_t 非十进制字段的快路径 / Fast path for one raw uint32_t
    * non-decimal field.
    */
   template <uint8_t Base, bool UpperCase = false>
   [[nodiscard]] ErrorCode WriteU32Base(uint32_t value);
 
   /**
-   * @brief 单个零填充 uint32_t 十进制字段的快路径。 / Fast path for one zero-padded
+   * @brief 单个零填充 uint32_t 十进制字段的快路径 / Fast path for one zero-padded
    * uint32_t decimal field.
    */
   [[nodiscard]] ErrorCode WriteU32ZeroPadWidth(uint8_t width, uint32_t value);
 
   /**
-   * @brief 单个原始字符串参数的快路径。 / Fast path for one raw string argument.
+   * @brief 单个原始字符串参数的快路径 / Fast path for one raw string argument.
    */
   [[nodiscard]] ErrorCode WriteStringRaw(std::string_view text);
 
   /**
-   * @brief 单个原始字符参数的快路径。 / Fast path for one raw character argument.
+   * @brief 单个原始字符参数的快路径 / Fast path for one raw character argument.
    */
   [[nodiscard]] ErrorCode WriteCharacterRaw(char ch);
 
+  // 这些小桥接函数只负责让 GenericField 分发更易读，同时保持原有的
+  // “读 spec -> 读下一个已打包参数 -> 调具体 writer” 执行顺序不变。
   // Small bridges that keep GenericField dispatch readable while preserving the
   // existing "read spec -> read next packed argument -> call concrete writer"
   // execution order.
-  // 这些小桥接函数只负责让 GenericField 分发更易读，同时保持原有的
-  // “读 spec -> 读下一个已打包参数 -> 调具体 writer” 执行顺序不变。
   template <std::signed_integral Int>
   [[nodiscard]] ErrorCode DispatchSignedField();
 

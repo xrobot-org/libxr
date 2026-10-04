@@ -13,7 +13,7 @@ namespace LibXR
 
 /**
  * @brief 可转换为精确回调函数指针的可调用对象
- * @brief Callable convertible to the exact callback function pointer
+ *        Callable convertible to the exact callback function pointer
  */
 template <typename CallableType, typename BoundArgType, typename... CallbackArgs>
 concept CallbackFunctionCompatible = requires(CallableType callable) {

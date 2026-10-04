@@ -90,10 +90,10 @@ static size_t calc_utf16le_len_runtime(const char* input)
   return len;
 }
 
-// Convert a UTF-8 interface string into UTF-16LE for USB string descriptors.
-// Unsupported code points are skipped in the same conservative way as before.
 // 把 UTF-8 接口字符串转换成 USB 字符串描述符使用的 UTF-16LE；
 // 不支持的码点保持原先的保守跳过策略。
+// Convert a UTF-8 interface string into UTF-16LE for USB string descriptors.
+// Unsupported code points are skipped in the same conservative way as before.
 static void to_utf16le(const char* str, uint8_t* buffer)
 {
   size_t len = 0;
@@ -190,8 +190,8 @@ static InterfaceStringLayout calc_interface_string_layout(DeviceClass* const* cl
   return layout;
 }
 
-// A configuration is treated as composite if it exposes multiple items or any IAD.
 // 一个 configuration 只要有多个 item，或包含任意 IAD，就按复合设备处理。
+// A configuration is treated as composite if it exposes multiple items or any IAD.
 static bool config_contains_iad(const std::initializer_list<ConfigDescriptorItem*>& group)
 {
   for (auto* item : group)
@@ -606,8 +606,8 @@ void DeviceComposition::BindEndpoints(bool in_isr)
 
   const auto& config = CurrentConfigItems();
 
-  // start_itf tracks the configuration-global interface number assigned to each class.
   // start_itf 记录 configuration 级别的全局接口号分配游标。
+  // start_itf tracks the configuration-global interface number assigned to each class.
   size_t start_itf = 0;
   for (size_t i = 0; i < config.item_num; ++i)
   {

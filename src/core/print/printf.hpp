@@ -63,15 +63,15 @@ class Printf
    */
   enum class Length : uint8_t
   {
-    Default,     ///< no length modifier / 无长度修饰符
-    Char,        ///< hh / char 长度修饰
-    Short,       ///< h / short 长度修饰
-    Long,        ///< l / long 长度修饰
-    LongLong,    ///< ll / long long 长度修饰
-    IntMax,      ///< j / intmax_t 长度修饰
-    Size,        ///< z / size_t 长度修饰
-    PtrDiff,     ///< t / ptrdiff_t 长度修饰
-    LongDouble,  ///< L / long double 长度修饰
+    Default,     ///< 无长度修饰符 / no length modifier
+    Char,        ///< char 长度修饰 / hh
+    Short,       ///< short 长度修饰 / h
+    Long,        ///< long 长度修饰 / l
+    LongLong,    ///< long long 长度修饰 / ll
+    IntMax,      ///< intmax_t 长度修饰 / j
+    Size,        ///< size_t 长度修饰 / z
+    PtrDiff,     ///< ptrdiff_t 长度修饰 / t
+    LongDouble,  ///< long double 长度修饰 / L
   };
 
   /**
@@ -80,31 +80,32 @@ class Printf
    */
   enum class Error : uint8_t
   {
-    None,            ///< success / 成功
-    NumberOverflow,  ///< width / precision literal does not fit in its field /
-                     ///< 宽度或精度字面量超出字段范围
-    FloatPrecisionLimitExceeded,  ///< float precision exceeds the configured frontend
-                                  ///< limit / 浮点精度超出当前配置的前端上限
-    UnexpectedEnd,  ///< format string ended in the middle of one conversion /
-                    ///< 格式串在转换项中途结束
-    EmbeddedNul,    ///< format literal contains an embedded NUL byte /
-                    ///< 格式串字面量内部包含嵌入式 NUL 字节
-    MixedIndexing,  ///< positional and sequential arguments were mixed /
-                    ///< 混用了位置参数与顺序参数
-    PositionalArgumentDisabled,  ///< positional n$ indexing is disabled by configuration
-                                 ///< / 位置参数 n$ 索引已被配置关闭
-    DynamicField,          ///< * width / precision is not supported / 不支持 * 宽度或精度
-    InvalidArgumentIndex,  ///< positional argument index is invalid / 位置参数索引非法
-    InvalidSpecifier,      ///< unsupported or disabled conversion specifier /
-                           ///< 转换说明符无效或被禁用
-    InvalidLength,         ///< length modifier is incompatible with the conversion /
-                           ///< 长度修饰符与转换说明不兼容
-    ConflictingArgument,   ///< one positional argument was reused with incompatible rules
-                           ///< / 同一位置参数被不兼容的规则重复使用
-    TextOffsetOverflow,    ///< referenced text offset no longer fits in uint16_t /
-                           ///< 文本池偏移超出 uint16_t
-    TextSizeOverflow,  ///< referenced text size no longer fits in uint16_t / 文本长度超出
-                       ///< uint16_t
+    None,                         ///< 成功 / success
+    NumberOverflow,               ///< 宽度或精度字面量超出字段范围
+                                  ///< width / precision literal does not fit in its field
+    FloatPrecisionLimitExceeded,  ///< 浮点精度超出当前配置的前端上限
+                                  ///< float precision exceeds the configured frontend
+                                  ///< limit
+    UnexpectedEnd,                ///< 格式串在转换项中途结束
+                                  ///< format string ended in the middle of one conversion
+    EmbeddedNul,                  ///< 格式串字面量内部包含嵌入式 NUL 字节
+                                  ///< format literal contains an embedded NUL byte
+    MixedIndexing,                ///< 混用了位置参数与顺序参数
+                                  ///< positional and sequential arguments were mixed
+    PositionalArgumentDisabled,   ///< 位置参数 n$ 索引已被配置关闭
+                                  ///< positional n$ indexing is disabled by configuration
+    DynamicField,          ///< 不支持 * 宽度或精度 / * width / precision is not supported
+    InvalidArgumentIndex,  ///< 位置参数索引非法 / positional argument index is invalid
+    InvalidSpecifier,      ///< 转换说明符无效或被禁用
+                           ///< unsupported or disabled conversion specifier
+    InvalidLength,         ///< 长度修饰符与转换说明不兼容
+                           ///< length modifier is incompatible with the conversion
+    ConflictingArgument,   ///< 同一位置参数被不兼容的规则重复使用
+                           ///< one positional argument was reused with incompatible rules
+    TextOffsetOverflow,    ///< 文本池偏移超出 uint16_t
+                           ///< referenced text offset no longer fits in uint16_t
+    TextSizeOverflow,      ///< 文本长度超出 uint16_t
+                           ///< referenced text size no longer fits in uint16_t
   };
 
   template <Text Source>
@@ -189,30 +190,30 @@ struct Printf::Compiled
 
  public:
   /**
-   * @brief 返回运行期 writer 最终会执行的字节流。 / Returns the final byte stream that
+   * @brief 返回运行期 writer 最终会执行的字节流 / Returns the final byte stream that
    * the runtime writer will execute.
    */
   inline static constexpr auto codes = result.codes;
   /**
-   * @brief 返回当前格式需要哪些 writer 分支的编译期摘要。 / Returns the compile-time
+   * @brief 返回当前格式需要哪些 writer 分支的编译期摘要 / Returns the compile-time
    * summary of which writer branches this format needs.
    */
   inline static constexpr FormatProfile profile = result.profile;
 
   /**
-   * @brief 返回运行期参数打包时要按字段顺序读取的参数列表。 / Returns the field-ordered
+   * @brief 返回运行期参数打包时要按字段顺序读取的参数列表 / Returns the field-ordered
    * argument list the runtime packer will follow.
    */
   [[nodiscard]] static constexpr auto ArgumentList() { return result.arg_info; }
 
   /**
-   * @brief 返回每个字段对应的是第几个源参数。 / Returns, for each field, which source
+   * @brief 返回每个字段对应的是第几个源参数 / Returns, for each field, which source
    * argument index it refers to.
    */
   [[nodiscard]] static constexpr auto ArgumentOrder() { return source_analysis.order; }
 
   /**
-   * @brief 返回仅供编译期类型匹配使用的源参数列表。 / Returns the source-argument list
+   * @brief 返回仅供编译期类型匹配使用的源参数列表 / Returns the source-argument list
    * used only for compile-time type matching.
    */
   [[nodiscard]] static constexpr auto SourceArgumentList()
@@ -221,23 +222,23 @@ struct Printf::Compiled
   }
 
   /**
-   * @brief 返回与 `codes` 相同的最终字节流。 / Returns the same final byte stream as
+   * @brief 返回与 `codes` 相同的最终字节流 / Returns the same final byte stream as
    * `codes`.
    */
   [[nodiscard]] static constexpr const auto& Codes() { return codes; }
 
   /**
-   * @brief 返回当前编译格式携带的 writer 分支摘要。 / Returns the writer-branch summary
+   * @brief 返回当前编译格式携带的 writer 分支摘要 / Returns the writer-branch summary
    * carried by this compiled format.
    */
   [[nodiscard]] static constexpr FormatProfile Profile() { return profile; }
 
   /**
-   * @brief 判断 `Args...` 是否就是当前编译格式期望的那组 C++ 参数类型。 / Returns whether
+   * @brief 判断 `Args...` 是否就是当前编译格式期望的那组 C++ 参数类型 / Returns whether
    * `Args...` are exactly the C++ argument types this compiled format expects.
-   * @tparam Args C++ argument types to compare. / 待比较的 C++ 实参类型列表。
-   * @return Returns `true` when the type list matches exactly, otherwise
-   *         `false`. / 完全匹配返回 `true`，否则返回 `false`。
+   * @tparam Args 待比较的 C++ 实参类型列表 / C++ argument types to compare.
+   * @return 完全匹配返回 `true`，否则返回 `false`。
+   *         Returns `true` when the type list matches exactly, otherwise `false`.
    */
   template <typename... Args>
   [[nodiscard]] static consteval bool Matches()

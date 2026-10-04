@@ -13,7 +13,7 @@
  * @brief  解析输入数据流，将其转换为字符并处理
  *         Parses the input data stream, converting it into characters and processing
  * them
- * @param  raw_data 输入的原始数据 Input raw data
+ * @param  raw_data 输入的原始数据 / Input raw data
  */
 void Parse(RawData& raw_data)
 {
@@ -27,7 +27,7 @@ void Parse(RawData& raw_data)
 /**
  * @brief  处理 ANSI 序列中的后续字符
  *         Handles the follow-up characters of an ANSI sequence
- * @param  data 输入字符 The input character
+ * @param  data 输入字符 / The input character
  *
  * @note 当前实现只识别箭头键对应的尾字符；其它 ANSI 序列会被静默忽略。
  *       The current implementation recognizes only the tail characters used
@@ -100,7 +100,7 @@ void HandleAnsiCharacter(char data)
 /**
  * @brief  处理控制字符，包括换行、删除、制表符等
  *         Handles control characters such as newline, delete, and tab
- * @param  data 输入的控制字符 The input control character
+ * @param  data 输入的控制字符 / The input control character
  *
  * @note 这里还负责去掉一对 `\r\n` / `\n\r` 双换行中的重复第二字节，避免一次回车被
  *       当成两次命令提交。
@@ -132,6 +132,11 @@ void HandleControlCharacter(char data)
         CopyHistoryToInputLine();
       }
       LineFeed();
+      if (line_truncated_)
+      {
+        ShowTruncatedLineNotice();
+        line_truncated_ = false;
+      }
       if (input_line_.Size() > 0)
       {
         ExecuteCommand();
@@ -160,7 +165,7 @@ void HandleControlCharacter(char data)
 /**
  * @brief  处理输入字符，根据类型调用相应的处理函数
  *         Handles input characters, dispatching them to the appropriate handler
- * @param  data 输入的字符 The input character
+ * @param  data 输入的字符 / The input character
  */
 void HandleCharacter(char data)
 {

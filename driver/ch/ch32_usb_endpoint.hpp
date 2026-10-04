@@ -8,7 +8,7 @@
 namespace LibXR
 {
 
-#if defined(USBFSD)
+#if defined(USBFSD) || defined(__DOXYGEN__)
 
 /**
  * @brief CH32 OTG FS 端点实现 / CH32 OTG FS endpoint implementation
@@ -40,9 +40,9 @@ class CH32EndpointOtgFs : public USB::Endpoint
   static inline CH32EndpointOtgFs* map_otg_fs_[EP_OTG_FS_MAX_SIZE][2] = {};
 };
 
-#endif  // defined(USBFSD)
+#endif  // defined(USBFSD) || defined(__DOXYGEN__)
 
-#if defined(RCC_APB1Periph_USB)
+#if defined(RCC_APB1Periph_USB) || defined(__DOXYGEN__)
 
 /**
  * @brief CH32 FSDEV 端点实现 / CH32 FSDEV endpoint implementation
@@ -83,9 +83,9 @@ class CH32EndpointDevFs : public USB::Endpoint
   static inline CH32EndpointDevFs* map_dev_fs_[EP_DEV_FS_MAX_SIZE][2] = {};
 };
 
-#endif  // defined(RCC_APB1Periph_USB)
+#endif  // defined(RCC_APB1Periph_USB) || defined(__DOXYGEN__)
 
-#if defined(USBHSD)
+#if defined(USBHSD) || defined(__DOXYGEN__)
 
 /**
  * @brief CH32 OTG HS 端点实现 / CH32 OTG HS endpoint implementation
@@ -118,6 +118,6 @@ class CH32EndpointOtgHs : public USB::Endpoint
   static inline CH32EndpointOtgHs* map_otg_hs_[EP_OTG_HS_MAX_SIZE][2] = {};
 };
 
-#endif  // defined(USBHSD)
+#endif  // defined(USBHSD) || defined(__DOXYGEN__)
 
 }  // namespace LibXR

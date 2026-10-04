@@ -253,11 +253,11 @@ static void drain_usbdev_fs_pending_irqs()
       LibXR::CH32EndpointDevFs::ClearEpCtrTx(EP_ID);
     }
 
+    // 这里只清掉当前已经锁存的 pending 位；如果主机随后又产生了新事件，
+    // 硬件会重新拉起 IRQ，下一次进入 handler 时再处理。
     // We only drain the bits that are latched right now. If the host produces a
     // new event after that point, hardware will assert the IRQ again and the next
     // handler entry will observe it.
-    // 这里只清掉当前已经锁存的 pending 位；如果主机随后又产生了新事件，
-    // 硬件会重新拉起 IRQ，下一次进入 handler 时再处理。
   }
 }
 
@@ -538,14 +538,6 @@ void CH32USBDeviceFS::Start(bool)
   EXTEN->EXTEN_CTR &= ~EXTEN_USBD_LS;
 #endif
 
-  NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
-  NVIC_EnableIRQ(USB_HP_CAN1_TX_IRQn);
-  NVIC_EnableIRQ(USBWakeUp_IRQn);
-
-#if defined(EXTEN_USBD_PU_EN)
-  EXTEN->EXTEN_CTR |= EXTEN_USBD_PU_EN;
-#endif
-
   *usbdev_daddr() = USB_DADDR_EF;
 
   CH32EndpointDevFs::SetEpTxStatus(0, USB_EP_TX_NAK);
@@ -575,10 +567,22 @@ void CH32USBDeviceFS::Start(bool)
   self_ = this;
   LibXR::CH32UsbCanShared::usb_inited.store(true, std::memory_order_release);
   LibXR::CH32UsbCanShared::register_usb_irq(&usb_irq_thunk);
+
+  // 回调与端点就绪后再放行中断和连接主机。
+  // Publish the handler and arm endpoints before enabling IRQs or the pull-up.
+  NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
+  NVIC_EnableIRQ(USB_HP_CAN1_TX_IRQn);
+  NVIC_EnableIRQ(USBWakeUp_IRQn);
+#if defined(EXTEN_USBD_PU_EN)
+  EXTEN->EXTEN_CTR |= EXTEN_USBD_PU_EN;
+#endif
 }
 
 void CH32USBDeviceFS::Stop(bool)
 {
+  // 先屏蔽 USB 中断源，再解除回调；共享 CAN 中断线可能仍然开启。
+  // Mask USB interrupt sources before unregistering from live shared CAN IRQs.
+  *usbdev_cntr() = USB_CNTR_FRES;
   LibXR::CH32UsbCanShared::register_usb_irq(nullptr);
   LibXR::CH32UsbCanShared::usb_inited.store(false, std::memory_order_release);
   self_ = nullptr;
@@ -593,8 +597,6 @@ void CH32USBDeviceFS::Stop(bool)
     NVIC_DisableIRQ(USB_HP_CAN1_TX_IRQn);
   }
   NVIC_DisableIRQ(USBWakeUp_IRQn);
-
-  *usbdev_cntr() = USB_CNTR_FRES;
 }
 
 #endif  // defined(RCC_APB1Periph_USB)

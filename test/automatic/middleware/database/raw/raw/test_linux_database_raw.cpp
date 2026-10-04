@@ -2,10 +2,13 @@
  * @file test_linux_database_raw.cpp
  * @brief DatabaseRaw 存储与恢复测试 / DatabaseRaw storage and recovery tests.
  *
- * 借助文件模拟 Flash，检查多键更新、重新打开、大小不匹配、损坏恢复和致命 I/O 失败。
+ * 借助文件模拟 Flash，检查多键更新、重新打开、大小不匹配、损坏恢复和致命 I/O 失败，
+ * 以及在每一次 Flash 操作处掉电之后的值。
  * Use file-backed Flash to check key updates, reopening, size mismatches, recovery and
- * fatal I/O failures.
+ * fatal I/O failures, and the values after a power cut at every Flash operation.
  */
+
+#include <memory>
 
 #include "middleware/database/linux_database_test_common.hpp"
 #include "test_assert.hpp"
@@ -219,19 +222,20 @@ namespace
 
 using namespace LinuxDatabaseTestCommon;
 
-void TestDatabaseRawInvalidMainKeyMetadataReinitializes()
+void TestDatabaseRawUncommittedKeyIsDropped()
 {
-  // 损坏主区键元数据后重新打开，检查数据库重新初始化而不是使用损坏的键。
-  // Reopen after corrupting main key metadata; check reinitialization instead of using
-  // the corrupt key.
+  // 把首个键改回未提交状态后重新打开：只丢弃这个键，后面的键保持原值。
+  // Reopen after turning the first key back into an uncommitted one: only that key is
+  // dropped, and the key after it keeps its value.
   const char* path = "/tmp/flash_test_raw_invalid_main_key_metadata.bin";
-  CreateSeedDatabase(path);
+  CreateTwoKeyDatabase(path);
 
   auto bytes = ReadAllBytes(path);
   MarkMainFirstKeyAsUninitialized(bytes);
   WriteAllBytes(path, bytes);
 
-  TEST_ASSERT(ReopenDatabaseValue(path, 77) == 77);
+  TEST_ASSERT(ReopenDatabaseValue(path, 77, "key1") == 77);
+  TEST_ASSERT(ReopenDatabaseValue(path, 88, "key2") == 2222);
   auto repaired = ReadAllBytes(path);
   TEST_ASSERT(ReadLe32(repaired, 0) == XR_DB_FLASH_HEADER);
   TEST_ASSERT(ReadLe32(repaired, XR_DB_CHECKSUM_OFFSET) == XR_DB_CHECKSUM);
@@ -252,7 +256,7 @@ void TestDatabaseRawInvalidBackupMetadataDoesNotRestore()
   WriteAllBytes(path, bytes);
 
   TEST_ASSERT(ReopenDatabaseValue(path, 55) == 55);
-  AssertMainValidBackupInvalid(path);
+  AssertMainValidBackupNotRecoverable(path);
 }
 
 void TestDatabaseRawRestoresFromValidBackup()
@@ -269,7 +273,54 @@ void TestDatabaseRawRestoresFromValidBackup()
   WriteAllBytes(path, bytes);
 
   TEST_ASSERT(ReopenDatabaseValue(path, 55) == 1234);
-  AssertMainValidBackupInvalid(path);
+  AssertMainValidBackupNotRecoverable(path);
+}
+
+void TestDatabaseRawKeepsValidMainOverCutBackupCopy()
+{
+  // 备份块是旧版本回收中途留下的拷贝，链表恰好完整：主块有效时保留主块。
+  // The backup is a copy cut in the middle of an older-version recycle whose chain
+  // happens to be complete: a valid main block is kept.
+  const char* path = "/tmp/flash_test_raw_cut_backup_copy.bin";
+  CreateTwoKeyDatabase(path);
+
+  auto bytes = ReadAllBytes(path);
+  CraftCutCopyOfSecondKey(bytes);
+  WriteAllBytes(path, bytes);
+
+  TEST_ASSERT(ReopenDatabaseValue(path, 77, "key1") == 1111);
+  TEST_ASSERT(ReopenDatabaseValue(path, 88, "key2") == 2222);
+  AssertMainValidBackupNotRecoverable(path);
+}
+
+void TestDatabaseRawFullBlockSetReturnsFull()
+{
+  // 一个键占满主块时，整理也腾不出空间：更新返回 FULL，原值不变。
+  // When one key fills the main block, compacting frees nothing: the update returns
+  // FULL and the stored value stays.
+  struct Big
+  {
+    uint8_t bytes[XR_DB_CHECKSUM_OFFSET - XR_DB_RAW_FIRST_KEY_OFFSET -
+                  XR_DB_RAW_KEYINFO_ALIGNED_SIZE - XR_DB_MIN_WRITE_SIZE];
+  };
+  const char* path = "/tmp/flash_test_raw_full_block.bin";
+  Big first{};
+  std::memset(first.bytes, 0x11, sizeof(first.bytes));
+  Big second{};
+  std::memset(second.bytes, 0x22, sizeof(second.bytes));
+  {
+    LinuxBinaryFileFlash<XR_DB_FLASH_SIZE> flash(path, XR_DB_MIN_ERASE_SIZE,
+                                                 XR_DB_MIN_WRITE_SIZE, false, true);
+    DatabaseRaw<16> db(flash, 5);
+    db.Restore();
+    DatabaseRaw<16>::Key<Big> key(db, "big", first);
+    TEST_ASSERT(key.Set(second) == ErrorCode::FULL);
+  }
+  LinuxBinaryFileFlash<XR_DB_FLASH_SIZE> flash(path, XR_DB_MIN_ERASE_SIZE,
+                                               XR_DB_MIN_WRITE_SIZE, false, true);
+  DatabaseRaw<16> db(flash, 5);
+  DatabaseRaw<16>::Key<Big> key(db, "big", second);
+  TEST_ASSERT(std::memcmp(key.data_.bytes, first.bytes, sizeof(first.bytes)) == 0);
 }
 
 void TestDatabaseRawCorruptFirstKeySizeInMultiKeyDatabaseReinitializes()
@@ -295,10 +346,59 @@ void TestDatabaseRawCorruptFirstKeySizeInMultiKeyDatabaseReinitializes()
 
 void RunLinuxDatabaseRawRecoveryTests()
 {
-  TestDatabaseRawInvalidMainKeyMetadataReinitializes();
+  TestDatabaseRawUncommittedKeyIsDropped();
   TestDatabaseRawInvalidBackupMetadataDoesNotRestore();
   TestDatabaseRawRestoresFromValidBackup();
+  TestDatabaseRawKeepsValidMainOverCutBackupCopy();
+  TestDatabaseRawFullBlockSetReturnsFull();
   TestDatabaseRawCorruptFirstKeySizeInMultiKeyDatabaseReinitializes();
+}
+
+namespace
+{
+
+using namespace LinuxDatabaseTestCommon;
+
+void TestDatabaseRawPowerCutDoubleWord()
+{
+  // 8 字节写入单元（G4 等带 ECC 的双字编程）：每次 Flash 操作处掉电（包括编程和擦除
+  // 被打断在中间，擦除时 1/16 或 1/512 的位回到 1），键保持旧值或新值。
+  // 8-byte write unit (double-word programming with ECC, as on G4): a power cut at any
+  // Flash operation, including a program or erase cut part-way (with 1/16 or 1/512 of
+  // the bits back to 1), leaves each key at its old or new value.
+  RunPowerCutCases([](Flash& flash)
+                   { return std::make_unique<DatabaseRaw<8>>(flash, 3); },
+                   XR_DB_MIN_ERASE_SIZE, 8, 4 + (3 * 24), 4);
+  RunPowerCutCases([](Flash& flash)
+                   { return std::make_unique<DatabaseRaw<8>>(flash, 3); },
+                   XR_DB_MIN_ERASE_SIZE, 8, 4 + (3 * 24), 9);
+}
+
+void TestDatabaseRawPowerCutFullBlock()
+{
+  // 阈值很大时只有块写满才回收：覆盖新增、更新在空间不足时触发的回收。
+  // With a large threshold a recycle happens only when the block is full: this covers
+  // the recycles triggered by an add or update that does not fit.
+  RunPowerCutCases([](Flash& flash)
+                   { return std::make_unique<DatabaseRaw<8>>(flash, 1000); },
+                   XR_DB_MIN_ERASE_SIZE, 8, 4 + (3 * 30), 4);
+}
+
+void TestDatabaseRawPowerCutByte()
+{
+  // 1 字节写入单元（F4 等按字节编程）。 / 1-byte write unit (byte programming, as on F4).
+  RunPowerCutCases([](Flash& flash)
+                   { return std::make_unique<DatabaseRaw<1>>(flash, 3); },
+                   XR_DB_MIN_ERASE_SIZE, 1, 4 + (3 * 10), 9);
+}
+
+}  // namespace
+
+void RunLinuxDatabaseRawPowerCutTests()
+{
+  TestDatabaseRawPowerCutDoubleWord();
+  TestDatabaseRawPowerCutFullBlock();
+  TestDatabaseRawPowerCutByte();
 }
 
 void test_linux_database_raw()
@@ -306,4 +406,5 @@ void test_linux_database_raw()
   RunLinuxDatabaseRawSmokeTests();
   RunLinuxDatabaseRawFailureTests();
   RunLinuxDatabaseRawRecoveryTests();
+  RunLinuxDatabaseRawPowerCutTests();
 }

@@ -21,8 +21,8 @@ namespace Detail
 {
 
 /**
- * @brief Type-list tag used only for exact argument-list comparison.
  * @brief 仅用于精确比较参数类型列表的标签类型。
+ *        Type-list tag used only for exact argument-list comparison.
  */
 template <typename... Values>
 struct RuntimeStringTypeList
@@ -30,8 +30,8 @@ struct RuntimeStringTypeList
 };
 
 /**
- * @brief Normalizes enum arguments to their underlying type for capacity probes.
  * @brief 为容量探测把枚举参数归一化到底层整数类型。
+ *        Normalizes enum arguments to their underlying type for capacity probes.
  */
 template <typename T, bool IsEnum = std::is_enum_v<T>>
 struct RuntimeStringNormalized
@@ -47,7 +47,7 @@ struct RuntimeStringNormalized<T, true>
 
 /**
  * @brief 只在不可达模板分支中触发 `static_assert` 的延迟 false 值。
- * @brief Dependent false value used by `static_assert` in unreachable template
+ *        Dependent false value used by `static_assert` in unreachable template
  *        branches.
  */
 template <typename T>
@@ -60,7 +60,7 @@ inline constexpr size_t runtime_string_max_field_width =
 
 /**
  * @brief 保守估计一个格式化字段可能产生的最大长度。
- * @brief Conservatively bound one formatted field's maximum output length.
+ *        Conservatively bound one formatted field's maximum output length.
  *
  * 这里不读取格式参数值，也不重新实现完整 writer。编译后的 `ArgumentList()`
  * 已经把每个输出字段归一化为存储类别；再叠加协议中的 8-bit width /
@@ -133,8 +133,8 @@ template <typename Built>
 }
 
 /**
- * @brief Compile-time traits for formatted retained-string arguments.
  * @brief 格式化保留字符串参数的编译期类型特征。
+ *        Compile-time traits for formatted retained-string arguments.
  *
  * The formatted variant must allocate before seeing future values, so only
  * bounded value-like argument types are accepted. Text-like runtime arguments
@@ -165,10 +165,10 @@ struct RuntimeStringArgumentTraits
 };
 
 /**
- * @brief Checks that a rewrite call uses exactly the argument types bound in
- *        `RuntimeStringView<Source, Args...>`.
  * @brief 检查刷新调用是否精确使用 `RuntimeStringView<Source, Args...>`
  *        绑定的参数类型。
+ *        Checks that a rewrite call uses exactly the argument types bound in
+ *        `RuntimeStringView<Source, Args...>`.
  */
 template <typename... Args>
 struct RuntimeStringArgumentTypes
@@ -180,12 +180,12 @@ struct RuntimeStringArgumentTypes
 };
 
 /**
- * @brief Normalized text part used by the copy/concatenation path.
  * @brief 拷贝/拼接路径使用的归一化文本片段。
+ *        Normalized text part used by the copy/concatenation path.
  */
 struct RuntimeStringTextPart
 {
-  std::string_view view;
+  std::string_view view = {};
   ErrorCode status = ErrorCode::OK;
 };
 
@@ -204,8 +204,8 @@ inline constexpr bool runtime_string_is_view_v =
     RuntimeStringViewTag<std::remove_cvref_t<T>>::value;
 
 /**
- * @brief Sink used by the second formatting pass to fill retained storage.
  * @brief 格式化第二遍使用的保留存储写入端。
+ *        Sink used by the second formatting pass to fill retained storage.
  */
 struct RuntimeStringBufferSink
 {
@@ -233,7 +233,7 @@ struct RuntimeStringBufferSink
 /**
  * @class RuntimeStringView
  * @brief 运行期构造、长期保留的 NUL 结尾字符串视图。
- * @brief Runtime-built retained NUL-terminated string view.
+ *        Runtime-built retained NUL-terminated string view.
  *
  * 文本构造用于模块名、topic 名、后缀拼接等只构造一次的名字。
  * 格式化构造绑定字面量和参数类型，第一次 `Reformat()` / `Reprintf()`
@@ -259,14 +259,13 @@ class RuntimeStringView
                 "LibXR::RuntimeStringView formatted arguments cannot contain "
                 "runtime strings; use RuntimeStringView<> for text concatenation");
 
-  /// Constructs an empty valid view. / 构造一个空的有效视图。
+  /// 构造一个空的有效视图 / Constructs an empty valid view.
   constexpr RuntimeStringView() = default;
 
   RuntimeStringView(const RuntimeStringView&) = delete;
   RuntimeStringView& operator=(const RuntimeStringView&) = delete;
 
-  /// Move-constructs by taking the retained storage handle. /
-  /// 移动构造并接管保留存储句柄。
+  /// 移动构造并接管保留存储句柄 / Move-constructs by taking the retained storage handle.
   RuntimeStringView(RuntimeStringView&& other) noexcept
       : data_(other.data_),
         size_(other.size_),
@@ -281,15 +280,14 @@ class RuntimeStringView
 
   RuntimeStringView& operator=(RuntimeStringView&&) = delete;
 
-  /// Copies text into retained storage. / 拷贝文本到保留存储。
+  /// 拷贝文本到保留存储 / Copies text into retained storage.
   explicit RuntimeStringView(std::string_view text)
     requires(Source.Size() == 0 && sizeof...(Args) == 0)
   {
     static_cast<void>(AssignCopy(text));
   }
 
-  /// Copies one bounded mutable char array as text. /
-  /// 按文本语义拷贝一个有界可变字符数组。
+  /// 按文本语义拷贝一个有界可变字符数组 / Copies one bounded mutable char array as text.
   template <size_t N>
   explicit RuntimeStringView(char (&text)[N])
     requires(Source.Size() == 0 && sizeof...(Args) == 0)
@@ -297,7 +295,7 @@ class RuntimeStringView
     static_cast<void>(AssignCopy(std::string_view(text, BoundedTextLength(text, N))));
   }
 
-  /// Copies one bounded const char array as text. / 按文本语义拷贝一个有界只读字符数组。
+  /// 按文本语义拷贝一个有界只读字符数组 / Copies one bounded const char array as text.
   template <size_t N>
   explicit RuntimeStringView(const char (&text)[N])
     requires(Source.Size() == 0 && sizeof...(Args) == 0)
@@ -305,8 +303,8 @@ class RuntimeStringView
     static_cast<void>(AssignCopy(std::string_view(text, BoundedTextLength(text, N))));
   }
 
-  /// Copies a NUL-terminated C-string pointer into retained storage. / 拷贝 NUL 结尾 C
-  /// 字符串指针到保留存储。
+  /// 拷贝 NUL 结尾 C 字符串指针到保留存储。
+  /// Copies a NUL-terminated C-string pointer into retained storage.
   template <typename CharPtr>
     requires(Source.Size() == 0 && sizeof...(Args) == 0 &&
              (std::is_same_v<CharPtr, char*> || std::is_same_v<CharPtr, const char*>))
@@ -315,15 +313,15 @@ class RuntimeStringView
     static_cast<void>(AssignCopy(text));
   }
 
-  /// Preserves the old bare-nullptr entry for runtime null checks. / 保留裸 nullptr
-  /// 入口以维持运行期空指针检查语义。
+  /// 保留裸 nullptr 入口以维持运行期空指针检查语义。
+  /// Preserves the old bare-nullptr entry for runtime null checks.
   explicit RuntimeStringView(std::nullptr_t text)
     requires(Source.Size() == 0 && sizeof...(Args) == 0)
   {
     static_cast<void>(AssignCopy(static_cast<const char*>(text)));
   }
 
-  /// Concatenates text parts into retained storage. / 拼接多个文本片段到保留存储。
+  /// 拼接多个文本片段到保留存储 / Concatenates text parts into retained storage.
   template <typename First, typename Second, typename... Rest>
   explicit RuntimeStringView(First&& first, Second&& second, Rest&&... rest)
     requires(Source.Size() == 0 && sizeof...(Args) == 0)
@@ -335,7 +333,7 @@ class RuntimeStringView
 
   /**
    * @brief 使用绑定的 brace-style 格式重写当前内容。
-   * @brief Rewrite current content with the bound brace-style format.
+   *        Rewrite current content with the bound brace-style format.
    */
   template <typename... CallArgs>
   [[nodiscard]] ErrorCode Reformat(CallArgs&&... args)
@@ -359,7 +357,7 @@ class RuntimeStringView
 
   /**
    * @brief 使用绑定的 printf-style 格式重写当前内容。
-   * @brief Rewrite current content with the bound printf-style format.
+   *        Rewrite current content with the bound printf-style format.
    */
   template <typename... CallArgs>
   [[nodiscard]] ErrorCode Reprintf(CallArgs&&... args)
@@ -381,29 +379,29 @@ class RuntimeStringView
         { return Print::PrintfTo<Source>(sink, std::forward<CallArgs>(args)...); });
   }
 
-  /// Returns the current read-only view. / 返回当前只读视图。
+  /// 返回当前只读视图 / Returns the current read-only view.
   [[nodiscard]] constexpr std::string_view View() const
   {
     return data_ == nullptr ? std::string_view{} : std::string_view(data_, size_);
   }
 
-  /// Returns a NUL-terminated C string. / 返回 NUL 结尾 C 字符串。
+  /// 返回 NUL 结尾 C 字符串 / Returns a NUL-terminated C string.
   [[nodiscard]] const char* CStr() const { return data_ == nullptr ? "" : data_; }
-  /// Returns the text size excluding the trailing NUL. / 返回不含结尾 NUL 的文本长度。
+  /// 返回不含结尾 NUL 的文本长度 / Returns the text size excluding the trailing NUL.
   [[nodiscard]] constexpr size_t Size() const { return size_; }
-  /// Returns whether the current visible text is empty. / 返回当前可见文本是否为空。
+  /// 返回当前可见文本是否为空 / Returns whether the current visible text is empty.
   [[nodiscard]] constexpr bool Empty() const { return size_ == 0; }
-  /// Returns the latest operation status. / 返回最近一次操作状态。
+  /// 返回最近一次操作状态 / Returns the latest operation status.
   [[nodiscard]] constexpr ErrorCode Status() const { return status_; }
-  /// Converts to a read-only string view. / 转换为只读字符串视图。
+  /// 转换为只读字符串视图 / Converts to a read-only string view.
   [[nodiscard]] constexpr operator std::string_view() const { return View(); }
-  /// Converts to a NUL-terminated C string. / 转换为 NUL 结尾 C 字符串。
+  /// 转换为 NUL 结尾 C 字符串 / Converts to a NUL-terminated C string.
   [[nodiscard]] operator const char*() const { return CStr(); }
 
  private:
   /**
    * @brief 记录最近一次失败，并在已有存储上保留一个有效的空 C 字符串。
-   * @brief Record the latest failure and keep a valid empty C string when
+   *        Record the latest failure and keep a valid empty C string when
    *        storage already exists.
    */
   [[nodiscard]] ErrorCode SetFailure(ErrorCode status)
@@ -419,7 +417,7 @@ class RuntimeStringView
 
   /**
    * @brief 为首个非空结果分配保留存储，已有存储不会再次扩容。
-   * @brief Allocate retained storage for the first non-empty result; existing
+   *        Allocate retained storage for the first non-empty result; existing
    *        storage is never grown.
    *
    * RuntimeStringView 的容量策略是一次分配后复用。格式化路径会先从编译格式
@@ -458,7 +456,7 @@ class RuntimeStringView
 
   /**
    * @brief 构造期文本拷贝入口；空字符串保持零分配。
-   * @brief Construction-time text copy entry; empty text remains allocation-free.
+   *        Construction-time text copy entry; empty text remains allocation-free.
    */
   [[nodiscard]] ErrorCode AssignCopy(std::string_view text)
   {
@@ -482,7 +480,7 @@ class RuntimeStringView
 
   /**
    * @brief C 字符串入口负责空指针检查，再进入统一的文本拷贝路径。
-   * @brief C-string entry checks null pointers before using the common text copy
+   *        C-string entry checks null pointers before using the common text copy
    *        path.
    */
   [[nodiscard]] ErrorCode AssignCopy(const char* text)
@@ -493,7 +491,7 @@ class RuntimeStringView
 
   /**
    * @brief 拼接构造的两遍流程：先校验并统计所有片段，再一次性写入。
-   * @brief Two-pass concatenation constructor: validate/count all parts before
+   *        Two-pass concatenation constructor: validate/count all parts before
    *        one retained write.
    *
    * 第一遍会传播空指针或非法片段错误，避免已经写了一半才发现参数不可用。
@@ -564,7 +562,7 @@ class RuntimeStringView
 
   /**
    * @brief 格式化重写入口；首次调用按编译期上界分配，后续调用只覆盖已有存储。
-   * @brief Formatted rewrite entry; the first call allocates the compile-time
+   *        Formatted rewrite entry; the first call allocates the compile-time
    *        upper bound, later calls only overwrite retained storage.
    *
    * `max_size` 来自已编译格式元数据和字段类型上界；`write` 使用本次真实参数写入
@@ -601,7 +599,7 @@ class RuntimeStringView
 
   /**
    * @brief 在已知边界内查找文本长度；遇到首个 `\0` 截断，否则使用整个数组长度。
-   * @brief Find text length within a known bound; stop at the first `\0`,
+   *        Find text length within a known bound; stop at the first `\0`,
    *        otherwise use the whole array extent.
    */
   [[nodiscard]] static constexpr size_t BoundedTextLength(const char* text,
@@ -618,7 +616,7 @@ class RuntimeStringView
   /**
    * @brief 把拼接构造支持的输入统一归一化为只读文本片段；普通拼接只接受文本类输入，
    *        数值格式化必须显式走 `Reformat()` 或 `Reprintf()`。
-   * @brief Normalize one supported concatenation input into a read-only text
+   *        Normalize one supported concatenation input into a read-only text
    *        part. Plain concatenation accepts text-like inputs only; numeric
    *        formatting must go through `Reformat()` or `Reprintf()`.
    */
@@ -668,27 +666,27 @@ class RuntimeStringView
     }
   }
 
-  /// 长期保留的 NUL 结尾存储；对象析构时不释放。 / Retained NUL-terminated storage; not
+  /// 长期保留的 NUL 结尾存储；对象析构时不释放 / Retained NUL-terminated storage; not
   /// released by the destructor.
   char* data_ = nullptr;
-  /// 不含结尾 NUL 的当前可见文本长度。 / Current visible payload size excluding the
+  /// 不含结尾 NUL 的当前可见文本长度 / Current visible payload size excluding the
   /// trailing NUL.
   size_t size_ = 0;
-  /// 不含结尾 NUL 的已探测/分配容量。 / Probed/allocated payload capacity excluding the
+  /// 不含结尾 NUL 的已探测/分配容量 / Probed/allocated payload capacity excluding the
   /// trailing NUL.
   size_t capacity_ = 0;
-  /// 最近一次构造或重写状态。 / Status of the latest construction or rewrite.
+  /// 最近一次构造或重写状态 / Status of the latest construction or rewrite.
   ErrorCode status_ = ErrorCode::OK;
 };
 
-/// 单参数文本构造推导为普通保留字符串。 / Single text argument deduces a plain retained
+/// 单参数文本构造推导为普通保留字符串 / Single text argument deduces a plain retained
 /// string.
 RuntimeStringView(std::string_view) -> RuntimeStringView<>;
-/// C 字符串构造推导为普通保留字符串。 / C-string construction deduces a plain retained
+/// C 字符串构造推导为普通保留字符串 / C-string construction deduces a plain retained
 /// string.
 RuntimeStringView(const char*) -> RuntimeStringView<>;
 
-/// 多片段构造推导为普通拼接字符串。 / Multi-part construction deduces a plain
+/// 多片段构造推导为普通拼接字符串 / Multi-part construction deduces a plain
 /// concatenated string.
 template <typename First, typename Second, typename... Rest>
 RuntimeStringView(First&&, Second&&, Rest&&...) -> RuntimeStringView<>;

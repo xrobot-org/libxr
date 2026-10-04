@@ -1,6 +1,6 @@
 #pragma once
 
-#include "libxr.hpp"
+#include "libxr_rw.hpp"
 
 namespace LibXR
 {
@@ -23,7 +23,7 @@ class I2C
   struct Configuration
   {
     uint32_t
-        clock_speed;  ///< I2C 通信时钟速率（单位：Hz）。 The I2C clock speed (in Hz).
+        clock_speed;  ///< I2C 通信时钟速率（单位：Hz） / The I2C clock speed (in Hz).
   };
 
   enum class MemAddrLength : uint8_t
@@ -53,7 +53,7 @@ class I2C
    * @param op 读取操作对象，包含同步或异步操作模式。
    *           Read operation object containing synchronous or asynchronous operation
    * mode.
-   * @param in_isr 是否在中断中进行操作。Whether the operation is performed in an ISR.
+   * @param in_isr 是否在中断中进行操作 / Whether the operation is performed in an ISR.
    * @return 返回 `ErrorCode`，指示操作是否成功。
    *         Returns an `ErrorCode` indicating whether the operation was successful.
    */
@@ -74,7 +74,7 @@ class I2C
    * @param op 写入操作对象，包含同步或异步操作模式。
    *           Write operation object containing synchronous or asynchronous operation
    * mode.
-   * @param in_isr 是否在中断中进行操作。Whether the operation is performed in an ISR.
+   * @param in_isr 是否在中断中进行操作 / Whether the operation is performed in an ISR.
    * @return 返回 `ErrorCode`，指示操作是否成功。
    *         Returns an `ErrorCode` indicating whether the operation was successful.
    */
@@ -113,7 +113,7 @@ class I2C
    *          Read operation object (sync or async).
    * @param mem_addr_size 寄存器地址长度。
    *                      Size of register address in bytes.
-   * @param in_isr 是否在中断中进行操作。Whether the operation is performed in an ISR.
+   * @param in_isr 是否在中断中进行操作 / Whether the operation is performed in an ISR.
    * @return 返回 `ErrorCode`，表示是否读取成功。
    *         Returns `ErrorCode` indicating success or failure.
    */
@@ -139,7 +139,7 @@ class I2C
    *          Write operation object (sync or async).
    * @param mem_addr_size 寄存器地址长度。
    *                      Size of register address in bytes.
-   * @param in_isr 是否在中断中进行操作。Whether the operation is performed in an ISR.
+   * @param in_isr 是否在中断中进行操作 / Whether the operation is performed in an ISR.
    * @return 返回 `ErrorCode`，表示是否写入成功。
    *         Returns `ErrorCode` indicating success or failure.
    */

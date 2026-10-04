@@ -38,9 +38,9 @@ class ASync
    */
   enum class Status : uint32_t
   {
-    READY = 0,         ///< 任务已准备就绪。 Task is ready.
-    BUSY = 1,          ///< 任务已接收或正在执行。 Job accepted or running.
-    DONE = UINT32_MAX  ///< 任务已完成，尚未取走状态。 Completed, awaiting acknowledgment.
+    READY = 0,         ///< 任务已准备就绪 / Task is ready.
+    BUSY = 1,          ///< 任务已接收或正在执行 / Job accepted or running.
+    DONE = UINT32_MAX  ///< 任务已完成，尚未取走状态 / Completed, awaiting acknowledgment.
   };
 
   /**
@@ -125,10 +125,10 @@ class ASync
    */
   ErrorCode AssignJobFromCallback(Job job, bool in_isr);
 
-  Job job_;  ///< 存储分配的异步任务回调。 Stores the assigned asynchronous job callback.
-  Semaphore sem_;  ///< 控制任务执行的信号量。 Semaphore controlling task execution.
+  Job job_;  ///< 存储分配的异步任务回调 / Stores the assigned asynchronous job callback.
+  Semaphore sem_;  ///< 控制任务执行的信号量 / Semaphore controlling task execution.
 
-  Thread thread_handle_;  ///< 处理异步任务的线程。 Thread handling asynchronous tasks.
+  Thread thread_handle_;  ///< 处理异步任务的线程 / Thread handling asynchronous tasks.
 
  private:
   void RunJob();

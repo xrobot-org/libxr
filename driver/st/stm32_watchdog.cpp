@@ -62,6 +62,12 @@ ErrorCode STM32Watchdog::SetConfig(const Configuration& config)
 
   hiwdg_->Init.Prescaler = best_pr;
   hiwdg_->Init.Reload = best_rlr;
+#if defined(IWDG_WINDOW_DISABLE)
+  // LibXR 按周期喂狗，没有窗口的概念；关闭窗口，任何时刻喂狗都有效。
+  // LibXR feeds the watchdog periodically and has no window concept; disabling the
+  // window makes a refresh valid at any time.
+  hiwdg_->Init.Window = IWDG_WINDOW_DISABLE;
+#endif
 #if defined(IWDG)
   hiwdg_->Instance = IWDG;  // NOLINT
 #elif defined(IWDG1)

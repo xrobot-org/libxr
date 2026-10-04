@@ -37,7 +37,7 @@ class CH32USBDevice : public USB::EndpointPool, public USB::DeviceCore
   uint8_t id_;
 };
 
-#if defined(RCC_APB1Periph_USB)
+#if defined(RCC_APB1Periph_USB) || defined(__DOXYGEN__)
 
 /**
  * @brief CH32 FSDEV 设备驱动 / CH32 FSDEV device driver
@@ -78,9 +78,9 @@ class CH32USBDeviceFS : public USB::EndpointPool, public USB::DeviceCore
   static inline CH32USBDeviceFS* self_ = nullptr;
 };
 
-#endif  // defined(RCC_APB1Periph_USB)
+#endif  // defined(RCC_APB1Periph_USB) || defined(__DOXYGEN__)
 
-#if defined(USBFSD)
+#if defined(USBFSD) || defined(__DOXYGEN__)
 
 /**
  * @brief CH32 OTG FS 设备驱动 / CH32 OTG FS device driver
@@ -120,9 +120,9 @@ class CH32USBOtgFS : public USB::EndpointPool, public USB::DeviceCore
   static inline CH32USBOtgFS* self_ = nullptr;
 };
 
-#endif  // defined(USBFSD)
+#endif  // defined(USBFSD) || defined(__DOXYGEN__)
 
-#if defined(USBHSD)
+#if defined(USBHSD) || defined(__DOXYGEN__)
 
 /**
  * @brief CH32 OTG HS 设备驱动 / CH32 OTG HS device driver
@@ -175,6 +175,6 @@ class CH32USBOtgHS : public USB::EndpointPool, public USB::DeviceCore
   static inline CH32USBOtgHS* self_ = nullptr;
 };
 
-#endif  // defined(USBHSD)
+#endif  // defined(USBHSD) || defined(__DOXYGEN__)
 
 }  // namespace LibXR

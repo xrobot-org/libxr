@@ -16,23 +16,22 @@ namespace LibXR::Print
  * @brief print 便捷接口的公开返回值约定 / Public return-value contract for the print
  * convenience surface
  *
- * Sink-writing helpers such as Write(), FormatTo(), and PrintfTo() return
- * ErrorCode only and report success or failure without exposing a length.
  * 像 Write()、FormatTo()、PrintfTo() 这样的 sink 写入接口只返回
  * ErrorCode，只表达成败，不暴露长度。
+ * Sink-writing helpers such as Write(), FormatTo(), and PrintfTo() return
+ * ErrorCode only and report success or failure without exposing a length.
  *
+ * 像 FormatIntoBuffer()、PrintfIntoBuffer() 这样的有界缓冲区接口返回 int；
+ * 成功时采用 snprintf 风格的完整长度语义：返回未截断时本应产生的完整字符数，
+ * 不含结尾零字节，即使发生截断也如此。运行期错误（包括格式化失败，以及完整长度
+ * 已无法放入 int）返回 -1。
  * Bounded-buffer helpers such as FormatIntoBuffer() and PrintfIntoBuffer()
  * return int and follow snprintf-style length semantics on success: the full
  * formatted size excluding the trailing zero byte, even when truncation
  * occurs. Runtime errors, including formatting failures and full sizes that no
  * longer fit in int, are reported as -1.
- * 像 FormatIntoBuffer()、PrintfIntoBuffer() 这样的有界缓冲区接口返回 int；
- * 成功时采用 snprintf 风格的完整长度语义：返回未截断时本应产生的完整字符数，
- * 不含结尾零字节，即使发生截断也如此。运行期错误（包括格式化失败，以及完整长度
- * 已无法放入 int）返回 -1。
  *
- * SNPrintf() keeps the same contract.
- * SNPrintf() 保持同样的契约。
+ * SNPrintf() 保持同样的契约 / SNPrintf() keeps the same contract.
  */
 
 /**
@@ -121,17 +120,17 @@ template <Text Source, OutputSink Sink, typename... Args>
  * @param args 参与本次格式化的调用点实参 / Call-site arguments used for this formatting
  * pass
  *
+ * 返回值采用 snprintf 语义：它表示未截断时本应产生的完整字符数，
+ * 不含结尾零字节。截断不算错误；真正保留到 buffer 里的长度可由
+ * capacity 推导。
  * The returned size follows snprintf semantics: it is the full character count
  * that would have been produced without truncation, excluding the trailing zero
  * byte. Truncation is not an error; the retained payload length can be derived
  * from capacity.
- * 返回值采用 snprintf 语义：它表示未截断时本应产生的完整字符数，
- * 不含结尾零字节。截断不算错误；真正保留到 buffer 里的长度可由
- * capacity 推导。
  *
+ * 当 capacity 非零时，目标缓冲区始终保持 NUL 结尾。
  * When capacity is nonzero, the destination buffer is always kept
  * NUL-terminated.
- * 当 capacity 非零时，目标缓冲区始终保持 NUL 结尾。
  *
  * @note `buffer` 真正最多保留 `capacity - 1` 个可见字符；最后一个字节保留给结尾零 / The
  * buffer retains at most `capacity - 1` visible characters; the last byte is reserved for
@@ -253,11 +252,11 @@ template <Text Source, typename... Args>
  * @param args 参与本次格式化的调用点实参 / Call-site arguments used for this formatting
  * pass
  *
+ * 返回完整格式化长度（不含结尾零字节）；运行期错误（包括尺寸溢出）返回 -1。
  * Returns the full formatted size excluding the trailing zero byte, or -1 on
  * runtime error (including size overflow).
- * 返回完整格式化长度（不含结尾零字节）；运行期错误（包括尺寸溢出）返回 -1。
- * Truncation is not an error and still returns the full size.
  * 截断不算错误，返回值仍然是完整长度。
+ * Truncation is not an error and still returns the full size.
  *
  * @return 成功时返回完整格式化长度；运行期错误或长度超出 `int` 可表示范围时返回 `-1` /
  * Returns the full formatted size on success, or `-1` on runtime error or `int` overflow

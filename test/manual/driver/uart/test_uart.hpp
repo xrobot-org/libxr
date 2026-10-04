@@ -5,7 +5,7 @@
  * 反复收发不同长度的数据，检查阻塞、轮询、回调完成、挂起读取和发送源复用。
  * Repeat different packet lengths; check blocking, polling and callback completion,
  * pending reads, and reuse of the caller's transmit buffer after Write returns.
- * 配置测试另用阻塞收发检查数据及总耗时。 / A separate configuration test checks
+ * 配置测试另用阻塞收发检查数据及总耗时 / A separate configuration test checks
  * data and total transfer time using blocking operations.
  */
 #pragma once

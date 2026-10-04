@@ -174,9 +174,9 @@ class File : public FsNode
   /**
    * @brief 文件负载联合体 / File payload union
    *
+   * 这块存储会根据 `file_type_` 被解释成可写数据、只读数据或可执行入口。
    * The same storage is interpreted either as mutable data, const data, or an
    * executable entry depending on `file_type_`.
-   * 这块存储会根据 `file_type_` 被解释成可写数据、只读数据或可执行入口。
    */
   union
   {

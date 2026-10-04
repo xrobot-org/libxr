@@ -39,6 +39,7 @@ void test_object_pool();
 void test_linux_stdio_print();
 void test_message_packet();
 void test_message_topic();
+void test_message_topic_contract();
 void test_queue();
 void test_spsc_queue();
 void test_spsc_prefix();
@@ -59,8 +60,6 @@ void test_read_port();
 void test_write_port();
 void test_write_stream();
 void test_message_runtime();
-void test_app_framework_application();
-void test_app_framework_hardware();
 void test_database();
 void test_logger();
 void test_terminal_input();
@@ -144,7 +143,7 @@ void RunTestCase(const TestCase& test_case, bool direct)
 
   if (child == 0)
   {
-    // 多线程 fork 后只执行 exec 或退出。/ Only exec or exit after a threaded fork.
+    // 多线程 fork 后只执行 exec 或退出 / Only exec or exit after a threaded fork.
     execl("/proc/self/exe", "test", "--direct-case", test_case.name,
           static_cast<char*>(nullptr));
     _exit(127);
@@ -249,12 +248,10 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"control_tests", {"pid", &RunVoidEntry<test_pid>, false}},
 
     {"system_tests", {"ramfs", &RunVoidEntry<test_ramfs>, false}},
-    {"system_tests",
-     {"app_framework_application", &RunVoidEntry<test_app_framework_application>, false}},
-    {"system_tests",
-     {"app_framework_hardware", &RunVoidEntry<test_app_framework_hardware>, false}},
     {"system_tests", {"event", &RunVoidEntry<test_event>, false}},
     {"system_tests", {"message_topic", &RunVoidEntry<test_message_topic>, false}},
+    {"system_tests",
+     {"message_topic_contract", &RunVoidEntry<test_message_topic_contract>, true, false}},
     {"system_tests", {"message_packet", &RunVoidEntry<test_message_packet>, false}},
     {"system_tests", {"database", &RunVoidEntry<test_database>, false}},
     {"linux_host_tests",

@@ -2,23 +2,23 @@
 
 <div align="center">
 
-<img src="https://github.com/Jiu-xiao/LibXR_CppCodeGenerator/raw/main/imgs/XRobot.jpeg" width="300">
+<img src="https://github.com/xrobot-org/LibXR_CppCodeGenerator/raw/master/imgs/XRobot.jpeg" width="300">
 
-A truly tiny and beautiful, ultra-fast and modern USB stack for embedded systems.
+A C++20 USB device stack for embedded systems.
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
-[![Documentation](https://img.shields.io/badge/docs-online-brightgreen)](https://jiu-xiao.github.io/libxr/)
+[![Documentation](https://img.shields.io/badge/docs-online-brightgreen)](https://xrobot.work/libxr/)
 [![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FJiu-xiao%2Flibxr.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FJiu-xiao%2Flibxr?ref=badge_shield)
 
 </div>
 
 ## Introduction
 
-XRUSB is a standalone, modern C++ USB protocol stack. It is provided both as a [LibXR](https://github.com/Jiu-xiao/libxr) subtree and as an independent repository. XRUSB focuses on portability, high performance, and easy integration.
+XRUSB is the USB device stack of [LibXR](https://github.com/xrobot-org/libxr), located in `src/driver/usb`. XRUSB focuses on portability, high performance, and easy integration.
 
 ## Key Features
 
-* **Modern C++ Implementation**: Written in C++17, using classes and template-based modular encapsulation for easy extension.
+* **Modern C++ Implementation**: Written in C++20, using classes and template-based modular encapsulation for easy extension.
 * **Lock-Free Data Structures**: All data transfers and event handling are lock-free and thread-safe for maximum efficiency.
 * **Double Buffering Mechanism**: Fully utilizes hardware/software double buffers and DMA. Alternating read/write greatly increases data throughput.
 * **Dynamic Endpoint Allocation**: Endpoints are allocated on demand during enumeration; multiple classes can automatically manage and reuse endpoints to avoid resource waste.
@@ -29,7 +29,7 @@ XRUSB is a standalone, modern C++ USB protocol stack. It is provided both as a [
 
 ## Device Drivers
 
-This repository only contains platform-independent stack code. For platform-specific device drivers, please refer to the corresponding drivers in libxr, such as:
+`src/driver/usb` contains only platform-independent stack code; the platform device drivers are under `driver/<platform>/`, such as:
 
 - `driver/st/stm32_usb_ep.cpp`
 - `driver/ch/ch32_usb_endpoint_otghs.cpp`
@@ -37,7 +37,7 @@ This repository only contains platform-independent stack code. For platform-spec
 
 Note:
 
-- `USB-DEVICE` below refers to the native USB device controller path used by XRUSB.
+- `USB-DEVICE` in the [platform peripheral support list](../../../doc/support.md) refers to the native USB device controller path used by XRUSB.
 - Mainline libxr currently provides `CDC-JTAG` on ESP32-C3/ESP32-C6 via `driver/esp/esp_cdc_jtag.*`; this is a separate dedicated USB Serial/JTAG UART backend, not the generic XRUSB device-controller path.
 
 ## Support Status
@@ -50,7 +50,7 @@ Note:
 | HID        | Supported                     | Only standard keyboard/mouse and remote controller; other types require you to derive your own |
 | UAC        | Supported                     | Currently implements a UAC 1.0 microphone only                                                 |
 | GSUSB      | Supported (CAN/FDCAN)         | Driverless SocketCAN on Linux                                                                  |
-| DAPLINK V2 | Supports (SWD interface only) | Can be used with Keil/OpenOCD                                                                  |
+| DAPLINK V2 | Supported (SWD and JTAG)      | Can be used with Keil/OpenOCD                                                                  |
 
 ### Host Stack
 
@@ -75,4 +75,4 @@ Note:
 
 ## Documentation
 
-Released together with the [LibXR documentation](https://xrobot-org.github.io/en/docs/xrusb).
+Released together with the [LibXR documentation](https://xrobot.work/en/docs/xrusb).

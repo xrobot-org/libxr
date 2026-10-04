@@ -35,8 +35,9 @@ class Operation
     NONE       ///< 无完成通知 / No completion notification.
   };
 
-  /// 轮询操作状态 / Polling operation status.
-  enum class OperationPollingStatus : uint8_t
+  /// 轮询操作状态；保持字宽，避免 M0 引入 byte-atomic runtime ABI /
+  /// Polling status; keep it word-sized to avoid byte-atomic runtime ABI on M0.
+  enum class OperationPollingStatus : uint32_t
   {
     READY,    ///< 尚未开始 / Not started.
     RUNNING,  ///< 正在执行 / In progress.

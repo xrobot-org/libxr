@@ -7,10 +7,11 @@
 struct IndexingState
 {
   bool uses_positional =
-      false;  ///< at least one conversion used n$ syntax / 至少有一个转换使用了 n$ 语法
-  bool uses_sequential = false;  ///< at least one conversion used implicit sequential
-                                 ///< order / 至少有一个转换使用了隐式顺序参数
-  size_t next_index = 0;         ///< next sequential argument index / 下一个顺序参数索引
+      false;  ///< 至少有一个转换使用了 n$ 语法 / at least one conversion used n$ syntax
+  bool uses_sequential = false;  ///< 至少有一个转换使用了隐式顺序参数
+                                 ///< at least one conversion used implicit sequential
+                                 ///< order
+  size_t next_index = 0;         ///< 下一个顺序参数索引 / next sequential argument index
 };
 
 /**
@@ -45,10 +46,10 @@ struct IndexingState
  * @brief 解析可选的前导 n$ 位置参数选择器 / Parse the optional leading n$ positional
  * argument selector
  *
- * This probe only consumes digits when they are immediately followed by '$'.
- * Plain width digits such as %05d stay untouched for the later width parser.
  * 只有当数字后面紧跟 '$' 时，这个探测才会真正消费它们；像 %05d 这样的普通宽度
  * 数字会完整保留给后续宽度解析阶段。
+ * This probe only consumes digits when they are immediately followed by '$'.
+ * Plain width digits such as %05d stay untouched for the later width parser.
  * @param source 完整 printf 源字符串 / Full printf source string
  * @param pos 当前解析位置，成功时推进到 `n$` 之后 / Current parse position; advanced past
  * `n$` on success

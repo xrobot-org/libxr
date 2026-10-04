@@ -83,10 +83,10 @@ class EndpointPool
    * @brief 查找端点/ Lookup endpoint
    *
    * 端点 0 走 ep0_in_/ep0_out_ 旁路；其余端点仅在「已分配（in-use）」状态下可被查到，
-   * 与原实现语义一致（未分配端点收到端点级请求视为异常）。
+   * 未分配的端点返回 NOT_FOUND（收到端点级请求视为异常）。
    * Endpoint 0 goes through the ep0_in_/ep0_out_ bypass; other endpoints are visible only
-   * while allocated (in-use), matching the original semantics (an endpoint-level request
-   * for an unallocated endpoint is treated as an error).
+   * while allocated (in-use); an unallocated endpoint returns NOT_FOUND (an
+   * endpoint-level request for it is treated as an error).
    *
    * @param ep_addr 端点地址，IN端点高位需加0x80 / Endpoint address (0x80 for IN
    * endpoints)

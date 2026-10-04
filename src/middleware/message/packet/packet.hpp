@@ -19,15 +19,15 @@ LIBXR_PACKED_BEGIN
  */
 struct Topic::PackedDataHeader
 {
-  uint8_t prefix;  ///< 包前缀字节。Packet prefix byte.
-  uint8_t
-      data_len_raw[3];  ///< 小端 24 位 payload 长度。Little-endian 24-bit payload length.
-  uint32_t topic_name_crc32;  ///< 目标 topic 名称 CRC32 键。CRC32 key of the target topic
-                              ///< name.
-  uint8_t timestamp_us_raw[6];  ///< 小端 48 位微秒时间戳。Little-endian 48-bit
+  uint8_t prefix;             ///< 包前缀字节 / Packet prefix byte.
+  uint8_t data_len_raw[3];    ///< 小端 24 位 payload 长度 / Little-endian 24-bit payload
+                              ///< length.
+  uint32_t topic_name_crc32;  ///< 目标 topic 名称 CRC32 键 / CRC32 key of the target
+                              ///< topic name.
+  uint8_t timestamp_us_raw[6];  ///< 小端 48 位微秒时间戳 / Little-endian 48-bit
                                 ///< microsecond timestamp.
-  uint8_t version;              ///< 包协议版本。Packet protocol version.
-  uint8_t pack_header_crc8;     ///< 头部 CRC8。Header CRC8.
+  uint8_t version;              ///< 包协议版本 / Packet protocol version.
+  uint8_t pack_header_crc8;     ///< 头部 CRC8 / Header CRC8.
 
   /**
    * @brief 设置数据区长度 / Set the payload length
@@ -83,12 +83,12 @@ class Topic::PackedData
    */
   struct
   {
-    PackedDataHeader header_;     ///< 固定头。Fixed packet header.
-    uint8_t data_[sizeof(Data)];  ///< payload 原始字节区。Raw payload byte area.
-  } raw;  ///< 固定头和 payload 组成的原始字节布局。Raw byte layout made of the fixed
+    PackedDataHeader header_;     ///< 固定头 / Fixed packet header.
+    uint8_t data_[sizeof(Data)];  ///< payload 原始字节区 / Raw payload byte area.
+  } raw;  ///< 固定头和 payload 组成的原始字节布局 / Raw byte layout made of the fixed
           ///< header and payload.
 
-  uint8_t crc8_;  ///< 尾部 CRC8。Trailing CRC8.
+  uint8_t crc8_;  ///< 尾部 CRC8 / Trailing CRC8.
 
   /**
    * @brief 读取 packet 里的时间戳 / Read the timestamp stored in this packet

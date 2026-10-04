@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstring>
+#include <type_traits>
 
 #include "libxr_def.hpp"
 #include "mutex.hpp"
@@ -12,9 +13,10 @@ namespace LibXR
  * @brief 线程安全的栈数据结构 / Thread-safe stack data structure
  *
  * 该类实现了一个基于数组的线程安全栈，支持基本的 `Push`、`Pop`、`Peek`
- * 等操作，并使用互斥锁 (`Mutex`) 保护数据安全。 This class implements a thread-safe stack
- * based on an array, supporting basic operations such as `Push`, `Pop`, and `Peek`, with
- * mutex (`Mutex`) protection to ensure data safety.
+ * 等操作，并使用互斥锁 (`Mutex`) 保护数据安全。
+ * This class implements a thread-safe stack based on an array, supporting basic
+ * operations such as `Push`, `Pop`, and `Peek`, with mutex (`Mutex`) protection to ensure
+ * data safety.
  *
  * @tparam Data 栈中存储的数据类型 / The type of data stored in the stack
  */
@@ -38,6 +40,16 @@ class Stack
   Stack(uint32_t depth) : stack_(new Data[depth]), depth_(depth) {}
 
   /**
+   * @brief 析构栈并释放存储数组 / Destroys the stack and frees the storage array
+   */
+  ~Stack() { delete[] stack_; }
+
+  /// @brief 禁止复制构造 / Not copy-constructible
+  Stack(const Stack&) = delete;
+  /// @brief 禁止复制赋值 / Not copy-assignable
+  Stack& operator=(const Stack&) = delete;
+
+  /**
    * @brief 获取指定索引的元素 / Retrieves the element at a specified index
    * @param index 元素索引，支持负索引（从栈顶向下索引） / Element index, supports
    * negative indexing (relative to the top)
@@ -52,7 +64,7 @@ class Stack
     }
     else
     {
-      ASSERT(static_cast<int32_t>(depth_) + index >= 0);
+      ASSERT(static_cast<int32_t>(top_) + index >= 0);
       return stack_[top_ + index];
     }
   }
@@ -161,9 +173,17 @@ class Stack
    * `ErrorCode::FULL`，索引超出范围返回 `ErrorCode::OUT_OF_RANGE` / Operation result:
    * returns `ErrorCode::OK` on success, `ErrorCode::FULL` if the stack is full,
    * `ErrorCode::OUT_OF_RANGE` if the index is out of range
+   *
+   * @note 插入位置之后的元素按字节搬移，因此 `Data` 必须可平凡复制，否则编译失败。
+   *       The elements after the position are moved byte by byte, so `Data` must be
+   *       trivially copyable; otherwise the call does not compile.
    */
   ErrorCode Insert(const Data& data, uint32_t index)
   {
+    static_assert(std::is_trivially_copyable_v<Data>,
+                  "Stack::Insert moves elements with memmove and requires a trivially "
+                  "copyable element type");
+
     mutex_.Lock();
     if (top_ >= depth_)
     {

@@ -15,11 +15,11 @@ template <size_t MaxFieldCount>
 struct SourceAnalysisScratch
 {
   std::array<size_t, MaxFieldCount>
-      order{};  ///< field-ordered source argument indexes / 按字段顺序排列的源参数索引
-  size_t field_count = 0;  ///< parsed conversion count / 已解析的转换项数量
+      order{};  ///< 按字段顺序排列的源参数索引 / field-ordered source argument indexes
+  size_t field_count = 0;  ///< 已解析的转换项数量 / parsed conversion count
   size_t argument_count =
-      0;  ///< highest referenced argument count / 最高引用到的参数个数
-  Error error = Error::None;  ///< first parse/analysis error / 首个解析或分析错误
+      0;  ///< 最高引用到的参数个数 / highest referenced argument count
+  Error error = Error::None;  ///< 首个解析或分析错误 / first parse/analysis error
 
   [[nodiscard]] consteval Error Text(size_t, size_t) const { return Error::None; }
 
@@ -45,10 +45,10 @@ template <size_t FieldCount, size_t ArgCount>
 struct SourceAnalysis
 {
   std::array<size_t, FieldCount>
-      order{};  ///< field-ordered source argument indexes / 按字段顺序排列的源参数索引
+      order{};  ///< 按字段顺序排列的源参数索引 / field-ordered source argument indexes
   std::array<FormatArgumentInfo, ArgCount>
-      args{};  ///< source-ordered argument metadata / 按源参数顺序排列的参数元信息
-  Error error = Error::None;  ///< first parse/analysis error / 首个解析或分析错误
+      args{};  ///< 按源参数顺序排列的参数元信息 / source-ordered argument metadata
+  Error error = Error::None;  ///< 首个解析或分析错误 / first parse/analysis error
 };
 
 /**

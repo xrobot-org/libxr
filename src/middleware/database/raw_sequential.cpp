@@ -167,10 +167,10 @@ void DatabaseRawSequential::InitBlock(BlockType block)
 }
 
 /**
- * @brief 判断块是否已初始化 (Check if block is initialized).
- * @param block 需要检查的块 (Block to check).
- * @return 如果已初始化返回 true，否则返回 false (Returns true if initialized, false
- * otherwise).
+ * @brief 判断块是否已初始化 / Check if block is initialized.
+ * @param block 需要检查的块 / Block to check.
+ * @return 如果已初始化返回 true，否则返回 false / Returns true if initialized, false
+ * otherwise.
  */
 bool DatabaseRawSequential::IsBlockInited(BlockType block)
 {
@@ -185,9 +185,9 @@ bool DatabaseRawSequential::IsBlockInited(BlockType block)
 }
 
 /**
- * @brief 判断块是否为空 (Check if block is empty).
- * @param block 需要检查的块 (Block to check).
- * @return 如果为空返回 true，否则返回 false (Returns true if empty, false otherwise).
+ * @brief 判断块是否为空 / Check if block is empty.
+ * @param block 需要检查的块 / Block to check.
+ * @return 如果为空返回 true，否则返回 false / Returns true if empty, false otherwise.
  */
 bool DatabaseRawSequential::IsBlockEmpty(BlockType block)
 {
@@ -202,9 +202,9 @@ bool DatabaseRawSequential::IsBlockEmpty(BlockType block)
 }
 
 /**
- * @brief 判断块是否损坏 (Check if block has an error).
- * @param block 需要检查的块 (Block to check).
- * @return 如果损坏返回 true，否则返回 false (Returns true if corrupted, false otherwise).
+ * @brief 判断块是否损坏 / Check if block has an error.
+ * @param block 需要检查的块 / Block to check.
+ * @return 如果损坏返回 true，否则返回 false / Returns true if corrupted, false otherwise.
  */
 bool DatabaseRawSequential::IsBlockError(BlockType block)
 {

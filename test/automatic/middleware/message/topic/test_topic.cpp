@@ -2,12 +2,19 @@
  * @file test_topic.cpp
  * @brief Topic 发布与订阅测试 / Topic publication and subscription tests.
  *
- * 检查不同订阅方式收到的数据、时间戳和 ISR 标记，以及可变回调和队列满时的丢弃。
- * Check subscriber data, timestamps and ISR flags, mutable callbacks and drops when a
- * queue is full.
+ * 检查不同订阅方式收到的数据、时间戳和 ISR 标记，可变回调和队列满时的丢弃，以及初始化期
+ * 类型契约冲突在所有构建类型中都是致命错误。
+ * Check subscriber data, timestamps and ISR flags, mutable callbacks, drops when a
+ * queue is full, and that init-time type contract conflicts are fatal in every build
+ * type.
  */
 
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 
 #include "libxr.hpp"
 #include "libxr_def.hpp"
@@ -228,10 +235,88 @@ void TestTopicMutationAndQueueDrop()
   TEST_ASSERT(drop_queue.Pop(dropped_message) == LibXR::ErrorCode::EMPTY);
 }
 
+constexpr int TOPIC_FATAL_EXIT = 42;
+
+template <typename Func>
+void ExpectTopicFatal(bool expect_fatal, Func&& func)
+{
+  // 在子进程里执行一次初始化操作。致命错误回调确认断言位于 topic.cpp，
+  // 再以固定退出码结束。
+  // Run one init operation in a child. The fatal callback confirms that the assertion is
+  // in topic.cpp, then exits with a fixed code.
+  std::fflush(nullptr);
+  pid_t child = fork();
+  TEST_ASSERT(child >= 0);
+
+  if (child == 0)
+  {
+    auto cb = LibXR::Assert::FatalCallback::Create(
+        [](bool, int code, const char* file, uint32_t)
+        {
+          constexpr const char* SOURCE = "/topic.cpp";
+          const size_t length = std::strlen(file);
+          const size_t suffix = std::strlen(SOURCE);
+          const bool in_topic =
+              length >= suffix && std::strcmp(file + length - suffix, SOURCE) == 0;
+          _exit(in_topic ? code : 1);
+        },
+        TOPIC_FATAL_EXIT);
+    LibXR::Assert::RegisterFatalErrorCallback(cb);
+    func();
+    _exit(0);
+  }
+
+  int status = 0;
+  TEST_ASSERT(waitpid(child, &status, 0) == child);
+  TEST_ASSERT(WIFEXITED(status));
+  TEST_ASSERT(WEXITSTATUS(status) == (expect_fatal ? TOPIC_FATAL_EXIT : 0));
+}
+
 }  // namespace
 
 void test_message_topic()
 {
   TestTopicSubscriberDispatch();
   TestTopicMutationAndQueueDrop();
+}
+
+void test_message_topic_contract()
+{
+  // 同名 topic 的类型或发布者约定冲突，以及订阅者和回调的类型不符，在 Debug 和 Release
+  // 中都进入致命错误。
+  // Type or publisher conflicts on an existing name, and subscriber or callback type
+  // mismatches, are fatal in both Debug and Release.
+  static_assert(sizeof(int64_t) == sizeof(double) && alignof(int64_t) == alignof(double));
+
+  auto domain = LibXR::Topic::Domain("message_topic_contract_domain");
+  auto topic = LibXR::Topic::CreateTopic<double>("contract_tp", &domain);
+
+  // int64_t 与 double 字节数和对齐相同，类型不同也是致命错误。
+  // int64_t and double share size and alignment; the type difference is still fatal.
+  ExpectTopicFatal(
+      false, [&] { (void)LibXR::Topic::FindOrCreate<double>("contract_tp", &domain); });
+  ExpectTopicFatal(
+      true, [&] { (void)LibXR::Topic::CreateTopic<float>("contract_tp", &domain); });
+  ExpectTopicFatal(
+      true, [&] { (void)LibXR::Topic::FindOrCreate<int64_t>("contract_tp", &domain); });
+  ExpectTopicFatal(true,
+                   [&]
+                   {
+                     static float value = 0.0f;
+                     LibXR::Topic::SyncSubscriber<float> suber(topic, value);
+                     UNUSED(suber);
+                   });
+  ExpectTopicFatal(true,
+                   [&]
+                   {
+                     auto cb = LibXR::Topic::Callback::Create([](bool, void*, float&) {},
+                                                              reinterpret_cast<void*>(0));
+                     topic.RegisterCallback(cb);
+                   });
+  ExpectTopicFatal(
+      true,
+      [&] { (void)LibXR::Topic::CreateTopic<double>("contract_tp", &domain, true); });
+  ExpectTopicFatal(
+      true,
+      [&] { (void)LibXR::Topic::FindOrCreate<double>("contract_tp", &domain, true); });
 }

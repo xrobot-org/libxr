@@ -246,16 +246,16 @@ void CH32EndpointOtgFs::Configure(const Config& cfg)
 
   if (is_bidir_noniso)
   {
+    // 当前共享双向非等时 OTGFS 路径现在只按方向二分原始内存。
     // Current shared bidirectional non-iso OTGFS path only splits raw memory by
     // direction.
-    // 当前共享双向非等时 OTGFS 路径现在只按方向二分原始内存。
     ASSERT(dma_buffer_.size_ >= static_cast<size_t>(requested_mps) * 2u);
   }
 
   ep_cfg.double_buffer = is_single_noniso;
 
-  // OTGFS MPS is clamped by request, effective buffer, and USB FS type limit.
   // OTGFS 包长同时受请求值、当前有效缓冲区和 USB FS 类型上限约束。
+  // OTGFS MPS is clamped by request, effective buffer, and USB FS type limit.
   ep_cfg.max_packet_size = LibXR::min<uint16_t>(
       requested_mps,
       LibXR::min<uint16_t>(static_cast<uint16_t>(GetBuffer().size_), type_limit));

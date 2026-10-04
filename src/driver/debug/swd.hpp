@@ -18,25 +18,25 @@ class Swd
  public:
   /**
    * @struct TransferPolicy
-   * @brief 传输策略（WAIT 重试与空闲周期插入）。Transfer policy (WAIT retry & idle
-   * insertion).
+   * @brief 传输策略（WAIT 重试与空闲周期插入）。
+   * Transfer policy (WAIT retry & idle insertion).
    *
-   * - idle_cycles：每次传输尝试后插入（包括 WAIT 重试）。idle_cycles: inserted after EACH
-   * transfer attempt, including WAIT retries.
-   * - wait_retry：最大 WAIT 重试次数。wait_retry: maximum WAIT retries.
-   * - clear_sticky_on_fault：当 ACK==FAULT 时清除 sticky 错误。clear_sticky_on_fault:
+   * - idle_cycles：每次传输尝试后插入（包括 WAIT 重试） / idle_cycles: inserted after
+   * EACH transfer attempt, including WAIT retries.
+   * - wait_retry：最大 WAIT 重试次数 / wait_retry: maximum WAIT retries.
+   * - clear_sticky_on_fault：当 ACK==FAULT 时清除 sticky 错误 / clear_sticky_on_fault:
    * clear sticky errors when ACK==FAULT.
    */
   struct TransferPolicy
   {
-    uint8_t idle_cycles = 0;    ///< 空闲周期数。Idle cycles.
-    uint16_t wait_retry = 100;  ///< WAIT 最大重试次数。Maximum WAIT retries.
+    uint8_t idle_cycles = 0;    ///< 空闲周期数 / Idle cycles.
+    uint16_t wait_retry = 100;  ///< WAIT 最大重试次数 / Maximum WAIT retries.
     bool clear_sticky_on_fault =
-        true;  ///< FAULT 时清除 sticky 错误。Clear sticky errors on FAULT.
+        true;  ///< FAULT 时清除 sticky 错误 / Clear sticky errors on FAULT.
   };
 
   /**
-   * @brief 虚析构函数。Virtual destructor.
+   * @brief 虚析构函数 / Virtual destructor.
    */
   virtual ~Swd() = default;
 
@@ -44,46 +44,46 @@ class Swd
   Swd& operator=(const Swd&) = delete;
 
   /**
-   * @brief 设置传输策略。Set transfer policy.
-   * @param policy 传输策略。Transfer policy.
+   * @brief 设置传输策略 / Set transfer policy.
+   * @param policy 传输策略 / Transfer policy.
    */
   void SetTransferPolicy(const TransferPolicy& policy) { policy_ = policy; }
 
   /**
-   * @brief 获取传输策略。Get transfer policy.
+   * @brief 获取传输策略 / Get transfer policy.
    */
   [[nodiscard]] const TransferPolicy& GetTransferPolicy() const { return policy_; }
 
   /**
-   * @brief 设置 SWCLK 频率（可选）。Set SWCLK frequency (optional).
-   * @param hz 目标频率（Hz）。Target frequency in Hz.
-   * @return ErrorCode 操作结果。Error code.
+   * @brief 设置 SWCLK 频率（可选） / Set SWCLK frequency (optional).
+   * @param hz 目标频率（Hz） / Target frequency in Hz.
+   * @return ErrorCode 操作结果 / Error code.
    */
   virtual ErrorCode SetClockHz(uint32_t hz) = 0;
 
   /**
-   * @brief 关闭探针并释放资源。Close probe and release resources.
+   * @brief 关闭探针并释放资源 / Close probe and release resources.
    */
   virtual void Close() = 0;
 
   /**
-   * @brief 执行 SWD 线复位。Perform SWD line reset.
-   * @return ErrorCode 操作结果。Error code.
+   * @brief 执行 SWD 线复位 / Perform SWD line reset.
+   * @return ErrorCode 操作结果 / Error code.
    */
   virtual ErrorCode LineReset() = 0;
 
   /**
-   * @brief 进入 SWD 模式（如需从 JTAG 切换）。Enter SWD mode (e.g., switch from JTAG if
-   * needed).
-   * @return ErrorCode 操作结果。Error code.
+   * @brief 进入 SWD 模式（如需从 JTAG 切换）。
+   * Enter SWD mode (e.g., switch from JTAG if needed).
+   * @return ErrorCode 操作结果 / Error code.
    */
   virtual ErrorCode EnterSwd() = 0;
 
   /**
-   * @brief 执行一次 SWD 传输（不含重试）。Perform one SWD transfer (no retry).
-   * @param req 请求包。Request.
-   * @param resp 响应包。Response.
-   * @return ErrorCode 总线级错误码。Bus-level error code.
+   * @brief 执行一次 SWD 传输（不含重试） / Perform one SWD transfer (no retry).
+   * @param req 请求包 / Request.
+   * @param resp 响应包 / Response.
+   * @return ErrorCode 总线级错误码 / Bus-level error code.
    */
   virtual ErrorCode Transfer(const SwdProtocol::Request& req,
                              SwdProtocol::Response& resp) = 0;
@@ -96,16 +96,16 @@ class Swd
    * @brief 带重试的 SWD 传输封装（WAIT 重试 + IdleCycles 插入）。
    *        SWD transfer wrapper with retry (WAIT retry + IdleCycles insertion).
    *
-   * 规则：Rules:
-   * - 每次传输尝试后均插入 idle_cycles（包括 WAIT 重试）。Insert idle_cycles after EACH
-   * attempt (including WAIT retries).
-   * - WAIT 最多重试 wait_retry 次。Retry WAIT up to wait_retry times.
-   * - 若 ACK==FAULT 且策略允许，则尝试清除 sticky 错误。If ACK==FAULT and enabled,
-   * best-effort clear sticky errors.
+   * 规则 / Rules:
+   * - 每次传输尝试后均插入 idle_cycles（包括 WAIT 重试）。
+   * Insert idle_cycles after EACH attempt (including WAIT retries).
+   * - WAIT 最多重试 wait_retry 次 / Retry WAIT up to wait_retry times.
+   * - 若 ACK==FAULT 且策略允许，则尝试清除 sticky 错误。
+   * If ACK==FAULT and enabled, best-effort clear sticky errors.
    *
-   * @param req 请求包。Request.
-   * @param resp 响应包。Response.
-   * @return ErrorCode 操作结果（传输流程级）。Error code (flow-level).
+   * @param req 请求包 / Request.
+   * @param resp 响应包 / Response.
+   * @return ErrorCode 操作结果（传输流程级） / Error code (flow-level).
    */
   ErrorCode TransferWithRetry(const SwdProtocol::Request& req,
                               SwdProtocol::Response& resp)
@@ -124,8 +124,8 @@ class Swd
         return ec;
       }
 
-      // CMSIS-DAP IdleCycles：每次传输尝试后插入。CMSIS-DAP IdleCycles: insert after EACH
-      // transfer attempt.
+      // CMSIS-DAP IdleCycles：每次传输尝试后插入。
+      // CMSIS-DAP IdleCycles: insert after EACH transfer attempt.
       if (policy_.idle_cycles != 0u)
       {
         IdleClocks(policy_.idle_cycles);
@@ -160,11 +160,11 @@ class Swd
   // --------------------------------------------------------------------------
 
   /**
-   * @brief DP 寄存器读取（无重试）。DP register read (no retry).
-   * @param reg DP 读寄存器。DP read register.
-   * @param val 输出：读到的数据。Output: read value.
-   * @param ack 输出：ACK。Output: ACK.
-   * @return ErrorCode 操作结果。Error code.
+   * @brief DP 寄存器读取（无重试） / DP register read (no retry).
+   * @param reg DP 读寄存器 / DP read register.
+   * @param val 输出：读到的数据 / Output: read value.
+   * @param ack 输出：ACK / Output: ACK.
+   * @return ErrorCode 操作结果 / Error code.
    */
   ErrorCode DpRead(SwdProtocol::DpReadReg reg, uint32_t& val, SwdProtocol::Ack& ack)
   {
@@ -188,11 +188,11 @@ class Swd
   }
 
   /**
-   * @brief DP 寄存器写入（无重试）。DP register write (no retry).
-   * @param reg DP 写寄存器。DP write register.
-   * @param val 写入数据。Write value.
-   * @param ack 输出：ACK。Output: ACK.
-   * @return ErrorCode 操作结果。Error code.
+   * @brief DP 寄存器写入（无重试） / DP register write (no retry).
+   * @param reg DP 写寄存器 / DP write register.
+   * @param val 写入数据 / Write value.
+   * @param ack 输出：ACK / Output: ACK.
+   * @return ErrorCode 操作结果 / Error code.
    */
   ErrorCode DpWrite(SwdProtocol::DpWriteReg reg, uint32_t val, SwdProtocol::Ack& ack)
   {
@@ -209,11 +209,11 @@ class Swd
   }
 
   /**
-   * @brief DP 读事务（带重试）。DP read transaction (with retry).
-   * @param reg DP 读寄存器。DP read register.
-   * @param val 输出：读到的数据。Output: read value.
-   * @param ack 输出：ACK。Output: ACK.
-   * @return ErrorCode 操作结果。Error code.
+   * @brief DP 读事务（带重试） / DP read transaction (with retry).
+   * @param reg DP 读寄存器 / DP read register.
+   * @param val 输出：读到的数据 / Output: read value.
+   * @param ack 输出：ACK / Output: ACK.
+   * @return ErrorCode 操作结果 / Error code.
    */
   ErrorCode DpReadTxn(SwdProtocol::DpReadReg reg, uint32_t& val, SwdProtocol::Ack& ack)
   {
@@ -236,11 +236,11 @@ class Swd
   }
 
   /**
-   * @brief DP 写事务（带重试）。DP write transaction (with retry).
-   * @param reg DP 写寄存器。DP write register.
-   * @param val 写入数据。Write value.
-   * @param ack 输出：ACK。Output: ACK.
-   * @return ErrorCode 操作结果。Error code.
+   * @brief DP 写事务（带重试） / DP write transaction (with retry).
+   * @param reg DP 写寄存器 / DP write register.
+   * @param val 写入数据 / Write value.
+   * @param ack 输出：ACK / Output: ACK.
+   * @return ErrorCode 操作结果 / Error code.
    */
   ErrorCode DpWriteTxn(SwdProtocol::DpWriteReg reg, uint32_t val, SwdProtocol::Ack& ack)
   {
@@ -258,18 +258,18 @@ class Swd
   }
 
   /**
-   * @brief AP 读事务（带重试，包含 RDBUFF 回读）。AP read transaction (with retry, with
-   * RDBUFF readback).
+   * @brief AP 读事务（带重试，包含 RDBUFF 回读）。
+   * AP read transaction (with retry, with RDBUFF readback).
    *
-   * 注意：AP 读为 posted；该辅助函数执行：Note: AP reads are posted; this helper
-   * performs: 1) AP READ（获得 posted 数据）。AP READ (gets posted data). 2) 读取 DP
-   * RDBUFF 获取本次 AP READ 的实际数据。DP RDBUFF read to obtain the actual data for this
-   * AP read.
+   * 注意：AP 读为 posted；该辅助函数执行：1) AP READ（获得 posted 数据）。2) 读取 DP
+   * RDBUFF 获取本次 AP READ 的实际数据。
+   * Note: AP reads are posted; this helper performs: 1) AP READ (gets posted data).
+   * 2) DP RDBUFF read to obtain the actual data for this AP read.
    *
-   * @param addr2b AP 寄存器地址（A2/A3，两位）。AP register address (A2/A3, 2-bit).
-   * @param val 输出：实际读取的数据。Output: actual read value.
-   * @param ack 输出：ACK。Output: ACK.
-   * @return ErrorCode 操作结果。Error code.
+   * @param addr2b AP 寄存器地址（A2/A3，两位） / AP register address (A2/A3, 2-bit).
+   * @param val 输出：实际读取的数据 / Output: actual read value.
+   * @param ack 输出：ACK / Output: ACK.
+   * @return ErrorCode 操作结果 / Error code.
    */
   ErrorCode ApReadTxn(uint8_t addr2b, uint32_t& val, SwdProtocol::Ack& ack)
   {
@@ -298,10 +298,10 @@ class Swd
    *       调用方需额外读取一次 DP RDBUFF 以获得最后一次 AP READ 的真实数据。
    *       Caller must read DP RDBUFF once to obtain the last AP READ value.
    *
-   * @param addr2b AP 寄存器地址（A2/A3，两位）。AP register address (A2/A3, 2-bit).
-   * @param posted_val 输出：posted 数据。Output: posted value.
-   * @param ack 输出：ACK。Output: ACK.
-   * @return ErrorCode 操作结果。Error code.
+   * @param addr2b AP 寄存器地址（A2/A3，两位） / AP register address (A2/A3, 2-bit).
+   * @param posted_val 输出：posted 数据 / Output: posted value.
+   * @param ack 输出：ACK / Output: ACK.
+   * @return ErrorCode 操作结果 / Error code.
    */
   ErrorCode ApReadPostedTxn(uint8_t addr2b, uint32_t& posted_val, SwdProtocol::Ack& ack)
   {
@@ -323,10 +323,10 @@ class Swd
   }
 
   /**
-   * @brief 读取 DP RDBUFF（带重试）。Read DP RDBUFF (with retry).
-   * @param val 输出：读到的数据。Output: read value.
-   * @param ack 输出：ACK。Output: ACK.
-   * @return ErrorCode 操作结果。Error code.
+   * @brief 读取 DP RDBUFF（带重试） / Read DP RDBUFF (with retry).
+   * @param val 输出：读到的数据 / Output: read value.
+   * @param ack 输出：ACK / Output: ACK.
+   * @return ErrorCode 操作结果 / Error code.
    */
   ErrorCode DpReadRdbuffTxn(uint32_t& val, SwdProtocol::Ack& ack)
   {
@@ -334,11 +334,11 @@ class Swd
   }
 
   /**
-   * @brief AP 写事务（带重试）。AP write transaction (with retry).
-   * @param addr2b AP 寄存器地址（A2/A3，两位）。AP register address (A2/A3, 2-bit).
-   * @param val 写入数据。Write value.
-   * @param ack 输出：ACK。Output: ACK.
-   * @return ErrorCode 操作结果。Error code.
+   * @brief AP 写事务（带重试） / AP write transaction (with retry).
+   * @param addr2b AP 寄存器地址（A2/A3，两位） / AP register address (A2/A3, 2-bit).
+   * @param val 写入数据 / Write value.
+   * @param ack 输出：ACK / Output: ACK.
+   * @return ErrorCode 操作结果 / Error code.
    */
   ErrorCode ApWriteTxn(uint8_t addr2b, uint32_t val, SwdProtocol::Ack& ack)
   {
@@ -356,10 +356,10 @@ class Swd
   }
 
   /**
-   * @brief 读取 DP IDCODE。Read DP IDCODE.
-   * @param idcode 输出：IDCODE。Output: IDCODE.
-   * @param ack 输出：ACK。Output: ACK.
-   * @return ErrorCode 操作结果。Error code.
+   * @brief 读取 DP IDCODE / Read DP IDCODE.
+   * @param idcode 输出：IDCODE / Output: IDCODE.
+   * @param ack 输出：ACK / Output: ACK.
+   * @return ErrorCode 操作结果 / Error code.
    */
   ErrorCode ReadIdCode(uint32_t& idcode, SwdProtocol::Ack& ack)
   {
@@ -367,10 +367,10 @@ class Swd
   }
 
   /**
-   * @brief 写入 DP ABORT（无重试）。Write DP ABORT (no retry).
-   * @param flags ABORT 标志位。ABORT flags.
-   * @param ack 输出：ACK。Output: ACK.
-   * @return ErrorCode 操作结果。Error code.
+   * @brief 写入 DP ABORT（无重试） / Write DP ABORT (no retry).
+   * @param flags ABORT 标志位 / ABORT flags.
+   * @param ack 输出：ACK / Output: ACK.
+   * @return ErrorCode 操作结果 / Error code.
    */
   ErrorCode WriteAbort(uint32_t flags, SwdProtocol::Ack& ack)
   {
@@ -378,10 +378,10 @@ class Swd
   }
 
   /**
-   * @brief 写入 DP ABORT（带重试）。Write DP ABORT (with retry).
-   * @param flags ABORT 标志位。ABORT flags.
-   * @param ack 输出：ACK。Output: ACK.
-   * @return ErrorCode 操作结果。Error code.
+   * @brief 写入 DP ABORT（带重试） / Write DP ABORT (with retry).
+   * @param flags ABORT 标志位 / ABORT flags.
+   * @param ack 输出：ACK / Output: ACK.
+   * @return ErrorCode 操作结果 / Error code.
    */
   ErrorCode WriteAbortTxn(uint32_t flags, SwdProtocol::Ack& ack)
   {
@@ -393,11 +393,11 @@ class Swd
   // --------------------------------------------------------------------------
 
   /**
-   * @brief 写 SELECT（带缓存；命中则跳过写入）。Write SELECT with cache (skip write on
-   * hit).
-   * @param select SELECT 值。SELECT value.
-   * @param ack 输出：ACK。Output: ACK.
-   * @return ErrorCode 操作结果。Error code.
+   * @brief 写 SELECT（带缓存；命中则跳过写入）。
+   * Write SELECT with cache (skip write on hit).
+   * @param select SELECT 值 / SELECT value.
+   * @param ack 输出：ACK / Output: ACK.
+   * @return ErrorCode 操作结果 / Error code.
    */
   ErrorCode SetSelectCached(uint32_t select, SwdProtocol::Ack& ack)
   {
@@ -417,7 +417,7 @@ class Swd
   }
 
   /**
-   * @brief 失效 SELECT 缓存。Invalidate SELECT cache.
+   * @brief 失效 SELECT 缓存 / Invalidate SELECT cache.
    */
   void InvalidateSelectCache()
   {
@@ -427,13 +427,13 @@ class Swd
 
  public:
   /**
-   * @brief 构造函数。Constructor.
+   * @brief 构造函数 / Constructor.
    */
   Swd() = default;
 
   /**
-   * @brief 插入空闲时钟周期。Insert idle clock cycles.
-   * @param cycles 周期数。Number of cycles.
+   * @brief 插入空闲时钟周期 / Insert idle clock cycles.
+   * @param cycles 周期数 / Number of cycles.
    */
   virtual void IdleClocks(uint32_t cycles) = 0;
 
@@ -447,8 +447,8 @@ class Swd
 
  private:
   /**
-   * @brief 重置响应结构体为默认值。Reset response to defaults.
-   * @param resp 响应结构体。Response structure.
+   * @brief 重置响应结构体为默认值 / Reset response to defaults.
+   * @param resp 响应结构体 / Response structure.
    */
   static inline void ResetResponse(SwdProtocol::Response& resp)
   {
@@ -458,8 +458,8 @@ class Swd
   }
 
   /**
-   * @brief 清除 DP sticky 错误（尽力而为）。Clear DP sticky errors (best-effort).
-   * @return ErrorCode 操作结果。Error code.
+   * @brief 清除 DP sticky 错误（尽力而为） / Clear DP sticky errors (best-effort).
+   * @return ErrorCode 操作结果 / Error code.
    */
   ErrorCode ClearStickyErrors()
   {
@@ -471,10 +471,10 @@ class Swd
   }
 
  private:
-  TransferPolicy policy_{};  ///< 传输策略。Transfer policy.
+  TransferPolicy policy_{};  ///< 传输策略 / Transfer policy.
 
-  uint32_t select_cache_ = 0u;  ///< SELECT 缓存值。SELECT cached value.
-  bool select_valid_ = false;   ///< SELECT 缓存是否有效。SELECT cache valid.
+  uint32_t select_cache_ = 0u;  ///< SELECT 缓存值 / SELECT cached value.
+  bool select_valid_ = false;   ///< SELECT 缓存是否有效 / SELECT cache valid.
 };
 
 }  // namespace LibXR::Debug

@@ -50,14 +50,14 @@ class UAC1MicrophoneQ : public DeviceClass
    * @brief 构造 UAC1 队列式麦克风
    *        Construct a queue‑backed UAC1 microphone
    *
-   * @param sample_rate_hz  采样率 | Sampling rate in Hz
-   * @param vol_min         最小音量 | Min volume (1/256 dB)
-   * @param vol_max         最大音量 | Max volume (1/256 dB)
-   * @param vol_res         步进 | Step (1/256 dB)
-   * @param speed           USB 速度 | USB device speed
-   * @param queue_bytes     队列容量 | Queue capacity in bytes
-   * @param interval        端点轮询间隔 | Endpoint interval
-   * @param iso_in_ep_num   ISO IN 端点号 | Isochronous IN endpoint number
+   * @param sample_rate_hz  采样率 / Sampling rate in Hz
+   * @param vol_min         最小音量 / Min volume (1/256 dB)
+   * @param vol_max         最大音量 / Max volume (1/256 dB)
+   * @param vol_res         步进 / Step (1/256 dB)
+   * @param speed           USB 速度 / USB device speed
+   * @param queue_bytes     队列容量 / Queue capacity in bytes
+   * @param interval        端点轮询间隔 / Endpoint interval
+   * @param iso_in_ep_num   ISO IN 端点号 / Isochronous IN endpoint number
    * @param control_interface_string 控制接口字符串 / Control interface string
    * @param streaming_interface_string 流接口字符串 / Streaming interface string
    */
@@ -869,7 +869,7 @@ class UAC1MicrophoneQ : public DeviceClass
   // 音量与静音状态。
   // Volume and mute state.
   uint8_t mute_ = 0;
-  int16_t vol_cur_ = 0;  // 0 dB / 0 dB
+  int16_t vol_cur_ = 0;  // 0 dB
   int16_t vol_min_, vol_max_, vol_res_;
 
   uint8_t interval_;

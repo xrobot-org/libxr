@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @brief writer 执行器的顶层运行期操作码循环。 / Top-level runtime opcode loop for the
+ * @brief writer 执行器的顶层运行期操作码循环 / Top-level runtime opcode loop for the
  * writer executor.
  */
 
@@ -24,9 +24,9 @@ Writer::Executor<Sink>::Executor(Sink& sink, const uint8_t* codes, const uint8_t
  * End or the first sink/runtime error.
  * @tparam Profile 当前编译格式需要的操作码配置 / Opcode profile required by the current
  * compiled format
- * @return Returns `ErrorCode::OK` on normal completion, or the first sink /
- *         runtime error. / 正常结束返回 `ErrorCode::OK`；否则返回首个
- *         sink/运行期错误。
+ * @return 正常结束返回 `ErrorCode::OK`；否则返回首个 sink/运行期错误。
+ *         Returns `ErrorCode::OK` on normal completion, or the first sink / runtime
+ *         error.
  */
 template <OutputSink Sink>
 template <FormatProfile Profile>
@@ -53,9 +53,9 @@ ErrorCode Writer::Executor<Sink>::Run()
  * specialized runtime path.
  * @tparam Profile 当前编译格式需要的操作码配置 / Opcode profile required by the current
  * compiled format
- * @param op Decoded runtime opcode. / 解码后的运行期操作码。
- * @return Returns the specialized runtime result for that opcode. /
- *         返回该操作码对应特化路径的运行结果。
+ * @param op 解码后的运行期操作码 / Decoded runtime opcode.
+ * @return 返回该操作码对应特化路径的运行结果。
+ *         Returns the specialized runtime result for that opcode.
  */
 template <OutputSink Sink>
 template <FormatProfile Profile>

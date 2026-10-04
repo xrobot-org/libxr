@@ -53,9 +53,9 @@ Use the Debug configuration above for everyday development. CI also runs two Rel
 | Release | ON | 优化后保留开发断言 / Keep developer assertions in optimized code |
 | Release | OFF | 使用默认关闭开发断言的配置 / Test with developer assertions disabled by default |
 
-断言宏本身另有四个小测试，分别检查 `ASSERT` 和 `DEV_ASSERT` 开关的四种组合；这四项不是完整测试程序的运行模式。构建时还会检查关闭断言的公共头文件，以及不同打印配置能否编译。测试中的 `TEST_ASSERT` 始终生效。
+断言宏本身另有四个小测试，分别检查 `ASSERT` 和 `DEV_ASSERT` 开关的四种组合；这四项不是完整测试程序的运行模式。构建时还会检查关闭断言的公共头文件，以及不同打印配置能否编译。`stack_insert_nontrivial` 构建一个必须编译失败的源文件，检查 `Stack::Insert` 拒绝不可平凡复制的元素类型。测试中的 `TEST_ASSERT` 始终生效。
 
-Four separate small tests check all on/off combinations of `ASSERT` and `DEV_ASSERT`; they are not four modes of the full test program. The build also checks public headers with assertions disabled and compiles several print configurations. `TEST_ASSERT` in test code is always active.
+Four separate small tests check all on/off combinations of `ASSERT` and `DEV_ASSERT`; they are not four modes of the full test program. The build also checks public headers with assertions disabled and compiles several print configurations. `stack_insert_nontrivial` builds a source file that must fail to compile, checking that `Stack::Insert` rejects an element type that is not trivially copyable. `TEST_ASSERT` in test code is always active.
 
 只构建产品库时设置 `LIBXR_TEST_BUILD=OFF`，此时不构建测试，也不需要 `script`。
 

@@ -80,7 +80,7 @@ class Timebase
   /**
    * @brief 设置时间基就绪状态。
    *        Set the timebase ready flag.
-   * @param ready 是否就绪。Whether the backend is ready.
+   * @param ready 是否就绪 / Whether the backend is ready.
    */
   static void SetReady(bool ready = true) noexcept { ready_ = ready; }
 

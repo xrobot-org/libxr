@@ -53,7 +53,9 @@ void FDCAN::Register(CallbackFD cb, Type type, FilterMode mode, uint32_t start_i
 
 void FDCAN::OnMessage(const FDPack& pack, bool in_isr)
 {
-  ASSERT(pack.type < Type::TYPE_NUM);
+  // FD 帧没有远程帧，订阅表只有 STANDARD 和 EXTENDED 两项。
+  // FD frames have no remote form; the subscriber table holds only STANDARD and EXTENDED.
+  ASSERT(pack.type < Type::REMOTE_STANDARD);
   subscriber_list_fd_[static_cast<uint8_t>(pack.type)].Foreach<Filter>(
       [&](Filter& node)
       {

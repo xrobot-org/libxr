@@ -125,9 +125,9 @@ class WebUsbBosCapability final : public LibXR::USB::BosCapability
     const size_t URL_BODY_LEN = std::strlen(url_body);
     if (URL_BODY_LEN == 0u || URL_BODY_LEN > 252u)
     {
+      // URL descriptor 的总长度由 1 字节表示，且包含前 3 字节头部。
       // The URL descriptor length is stored in one byte and includes the
       // 3-byte header.
-      // URL descriptor 的总长度由 1 字节表示，且包含前 3 字节头部。
       ASSERT(false);
       enabled_ = false;
       platform_cap_.iLandingPage = 0u;

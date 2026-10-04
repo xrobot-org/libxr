@@ -411,8 +411,8 @@ void CH32EndpointOtgHs::Configure(const Config& cfg)
   const size_t buffer_size = GetBuffer().size_;
   if (ep_cfg.type == Type::BULK)
   {
-    // CH32 USBHS bulk endpoints always use the hardware-fixed 512-byte packet size.
     // CH32 USBHS 的 BULK 端点始终使用硬件固定的 512 字节包长。
+    // CH32 USBHS bulk endpoints always use the hardware-fixed 512-byte packet size.
     ASSERT(buffer_size >= 512u);
     ep_cfg.max_packet_size = 512u;
   }
@@ -714,12 +714,12 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
   if (IS_EP0 && IS_OUT)
   {
     auto* rx_ctrl = get_rx_control_addr(GetNumber());
-    // Do not leave EP0 OUT open here. The upper control stack will re-arm it after the
-    // current packet has been fully consumed; otherwise the next session may race stale
-    // EP0 software state and duplicate/skip DFU payload blocks.
     // 这里不要直接把 EP0 OUT 留在 ACK。
     // 上层控制传输栈会在“当前包已经被完整消费”后再重新挂接收；
     // 否则下一轮 session 可能撞上陈旧的 EP0 软件状态，导致 DFU 数据块重复或丢失。
+    // Do not leave EP0 OUT open here. The upper control stack will re-arm it after the
+    // current packet has been fully consumed; otherwise the next session may race stale
+    // EP0 software state and duplicate/skip DFU payload blocks.
     if (size > 0u)
     {
       // 每成功收完一个 EP0 OUT 包，都要推进一次 RX DATA0/DATA1 相位。

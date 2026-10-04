@@ -11,9 +11,9 @@ namespace LibXR::USB
 /**
  * @brief
  * USB HID（Human Interface Device）基类，支持可选 OUT
- * 端点、自动生成描述符，适合键盘、鼠标、手柄等扩展。 USB HID (Human Interface Device)
- * base class with optional OUT endpoint and auto descriptor generation, suitable for
- * extension as keyboard, mouse, gamepad, etc.
+ * 端点、自动生成描述符，适合键盘、鼠标、手柄等扩展。
+ * USB HID (Human Interface Device) base class with optional OUT endpoint and auto
+ * descriptor generation, suitable for extension as keyboard, mouse, gamepad, etc.
  *
  * @tparam REPORT_DESC_LEN 报告描述符长度 / Report descriptor length (bytes)
  * @tparam TX_REPORT_LEN Input Report 长度 / Input report length (bytes)

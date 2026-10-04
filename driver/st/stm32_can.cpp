@@ -7,9 +7,9 @@ using namespace LibXR;
 STM32CAN* STM32CAN::map[STM32_CAN_NUMBER] = {nullptr};
 
 /**
- * @brief 获取 CAN ID Get CAN ID
+ * @brief 获取 CAN ID / Get CAN ID
  *
- * @param addr CAN外设地址 CAN device address
+ * @param addr CAN外设地址 / CAN device address
  * @return stm32_can_id_t
  */
 stm32_can_id_t STM32_CAN_GetID(CAN_TypeDef* addr)

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <type_traits>
+#include <utility>
+
 #include "main.h"
 
 #ifdef HAL_I2C_MODULE_ENABLED
@@ -9,7 +12,7 @@
 #endif
 
 #include "i2c.hpp"
-#include "libxr.hpp"
+#include "libxr_assert.hpp"
 
 typedef enum
 {
@@ -70,6 +73,17 @@ class STM32I2C : public I2C
                      bool in_isr) override;
 
   template <typename, typename = void>
+  struct HasTiming : std::false_type
+  {
+  };
+
+  template <typename T>
+  struct HasTiming<T, std::void_t<decltype(std::declval<T>()->Init.Timing)>>
+      : std::true_type
+  {
+  };
+
+  template <typename, typename = void>
   struct HasClockSpeed : std::false_type
   {
   };
@@ -91,6 +105,18 @@ class STM32I2C : public I2C
       T& i2c_handle, const Configuration& config)
   {
     i2c_handle->Init.ClockSpeed = config.clock_speed;
+  }
+
+  template <typename T>
+  typename std::enable_if<HasTiming<T>::value>::type SetTiming(T& i2c_handle,
+                                                               uint32_t timing)
+  {
+    i2c_handle->Init.Timing = timing;
+  }
+
+  template <typename T>
+  typename std::enable_if<!HasTiming<T>::value>::type SetTiming(T&, uint32_t)
+  {
   }
 
   ErrorCode SetConfig(Configuration config) override;

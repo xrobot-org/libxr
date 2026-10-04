@@ -48,13 +48,13 @@ class Joint
    */
   typedef struct Param
   {
-    Transform<Scalar> parent2this;  ///< 父坐标系到当前关节的变换。 Transform from the
+    Transform<Scalar> parent2this;  ///< 父坐标系到当前关节的变换 / Transform from the
                                     ///< parent frame to the current joint.
-    Transform<Scalar> this2child;   ///< 当前关节到子坐标系的变换。 Transform from the
+    Transform<Scalar> this2child;   ///< 当前关节到子坐标系的变换 / Transform from the
                                     ///< current joint to the child frame.
-    Axis<Scalar> axis;              ///< 关节旋转轴。 Rotation axis of the joint.
+    Axis<Scalar> axis;              ///< 关节旋转轴 / Rotation axis of the joint.
     Scalar
-        ik_mult;  ///< 逆向运动学步长系数。 Step size coefficient for inverse kinematics.
+        ik_mult;  ///< 逆向运动学步长系数 / Step size coefficient for inverse kinematics.
   } Param;
 
   /**
@@ -64,39 +64,39 @@ class Joint
   typedef struct Runtime
   {
     Eigen::AngleAxis<Scalar>
-        state_angle;  ///< 当前关节角度状态。 Current joint angle state.
+        state_angle;  ///< 当前关节角度状态 / Current joint angle state.
     Eigen::AngleAxis<Scalar>
-        target_angle;  ///< 目标关节角度状态。 Target joint angle state.
+        target_angle;  ///< 目标关节角度状态 / Target joint angle state.
 
     Eigen::Matrix<Scalar, 3, 3>
-        inertia;  ///< 关节的惯性矩阵。 Inertia matrix of the joint.
+        inertia;  ///< 关节的惯性矩阵 / Inertia matrix of the joint.
 
-    Axis<Scalar> state_axis;   ///< 当前关节轴向。 Current axis orientation.
-    Axis<Scalar> target_axis;  ///< 目标关节轴向。 Target axis orientation.
+    Axis<Scalar> state_axis;   ///< 当前关节轴向 / Current axis orientation.
+    Axis<Scalar> target_axis;  ///< 目标关节轴向 / Target axis orientation.
 
     Transform<Scalar>
-        state;  ///< 当前状态的变换矩阵。 Transformation matrix of the current state.
+        state;  ///< 当前状态的变换矩阵 / Transformation matrix of the current state.
     Transform<Scalar>
-        target;  ///< 目标状态的变换矩阵。 Transformation matrix of the target state.
+        target;  ///< 目标状态的变换矩阵 / Transformation matrix of the target state.
   } Runtime;
 
-  Runtime runtime_;  ///< 关节的运行时数据。 Runtime data of the joint.
+  Runtime runtime_;  ///< 关节的运行时数据 / Runtime data of the joint.
 
-  Object<Scalar>* parent = nullptr;  ///< 指向父物体的指针。 Pointer to the parent object.
-  Object<Scalar>* child = nullptr;   ///< 指向子物体的指针。 Pointer to the child object.
-  Param param_;                      ///< 关节的参数配置。 Parameters of the joint.
+  Object<Scalar>* parent = nullptr;  ///< 指向父物体的指针 / Pointer to the parent object.
+  Object<Scalar>* child = nullptr;   ///< 指向子物体的指针 / Pointer to the child object.
+  Param param_;                      ///< 关节的参数配置 / Parameters of the joint.
 
   /**
    * @brief 构造 `Joint` 关节对象。
    *        Constructs a `Joint` object.
    *
-   * @param axis 关节旋转轴。 Rotation axis of the joint.
-   * @param parent 关节的父对象。 Parent object of the joint.
-   * @param parent2this 父坐标系到该关节的变换。 Transform from the parent frame to this
-   * joint.
-   * @param child 关节的子对象。 Child object of the joint.
-   * @param this2child 该关节到子坐标系的变换。 Transform from this joint to the child
-   * frame.
+   * @param axis 关节旋转轴 / Rotation axis of the joint.
+   * @param parent 关节的父对象 / Parent object of the joint.
+   * @param parent2this 父坐标系到该关节的变换。
+   * Transform from the parent frame to this joint.
+   * @param child 关节的子对象 / Child object of the joint.
+   * @param this2child 该关节到子坐标系的变换。
+   * Transform from this joint to the child frame.
    *
    * @note 包含动态内存分配。
    *       Contains dynamic memory allocation.
@@ -118,7 +118,7 @@ class Joint
    * 该函数确保角度值在 `[-π, π]` 之间。
    * This function ensures the angle value remains within `[-π, π]`.
    *
-   * @param state 需要设置的角度值（弧度）。 The angle value to be set (in radians).
+   * @param state 需要设置的角度值（弧度） / The angle value to be set (in radians).
    */
   void SetState(Scalar state)
   {
@@ -141,7 +141,7 @@ class Joint
    * 该函数确保目标角度值在 `[-π, π]` 之间。
    * This function ensures the target angle value remains within `[-π, π]`.
    *
-   * @param target 目标角度值（弧度）。 The target angle value (in radians).
+   * @param target 目标角度值（弧度） / The target angle value (in radians).
    */
   void SetTarget(Scalar target)
   {
@@ -165,7 +165,7 @@ class Joint
    * This parameter adjusts the rate of change of the joint during inverse kinematics
    * calculations.
    *
-   * @param mult 逆向运动学步长系数。 The step size coefficient.
+   * @param mult 逆向运动学步长系数 / The step size coefficient.
    */
   void SetBackwardMult(Scalar mult) { param_.ik_mult = mult; }
 };
@@ -185,7 +185,7 @@ template <typename Scalar>
 class Object
 {
  public:
-  typedef List::Node<Joint<Scalar>*> Link;  ///< 关节链接类型。 Type for linking joints.
+  typedef List::Node<Joint<Scalar>*> Link;  ///< 关节链接类型 / Type for linking joints.
 
   /**
    * @brief 物体参数结构体，存储物体的惯性参数。
@@ -203,23 +203,23 @@ class Object
   typedef struct
   {
     Transform<Scalar>
-        state;  ///< 物体的当前状态变换矩阵。 Transformation matrix of the current state.
+        state;  ///< 物体的当前状态变换矩阵 / Transformation matrix of the current state.
     Transform<Scalar>
-        target;  ///< 物体的目标状态变换矩阵。 Transformation matrix of the target state.
+        target;  ///< 物体的目标状态变换矩阵 / Transformation matrix of the target state.
   } Runtime;
 
-  List joints;  ///< 物体的关节列表。 List of joints associated with the object.
+  List joints;  ///< 物体的关节列表 / List of joints associated with the object.
 
-  Joint<Scalar>* parent = nullptr;  ///< 指向父关节的指针。 Pointer to the parent joint.
+  Joint<Scalar>* parent = nullptr;  ///< 指向父关节的指针 / Pointer to the parent joint.
 
-  Param param_;      ///< 物体参数。 Object parameters.
-  Runtime runtime_;  ///< 物体运行时状态。 Object runtime data.
+  Param param_;      ///< 物体参数 / Object parameters.
+  Runtime runtime_;  ///< 物体运行时状态 / Object runtime data.
 
   /**
    * @brief 使用惯性参数构造 `Object` 对象。
    *        Constructs an `Object` using inertia parameters.
    *
-   * @param inertia 物体的惯性参数。 The inertia parameters of the object.
+   * @param inertia 物体的惯性参数 / The inertia parameters of the object.
    */
   Object(Inertia<Scalar>& inertia) : param_({inertia}) {}
 
@@ -271,21 +271,21 @@ class EndPoint : public Object<Scalar>
 {
  private:
   Eigen::Matrix<Scalar, 6, Eigen::Dynamic>* jacobian_matrix_ =
-      nullptr;  ///< 雅可比矩阵，用于逆运动学计算。 Jacobian matrix for inverse kinematics
+      nullptr;  ///< 雅可比矩阵，用于逆运动学计算 / Jacobian matrix for inverse kinematics
                 ///< calculations.
   Eigen::Matrix<Scalar, Eigen::Dynamic, 1>* delta_theta_ =
-      nullptr;  ///< 关节角度调整量。 Joint angle adjustments.
+      nullptr;  ///< 关节角度调整量 / Joint angle adjustments.
   Eigen::Matrix<Scalar, 6, 1> err_weight_ =
-      Eigen::Matrix<Scalar, 6, 1>::Constant(1);  ///< 误差权重矩阵。 Error weight matrix.
-  int joint_num_ = 0;  ///< 机器人末端至基座的关节数量。 Number of joints from the end
+      Eigen::Matrix<Scalar, 6, 1>::Constant(1);  ///< 误差权重矩阵 / Error weight matrix.
+  int joint_num_ = 0;  ///< 机器人末端至基座的关节数量 / Number of joints from the end
                        ///< effector to the base.
 
-  Quaternion<Scalar> target_quat_;  ///< 目标四元数方向。 Target quaternion orientation.
-  Position<Scalar> target_pos_;     ///< 目标位置。 Target position.
+  Quaternion<Scalar> target_quat_;  ///< 目标四元数方向 / Target quaternion orientation.
+  Position<Scalar> target_pos_;     ///< 目标位置 / Target position.
   Scalar max_angular_velocity_ =
-      -1.0;  ///< 最大角速度（若小于 0 则无约束）。 Maximum angular velocity (negative
+      -1.0;  ///< 最大角速度（若小于 0 则无约束） / Maximum angular velocity (negative
              ///< value means no limit).
-  Scalar max_line_velocity_ = -1.0;  ///< 最大线速度（若小于 0 则无约束）。 Maximum linear
+  Scalar max_line_velocity_ = -1.0;  ///< 最大线速度（若小于 0 则无约束） / Maximum linear
                                      ///< velocity (negative value means no limit).
 
  public:
@@ -293,7 +293,7 @@ class EndPoint : public Object<Scalar>
    * @brief 构造 `EndPoint` 末端点对象。
    *        Constructs an `EndPoint` object.
    *
-   * @param inertia 物体的惯性参数。 The inertia parameters of the object.
+   * @param inertia 物体的惯性参数 / The inertia parameters of the object.
    */
   EndPoint(Inertia<Scalar>& inertia) : Object<Scalar>(inertia) {}
 
@@ -301,7 +301,7 @@ class EndPoint : public Object<Scalar>
    * @brief 设置目标四元数方向。
    *        Sets the target quaternion orientation.
    *
-   * @param quat 目标四元数。 The target quaternion.
+   * @param quat 目标四元数 / The target quaternion.
    */
   void SetTargetQuaternion(const Quaternion<Scalar>& quat) { target_quat_ = quat; }
 
@@ -309,7 +309,7 @@ class EndPoint : public Object<Scalar>
    * @brief 设置目标位置。
    *        Sets the target position.
    *
-   * @param pos 目标位置。 The target position.
+   * @param pos 目标位置 / The target position.
    */
   void SetTargetPosition(const Position<Scalar>& pos) { target_pos_ = pos; }
 
@@ -321,7 +321,7 @@ class EndPoint : public Object<Scalar>
    * This matrix is used to adjust the contribution weights of errors in different
    * directions.
    *
-   * @param weight 误差权重矩阵。 The error weight matrix.
+   * @param weight 误差权重矩阵 / The error weight matrix.
    */
   void SetErrorWeight(const Eigen::Matrix<Scalar, 6, 1>& weight) { err_weight_ = weight; }
 
@@ -332,8 +332,8 @@ class EndPoint : public Object<Scalar>
    * 该函数用于限制末端点旋转变化的速率。
    * This function limits the rate of rotational changes at the end effector.
    *
-   * @param velocity 角速度上限（负值表示无限制）。 The maximum angular velocity (negative
-   * value means no limit).
+   * @param velocity 角速度上限（负值表示无限制）。
+   * The maximum angular velocity (negative value means no limit).
    */
   void SetMaxAngularVelocity(Scalar velocity) { max_angular_velocity_ = velocity; }
 
@@ -345,7 +345,7 @@ class EndPoint : public Object<Scalar>
    * This error represents the difference between the current state and the target
    * position.
    *
-   * @return 位置误差向量。 The position error vector.
+   * @return 位置误差向量 / The position error vector.
    */
   Eigen::Matrix<Scalar, 3, 1> GetPositionError()
   {
@@ -359,7 +359,7 @@ class EndPoint : public Object<Scalar>
    * 计算当前方向和目标方向的四元数误差。
    * Computes the quaternion error between the current and target orientations.
    *
-   * @return 方向误差的四元数。 The quaternion representing the orientation error.
+   * @return 方向误差的四元数 / The quaternion representing the orientation error.
    */
   Eigen::Quaternion<Scalar> GetQuaternionError()
   {
@@ -373,8 +373,8 @@ class EndPoint : public Object<Scalar>
    * 该函数用于限制末端点线性移动的速率。
    * This function limits the rate of linear movement at the end effector.
    *
-   * @param velocity 线速度上限（负值表示无限制）。 The maximum linear velocity (negative
-   * value means no limit).
+   * @param velocity 线速度上限（负值表示无限制）。
+   * The maximum linear velocity (negative value means no limit).
    */
   void SetMaxLineVelocity(Scalar velocity) { max_line_velocity_ = velocity; }
 
@@ -387,11 +387,11 @@ class EndPoint : public Object<Scalar>
    * This function uses the Jacobian matrix to compute optimal joint angle adjustments and
    * performs iterative optimization.
    *
-   * @param dt 时间步长。 Time step.
-   * @param max_step 最大迭代步数。 Maximum number of iterations.
-   * @param max_err 允许的最大误差。 Maximum allowable error.
-   * @param step_size 逆运动学步长。 Step size for inverse kinematics.
-   * @return 计算后的误差向量。 The computed error vector.
+   * @param dt 时间步长 / Time step.
+   * @param max_step 最大迭代步数 / Maximum number of iterations.
+   * @param max_err 允许的最大误差 / Maximum allowable error.
+   * @param step_size 逆运动学步长 / Step size for inverse kinematics.
+   * @return 计算后的误差向量 / The computed error vector.
    *
    * @note 包含动态内存分配。
    *       Contains dynamic memory allocation.
@@ -420,7 +420,7 @@ class EndPoint : public Object<Scalar>
       delta_theta_ = new Eigen::Matrix<Scalar, Eigen::Dynamic, 1>(joint_num_);
     }
 
-    /* Apply Limition */
+    /* Apply limits */
     Position<Scalar> target_pos = target_pos_;
     Quaternion<Scalar> target_quat = target_quat_;
     if (max_line_velocity_ > 0 && max_angular_velocity_ > 0)
@@ -560,13 +560,13 @@ template <typename Scalar>
 class StartPoint : public Object<Scalar>
 {
  public:
-  CenterOfMass<Scalar> cog;  ///< 机器人质心。 The center of mass of the robot.
+  CenterOfMass<Scalar> cog;  ///< 机器人质心 / The center of mass of the robot.
 
   /**
    * @brief 构造 `StartPoint` 物体对象。
    *        Constructs a `StartPoint` object.
    *
-   * @param inertia 物体的惯性参数。 The inertia parameters of the object.
+   * @param inertia 物体的惯性参数 / The inertia parameters of the object.
    */
   StartPoint(Inertia<Scalar>& inertia) : Object<Scalar>(inertia) {}
 

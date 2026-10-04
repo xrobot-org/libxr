@@ -626,7 +626,13 @@ void MSPM0UART::ConfigureRxDma()
 
 void MSPM0UART::ApplyConfig(UART::Configuration config)
 {
-  DL_UART_changeConfig(res_.instance);
+  // 配置路径已等待空闲；保留 FEN，避免反复切换 FIFO 暴露旧的 RX 内容。
+  // The configuration path has reached idle. Keep FEN unchanged: toggling FIFO
+  // mode on G3507 can expose previously consumed RX bytes.
+  DL_UART_disable(res_.instance);
+  while (DL_UART_isBusy(res_.instance))
+  {
+  }
 
   DL_UART_WORD_LENGTH word_length = DL_UART_WORD_LENGTH_8_BITS;
   switch (config.data_bits)

@@ -42,16 +42,12 @@ void Timer::Add(TimerHandle handle)
 
 void Timer::Refresh()
 {
+  // 第一次 Add() 才创建任务列表和管理线程；在此之前没有任务可刷新。
+  // The first Add() creates the task list and the management thread; before that there
+  // is no task to refresh.
   if (!LibXR::Timer::list_)
   {
-    LibXR::Timer::list_ = new LibXR::LockFreeList();
-
-#ifndef LIBXR_NOT_SUPPORT_MUTI_THREAD
-
-    auto thread_handle = Thread();
-    thread_handle.Create<void*>(nullptr, RefreshThreadFunction, "libxr_timer_task", 512,
-                                Thread::Priority::HIGH);
-#endif
+    return;
   }
 
   auto fun = [](ControlBlock& block)

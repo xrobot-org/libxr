@@ -20,20 +20,19 @@ namespace LibXR
 class STDIO
 {
  public:
-  // Shared global stdio binding state.
-  // 共享的全局 stdio 绑定状态。
+  // 共享的全局 stdio 绑定状态 / Shared global stdio binding state.
   // NOLINTBEGIN
-  static inline ReadPort* read_ = nullptr;    ///< Read port instance. 读取端口。
-  static inline WritePort* write_ = nullptr;  ///< Write port instance. 写入端口。
+  static inline ReadPort* read_ = nullptr;    ///< 读取端口 / Read port instance.
+  static inline WritePort* write_ = nullptr;  ///< 写入端口 / Write port instance.
   static inline LibXR::Mutex* write_mutex_ =
-      nullptr;  ///< Write port mutex. 写入端口互斥锁。
+      nullptr;  ///< 写入端口互斥锁 / Write port mutex.
   static inline LibXR::WritePort::Stream* write_stream_ =
-      nullptr;  ///< Optional externally owned write stream. 可选的外部托管写流。
+      nullptr;  ///< 可选的外部托管写流 / Optional externally owned write stream.
                 // NOLINTEND
 
  private:
-  // Compiled-format bridge shared by the brace and printf frontends.
   // brace 与 printf 两个前端共用的编译格式桥接层。
+  // Compiled-format bridge shared by the brace and printf frontends.
 
   /**
    * @brief STDIO 编译格式会话使用的流式截断输出端 / Stream-backed truncating sink used by
@@ -67,15 +66,15 @@ class STDIO
     [[nodiscard]] size_t RetainedSize() const { return retained_size_; }
 
    private:
-    WritePort::Stream& stream_;  ///< Active stream session receiving retained bytes.
-                                 ///< 接收保留字节的活动流会话。
-    size_t retained_size_ = 0;   ///< Bytes retained so far. 当前已保留的字节数。
-    bool saturated_ = false;     ///< No more bytes should be retained in this session.
-                                 ///< 当前会话不再继续保留输出。
+    WritePort::Stream& stream_;  ///< 接收保留字节的活动流会话。
+                                 ///< Active stream session receiving retained bytes.
+    size_t retained_size_ = 0;   ///< 当前已保留的字节数 / Bytes retained so far.
+    bool saturated_ = false;     ///< 当前会话不再继续保留输出。
+                                 ///< No more bytes should be retained in this session.
   };
 
-  // Type-erased bridge for one compiled STDIO call.
   // 一次编译格式 STDIO 调用的类型擦除桥接函数。
+  // Type-erased bridge for one compiled STDIO call.
   using CompiledWriteFun = ErrorCode (*)(void* context, CompiledSink& sink);
 
   /**
@@ -88,8 +87,8 @@ class STDIO
   struct CompiledCall
   {
     const CompiledFormat&
-        format;  ///< Compile-time compiled format object. 编译期已编译的格式对象。
-    std::tuple<Args&&...> args;  ///< Forwarded runtime arguments. 转发保存的运行时参数。
+        format;  ///< 编译期已编译的格式对象 / Compile-time compiled format object.
+    std::tuple<Args&&...> args;  ///< 转发保存的运行时参数 / Forwarded runtime arguments.
 
     /**
      * @brief 将当前模板上下文桥接到编译格式前端写入入口 / Bridge the current template

@@ -33,8 +33,8 @@ static void ResetEp0State(OtgHsEndpointMap& map)
   in0->tog0_ = true;
   in0->tog1_ = false;
 
-  // After reset/suspend recovery, EP0 must be ready for the next setup packet.
   // reset/suspend 恢复后，EP0 必须回到等待下一包 setup 的状态。
+  // After reset/suspend recovery, EP0 must be ready for the next setup packet.
   USBHSD->UEP0_TX_CTRL = USBHS_UEP_T_TOG_DATA1 | USBHS_UEP_T_RES_NAK;
   USBHSD->UEP0_RX_CTRL = USBHS_UEP_R_TOG_DATA1 | USBHS_UEP_R_RES_ACK;
 }
@@ -59,10 +59,10 @@ static bool CompleteEp0InBeforeSetup(OtgHsEndpointMap& map, uint8_t int_flag,
     return false;
   }
 
-  // Some setup races report "new setup" and "previous EP0 IN complete" together.
-  // Consume the old EP0 IN completion first, then let setup rebuild the control state.
   // 部分 setup 竞争会把“新 setup 到来”和“上一笔 EP0 IN 完成”同时上报；
   // 这里先消费旧的 EP0 IN 完成，再让 setup 重建控制传输状态。
+  // Some setup races report "new setup" and "previous EP0 IN complete" together.
+  // Consume the old EP0 IN completion first, then let setup rebuild the control state.
   in0->TransferComplete(0u);
   return true;
 }
@@ -75,10 +75,10 @@ static void PrepareEp0ForSetup(OtgHsEndpointMap& map)
   ASSERT(out0 != nullptr);
   ASSERT(in0 != nullptr);
 
-  // A fresh SETUP cancels the previous control transfer, so EP0 must be re-armed
-  // to the default control endpoint shape before the setup packet is dispatched.
   // 新的 SETUP 会中断前一笔控制传输，因此在分发 setup 包之前，
   // 必须先把 EP0 恢复成默认控制端点形态。
+  // A fresh SETUP cancels the previous control transfer, so EP0 must be re-armed
+  // to the default control endpoint shape before the setup packet is dispatched.
   out0->SetState(LibXR::USB::Endpoint::State::IDLE);
   in0->SetState(LibXR::USB::Endpoint::State::IDLE);
   out0->tog0_ = true;
@@ -119,10 +119,10 @@ static void HandleTransferOut(CH32EndpointOtgHs* ep_out, uint8_t ep_num, uint8_t
     return;
   }
 
-  // Some non-EP0 OUT paths may still expose a usable late length snapshot while the
-  // endpoint stays BUSY. Keep that narrow recovery path here.
   // 部分 non-EP0 OUT 路径在端点仍处于 BUSY 时，仍可能给出可用的晚到长度快照；
   // 这里只保留这条窄恢复路径。
+  // Some non-EP0 OUT paths may still expose a usable late length snapshot while the
+  // endpoint stays BUSY. Keep that narrow recovery path here.
   ep_out->TransferComplete(rx_len);
 }
 
@@ -148,10 +148,10 @@ static void HandleTransferIn(CH32EndpointOtgHs* ep_in, uint8_t ep_num, uint8_t i
     return;
   }
 
-  // EP0 data IN may complete after setup arbitration without a visible ACK.
-  // Status ZLP must still stay strict, so only non-zero data stages use this path.
   // EP0 的数据 IN 在 setup 仲裁后也可能没有可见 ACK 就结束；
   // 但 status ZLP 仍然必须保持严格，因此这里只允许非零数据阶段走这条路径。
+  // EP0 data IN may complete after setup arbitration without a visible ACK.
+  // Status ZLP must still stay strict, so only non-zero data stages use this path.
   ep_in->TransferComplete(0u);
 }
 
@@ -165,10 +165,10 @@ static void HandleTransferToken(OtgHsEndpointMap& map, uint8_t int_st)
   {
     case USBHS_UIS_TOKEN_SETUP:
     {
-      // CH32V30x USBHS reports SETUP through SETUP_ACT, so TOKEN_SETUP is
-      // informational only here and must not re-run the setup path.
       // CH32V30x USBHS 通过 SETUP_ACT 上报 SETUP，因此这里的 TOKEN_SETUP
       // 只是信息位，不能再次重复执行 setup 路径。
+      // CH32V30x USBHS reports SETUP through SETUP_ACT, so TOKEN_SETUP is
+      // informational only here and must not re-run the setup path.
       break;
     }
 
@@ -198,11 +198,11 @@ static void ClearPendingOtgHsInterrupts()
     }
     USBHSD->INT_FG = INTFLAG;
 
+    // 这个循环只清理 INT_FG 里已经锁存的位；如果之后又出现新的总线事件，
+    // 硬件会重新触发 IRQ，由下一次进入 handler 时再清。
     // This loop drains only the bits already latched in INT_FG. If hardware
     // observes another bus event later, it will assert a new IRQ and the next
     // handler entry will clear it.
-    // 这个循环只清理 INT_FG 里已经锁存的位；如果之后又出现新的总线事件，
-    // 硬件会重新触发 IRQ，由下一次进入 handler 时再清。
   }
 }
 
@@ -220,10 +220,10 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
 
   auto& map = LibXR::CH32EndpointOtgHs::map_otg_hs_;
 
-  // Handle order matters: recover bus-level events first, then settle EP0 setup
-  // arbitration, and finally dispatch ordinary token completions.
   // 处理顺序很重要：先恢复总线级事件，再收束 EP0 setup 仲裁，
   // 最后分发普通 token 完成事件。
+  // Handle order matters: recover bus-level events first, then settle EP0 setup
+  // arbitration, and finally dispatch ordinary token completions.
   while (true)
   {
     const uint16_t INTFGST = *reinterpret_cast<volatile uint16_t*>(
@@ -239,8 +239,8 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
 
     uint8_t clear_mask = 0;
 
-    // 1) Bus-level recovery: reset/suspend must rebuild EP0 first.
     // 1) 总线级恢复：reset/suspend 必须优先重建 EP0。
+    // 1) Bus-level recovery: reset/suspend must rebuild EP0 first.
     if (INTFLAG & USBHS_UIF_BUS_RST)
     {
       USBHSD->DEV_AD = 0;
@@ -258,10 +258,10 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
       clear_mask |= USBHS_UIF_SUSPEND;
     }
 
-    // 2) Setup arbitration: consume the previous EP0 IN completion before the
-    // new setup resets the control-transfer state.
     // 2) Setup 仲裁：在新 setup 重置控制传输状态之前，
     // 先消费上一笔 EP0 IN 完成。
+    // 2) Setup arbitration: consume the previous EP0 IN completion before the
+    // new setup resets the control-transfer state.
     if (CompleteEp0InBeforeSetup(map, INTFLAG, INTST))
     {
       clear_mask |= USBHS_UIF_TRANSFER;
@@ -279,8 +279,8 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
       clear_mask |= USBHS_UIF_SETUP_ACT;
     }
 
-    // 3) Ordinary token completion: non-setup transfers arrive here.
     // 3) 普通 token 完成：非 setup 传输统一在这里分发。
+    // 3) Ordinary token completion: non-setup transfers arrive here.
     if ((INTFLAG & USBHS_UIF_TRANSFER) && ((clear_mask & USBHS_UIF_TRANSFER) == 0u))
     {
       HandleTransferToken(map, INTST);
@@ -358,8 +358,8 @@ LibXR::ErrorCode CH32USBOtgHS::SetAddress(uint8_t address,
 
 void CH32USBOtgHS::Start(bool)
 {
-  // OTGHS selects the shared 48 MHz source first, then enables its own bus clock.
   // OTGHS 先选择共享 48 MHz 时钟源，再打开 USBHS 自己的总线时钟。
+  // OTGHS selects the shared 48 MHz source first, then enables its own bus clock.
   LibXR::CH32UsbRcc::ConfigureUsb48M();
 #if defined(RCC_AHBPeriph_USBHS)
   RCC_AHBPeriphClockCmd(RCC_AHBPeriph_USBHS, ENABLE);

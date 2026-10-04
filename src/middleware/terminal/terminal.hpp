@@ -20,7 +20,11 @@ namespace LibXR
 /**
  * @brief 基于 RamFS 的命令行终端 / Command-line terminal backed by RamFS.
  * @tparam READ_BUFF_SIZE 读取缓冲区大小 / Read buffer size.
- * @tparam MAX_LINE_SIZE 最大输入行长度 / Maximum input line length.
+ * @tparam MAX_LINE_SIZE 最大输入行长度（字符数）。超出的字符不回显、不写入当前行，
+ *         回车时先输出一行截断提示，再照常执行已保留的部分。
+ *         Maximum input line length in characters. Further characters are neither
+ *         echoed nor stored; on Enter a truncation notice is printed and the kept part
+ *         is executed as usual.
  * @tparam MAX_ARG_NUMBER 最大参数数量 / Maximum argument count.
  * @tparam MAX_HISTORY_NUMBER 最大历史记录数量 / Maximum history entry count.
  */
@@ -80,9 +84,9 @@ class Terminal
    */
   enum class Mode : uint8_t
   {
-    CRLF = 0,  ///< 回车换行 / Carriage Return + Line Feed (\r\n)
-    LF = 1,    ///< 仅换行 / Line Feed (\n)
-    CR = 2     ///< 仅回车 / Carriage Return (\r)
+    CRLF = 0,  ///< 回车换行 / Carriage Return + Line Feed (`\r\n`)
+    LF = 1,    ///< 仅换行 / Line Feed (`\n`)
+    CR = 2     ///< 仅回车 / Carriage Return (`\r`)
   };
 
   /**
@@ -150,15 +154,17 @@ class Terminal
   size_t request_read_size_ =
       0;  ///< 本轮计划读取的字节数 / Byte count requested for the current read attempt.
   RamFS::Dir* current_dir_;        ///< 当前目录 / Current directory
-  uint8_t flag_ansi_ = 0;          ///< ANSI 控制字符状态 ANSI control character state
+  uint8_t flag_ansi_ = 0;          ///< ANSI 控制字符状态 / ANSI control character state
   int offset_ = 0;                 ///< 光标偏移 / Cursor offset
   Stack<char> input_line_;         ///< 输入行缓冲区 / Input line buffer
   char* arg_tab_[MAX_ARG_NUMBER];  ///< 命令参数列表 / Command argument list
   size_t arg_number_ = 0;          ///< 参数数量 / Number of arguments
   Queue<HistoryLine> history_;     ///< 历史命令 / History of commands
   int history_index_ = -1;         ///< 当前历史索引 / Current history index
-  bool linefeed_flag_ = false;     ///< CRLF 抑制标志 CRLF suppression flag
+  bool linefeed_flag_ = false;     ///< CRLF 抑制标志 / CRLF suppression flag
   char linefeed_char_ = '\0';      ///< 上一个换行字符 / Previous line feed character
+  bool line_truncated_ =
+      false;  ///< 当前输入行丢弃过超长字符 / Characters beyond MAX_LINE_SIZE were dropped
 
   /**
    * @brief 行编辑、显示与历史记录实现 / Line editing, display, and command history.

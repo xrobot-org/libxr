@@ -99,6 +99,9 @@ class CH32I2C : public I2C
   void StartTxDma(uint32_t len);
   void StartRxDma(uint32_t len);
 
+  // Caller has either checked idle state or stopped DMA for recovery.
+  void ApplyConfig(Configuration config);
+
   void AbortTransfer(ErrorCode ec);
   void RecoverAfterImmediateFailure();
 

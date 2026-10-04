@@ -142,9 +142,9 @@ template <typename UInt>
  */
 struct IndexingState
 {
-  bool uses_manual = false;    ///< manual field numbering is in use / 正在使用手动编号
-  bool uses_auto = false;      ///< automatic field numbering is in use / 正在使用自动编号
-  size_t next_auto_index = 0;  ///< next automatic argument index / 下一个自动参数索引
+  bool uses_manual = false;    ///< 正在使用手动编号 / manual field numbering is in use
+  bool uses_auto = false;      ///< 正在使用自动编号 / automatic field numbering is in use
+  size_t next_auto_index = 0;  ///< 下一个自动参数索引 / next automatic argument index
 };
 
 /**

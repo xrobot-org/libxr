@@ -5,6 +5,8 @@
  * 用阻塞、轮询和回调方式检查固定寄存器，以及两组调用方数据的写入回读。
  * Check fixed registers and write/readback of two caller-supplied patterns in
  * blocking, polling and callback modes. Device-specific values belong to the caller.
+ * 配置测试另检查固定寄存器读数及传输耗时。
+ * A separate configuration test checks fixed-register data and transfer time.
  */
 #pragma once
 
@@ -13,6 +15,7 @@
 #include "i2c.hpp"
 #include "test_assert.hpp"
 #include "thread.hpp"
+#include "timebase.hpp"
 #include "transfer_wait.hpp"
 
 namespace LibXR::Test
@@ -169,5 +172,67 @@ inline void TestI2CMemWriteRead(I2C& i2c, uint16_t slave_addr, uint16_t mem_addr
       }
     }
   }
+}
+/**
+ * @brief 检查配置后的寄存器读数和耗时 / Check register data and timing after
+ * configuration.
+ * @pre 沿用固定寄存器读取的设备、缓冲区和地址要求。从普通任务调用，总线空闲，
+ *      微秒时间基已初始化，后端支持所选配置。
+ *      Use the same device, buffer and address requirements as the fixed-read test.
+ *      Call from a normal task with an idle bus, a ready microsecond timebase and a
+ *      configuration supported by the backend.
+ * @param i2c 已初始化并独占的总线 / Initialized, exclusively reserved bus.
+ * @param config 后端和从机均支持的时钟配置 / Clock configuration supported by backend and
+ * slave.
+ * @param slave_addr 不带 R/W 位的从机地址 / Slave address without the R/W bit.
+ * @param mem_addr 起始寄存器地址 / Starting register address.
+ * @param addr_length 寄存器地址长度 / Register address width.
+ * @param expected 固定预期字节，决定单次读取长度 / Fixed expected bytes defining each
+ * read length.
+ * @param buffer 独立接收区，容量至少为 expected 大小 / Separate receive storage, at least
+ * expected size.
+ * @param min_elapsed_us 所有读取耗时之和的下限，单位微秒 / Lower bound on summed read
+ * time in microseconds.
+ * @param max_elapsed_us 总耗时上限，包含协议、调用及调度开销 / Upper bound including
+ * protocol, call and scheduling overhead.
+ * @param iterations 读取次数 / Number of reads.
+ * @param timeout_ms 传给每次 BLOCK 操作的超时参数 / Timeout passed to each BLOCK
+ * operation.
+ * @return 实测读取耗时之和，单位微秒 / Measured sum of read times in microseconds.
+ * @note 正常返回后保留新配置；重复调用可检查同配置重设和 A-B-A 切换。
+ *       时钟拉伸和软件间隙也计入测量时间。
+ *       Retains the new configuration. Repeat calls for same-config setup and A-B-A
+ *       switching. Clock stretching and software gaps are part of the measured time.
+ */
+inline uint64_t TestI2CConfig(I2C& i2c, I2C::Configuration config, uint16_t slave_addr,
+                              uint16_t mem_addr, I2C::MemAddrLength addr_length,
+                              ConstRawData expected, RawData buffer,
+                              uint64_t min_elapsed_us, uint64_t max_elapsed_us,
+                              uint32_t iterations = 100, uint32_t timeout_ms = 1000)
+{
+  Detail::CheckI2CRegister(slave_addr, mem_addr, addr_length);
+  Detail::CheckI2CBuffers(expected, buffer);
+  TEST_ASSERT(Timebase::IsReady() && iterations > 0);
+  TEST_ASSERT(min_elapsed_us > 0 && max_elapsed_us >= min_elapsed_us);
+  TEST_ASSERT(timeout_ms > 0 && timeout_ms < UINT32_MAX / 2U);
+  Semaphore semaphore;
+  ReadOperation operation(semaphore, timeout_ms);
+  const RawData read_buffer{buffer.addr_, expected.size_};
+  TEST_ASSERT(i2c.SetConfig(config) == ErrorCode::OK);
+  uint64_t elapsed_us = 0;
+  for (uint32_t round = 0; round < iterations; ++round)
+  {
+    Detail::PoisonI2CBuffer(expected, read_buffer);
+    // 地址阶段、数据传输和完成等待都计时；预填和核对放在区间外。
+    // Include addressing, data transfer and completion wait; prepare and check outside.
+    const auto start = Timebase::GetMicroseconds();
+    TEST_ASSERT(i2c.MemRead(slave_addr, mem_addr, read_buffer, operation, addr_length,
+                            false) == ErrorCode::OK);
+    elapsed_us += (Timebase::GetMicroseconds() - start).ToMicrosecond();
+    TEST_ASSERT(elapsed_us <= max_elapsed_us);
+    Detail::CheckI2CData(expected, read_buffer);
+  }
+  TEST_ASSERT(elapsed_us >= min_elapsed_us);
+  return elapsed_us;
 }
 }  // namespace LibXR::Test

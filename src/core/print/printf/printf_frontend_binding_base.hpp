@@ -12,9 +12,9 @@ namespace FieldSelection
 /**
  * @brief 将一个归一化长度标签转换为描述表索引 / Converts one normalized length tag to its
  * descriptor-table index.
- * @param length Normalized printf length tag. / 归一化后的 printf 长度标签。
- * @return Returns the descriptor-table index for that length. /
- *         返回该长度标签对应的描述表索引。
+ * @param length 归一化后的 printf 长度标签 / Normalized printf length tag.
+ * @return 返回该长度标签对应的描述表索引。
+ *         Returns the descriptor-table index for that length.
  */
 [[nodiscard]] constexpr size_t LengthIndex(Length length)
 {
@@ -24,9 +24,9 @@ namespace FieldSelection
 /**
  * @brief 判断某个前端语义族是否应使用无符号存储与匹配规则 / Returns whether one frontend
  * semantic family should use unsigned storage/rules.
- * @param type Frontend semantic family. / 前端语义族。
- * @return Returns `true` when unsigned storage/rules should be used, otherwise
- *         `false`. / 应使用无符号存储与匹配规则时返回 `true`，否则返回 `false`。
+ * @param type 前端语义族 / Frontend semantic family.
+ * @return 应使用无符号存储与匹配规则时返回 `true`，否则返回 `false`。
+ *         Returns `true` when unsigned storage/rules should be used, otherwise `false`.
  */
 [[nodiscard]] constexpr bool IsUnsignedType(ValueKind type)
 {
@@ -46,9 +46,9 @@ namespace FieldSelection
 /**
  * @brief 在描述表中查找一个源级转换字符 / Looks up one source conversion character in the
  * descriptor table.
- * @param token Source conversion character. / 源级转换字符。
- * @return Returns the matching descriptor, or an empty one when not found. /
- *         返回匹配的描述项；找不到时返回空描述项。
+ * @param token 源级转换字符 / Source conversion character.
+ * @return 返回匹配的描述项；找不到时返回空描述项。
+ *         Returns the matching descriptor, or an empty one when not found.
  */
 [[nodiscard]] consteval SpecifierDescriptor LookupSpecifier(char token)
 {
@@ -100,11 +100,11 @@ namespace FieldSelection
 /**
  * @brief 判断某个长度修饰符对当前说明符家族是否合法 / Returns whether one parsed length
  * modifier is legal for the selected specifier family.
- * @param policy Length-policy family selected by the descriptor. /
- *        描述项选中的长度策略族。
- * @param length Parsed normalized length modifier. / 已解析的归一化长度修饰符。
- * @return Returns `true` when this length is legal for the selected policy,
- *         otherwise `false`. / 当前长度对该策略合法时返回 `true`，否则返回 `false`。
+ * @param policy 描述项选中的长度策略族 / Length-policy family selected by the descriptor.
+ * @param length 已解析的归一化长度修饰符 / Parsed normalized length modifier.
+ * @return 当前长度对该策略合法时返回 `true`，否则返回 `false`。
+ *         Returns `true` when this length is legal for the selected policy, otherwise
+ *         `false`.
  */
 [[nodiscard]] constexpr bool LengthAllowed(LengthPolicy policy, Length length)
 {
@@ -137,10 +137,10 @@ namespace FieldSelection
 /**
  * @brief 判断某个参数规则在当前目标上是否需要 64 位打包存储 / Returns whether one
  * argument rule requires 64-bit packed storage on this target.
- * @param rule Compile-time argument rule. / 编译期参数匹配规则。
- * @return Returns `true` when this rule requires 64-bit packed storage on the
- *         current target, otherwise `false`. / 该规则在当前目标上需要 64 位打包
- *         存储时返回 `true`，否则返回 `false`。
+ * @param rule 编译期参数匹配规则 / Compile-time argument rule.
+ * @return 该规则在当前目标上需要 64 位打包存储时返回 `true`，否则返回 `false`。
+ *         Returns `true` when this rule requires 64-bit packed storage on the current
+ *         target, otherwise `false`.
  */
 [[nodiscard]] consteval bool RuleUses64BitStorage(FormatArgumentRule rule)
 {
@@ -174,9 +174,9 @@ namespace FieldSelection
 /**
  * @brief 判断普通 printf 浮点转换是否降为 double 存储 / Returns whether ordinary printf
  * float conversions lower to double storage.
- * @return Returns `true` when ordinary printf float conversions lower to
- *         double-backed storage, otherwise `false`. / 普通 printf 浮点转换降为
- *         double 存储时返回 `true`，否则返回 `false`。
+ * @return 普通 printf 浮点转换降为 double 存储时返回 `true`，否则返回 `false`。
+ *         Returns `true` when ordinary printf float conversions lower to double-backed
+ *         storage, otherwise `false`.
  */
 [[nodiscard]] constexpr bool UsesDoubleFloatStorage()
 {

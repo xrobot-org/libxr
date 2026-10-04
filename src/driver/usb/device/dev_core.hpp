@@ -32,11 +32,11 @@ class DeviceCore
     UNKNOWN = 0,          ///< 未知 / Unknown
     SETUP_BEFORE_STATUS,  ///< Setup handled, before STATUS IN ZLP is armed
     STATUS_IN_ARMED,      ///< STATUS IN ZLP armed, but not yet completed
-    DATA_OUT,             ///< OUT data stage / OUT data stage
-    STATUS_OUT,           ///< OUT status stage / OUT status stage
-    DATA_IN,              ///< IN data stage / IN data stage
+    DATA_OUT,             ///< OUT data stage
+    STATUS_OUT,           ///< OUT status stage
+    DATA_IN,              ///< IN data stage
     STATUS_IN_COMPLETE,   ///< IN status stage completed
-    ZLP                   ///< ZLP stage marker / ZLP stage marker
+    ZLP                   ///< ZLP stage marker
   };
 
   /**
@@ -46,8 +46,8 @@ class DeviceCore
    * @param spec        USB 规范版本 / USB specification
    * @param speed       设备速度 / Device speed
    * @param packet_size EP0 包长 / EP0 packet size
-   * @param vid         Vendor ID / Vendor ID
-   * @param pid         Product ID / Product ID
+   * @param vid         Vendor ID
+   * @param pid         Product ID
    * @param bcd         设备版本号（BCD）/ Device release number (BCD)
    * @param lang_list   字符串语言包列表 / String language pack list
    * @param configs     配置列表（每个子列表为一个 configuration）

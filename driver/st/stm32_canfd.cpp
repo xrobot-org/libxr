@@ -7,9 +7,9 @@ using namespace LibXR;
 STM32CANFD* STM32CANFD::map[STM32_FDCAN_NUMBER] = {nullptr};
 
 /**
- * @brief 获取 FDCAN ID Get FDCAN ID
+ * @brief 获取 FDCAN ID / Get FDCAN ID
  *
- * @param addr FDCAN外设地址 FDCAN device address
+ * @param addr FDCAN外设地址 / FDCAN device address
  * @return stm32_fdcan_id_t
  */
 stm32_fdcan_id_t STM32_FDCAN_GetID(FDCAN_GlobalTypeDef* addr)
@@ -945,7 +945,10 @@ extern "C" void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef* hcan, uint32_t Rx
   auto can = STM32CANFD::map[STM32_FDCAN_GetID(hcan->Instance)];
   if (can)
   {
-    can->ProcessRxInterrupt(FDCAN_RX_FIFO0);
+    while (HAL_FDCAN_GetRxFifoFillLevel(hcan, FDCAN_RX_FIFO0) > 0U)
+    {
+      can->ProcessRxInterrupt(FDCAN_RX_FIFO0);
+    }
   }
 }
 
@@ -955,7 +958,10 @@ extern "C" void HAL_FDCAN_RxFifo1Callback(FDCAN_HandleTypeDef* hcan, uint32_t Rx
   auto can = STM32CANFD::map[STM32_FDCAN_GetID(hcan->Instance)];
   if (can)
   {
-    can->ProcessRxInterrupt(FDCAN_RX_FIFO1);
+    while (HAL_FDCAN_GetRxFifoFillLevel(hcan, FDCAN_RX_FIFO1) > 0U)
+    {
+      can->ProcessRxInterrupt(FDCAN_RX_FIFO1);
+    }
   }
 }
 

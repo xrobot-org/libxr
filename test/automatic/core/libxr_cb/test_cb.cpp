@@ -145,8 +145,9 @@ void TestEmptyAndDirectCallbacks()
 void TestGuardedAndLambdaCallbacks()
 {
   // Guarded 回调把递归请求留到当前回调返回后处理，最大深度保持为一；再检查 lambda
-  // 的参数传递。 Guarded callbacks defer recursive requests until return, keeping depth
-  // at one; also check lambda arguments.
+  // 的参数传递。
+  // Guarded callbacks defer recursive requests until return, keeping depth at one; also
+  // check lambda arguments.
   {
     GuardedCreationProbe probe;
     probe.cb.Run(false, 1);

@@ -15,8 +15,7 @@ using FatalCallback = LibXR::Callback<const char*, uint32_t>;
 
 namespace Detail
 {
-// Process-global fatal callback storage.
-// 进程级 fatal 回调存根。
+// 进程级 fatal 回调存根 / Process-global fatal callback storage.
 inline FatalCallback fatal_error_callback_;  // NOLINT
 }  // namespace Detail
 

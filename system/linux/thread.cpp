@@ -20,12 +20,12 @@ void Thread::Sleep(uint32_t milliseconds)
   }
 }
 
-void Thread::SleepUntil(MillisecondTimestamp& last_waskup_time, uint32_t time_to_sleep)
+void Thread::SleepUntil(MillisecondTimestamp& last_wakeup_time, uint32_t time_to_sleep)
 {
-  last_waskup_time = last_waskup_time + time_to_sleep;
+  last_wakeup_time = last_wakeup_time + time_to_sleep;
 
   const timespec ts =
-      MonotonicTime::AddMilliseconds(libxr_linux_start_time_spec, last_waskup_time);
+      MonotonicTime::AddMilliseconds(libxr_linux_start_time_spec, last_wakeup_time);
 
   while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, nullptr) == EINTR)
   {

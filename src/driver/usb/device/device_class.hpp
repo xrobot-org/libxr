@@ -98,8 +98,8 @@ class DeviceClass : public ConfigDescriptorItem
    *
    * @param in_isr   是否在 ISR / Whether in ISR context
    * @param bRequest 请求码 / Request code
-   * @param wValue   wValue / wValue
-   * @param wLength  wLength / wLength
+   * @param wValue   wValue
+   * @param wLength  wLength
    * @param out_data 输出：返回给主机的描述符数据（Device->Host）
    *                 Output: descriptor data to return (Device->Host)
    * @return 错误码 / Error code
@@ -121,9 +121,9 @@ class DeviceClass : public ConfigDescriptorItem
    *
    * @param in_isr   是否在 ISR / Whether in ISR context
    * @param bRequest 请求码 / Request code
-   * @param wValue   wValue / wValue
-   * @param wLength  wLength / wLength
-   * @param wIndex   wIndex / wIndex
+   * @param wValue   wValue
+   * @param wLength  wLength
+   * @param wIndex   wIndex
    * @param result   输出：控制传输结果 / Output: control transfer result
    * @return 错误码 / Error code
    */
@@ -178,9 +178,9 @@ class DeviceClass : public ConfigDescriptorItem
    *
    * @param in_isr   是否在 ISR / Whether in ISR context
    * @param bRequest 请求码 / Request code
-   * @param wValue   wValue / wValue
-   * @param wLength  wLength / wLength
-   * @param wIndex   wIndex / wIndex
+   * @param wValue   wValue
+   * @param wLength  wLength
+   * @param wIndex   wIndex
    * @param result   输出：控制传输结果 / Output: control transfer result
    * @return 错误码 / Error code
    */
@@ -198,9 +198,9 @@ class DeviceClass : public ConfigDescriptorItem
   }
 
  private:
+  // 这些辅助函数只在初始化期由 DeviceComposition 调用，不属于对外类接口。
   // These helpers are driven by DeviceComposition during initialization-time string
   // registration and are not part of the public class contract.
-  // 这些辅助函数只在初始化期由 DeviceComposition 调用，不属于对外类接口。
   void SetInterfaceStringBaseIndex(uint8_t string_index);
 
   friend class DeviceComposition;

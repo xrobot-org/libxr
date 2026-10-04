@@ -133,10 +133,10 @@ class Writer
    * for constraints and type deduction
    * @param args 调用点实参 / Call-site arguments
    *
-   * This path is used by formats such as `{1} {0}`: fields are still executed
-   * in source order, but the runtime argument pack must be built in another order.
    * 这条路径用于 `{1} {0}` 这种格式：字段仍然按源串顺序执行，
    * 但运行期参数包要按另一种顺序构造。
+   * This path is used by formats such as `{1} {0}`: fields are still executed
+   * in source order, but the runtime argument pack must be built in another order.
    *
    * @note 这条接口不重新解析源格式串；它直接执行编译好的字节流 / This function does not
    * re-parse the source format string; it executes the compiled byte stream directly
@@ -186,11 +186,11 @@ class Writer
    */
   struct Spec
   {
-    uint8_t flags = 0;  ///< FormatFlag bitset / 字段修饰位集合
-    char fill = ' ';    ///< field fill character / 字段填充字符
-    uint8_t width = 0;  ///< field width, or zero when absent / 字段宽度，未指定时为 0
-    uint8_t precision = unspecified_precision;  ///< precision, or unspecified_precision /
-                                                ///< 字段精度，未指定时为哨兵值
+    uint8_t flags = 0;  ///< 字段修饰位集合 / FormatFlag bitset
+    char fill = ' ';    ///< 字段填充字符 / field fill character
+    uint8_t width = 0;  ///< 字段宽度，未指定时为 0 / field width, or zero when absent
+    uint8_t precision = unspecified_precision;  ///< 字段精度，未指定时为哨兵值
+                                                ///< precision, or unspecified_precision
 
     /**
      * @brief 判断是否请求了左对齐 / Return whether left alignment is requested
@@ -343,13 +343,13 @@ class Writer
    * @brief 返回某个无符号整数在指定进制下所需的最大数字个数 / Return the maximum digit
    * count required for one unsigned integer under the selected radix
    *
+   * 本辅助函数有意使用一个简短且精确的整数除法循环，而不是浮点近似公式。
+   * 它被声明为 `consteval`，只能用于数组长度、`static_assert` 等立即编译期
+   * 场景，因此不会引入任何运行期开销。
    * This helper intentionally uses a short exact integer division loop instead
    * of a floating-point approximation. It is `consteval`, so it can only be
    * used in immediate compile-time contexts such as array extents and
    * `static_assert`, and therefore adds no runtime cost.
-   * 本辅助函数有意使用一个简短且精确的整数除法循环，而不是浮点近似公式。
-   * 它被声明为 `consteval`，只能用于数组长度、`static_assert` 等立即编译期
-   * 场景，因此不会引入任何运行期开销。
    * @tparam UInt 无符号整数类型 / Unsigned integer type
    * @tparam Base 整数进制 / Integer radix
    * @return 返回该整型在所选进制下的最大数字个数 / Returns the maximum digit count under
@@ -420,12 +420,12 @@ class Writer
    * @brief 直接在已生成的数字载荷上应用 `%#o` 的特殊规则 / Apply `%#o` special rules
    * directly onto the generated digit payload
    *
-   * Octal alternate form differs from hex: it is represented by a leading zero
-   * in the digit payload itself, not by a detached prefix string. This helper
-   * also preserves the required single 0 when %#.0o formats zero.
    * 八进制备用格式与十六进制不同：它通过数字载荷本体前导一个 0 来表示，
    * 而不是额外分离出的前缀字符串。本函数也负责在 %#.0o 格式化零值时保留
    * 必需的单个 0。
+   * Octal alternate form differs from hex: it is represented by a leading zero
+   * in the digit payload itself, not by a detached prefix string. This helper
+   * also preserves the required single 0 when %#.0o formats zero.
    * @tparam UInt 无符号整数类型 / Unsigned integer type
    * @param digits 可修改的数字缓冲区 / Mutable digit buffer
    * @param digit_count 当前数字个数 / Current digit count

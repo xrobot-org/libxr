@@ -139,13 +139,42 @@ CH32I2C::CH32I2C(ch32_i2c_id_t id, RawData dma_buff, GPIO_TypeDef* scl_port,
 
 ErrorCode CH32I2C::SetConfig(Configuration config)
 {
-  cfg_ = config;
+  if (instance_ == nullptr || config.clock_speed == 0U)
+  {
+    return ErrorCode::ARG_ERR;
+  }
+  if (config.clock_speed > 400000U)
+  {
+    return ErrorCode::NOT_SUPPORT;
+  }
+  if (recovering_ || DmaBusy() || I2C_GetFlagStatus(instance_, I2C_FLAG_BUSY) != RESET)
+  {
+    return ErrorCode::BUSY;
+  }
 
+  RCC_ClocksTypeDef clocks{};
+  RCC_GetClocksFreq(&clocks);
+  const uint64_t denominator =
+      uint64_t(config.clock_speed) * (config.clock_speed <= 100000U ? 2U : 3U);
+  // CKCFGR.CCR is 12 bits; the SDK otherwise silently truncates low-rate dividers.
+  if (clocks.PCLK1_Frequency == 0U ||
+      (uint64_t(clocks.PCLK1_Frequency) + denominator - 1U) / denominator > 0x0FFFU)
+  {
+    return ErrorCode::NOT_SUPPORT;
+  }
+
+  ApplyConfig(config);
+  cfg_ = config;
+  return ErrorCode::OK;
+}
+
+void CH32I2C::ApplyConfig(Configuration config)
+{
   I2C_Cmd(instance_, DISABLE);
   I2C_DeInit(instance_);
 
   I2C_InitTypeDef init = {};
-  init.I2C_ClockSpeed = cfg_.clock_speed;
+  init.I2C_ClockSpeed = config.clock_speed;
   init.I2C_Mode = I2C_Mode_I2C;
   init.I2C_DutyCycle = I2C_DutyCycle_2;
   init.I2C_OwnAddress1 = 0;
@@ -159,8 +188,8 @@ ErrorCode CH32I2C::SetConfig(Configuration config)
   // 默认 ACK/NACK 状态
   I2C_AcknowledgeConfig(instance_, ENABLE);
   I2C_NACKPositionConfig(instance_, I2C_NACKPosition_Current);
-
-  return ErrorCode::OK;
+  // I2C_DeInit resets CTLR2, including the asynchronous error interrupt.
+  I2C_ITConfig(instance_, I2C_IT_ERR, ENABLE);
 }
 
 bool CH32I2C::WaitEvent(uint32_t evt, uint32_t timeout_us)
@@ -542,7 +571,8 @@ void CH32I2C::RecoverAfterImmediateFailure()
   I2C_GenerateSTOP(instance_, ENABLE);
   if (!WaitFlag(I2C_FLAG_BUSY, RESET, K_DEFAULT_TIMEOUT_US))
   {
-    (void)SetConfig(cfg_);
+    // DMA is stopped; recovery must not use the public BUSY admission check.
+    ApplyConfig(cfg_);
   }
   else
   {
@@ -611,10 +641,10 @@ ErrorCode CH32I2C::Write(uint16_t slave_addr, ConstRawData write_data, WriteOper
   {
     block_wait_.Start(*op.data.sem_info.sem);
   }
+  op.MarkAsRunning();
   I2C_ITConfig(instance_, I2C_IT_ERR, ENABLE);
   StartTxDma(write_data.size_);
 
-  op.MarkAsRunning();
   if (op.type == WriteOperation::OperationType::BLOCK)
   {
     return block_wait_.Wait(op.data.sem_info.timeout);
@@ -670,10 +700,10 @@ ErrorCode CH32I2C::Read(uint16_t slave_addr, RawData read_data, ReadOperation& o
   {
     block_wait_.Start(*op.data.sem_info.sem);
   }
+  op.MarkAsRunning();
   I2C_ITConfig(instance_, I2C_IT_ERR, ENABLE);
   StartRxDma(read_data.size_);
 
-  op.MarkAsRunning();
   if (op.type == ReadOperation::OperationType::BLOCK)
   {
     return block_wait_.Wait(op.data.sem_info.timeout);
@@ -743,10 +773,10 @@ ErrorCode CH32I2C::MemWrite(uint16_t slave_addr, uint16_t mem_addr,
   {
     block_wait_.Start(*op.data.sem_info.sem);
   }
+  op.MarkAsRunning();
   I2C_ITConfig(instance_, I2C_IT_ERR, ENABLE);
   StartTxDma(write_data.size_);
 
-  op.MarkAsRunning();
   if (op.type == WriteOperation::OperationType::BLOCK)
   {
     return block_wait_.Wait(op.data.sem_info.timeout);
@@ -875,10 +905,10 @@ ErrorCode CH32I2C::MemRead(uint16_t slave_addr, uint16_t mem_addr, RawData read_
   {
     block_wait_.Start(*op.data.sem_info.sem);
   }
+  op.MarkAsRunning();
   I2C_ITConfig(instance_, I2C_IT_ERR, ENABLE);
   StartRxDma(read_data.size_);
 
-  op.MarkAsRunning();
   if (op.type == ReadOperation::OperationType::BLOCK)
   {
     return block_wait_.Wait(op.data.sem_info.timeout);
