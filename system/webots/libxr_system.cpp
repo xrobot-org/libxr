@@ -32,8 +32,10 @@ static uint32_t basic_time_step_ms = 1;
 static uint64_t step_interval_ns = 1000000ULL;
 LibXR::condition_var_handle* _libxr_webots_time_notify = nullptr;
 
-static LibXR::Semaphore stdo_sem;
-static LibXR::Semaphore stdi_space_sem;
+// STDIO 线程不会退出，信号量须在进程退出期间保持有效。
+// The STDIO threads never exit, so the semaphores stay valid during process exit.
+static LibXR::Semaphore& stdo_sem = *new LibXR::Semaphore();
+static LibXR::Semaphore& stdi_space_sem = *new LibXR::Semaphore();
 static constexpr size_t host_stdio_queue_bytes = 4096;
 
 struct LibXR::WebotsRealtimeThreadRegistration
