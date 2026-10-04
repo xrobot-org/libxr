@@ -31,11 +31,6 @@ void ExercisePool()
   handle.Reset();
 }
 
-void TestAssertDisabledHeaders()
-{
-  ExercisePool<LibXR::ObjectPool<uint32_t>>();
-  ExercisePool<LibXR::SPSCObjectPool<uint32_t>>();
-  ExercisePool<LibXR::MPMCObjectPool<uint32_t>>();
-}
+void TestAssertDisabledHeaders() { ExercisePool<LibXR::ObjectPool<uint32_t>>(); }
 
 template class LibXR::LinuxSharedTopic<uint32_t>;
