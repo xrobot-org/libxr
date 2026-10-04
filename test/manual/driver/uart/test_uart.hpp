@@ -28,6 +28,8 @@ namespace LibXR::Test
  *      tx/rx must be separate work RAM, disjoint from each other and active backend
  * buffers.
  * @param uart 已初始化且可读写的串口 / Initialized UART with both directions enabled.
+ * @param semaphore 调用方保留的 BLOCK 完成信号量，收发共用 / Caller-retained semaphore
+ * for BLOCK completion, shared by TX and RX.
  * @param tx 发送工作缓冲区，内容会被覆盖 / Transmit work buffer; contents are
  * overwritten.
  * @param rx 接收工作缓冲区，内容会被覆盖 / Receive work buffer; contents are overwritten.
@@ -39,7 +41,7 @@ namespace LibXR::Test
  * @param iterations 重复轮数，每个长度测试三种完成方式 /
  *        Rounds; each length uses all three completion modes.
  */
-inline void TestUARTLoopback(UART& uart, RawData tx, RawData rx,
+inline void TestUARTLoopback(UART& uart, Semaphore& semaphore, RawData tx, RawData rx,
                              std::initializer_list<size_t> lengths,
                              uint32_t timeout_ms = 1000, uint32_t iterations = 100)
 {
@@ -60,7 +62,10 @@ inline void TestUARTLoopback(UART& uart, RawData tx, RawData rx,
   }
   auto* sent = static_cast<uint8_t*>(tx.addr_);
   auto* received = static_cast<uint8_t*>(rx.addr_);
-  Detail::TransferTestCompletion tx_completion(timeout_ms), rx_completion(timeout_ms);
+  // BLOCK 发送和接收在本线程依次完成，可共用一个信号量。
+  // BLOCK TX and RX complete in turn on this thread and can share the semaphore.
+  Detail::TransferTestCompletion tx_completion(semaphore, timeout_ms),
+      rx_completion(semaphore, timeout_ms);
   for (uint32_t round = 0; round < iterations; ++round)
   {
     for (size_t length : lengths)
@@ -116,6 +121,8 @@ inline void TestUARTLoopback(UART& uart, RawData tx, RawData rx,
  * @pre 后端须在空闲配置请求之后，按新配置执行后续收发。
  *      The backend must use the accepted idle configuration for subsequent transfers.
  * @param uart 已初始化的串口 / Initialized UART.
+ * @param semaphore 调用方保留的 BLOCK 完成信号量，收发共用 / Caller-retained semaphore
+ * for BLOCK completion, shared by TX and RX.
  * @param config 后端支持的配置，数据位数不超过 8 / Supported configuration with at most 8
  * data bits.
  * @param tx 发送工作区，其大小为每包长度 / Transmit work buffer; its size is the packet
@@ -134,10 +141,10 @@ inline void TestUARTLoopback(UART& uart, RawData tx, RawData rx,
  * @note 接收数据只比较配置指定的有效低位，缓冲区中的原始高位保持不变。
  *       Compare only the configured low data bits; retain the raw upper bits in RX.
  */
-inline uint64_t TestUARTConfig(UART& uart, UART::Configuration config, RawData tx,
-                               RawData rx, uint64_t min_elapsed_us,
-                               uint64_t max_elapsed_us, uint32_t iterations = 100,
-                               uint32_t timeout_ms = 1000)
+inline uint64_t TestUARTConfig(UART& uart, Semaphore& semaphore,
+                               UART::Configuration config, RawData tx, RawData rx,
+                               uint64_t min_elapsed_us, uint64_t max_elapsed_us,
+                               uint32_t iterations = 100, uint32_t timeout_ms = 1000)
 {
   TEST_ASSERT(Timebase::IsReady() && iterations > 0);
   TEST_ASSERT(min_elapsed_us > 0 && max_elapsed_us >= min_elapsed_us);
@@ -154,9 +161,8 @@ inline uint64_t TestUARTConfig(UART& uart, UART::Configuration config, RawData t
   TEST_ASSERT(tx_begin >= rx_begin ? tx_begin - rx_begin >= rx.size_
                                    : rx_begin - tx_begin >= tx.size_);
   TEST_ASSERT(uart.read_port_->Size() == 0);
-  Semaphore tx_sem, rx_sem;
-  WriteOperation write(tx_sem, timeout_ms);
-  ReadOperation read(rx_sem, timeout_ms);
+  WriteOperation write(semaphore, timeout_ms);
+  ReadOperation read(semaphore, timeout_ms);
   TEST_ASSERT(uart.SetConfig(config) == ErrorCode::OK);
   auto* sent = static_cast<uint8_t*>(tx.addr_);
   auto* received = static_cast<uint8_t*>(rx.addr_);

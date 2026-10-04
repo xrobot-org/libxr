@@ -70,6 +70,8 @@ inline void CheckI2CData(ConstRawData expected, RawData buffer)
  *      Initialize and reserve the bus/device; registers must support stable repeated
  * reads.
  * @param i2c 已初始化的 I2C / Initialized I2C controller.
+ * @param semaphore 调用方保留的 BLOCK 完成信号量 / Caller-retained semaphore for BLOCK
+ * completion.
  * @param slave_addr 不带 R/W 位的从机地址 / Slave address without the R/W bit.
  * @param mem_addr 起始寄存器地址 / Starting register address.
  * @param addr_length 寄存器地址长度 / Register address width.
@@ -81,15 +83,15 @@ inline void CheckI2CData(ConstRawData expected, RawData buffer)
  * limit.
  * @param iterations 轮数，每轮三次读取 / Rounds, with three reads per round.
  */
-inline void TestI2CMemRead(I2C& i2c, uint16_t slave_addr, uint16_t mem_addr,
-                           I2C::MemAddrLength addr_length, ConstRawData expected,
-                           RawData buffer, uint32_t timeout_ms = 1000,
-                           uint32_t iterations = 1000)
+inline void TestI2CMemRead(I2C& i2c, Semaphore& semaphore, uint16_t slave_addr,
+                           uint16_t mem_addr, I2C::MemAddrLength addr_length,
+                           ConstRawData expected, RawData buffer,
+                           uint32_t timeout_ms = 1000, uint32_t iterations = 1000)
 {
   Detail::CheckI2CRegister(slave_addr, mem_addr, addr_length);
   Detail::CheckI2CBuffers(expected, buffer);
   TEST_ASSERT(iterations > 0);
-  Detail::TransferTestCompletion completion(timeout_ms);
+  Detail::TransferTestCompletion completion(semaphore, timeout_ms);
   const RawData read_buffer{buffer.addr_, expected.size_};
   for (uint32_t round = 0; round < iterations; ++round)
   {
@@ -117,6 +119,8 @@ inline void TestI2CMemRead(I2C& i2c, uint16_t slave_addr, uint16_t mem_addr,
  *      The caller handles paging, endurance and saving/restoring old values. Leaves the
  * second pattern.
  * @param i2c 已初始化并独占的总线 / Initialized, exclusively reserved bus.
+ * @param semaphore 调用方保留的 BLOCK 完成信号量 / Caller-retained semaphore for BLOCK
+ * completion.
  * @param slave_addr 不带 R/W 位的从机地址 / Slave address without the R/W bit.
  * @param mem_addr 可读写区域起始地址 / Start of the read/write region.
  * @param addr_length 寄存器地址长度 / Register address width.
@@ -131,9 +135,9 @@ inline void TestI2CMemRead(I2C& i2c, uint16_t slave_addr, uint16_t mem_addr,
  * @param iterations 轮数，每轮各六次写入和读取 / Rounds, each with six writes and six
  * reads.
  */
-inline void TestI2CMemWriteRead(I2C& i2c, uint16_t slave_addr, uint16_t mem_addr,
-                                I2C::MemAddrLength addr_length, ConstRawData first,
-                                ConstRawData second, RawData buffer,
+inline void TestI2CMemWriteRead(I2C& i2c, Semaphore& semaphore, uint16_t slave_addr,
+                                uint16_t mem_addr, I2C::MemAddrLength addr_length,
+                                ConstRawData first, ConstRawData second, RawData buffer,
                                 uint32_t settle_ms = 0, uint32_t timeout_ms = 1000,
                                 uint32_t iterations = 100)
 {
@@ -144,7 +148,7 @@ inline void TestI2CMemWriteRead(I2C& i2c, uint16_t slave_addr, uint16_t mem_addr
   TEST_ASSERT(std::memcmp(first.addr_, second.addr_, first.size_) != 0);
   TEST_ASSERT(settle_ms < UINT32_MAX / 2U && iterations > 0 &&
               iterations <= UINT32_MAX / 4U);
-  Detail::TransferTestCompletion completion(timeout_ms);
+  Detail::TransferTestCompletion completion(semaphore, timeout_ms);
   const ConstRawData patterns[] = {first, second};
   const RawData read_buffer{buffer.addr_, first.size_};
   for (uint32_t round = 0; round < iterations; ++round)
@@ -182,6 +186,8 @@ inline void TestI2CMemWriteRead(I2C& i2c, uint16_t slave_addr, uint16_t mem_addr
  *      Call from a normal task with an idle bus, a ready microsecond timebase and a
  *      configuration supported by the backend.
  * @param i2c 已初始化并独占的总线 / Initialized, exclusively reserved bus.
+ * @param semaphore 调用方保留的 BLOCK 完成信号量 / Caller-retained semaphore for BLOCK
+ * completion.
  * @param config 后端和从机均支持的时钟配置 / Clock configuration supported by backend and
  * slave.
  * @param slave_addr 不带 R/W 位的从机地址 / Slave address without the R/W bit.
@@ -204,18 +210,18 @@ inline void TestI2CMemWriteRead(I2C& i2c, uint16_t slave_addr, uint16_t mem_addr
  *       Retains the new configuration. Repeat calls for same-config setup and A-B-A
  *       switching. Clock stretching and software gaps are part of the measured time.
  */
-inline uint64_t TestI2CConfig(I2C& i2c, I2C::Configuration config, uint16_t slave_addr,
-                              uint16_t mem_addr, I2C::MemAddrLength addr_length,
-                              ConstRawData expected, RawData buffer,
-                              uint64_t min_elapsed_us, uint64_t max_elapsed_us,
-                              uint32_t iterations = 100, uint32_t timeout_ms = 1000)
+inline uint64_t TestI2CConfig(I2C& i2c, Semaphore& semaphore, I2C::Configuration config,
+                              uint16_t slave_addr, uint16_t mem_addr,
+                              I2C::MemAddrLength addr_length, ConstRawData expected,
+                              RawData buffer, uint64_t min_elapsed_us,
+                              uint64_t max_elapsed_us, uint32_t iterations = 100,
+                              uint32_t timeout_ms = 1000)
 {
   Detail::CheckI2CRegister(slave_addr, mem_addr, addr_length);
   Detail::CheckI2CBuffers(expected, buffer);
   TEST_ASSERT(Timebase::IsReady() && iterations > 0);
   TEST_ASSERT(min_elapsed_us > 0 && max_elapsed_us >= min_elapsed_us);
   TEST_ASSERT(timeout_ms > 0 && timeout_ms < UINT32_MAX / 2U);
-  Semaphore semaphore;
   ReadOperation operation(semaphore, timeout_ms);
   const RawData read_buffer{buffer.addr_, expected.size_};
   TEST_ASSERT(i2c.SetConfig(config) == ErrorCode::OK);
