@@ -23,12 +23,16 @@ Add `test/` and `test/manual/driver/` to the application's include paths and cal
 ```cpp
 #include "spi/test_spi.hpp"
 
-void CheckSPI(LibXR::SPI& spi, LibXR::RawData tx, LibXR::RawData rx,
-               std::initializer_list<size_t> lengths)
+void CheckSPI(LibXR::SPI& spi, LibXR::Semaphore& semaphore, LibXR::RawData tx,
+              LibXR::RawData rx, std::initializer_list<size_t> lengths)
 {
-  LibXR::Test::TestSPILoopback(spi, tx, rx, lengths);
+  LibXR::Test::TestSPILoopback(spi, semaphore, tx, rx, lengths);
 }
 ```
+
+`semaphore` 是阻塞方式等待完成所用的信号量，由调用方提供并保留，可供依次执行的各项测试复用。
+
+`semaphore` is the semaphore for blocking completion. The caller provides and retains it and may reuse it for tests run one after another.
 
 选择短包、较长包以及合法的边界长度。如果后端按长度选择不同传输方式，应由调用工程选择能触及这些分支的长度；通用测试不内置 DMA 阈值。
 
@@ -63,13 +67,13 @@ Both work buffers are overwritten and retain the final frame on success. No help
 Use an 8-bit full-duplex master with MOSI wired to MISO and double buffering disabled. Supply equal-size, separate work buffers; their size is the transfer length and must meet backend capacity, alignment and memory-access requirements. Start with an idle bus and an initialized microsecond timebase of sufficient resolution.
 
 ```cpp
-uint64_t CheckSPIConfig(LibXR::SPI& spi, LibXR::SPI::Configuration config,
-                        LibXR::RawData tx, LibXR::RawData rx,
-                        uint64_t min_us, uint64_t max_us)
+uint64_t CheckSPIConfig(LibXR::SPI& spi, LibXR::Semaphore& semaphore,
+                        LibXR::SPI::Configuration config, LibXR::RawData tx,
+                        LibXR::RawData rx, uint64_t min_us, uint64_t max_us)
 {
   // 100 次传输的耗时范围，由调用工程预先确定。
   // The calling project determines the time bounds for 100 transfers in advance.
-  return LibXR::Test::TestSPIConfig(spi, config, tx, rx, min_us, max_us);
+  return LibXR::Test::TestSPIConfig(spi, semaphore, config, tx, rx, min_us, max_us);
 }
 ```
 

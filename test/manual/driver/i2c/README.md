@@ -31,13 +31,18 @@ Add `test/` and `test/manual/driver/` to the application's include paths and cal
 ```cpp
 #include "i2c/test_i2c.hpp"
 
-void CheckRegisters(LibXR::I2C& bus, uint16_t device, uint16_t reg,
-                    LibXR::I2C::MemAddrLength address_length,
+void CheckRegisters(LibXR::I2C& bus, LibXR::Semaphore& semaphore, uint16_t device,
+                    uint16_t reg, LibXR::I2C::MemAddrLength address_length,
                     LibXR::ConstRawData expected, LibXR::RawData buffer)
 {
-  LibXR::Test::TestI2CMemRead(bus, device, reg, address_length, expected, buffer);
+  LibXR::Test::TestI2CMemRead(bus, semaphore, device, reg, address_length, expected,
+                              buffer);
 }
 ```
+
+`semaphore` 是阻塞方式等待完成所用的信号量，由调用方提供并保留，可供依次执行的各项测试复用。
+
+`semaphore` is the semaphore for blocking completion. The caller provides and retains it and may reuse it for tests run one after another.
 
 `expected` 的长度决定每次读取多少字节，`buffer` 至少需要同样大小。预期数据必须保持不变，且不能与实际接收区重叠。调用期间保留总线对象及两个缓冲区；后端完成操作后不得继续访问本次缓冲区或通知对象。
 
@@ -54,7 +59,7 @@ The final arguments are `timeout_ms` and `iterations`, defaulting to 1000 ms and
 `TestI2CMemWriteRead` alternates two caller-provided patterns. After each write completes, wait the specified interval, read back and compare every byte. Patterns must be distinct, equal-sized and legal for the selected region; the test does not invent inverted values for unknown control bits.
 
 ```cpp
-LibXR::Test::TestI2CMemWriteRead(bus, device, reg, address_length,
+LibXR::Test::TestI2CMemWriteRead(bus, semaphore, device, reg, address_length,
                                 first_pattern, second_pattern, buffer);
 ```
 
@@ -77,13 +82,13 @@ Success leaves the second pattern in place. If old values must be preserved, the
 `TestI2CConfig()` applies a caller-supplied clock configuration, repeatedly reads a fixed register with BLOCK `MemRead()`, and checks data and total duration. Use the same register, expected-byte and buffer requirements as the fixed-read test. It does not write register data; call the existing write/readback test separately.
 
 ```cpp
-uint64_t CheckI2CConfig(LibXR::I2C& bus, LibXR::I2C::Configuration config,
-                        uint16_t device, uint16_t reg,
+uint64_t CheckI2CConfig(LibXR::I2C& bus, LibXR::Semaphore& semaphore,
+                        LibXR::I2C::Configuration config, uint16_t device, uint16_t reg,
                         LibXR::I2C::MemAddrLength address_length,
                         LibXR::ConstRawData expected, LibXR::RawData buffer,
                         uint64_t min_us, uint64_t max_us)
 {
-  return LibXR::Test::TestI2CConfig(bus, config, device, reg, address_length,
+  return LibXR::Test::TestI2CConfig(bus, semaphore, config, device, reg, address_length,
                                    expected, buffer, min_us, max_us);
 }
 ```

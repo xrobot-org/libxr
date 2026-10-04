@@ -36,6 +36,8 @@ struct UARTConfigStressResult
  *      tx/rx are separate equal-size work RAM meeting backend requirements and both
  *      port capacities. They must not overlap active backend buffers.
  * @param uart 已初始化的串口 / Initialized UART.
+ * @param semaphore 调用方保留的 BLOCK 完成信号量 / Caller-retained semaphore for BLOCK
+ * completion.
  * @param worker 独占借用的 READY 状态 ASync / Exclusively borrowed READY ASync.
  * @param tx 发送工作区，其大小为每包长度 / TX work buffer; its size is the packet length.
  * @param rx 接收工作区 / RX work buffer.
@@ -54,7 +56,7 @@ struct UARTConfigStressResult
  * passes before return.
  */
 inline UARTConfigStressResult TestUARTConfigStress(
-    UART& uart, ASync& worker, RawData tx, RawData rx,
+    UART& uart, Semaphore& semaphore, ASync& worker, RawData tx, RawData rx,
     std::initializer_list<UART::Configuration> configs, UART::Configuration stable_config,
     uint32_t quiet_ms, uint32_t timeout_ms = 1000, uint32_t iterations = 100)
 {
@@ -119,8 +121,7 @@ inline UARTConfigStressResult TestUARTConfigStress(
       },
       &context);
   WriteOperation write(callback);
-  Semaphore read_sem;
-  ReadOperation read(read_sem, timeout_ms);
+  ReadOperation read(semaphore, timeout_ms);
   auto wait_until = [&](auto finished)
   {
     const uint32_t start = Thread::GetTime();
@@ -184,7 +185,7 @@ inline UARTConfigStressResult TestUARTConfigStress(
   // After request completion, wait for wire drain before discarding switching residue.
   Thread::Sleep(quiet_ms);
   TEST_ASSERT(uart.read_port_->ClearQueuedData() == ErrorCode::OK);
-  TestUARTLoopback(uart, tx, rx, {tx.size_}, timeout_ms, 1);
+  TestUARTLoopback(uart, semaphore, tx, rx, {tx.size_}, timeout_ms, 1);
   TEST_ASSERT(check_tx());
   context.result.write_failed = context.tx_failed.load(std::memory_order_relaxed);
   return context.result;

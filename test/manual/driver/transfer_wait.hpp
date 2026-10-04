@@ -24,7 +24,7 @@ class TransferTestCompletion
   using Mode = Transfer::OperationType;
 
  public:
-  explicit TransferTestCompletion(uint32_t timeout_ms)
+  TransferTestCompletion(Semaphore& semaphore, uint32_t timeout_ms)
       : callback_(Transfer::Callback::Create(
             [](bool, TransferTestCompletion* self, ErrorCode result)
             {
@@ -37,7 +37,7 @@ class TransferTestCompletion
               self->calls_.fetch_add(1, std::memory_order_release);
             },
             this)),
-        operations_{Transfer(semaphore_, timeout_ms), Transfer(status_),
+        operations_{Transfer(semaphore, timeout_ms), Transfer(status_),
                     Transfer(callback_)},
         timeout_ms_(timeout_ms)
   {
@@ -105,7 +105,6 @@ class TransferTestCompletion
   }
 
  private:
-  Semaphore semaphore_;
   std::atomic<Status> status_{Status::READY};
   std::atomic<uint32_t> calls_{0};
   std::atomic<uint32_t> failed_{0};
