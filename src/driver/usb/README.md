@@ -4,7 +4,7 @@
 
 <img src="https://github.com/xrobot-org/LibXR_CppCodeGenerator/raw/master/imgs/XRobot.jpeg" width="300">
 
-A C++20 USB device stack for embedded systems.
+LibXR 的 USB 设备协议栈 / The USB device stack of LibXR
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 [![Documentation](https://img.shields.io/badge/docs-online-brightgreen)](https://xrobot.work/libxr/)
@@ -12,67 +12,66 @@ A C++20 USB device stack for embedded systems.
 
 </div>
 
-## Introduction
+## 介绍 / Introduction
 
-XRUSB is the USB device stack of [LibXR](https://github.com/xrobot-org/libxr), located in `src/driver/usb`. XRUSB focuses on portability, high performance, and easy integration.
+XRUSB 是 [LibXR](https://github.com/xrobot-org/libxr) 的 USB 设备协议栈，用 C++20 编写，位于
+`src/driver/usb`。`core/` 生成设备、配置、字符串和 BOS 描述符并管理端点池，`device/` 是设备核心、
+组合设备和各设备类。一个组合设备可以包含多个设备类，初始化时各设备类从端点池申请所需的端点。这个目录
+只有平台无关的代码，USB 设备控制器的驱动位于各平台的 `driver/<平台>/`，例如 `driver/st/stm32_usb_dev.cpp`、
+`driver/ch/ch32_usb_otghs.cpp` 和 `driver/esp/esp_usb_dev.cpp`。
 
-## Key Features
+XRUSB is the USB device stack of [LibXR](https://github.com/xrobot-org/libxr), written in C++20,
+in `src/driver/usb`. `core/` builds the device, configuration, string and BOS descriptors and
+manages the endpoint pool; `device/` holds the device core, the composite device and the device
+classes. A composite device can contain several device classes, and each class takes the
+endpoints it needs from the endpoint pool at initialization. This directory holds only
+platform-independent code; the USB device controller drivers are in `driver/<platform>/` of each
+platform, such as `driver/st/stm32_usb_dev.cpp`, `driver/ch/ch32_usb_otghs.cpp` and
+`driver/esp/esp_usb_dev.cpp`.
 
-* **Modern C++ Implementation**: Written in C++20, using classes and template-based modular encapsulation for easy extension.
-* **Lock-Free Data Structures**: All data transfers and event handling are lock-free and thread-safe for maximum efficiency.
-* **Double Buffering Mechanism**: Fully utilizes hardware/software double buffers and DMA. Alternating read/write greatly increases data throughput.
-* **Dynamic Endpoint Allocation**: Endpoints are allocated on demand during enumeration; multiple classes can automatically manage and reuse endpoints to avoid resource waste.
-* **One-Time Memory Allocation**: All memory is determined at compile time and allocated once at construction. No redundant space is reserved for strings/descriptors.
-* **Interrupt-Driven**: Operates fully by hardware interrupts, with no reliance on polling or background threads.
-* **Interrupt-Safe**: Driver functions can be called directly from ISR (Interrupt Service Routine).
-* **Optimized Memory Copy**: Achieves higher throughput for bulk transfers and descriptor processing.
+[平台外设支持列表](../../../doc/support.md)中的 `USB-DEVICE` 指 XRUSB 使用的 USB 设备控制器。ESP32-C3 和
+ESP32-C6 的 `CDC-JTAG` 由 `driver/esp/esp_cdc_jtag.*` 实现，使用芯片自带的 USB Serial/JTAG 控制器，不经过
+XRUSB。
 
-## Device Drivers
+`USB-DEVICE` in the [platform peripheral support list](../../../doc/support.md) means the USB
+device controller used by XRUSB. `CDC-JTAG` on ESP32-C3 and ESP32-C6 is implemented by
+`driver/esp/esp_cdc_jtag.*` on the chip's own USB Serial/JTAG controller and does not use XRUSB.
 
-`src/driver/usb` contains only platform-independent stack code; the platform device drivers are under `driver/<platform>/`, such as:
+## 设备类 / Device Classes
 
-- `driver/st/stm32_usb_ep.cpp`
-- `driver/ch/ch32_usb_endpoint_otghs.cpp`
-- `driver/esp/esp_usb_dev.cpp`
+| 设备类 / Class | 头文件 / Header | 说明 / Notes |
+| --- | --- | --- |
+| CDC-ACM | `device/cdc/cdc_uart.hpp`、`cdc_to_uart.hpp` | `CDCUart` 作为 `LibXR::UART` 使用；`CDCToUart` 把 CDC 与一个 UART 双向桥接 / `CDCUart` is used as a `LibXR::UART`; `CDCToUart` bridges CDC and a UART in both directions |
+| HID | `device/hid/hid_keyboard.hpp`、`hid_mouse.hpp`、`hid_gamepad.hpp` | 键盘、鼠标和手柄；其他报告由 `HID` 派生 / Keyboard, mouse and gamepad; other reports derive from `HID` |
+| UAC | `device/uac/uac_mic.hpp` | UAC1 麦克风 / UAC1 microphone |
+| GS USB | `device/gsusb/gs_usb.hpp` | CAN 与 CAN FD 适配器，Linux 内核自带的 gs_usb 驱动把它作为 SocketCAN 接口 / CAN and CAN FD adapter that the gs_usb driver of the Linux kernel exposes as a SocketCAN interface |
+| DAPLink V1 | `device/dap/daplink_v1.hpp` | CMSIS-DAP v1（HID），SWD 与 JTAG / CMSIS-DAP v1 (HID), SWD and JTAG |
+| DAPLink V2 | `device/dap/daplink_v2.hpp` | CMSIS-DAP v2（Bulk），SWD 与 JTAG，可用于 Keil 和 OpenOCD / CMSIS-DAP v2 (Bulk), SWD and JTAG, works with Keil and OpenOCD |
+| DFU | `device/dfu/dfu.hpp`、`dfu_bootloader.hpp` | DFU 运行时接口和单镜像 bootloader / DFU runtime interface and single-image bootloader |
+| BOS | `device/bos/webusb.hpp`、`winusb_msos20.hpp` | WebUSB 与 WinUSB MS OS 2.0 描述符 / WebUSB and WinUSB MS OS 2.0 descriptors |
 
-Note:
+`device/cdc/cdc_test.hpp` 中的 `CDCWriteTest` 和 `CDCReadTest` 用于测试 CDC 的传输。
 
-- `USB-DEVICE` in the [platform peripheral support list](../../../doc/support.md) refers to the native USB device controller path used by XRUSB.
-- Mainline libxr currently provides `CDC-JTAG` on ESP32-C3/ESP32-C6 via `driver/esp/esp_cdc_jtag.*`; this is a separate dedicated USB Serial/JTAG UART backend, not the generic XRUSB device-controller path.
+`CDCWriteTest` and `CDCReadTest` in `device/cdc/cdc_test.hpp` test CDC transfers.
 
-## Support Status
+## 设备控制器 / Device Controllers
 
-### Device Stack
+| 平台 / Platform | 控制器 / Controller | 驱动 / Driver | 测试设备 / Tested on |
+| --- | --- | --- | --- |
+| STM32 | FSDEV（`USB_BASE`、`USB_DRD_FS`） | `driver/st/stm32_usb_dev.cpp` | STM32F103、STM32G431 |
+| STM32 | OTG FS（`USB_OTG_FS`） | `driver/st/stm32_usb_dev.cpp` | STM32F407 |
+| STM32 | OTG HS（`USB_OTG_HS`） | `driver/st/stm32_usb_dev.cpp` | STM32F407、STM32H750 |
+| ESP32-S3 | OTG FS | `driver/esp/esp_usb_dev.cpp` | ESP32-S3 |
+| CH32 | FSDEV | `driver/ch/ch32_usb_devfs.cpp` | CH32V203 |
+| CH32 | USBFS（OTG FS） | `driver/ch/ch32_usb_otgfs.cpp` | CH32V307、CH32V203、CH32V208 |
+| CH32 | USBHS（OTG HS） | `driver/ch/ch32_usb_otghs.cpp` | CH32V307 |
 
-| Protocol   | Status                        | Notes                                                                                          |
-| ---------- | ----------------------------- | ---------------------------------------------------------------------------------------------- |
-| CDC-ACM    | Supported                     | Implemented as LibXR’s UART class                                                              |
-| HID        | Supported                     | Only standard keyboard/mouse and remote controller; other types require you to derive your own |
-| UAC        | Supported                     | Currently implements a UAC 1.0 microphone only                                                 |
-| GSUSB      | Supported (CAN/FDCAN)         | Driverless SocketCAN on Linux                                                                  |
-| DAPLINK V2 | Supported (SWD and JTAG)      | Can be used with Keil/OpenOCD                                                                  |
+STM32 驱动按 CMSIS 设备头文件中定义的外设宏编译对应的控制器。
 
-### Host Stack
+The STM32 driver compiles the controllers whose peripheral macros the CMSIS device header defines.
 
-TODO
+## 文档 / Documentation
 
-### Platform Support
+用法见 LibXR 文档中的 [XRUSB 协议栈](https://xrobot.work/docs/xrusb)。
 
-| Platform | Phy           | Status             | Test Device                |
-| -------- | ------------- | ------------------ | -------------------------- |
-| STM32    | USB_DEVICE_FS | Supported          | STM32F103                  |
-| STM32    | USB_DRV_FS    | Supported (Device) | STM32G431                  |
-| STM32    | USB_OTG_FS    | Supported (Device) | STM32F407                  |
-| STM32    | USB_OTG_HS    | Supported (Device) | STM32F407/STM32H750        |
-| ESP32-S3 | USB_OTG_FS    | Supported (Device) | ESP32-S3                   |
-| CH32     | USB_DEVICE_FS | Supported          | CH32V203                   |
-| CH32     | USB_OTG_FS    | Supported (Device) | CH32V307/CH32V203/CH32V208 |
-| CH32     | USB_OTG_HS    | Supported (Device) | CH32V307                   |
-
-Note:
-
-- The current ESP native USB device backend is implemented for `ESP32-S3`.
-
-## Documentation
-
-Released together with the [LibXR documentation](https://xrobot.work/en/docs/xrusb).
+Usage is described in [XRUSB Stack](https://xrobot.work/en/docs/xrusb) of the LibXR documentation.
