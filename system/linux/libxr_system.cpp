@@ -21,8 +21,10 @@ struct timespec libxr_linux_start_time_spec;  // NOLINT
 
 static LibXR::LinuxTimebase libxr_linux_timebase;
 
-static LibXR::Semaphore stdo_sem;
-static LibXR::Semaphore stdi_space_sem;
+// STDIO 线程不会退出，信号量须在进程退出期间保持有效。
+// The STDIO threads never exit, so the semaphores stay valid during process exit.
+static LibXR::Semaphore& stdo_sem = *new LibXR::Semaphore();
+static LibXR::Semaphore& stdi_space_sem = *new LibXR::Semaphore();
 static constexpr size_t host_stdio_queue_bytes = 4096;
 
 namespace
