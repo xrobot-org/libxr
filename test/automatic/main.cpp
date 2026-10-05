@@ -234,7 +234,8 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"data_structure_tests", {"list", &RunVoidEntry<test_list>, false}},
     {"data_structure_tests", {"lockfree_list", &RunVoidEntry<test_lockfree_list>, false}},
     {"data_structure_tests", {"double_buffer", &RunVoidEntry<test_double_buffer>, false}},
-    {"data_structure_tests", {"latest_snapshot", &RunVoidEntry<test_latest_snapshot>, false}},
+    {"data_structure_tests",
+     {"latest_snapshot", &RunVoidEntry<test_latest_snapshot>, false}},
     {"data_structure_tests", {"type", &RunVoidEntry<test_type>, false}},
     {"data_structure_tests", {"string", &RunVoidEntry<test_string>, false}},
 

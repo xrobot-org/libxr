@@ -13,9 +13,11 @@ namespace LibXR
  *        Single-producer, single-consumer mailbox that keeps only the latest complete
  *        value
  *
- * 内部有三个槽：生产者独占后槽，消费者独占前槽，中间槽由一个原子状态交给对方，承载最新一次
- * 完成的发布。连续的 Store() 可以覆盖消费者尚未取走的中间值，但不会覆盖消费者正在拷贝的值。
- * 适用于只关心最新数据的场合，例如在接收中断里保存最新的反馈帧，由控制线程读取。
+ * 内部有三个槽：生产者独占后槽，消费者独占前槽，中间槽由一个原子状态
+ * 交给对方，承载最新一次完成的发布。连续的 Store() 可以覆盖消费者尚未
+ * 取走的中间值，但不会覆盖消费者正在拷贝的值。适用于只关心最新数据的
+ * 场合，例如在接收中断里保存最新的反馈帧，由控制线程读取。
+ *
  * The three slots are a back slot owned by the producer, a front slot owned by the
  * consumer, and a middle slot handed over through one atomic state, which carries the
  * latest completed publication. Repeated Store() calls may overwrite a middle value the
@@ -25,8 +27,9 @@ namespace LibXR
  *
  * @tparam T 可拷贝构造、可拷贝赋值的值类型 / Copy-constructible, copy-assignable value
  *           type
- * @warning 只能有一个生产者调用 Store()，一个串行的消费者调用 LoadLatest()；生产者与消费者
- *          的调用可以在不同核、线程或中断中重叠。
+ * @warning 只能有一个生产者调用 Store()，一个串行的消费者调用
+ *          LoadLatest()；生产者与消费者的调用可以在不同核、线程或中断中
+ *          重叠。
  *          Exactly one producer may call Store(), and exactly one serialized consumer may
  *          call LoadLatest(); producer and consumer calls may overlap on different cores
  *          or in thread and interrupt contexts.
@@ -56,7 +59,9 @@ class LatestSnapshot
   /**
    * @brief 发布一个完整的值 / Publish one complete value
    *
-   * 先把值拷入生产者独占的后槽，再把该槽作为最新的中间槽交给消费者。只能由唯一的生产者调用。
+   * 先把值拷入生产者独占的后槽，再把该槽作为最新的中间槽交给消费者。
+   * 只能由唯一的生产者调用。
+   *
    * The value is copied into the producer-owned back slot before that slot is released
    * to the consumer as the newest middle slot. Only the single producer may call it.
    *
@@ -74,7 +79,9 @@ class LatestSnapshot
   /**
    * @brief 把最新的完整值拷入 output / Copy the latest complete value into output
    *
-   * 有新的发布时先取得它；没有时 output 得到消费者上一次取得的值。只能由唯一的消费者串行调用。
+   * 有新的发布时先取得它；没有时 output 得到消费者上一次取得的值。只能
+   * 由唯一的消费者串行调用。
+   *
    * A newer publication is acquired first; without one, output receives the value the
    * consumer acquired last. Only the single consumer may call it, one call at a time.
    *

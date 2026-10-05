@@ -175,7 +175,8 @@ void TestConcurrentPublicationStress()
   std::thread producer(
       [&]
       {
-        TEST_ASSERT(WaitUntil([&] { return start.load(std::memory_order_acquire) != 0U; }));
+        TEST_ASSERT(
+            WaitUntil([&] { return start.load(std::memory_order_acquire) != 0U; }));
         for (uint32_t sequence = 1U; sequence <= publication_count; ++sequence)
         {
           snapshot.Store(MakeSnapshot(sequence));
