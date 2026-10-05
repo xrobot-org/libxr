@@ -55,8 +55,8 @@ MSPM0GPIO::MSPM0GPIO(GPIO_Regs* port, uint32_t pin_mask, uint32_t pincm)
 
   ASSERT(port_idx >= 0 && port_idx < LibXR::MAX_PORTS);
   // 端口来自固定配置，前提已由 ASSERT 检查；关闭检查时告知编译器该前提成立。
-  // The port is fixed configuration checked by the ASSERT above; with checks off, tell the
-  // compiler that the precondition holds.
+  // The port is fixed configuration checked by the ASSERT above; with checks off, tell
+  // the compiler that the precondition holds.
   if (port_idx < 0 || port_idx >= LibXR::MAX_PORTS)
   {
     __builtin_unreachable();
