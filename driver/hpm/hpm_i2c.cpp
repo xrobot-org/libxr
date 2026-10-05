@@ -81,12 +81,10 @@ ErrorCode HPMI2C::SetWaitPolicy(WaitPolicy policy)
     return ErrorCode::ARG_ERR;
   }
 
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return ErrorCode::BUSY;
   }
-#endif
 
   wait_policy_ = policy;
   return ErrorCode::OK;
@@ -131,9 +129,7 @@ extern "C" void libxr_hpm_i2c_wait_relax_hook(void) __attribute__((weak));
 #define LIBXR_HPM_I2C_HAS_WAIT_RELAX_HOOK 0
 #endif
 
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
 #include "hpm_i2c_platform.hpp"
-#endif
 
 namespace
 {
@@ -148,7 +144,6 @@ constexpr uint16_t kI2CFlagWriteCheckAck = I2C_WRITE_CHECK_ACK;
 
 // DMA manager state and ISR instance slots stay in this TU to avoid build-system
 // churn; platform resource resolution lives in hpm_i2c_platform.hpp.
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
 static_assert(sizeof(uintptr_t) <= sizeof(uint32_t),
               "HPM I2C DMA helper assumes a 32-bit address space.");
 
@@ -174,9 +169,7 @@ using HPMI2CPlatform::kInvalidDmaSource;
 using HPMI2CPlatform::ResolveBoardI2cDmaSource;
 using HPMI2CPlatform::ResolveBoardI2cIrq;
 using HPMI2CPlatform::ResolveI2cIndex;
-#endif
 
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
 #if LIBXR_HPM_I2C_HAS_L1C
 static bool ResolveDCacheRange(const void* addr, uint32_t size, uint32_t& start,
                                uint32_t& aligned_size)
@@ -232,9 +225,7 @@ static void FlushDCacheIfNeeded(const void* addr, uint32_t size)
   UNUSED(size);
 #endif
 }
-#endif
 
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
 static void InvalidateDCacheIfNeeded(const void* addr, uint32_t size)
 {
 #if LIBXR_HPM_I2C_HAS_L1C
@@ -252,7 +243,6 @@ static void InvalidateDCacheIfNeeded(const void* addr, uint32_t size)
   UNUSED(size);
 #endif
 }
-#endif
 
 void I2cWaitRelax()
 {
@@ -513,7 +503,7 @@ hpm_stat_t DoManualTransferWithFlagsImpl(I2C_Type* i2c, uint16_t slave_addr, Raw
 
 }  // namespace
 
-#if LIBXR_HPM_I2C_HAS_DMA_MGR && LIBXR_HPM_I2C_HAS_INTERRUPT
+#if LIBXR_HPM_I2C_HAS_INTERRUPT
 extern "C" void libxr_hpm_i2c_process_interrupt(I2C_Type* ptr)
 {
   const int32_t index = ResolveI2cIndex(ptr);
@@ -566,6 +556,9 @@ HPMI2C::HPMI2C(I2C_Type* i2c, clock_name_t clock, bool auto_board_init,
 {
   ASSERT(i2c_ != nullptr);
 
+  // Shared dma_mgr init must run in thread context, before any async request.
+  HPMDmaManager::EnsureInitialized();
+
 #if LIBXR_HPM_I2C_HAS_BOARD_HELPER
   if (auto_board_init_)
   {
@@ -600,14 +593,12 @@ ErrorCode HPMI2C::SetAddressMode(AddressMode mode)
     return ErrorCode::OK;
   }
 
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return ErrorCode::BUSY;
   }
   DisableAsyncI2cIrq();
   StopAsyncDma();
-#endif
   IssueStopAndWait(i2c_, wait_policy_);
   (void)WaitForBusIdle(i2c_, wait_policy_.bus_idle_timeout_us);
 
@@ -678,7 +669,6 @@ ErrorCode HPMI2C::ResolveMode(uint32_t clock_speed, i2c_mode_t& mode)
   return ErrorCode::OK;
 }
 
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
 ErrorCode HPMI2C::ConvertDmaStatus(hpm_stat_t status)
 {
   switch (status)
@@ -693,7 +683,6 @@ ErrorCode HPMI2C::ConvertDmaStatus(hpm_stat_t status)
       return ErrorCode::FAILED;
   }
 }
-#endif
 
 i2c_seq_transfer_opt_t HPMI2C::ConvertSequenceFrame(SequenceFrame frame)
 {
@@ -850,7 +839,6 @@ void HPMI2C::TryRecoverBusLines()
 #endif
 }
 
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
 uint32_t HPMI2C::ToSystemAddress(const void* addr)
 {
   return core_local_mem_to_sys_address(HPM_CORE0, ToHpmI2cDmaAddress(addr));
@@ -1522,7 +1510,7 @@ ErrorCode HPMI2C::EnsureAsyncDmaReady()
     return ErrorCode::NOT_SUPPORT;
   }
 
-  dma_mgr_init();
+  // dma_mgr was initialized once by the constructor.
 #if defined(BOARD_APP_I2C_DMA)
   hpm_stat_t status =
       dma_mgr_request_specified_resource(&async_dma_resource_, BOARD_APP_I2C_DMA);
@@ -1779,7 +1767,6 @@ void HPMI2C::OnDmaAbortCallback(DMA_Type* base, uint32_t channel, void* cb_data_
   AsyncCompletionStateMachine::MarkFailure(self->async_ctx_, status_fail, true);
   self->CompleteAsyncTransfer(true, ErrorCode::FAILED);
 }
-#endif
 
 ErrorCode HPMI2C::ValidateTransferArgs(uint16_t slave_addr, RawData data,
                                        bool allow_zero_size) const
@@ -1844,12 +1831,10 @@ ErrorCode HPMI2C::SetConfig(Configuration config)
   {
     return ErrorCode::PTR_NULL;
   }
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return ErrorCode::BUSY;
   }
-#endif
   if ((i2c_get_status(i2c_) & I2C_STATUS_BUSBUSY_MASK) != 0U)
   {
     return ErrorCode::BUSY;
@@ -1867,7 +1852,6 @@ ErrorCode HPMI2C::Read(uint16_t slave_addr, RawData read_data, ReadOperation& op
     return FinishOperation(op, in_isr, arg_ans);
   }
 
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return FinishOperation(op, in_isr, ErrorCode::BUSY);
@@ -1882,7 +1866,6 @@ ErrorCode HPMI2C::Read(uint16_t slave_addr, RawData read_data, ReadOperation& op
     }
     return ans;
   }
-#endif
 
   ErrorCode ans = EnsureControllerReady();
   if (ans != ErrorCode::OK)
@@ -1904,12 +1887,10 @@ ErrorCode HPMI2C::Read(uint16_t slave_addr, RawData read_data, ReadOperation& op
 ErrorCode HPMI2C::DoSequenceWrite(uint16_t slave_addr, ConstRawData write_data,
                                   SequenceFrame frame, bool check_ack)
 {
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return ErrorCode::BUSY;
   }
-#endif
 
   ErrorCode ans = EnsureControllerReady();
   if (ans != ErrorCode::OK)
@@ -1964,12 +1945,10 @@ ErrorCode HPMI2C::DoSequenceWrite(uint16_t slave_addr, ConstRawData write_data,
 ErrorCode HPMI2C::DoSequenceRead(uint16_t slave_addr, RawData read_data,
                                  SequenceFrame frame)
 {
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return ErrorCode::BUSY;
   }
-#endif
 
   ErrorCode ans = EnsureControllerReady();
   if (ans != ErrorCode::OK)
@@ -2013,12 +1992,10 @@ ErrorCode HPMI2C::DoSequenceRead(uint16_t slave_addr, RawData read_data,
 
 ErrorCode HPMI2C::DoTransferWithFlags(uint16_t slave_addr, RawData data, uint16_t flags)
 {
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return ErrorCode::BUSY;
   }
-#endif
 
   ErrorCode ans = EnsureControllerReady();
   if (ans != ErrorCode::OK)
@@ -2039,12 +2016,10 @@ ErrorCode HPMI2C::DoTransferWithFlags(uint16_t slave_addr, RawData data, uint16_
 hpm_stat_t HPMI2C::DoManualTransferWithFlags(uint16_t slave_addr, RawData data,
                                              uint16_t flags)
 {
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return status_i2c_bus_busy;
   }
-#endif
 
   return DoManualTransferWithFlagsImpl(i2c_, slave_addr, data, flags, wait_policy_);
 }
@@ -2058,12 +2033,10 @@ ErrorCode HPMI2C::SequenceWrite(uint16_t slave_addr, ConstRawData write_data,
   {
     return FinishOperation(op, in_isr, arg_ans);
   }
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return FinishOperation(op, in_isr, ErrorCode::BUSY);
   }
-#endif
   return FinishOperation(op, in_isr,
                          DoSequenceWrite(slave_addr, write_data, frame, check_ack));
 }
@@ -2076,12 +2049,10 @@ ErrorCode HPMI2C::SequenceRead(uint16_t slave_addr, RawData read_data,
   {
     return FinishOperation(op, in_isr, arg_ans);
   }
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return FinishOperation(op, in_isr, ErrorCode::BUSY);
   }
-#endif
   return FinishOperation(op, in_isr, DoSequenceRead(slave_addr, read_data, frame));
 }
 
@@ -2093,12 +2064,10 @@ ErrorCode HPMI2C::TransferWithFlags(uint16_t slave_addr, RawData data, uint16_t 
   {
     return FinishOperation(op, in_isr, arg_ans);
   }
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return FinishOperation(op, in_isr, ErrorCode::BUSY);
   }
-#endif
   return FinishOperation(op, in_isr, DoTransferWithFlags(slave_addr, data, flags));
 }
 
@@ -2110,12 +2079,10 @@ ErrorCode HPMI2C::TransferWithFlags(uint16_t slave_addr, ConstRawData data,
   {
     return FinishOperation(op, in_isr, arg_ans);
   }
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return FinishOperation(op, in_isr, ErrorCode::BUSY);
   }
-#endif
   return FinishOperation(
       op, in_isr,
       DoTransferWithFlags(slave_addr, RawData(const_cast<void*>(data.addr_), data.size_),
@@ -2131,7 +2098,6 @@ ErrorCode HPMI2C::Write(uint16_t slave_addr, ConstRawData write_data, WriteOpera
     return FinishOperation(op, in_isr, arg_ans);
   }
 
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return FinishOperation(op, in_isr, ErrorCode::BUSY);
@@ -2146,7 +2112,6 @@ ErrorCode HPMI2C::Write(uint16_t slave_addr, ConstRawData write_data, WriteOpera
     }
     return ans;
   }
-#endif
 
   ErrorCode ans = EnsureControllerReady();
   if (ans != ErrorCode::OK)
@@ -2175,7 +2140,6 @@ ErrorCode HPMI2C::MemRead(uint16_t slave_addr, uint16_t mem_addr, RawData read_d
     return FinishOperation(op, in_isr, arg_ans);
   }
 
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return FinishOperation(op, in_isr, ErrorCode::BUSY);
@@ -2191,7 +2155,6 @@ ErrorCode HPMI2C::MemRead(uint16_t slave_addr, uint16_t mem_addr, RawData read_d
     }
     return ans;
   }
-#endif
 
   uint32_t addr_size = 0;
   ErrorCode ans = ResolveMemAddressSize(mem_addr_size, addr_size);
@@ -2247,12 +2210,10 @@ ErrorCode HPMI2C::MemWrite(uint16_t slave_addr, uint16_t mem_addr,
     return FinishOperation(op, in_isr, ans);
   }
 
-#if LIBXR_HPM_I2C_HAS_DMA_MGR
   if (AsyncTransferActive())
   {
     return FinishOperation(op, in_isr, ErrorCode::BUSY);
   }
-#endif
 
   ans = EnsureControllerReady();
   if (ans != ErrorCode::OK)
