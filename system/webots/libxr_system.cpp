@@ -277,6 +277,13 @@ void LibXR::PlatformInit(webots::Robot* robot, uint32_t timer_pri,
   // Thread and STDIO setup may log; initialize the global timebase first.
   static LibXR::WebotsTimebase timebase;
 
+  // Thread::Sleep 等待此条件变量，STDIO 读线程启动后可能立即调用它。
+  // Thread::Sleep waits on this condition variable; the STDIO read thread may call it as
+  // soon as it starts.
+  _libxr_webots_time_notify = new condition_var_handle;
+  pthread_mutex_init(&_libxr_webots_time_notify->mutex, nullptr);
+  pthread_cond_init(&_libxr_webots_time_notify->cond, nullptr);
+
   LibXR::Timer::priority_ = static_cast<LibXR::Thread::Priority>(timer_pri);
   LibXR::Timer::stack_depth_ = timer_stack_depth;
   auto write_fun = [](WritePort& port, bool)
@@ -341,10 +348,6 @@ void LibXR::PlatformInit(webots::Robot* robot, uint32_t timer_pri,
       LibXR::max(1LL, std::llround(basic_time_step / sim_flow_rate)));
   step_interval_ns = static_cast<uint64_t>(
       LibXR::max(1LL, std::llround(basic_time_step * 1000000.0 / sim_flow_rate)));
-
-  _libxr_webots_time_notify = new condition_var_handle;
-  pthread_mutex_init(&_libxr_webots_time_notify->mutex, nullptr);
-  pthread_cond_init(&_libxr_webots_time_notify->cond, nullptr);
 
   auto webots_timebase_thread_fun = [](void*)
   {
