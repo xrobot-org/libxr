@@ -675,7 +675,6 @@ class UAC1MicrophoneQ : public DeviceClass
     }
     if (!ep_iso_in_)
     {
-      DEV_ASSERT(false);
       return ErrorCode::FAILED;
     }
 

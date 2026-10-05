@@ -22,17 +22,12 @@ int RamFS::CompareStr(const char* const& a, const char* const& b) { return strcm
 /**
  * @brief 复制并持有一个节点名称
  *        Duplicate and retain one node name
- * @param name 原始名称 / Source name
- * @return 新分配的名称缓冲区；若输入为空则返回 nullptr
- *         Newly allocated name buffer; returns nullptr if the input is null
+ * @param name 原始名称，不得为空 / Source name, must not be null
+ * @return 新分配的名称缓冲区 / Newly allocated name buffer
  */
 char* RamFS::DuplicateName(const char* name)
 {
   ASSERT(name != nullptr);
-  if (name == nullptr)
-  {
-    return nullptr;
-  }
 
   char* name_buff = new char[strlen(name) + 1];
   strcpy(name_buff, name);

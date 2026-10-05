@@ -67,7 +67,6 @@ IRQn_Type GetGpdmaIrq(DMA_Channel_TypeDef* instance)
 
 #undef LIBXR_GPDMA_IRQ_CASE
 
-  ASSERT(false);
   return NonMaskableInt_IRQn;
 }
 
@@ -171,7 +170,7 @@ HAL_StatusTypeDef STM32GpdmaUartAdapter::StartLinkedListDmaRx(uint8_t* buffer,
 
 uint8_t* STM32GpdmaUartAdapter::GetLinkedListDmaRxProducer() const
 {
-  ASSERT(state_.uart_handle_->hdmarx != nullptr);
+  DEV_ASSERT(state_.uart_handle_->hdmarx != nullptr);
   const uintptr_t destination = state_.uart_handle_->hdmarx->Instance->CDAR;
   return reinterpret_cast<uint8_t*>(destination);
 }
@@ -185,7 +184,8 @@ void STM32GpdmaUartAdapter::CloseTxTerminalSource() const
 }
 
 bool STM32GpdmaUartAdapter::LaunchStop(DMA_HandleTypeDef* dma_handle,
-                                       AbortCallback callback, bool in_isr)
+                                       AbortCallback callback,
+                                       [[maybe_unused]] bool in_isr)
 {
   ASSERT(dma_handle != nullptr);
   ASSERT(dma_handle->Parent == state_.uart_handle_);
@@ -211,7 +211,6 @@ bool STM32GpdmaUartAdapter::LaunchStop(DMA_HandleTypeDef* dma_handle,
   }
 
   GpdmaNvicMaskGuard irq_guard(dma_handle);
-  ASSERT_FROM_CALLBACK(irq_guard.Valid() && irq_guard.WasEnabled(), in_isr);
   if (!irq_guard.Valid() || !irq_guard.WasEnabled())
   {
     return false;
@@ -225,9 +224,7 @@ bool STM32GpdmaUartAdapter::LaunchStop(DMA_HandleTypeDef* dma_handle,
   }
   if (dma_handle->State == HAL_DMA_STATE_ABORT)
   {
-    const bool joined = abort_is_joinable();
-    DEV_ASSERT_FROM_CALLBACK(joined, in_isr);
-    return joined;
+    return abort_is_joinable();
   }
   if (dma_handle->State == HAL_DMA_STATE_READY && IsStopped(dma_handle) &&
       dma_handle->Lock == HAL_LOCKED)
@@ -253,9 +250,7 @@ bool STM32GpdmaUartAdapter::LaunchStop(DMA_HandleTypeDef* dma_handle,
       return true;
     }
 
-    const bool joined = abort_is_joinable();
-    DEV_ASSERT_FROM_CALLBACK(joined, in_isr);
-    return joined;
+    return abort_is_joinable();
   }
 
   return ((dma_handle->State == HAL_DMA_STATE_ABORT) && abort_is_joinable()) ||
@@ -289,10 +284,6 @@ void STM32GpdmaUartAdapter::FinalizeStopped(DMA_HandleTypeDef* dma_handle, bool 
 {
   DEV_ASSERT_FROM_CALLBACK(StopComplete(dma_handle), in_isr);
   DEV_ASSERT_FROM_CALLBACK(dma_handle->Lock == HAL_UNLOCKED, in_isr);
-  if (!StopComplete(dma_handle))
-  {
-    return;
-  }
 
   DisableInterrupts(dma_handle);
   if ((dma_handle->Mode & DMA_LINKEDLIST) == DMA_LINKEDLIST)

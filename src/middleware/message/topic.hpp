@@ -732,8 +732,8 @@ class Topic
   static void CopyPayload(void* dst, void* payload_addr)
   {
     CheckTopicPayload<Data>();
-    ASSERT(dst != nullptr);
-    ASSERT(payload_addr != nullptr);
+    DEV_ASSERT(dst != nullptr);
+    DEV_ASSERT(payload_addr != nullptr);
     *reinterpret_cast<Data*>(dst) = *reinterpret_cast<Data*>(payload_addr);
   }
 

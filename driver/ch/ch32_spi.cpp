@@ -97,7 +97,7 @@ CH32SPI::CH32SPI(ch32_spi_id_t id, RawData dma_rx, RawData dma_tx, GPIO_TypeDef*
   }
   else
   {
-    ASSERT(false);
+    DEV_ASSERT(false);
   }
   RCC_AHBPeriphClockCmd(CH32_SPI_RCC_PERIPH_MAP_DMA[id], ENABLE);
 

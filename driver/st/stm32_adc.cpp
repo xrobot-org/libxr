@@ -127,11 +127,7 @@ STM32ADC::Channel& STM32ADC::GetChannel(uint8_t index) { return *channels_[index
 
 float STM32ADC::ReadChannel(uint8_t channel)
 {
-  if (channel >= NUM_CHANNELS)
-  {
-    ASSERT(false);
-    return -1.0f;
-  }
+  ASSERT(channel < NUM_CHANNELS);
 
   uint16_t* buffer = reinterpret_cast<uint16_t*>(dma_buffer_.addr_);
   if (use_dma_)
@@ -238,14 +234,11 @@ float STM32ADC::ReadChannel(uint8_t channel)
 
   uint32_t expected = 0U;
 
-  if (!locked_.compare_exchange_strong(expected, 0xF0F0F0F0U, std::memory_order_acquire,
-                                       std::memory_order_relaxed))
-  {
-    // Multiple threads are working on the same adc peripheral
-    // Please use dma mode
-    ASSERT(false);
-    return 0.0f;
-  }
+  // Multiple threads are working on the same adc peripheral
+  // Please use dma mode
+  const bool locked = locked_.compare_exchange_strong(
+      expected, 0xF0F0F0F0U, std::memory_order_acquire, std::memory_order_relaxed);
+  REQUIRE(locked);
 
   HAL_ADC_ConfigChannel(hadc_, &config);
 

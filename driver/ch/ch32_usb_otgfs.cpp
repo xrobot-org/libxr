@@ -57,8 +57,8 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
   constexpr uint8_t IN_IDX = static_cast<uint8_t>(LibXR::USB::Endpoint::Direction::IN);
   auto* out0 = map[0][OUT_IDX];
   auto* in0 = map[0][IN_IDX];
-  ASSERT(out0 != nullptr);
-  ASSERT(in0 != nullptr);
+  DEV_ASSERT_FROM_CALLBACK(out0 != nullptr, true);
+  DEV_ASSERT_FROM_CALLBACK(in0 != nullptr, true);
 
   // 处理顺序与控制传输生命周期保持一致：
   // 1) 总线级恢复

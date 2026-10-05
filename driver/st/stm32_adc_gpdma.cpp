@@ -105,12 +105,12 @@ void STM32GpdmaAdcAdapter::BuildAndAttach(ADC_HandleTypeDef* adc_handle, uint32_
                                           uint32_t sample_count, size_t buffer_size)
 {
   DMA_HandleTypeDef* const dma_handle = adc_handle->DMA_Handle;
-  DEV_ASSERT(dma_handle->State == HAL_DMA_STATE_READY);
-  DEV_ASSERT((dma_handle->Instance->CCR & DMA_CCR_EN) == 0U);
+  ASSERT(dma_handle->State == HAL_DMA_STATE_READY);
+  ASSERT((dma_handle->Instance->CCR & DMA_CCR_EN) == 0U);
   ASSERT(dma_handle->LinkedListQueue != nullptr);
   ASSERT(dma_handle->LinkedListQueue->Head != nullptr);
   ASSERT(dma_handle->LinkedListQueue->FirstCircularNode != nullptr);
-  DEV_ASSERT(dma_handle->LinkedListQueue->State == HAL_DMA_QUEUE_STATE_READY);
+  ASSERT(dma_handle->LinkedListQueue->State == HAL_DMA_QUEUE_STATE_READY);
 
   DMA_NodeConfTypeDef node_config{};
   [[maybe_unused]] const auto dma_ex_list_get_node_config_result =

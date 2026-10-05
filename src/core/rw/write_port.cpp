@@ -146,8 +146,8 @@ void WritePort::WriteQueue::PopAll(uint8_t* destination)
 {
   BeginAction();
   const size_t remaining = AvailableSize();
-  ASSERT_FROM_CALLBACK(remaining != 0U, in_isr_);
-  ASSERT_FROM_CALLBACK(destination != nullptr, in_isr_);
+  DEV_ASSERT_FROM_CALLBACK(remaining != 0U, in_isr_);
+  DEV_ASSERT_FROM_CALLBACK(destination != nullptr, in_isr_);
 
   size_t offset = 0U;
   const size_t accepted = port_.queue_data_->ConsumeWithReader(
@@ -175,24 +175,21 @@ void WritePort::WriteQueue::FailFront(ErrorCode reason)
 {
   BeginAction();
   ASSERT_FROM_CALLBACK(reason != ErrorCode::OK, in_isr_);
-  ASSERT_FROM_CALLBACK(front_size_ != 0U, in_isr_);
+  DEV_ASSERT_FROM_CALLBACK(front_size_ != 0U, in_isr_);
 
   const size_t remaining = AvailableSize();
-  ASSERT_FROM_CALLBACK(remaining != 0U, in_isr_);
-  if (remaining != 0U)
-  {
-    const size_t accepted = port_.queue_data_->ConsumeWithReader(
-        remaining,
-        [](const uint8_t* first, size_t first_size, const uint8_t* second,
-           size_t second_size) -> size_t
-        {
-          UNUSED(first);
-          UNUSED(second);
-          return first_size + second_size;
-        });
-    DEV_ASSERT_FROM_CALLBACK(accepted == remaining, in_isr_);
-    popped_size_ += accepted;
-  }
+  DEV_ASSERT_FROM_CALLBACK(remaining != 0U, in_isr_);
+  const size_t accepted = port_.queue_data_->ConsumeWithReader(
+      remaining,
+      [](const uint8_t* first, size_t first_size, const uint8_t* second,
+         size_t second_size) -> size_t
+      {
+        UNUSED(first);
+        UNUSED(second);
+        return first_size + second_size;
+      });
+  DEV_ASSERT_FROM_CALLBACK(accepted == remaining, in_isr_);
+  popped_size_ += accepted;
   settlement_result_ = reason;
 }
 

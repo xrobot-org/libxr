@@ -267,13 +267,13 @@ class CDCUart : public CDCBase, public LibXR::UART
    * @param ep 数据 IN 端点 / Data IN endpoint
    * @param in_isr 是否在中断中调用 / Whether called in an ISR
    */
-  void StartTxBuffer(Endpoint& ep, [[maybe_unused]] bool in_isr)
+  void StartTxBuffer(Endpoint& ep, bool in_isr)
   {
     const size_t LENGTH = ep.GetActiveLength();
     DEV_ASSERT_FROM_CALLBACK(LENGTH != 0U, in_isr);
     ep.SetActiveLength(0U);
-    [[maybe_unused]] const auto ans = ep.Transfer(LENGTH);
-    DEV_ASSERT_FROM_CALLBACK(ans == ErrorCode::OK, in_isr);
+    const auto ans = ep.Transfer(LENGTH);
+    REQUIRE_FROM_CALLBACK(ans == ErrorCode::OK, in_isr);
     const size_t MPS = ep.MaxPacketSize();
     need_write_zlp_ = MPS != 0U && LENGTH % MPS == 0U;
   }

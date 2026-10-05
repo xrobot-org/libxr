@@ -220,8 +220,8 @@ ErrorCode MSPM0UART::ValidateConfig(UART::Configuration config) const
 UART::Configuration MSPM0UART::BuildConfigFromSysCfg(UART_Regs* instance,
                                                      uint32_t baudrate)
 {
-  DEV_ASSERT(instance != nullptr);
-  DEV_ASSERT(baudrate > 0U);
+  ASSERT(instance != nullptr);
+  ASSERT(baudrate > 0U);
 
   UART::Configuration config = {baudrate, UART::Parity::NO_PARITY, 8U, 1U};
   switch (DL_UART_getWordLength(instance))
@@ -253,7 +253,7 @@ UART::Configuration MSPM0UART::BuildConfigFromSysCfg(UART_Regs* instance,
       config.parity = UART::Parity::ODD;
       break;
     default:
-      DEV_ASSERT(false);
+      ASSERT(false);
       break;
   }
   config.stop_bits = DL_UART_getStopBits(instance) == DL_UART_STOP_BITS_TWO ? 2U : 1U;
@@ -620,7 +620,7 @@ void MSPM0UART::ConfigureRxDma()
                                               DL_DMA_EARLY_INTERRUPT_THRESHOLD_HALF);
   }
 #else
-  DEV_ASSERT(false);
+  ASSERT(false);
 #endif
 }
 

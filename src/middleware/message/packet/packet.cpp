@@ -42,8 +42,8 @@ MicrosecondTimestamp Topic::PackedDataHeader::GetTimestamp() const
 void Topic::PackBytes(uint32_t topic_name_crc32, RawData buffer,
                       MicrosecondTimestamp timestamp, ConstRawData data)
 {
-  ASSERT(buffer.addr_ != nullptr);
-  ASSERT(buffer.size_ >= PACK_BASE_SIZE + data.size_);
+  DEV_ASSERT(buffer.addr_ != nullptr);
+  DEV_ASSERT(buffer.size_ >= PACK_BASE_SIZE + data.size_);
 
   auto* pack = reinterpret_cast<PackedData<uint8_t>*>(buffer.addr_);
 

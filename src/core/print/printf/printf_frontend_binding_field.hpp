@@ -91,6 +91,13 @@ namespace FieldSelection
 }
 
 /**
+ * @brief 无效的运行期语义类型占位：非 constexpr，在常量求值中调用即编译失败 / Marker for
+ * an invalid runtime semantic type: not constexpr, so calling it during constant
+ * evaluation fails compilation.
+ */
+inline void InvalidPackKindType() noexcept {}
+
+/**
  * @brief 为一个运行期语义类型选择参数打包存储类别 / Chooses the packed storage kind for
  * one runtime semantic type.
  * @param type 运行期语义类型 / Runtime semantic type.
@@ -139,11 +146,11 @@ namespace FieldSelection
     case FormatType::TextInline:
     case FormatType::TextRef:
     case FormatType::TextSpace:
-      DEV_ASSERT(false);
+      InvalidPackKindType();
       return FormatPackKind::U32;
   }
 
-  DEV_ASSERT(false);
+  InvalidPackKindType();
   return FormatPackKind::U32;
 }
 
