@@ -325,12 +325,6 @@ ErrorCode MSPM0SPI::ReadAndWrite(RawData read_data, ConstRawData write_data,
     return ErrorCode::SIZE_ERR;
   }
 
-  ASSERT(rx.size_ >= NEED);
-  if (!IS_READ_ONLY)
-  {
-    ASSERT(tx.size_ >= NEED);
-  }
-
   uint8_t* tx_bytes = nullptr;
   if (!IS_READ_ONLY)
   {

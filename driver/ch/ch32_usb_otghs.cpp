@@ -23,8 +23,8 @@ static void ResetEp0State(OtgHsEndpointMap& map)
   auto* out0 = map[0][OUT_IDX];
   auto* in0 = map[0][IN_IDX];
 
-  ASSERT(out0 != nullptr);
-  ASSERT(in0 != nullptr);
+  DEV_ASSERT_FROM_CALLBACK(out0 != nullptr, true);
+  DEV_ASSERT_FROM_CALLBACK(in0 != nullptr, true);
 
   out0->SetState(LibXR::USB::Endpoint::State::IDLE);
   out0->tog0_ = true;
@@ -53,7 +53,7 @@ static bool CompleteEp0InBeforeSetup(OtgHsEndpointMap& map, uint8_t int_flag,
   }
 
   auto* in0 = map[0][IN_IDX];
-  ASSERT(in0 != nullptr);
+  DEV_ASSERT_FROM_CALLBACK(in0 != nullptr, true);
   if (in0->GetState() != LibXR::USB::Endpoint::State::BUSY)
   {
     return false;
@@ -72,8 +72,8 @@ static void PrepareEp0ForSetup(OtgHsEndpointMap& map)
   auto* out0 = map[0][OUT_IDX];
   auto* in0 = map[0][IN_IDX];
 
-  ASSERT(out0 != nullptr);
-  ASSERT(in0 != nullptr);
+  DEV_ASSERT_FROM_CALLBACK(out0 != nullptr, true);
+  DEV_ASSERT_FROM_CALLBACK(in0 != nullptr, true);
 
   // 新的 SETUP 会中断前一笔控制传输，因此在分发 setup 包之前，
   // 必须先把 EP0 恢复成默认控制端点形态。
@@ -272,7 +272,7 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
       PrepareEp0ForSetup(map);
 
       auto* out0 = map[0][OUT_IDX];
-      ASSERT(out0 != nullptr);
+      DEV_ASSERT_FROM_CALLBACK(out0 != nullptr, true);
       const auto* setup =
           reinterpret_cast<const LibXR::USB::SetupPacket*>(out0->GetBuffer().addr_);
       usb->OnSetupPacket(true, setup);

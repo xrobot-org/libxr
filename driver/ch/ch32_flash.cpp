@@ -53,11 +53,11 @@ uint32_t SectorSizeAt(const FlashRegion* regions, size_t region_count, uint32_t 
     if (address >= region.address &&
         address - region.address < region.sector_size * region.sector_count)
     {
-      REQUIRE((address - region.address) % region.sector_size == 0U);
+      ASSERT((address - region.address) % region.sector_size == 0U);
       return region.sector_size;
     }
   }
-  REQUIRE(false);
+  ASSERT(false);
   return 0U;
 }
 
@@ -69,7 +69,7 @@ uint32_t SecondToLastSector(const FlashRegion* regions, size_t region_count)
   {
     return last.address + last.sector_size * (last.sector_count - 2U);
   }
-  REQUIRE(region_count >= 2U);
+  ASSERT(region_count >= 2U);
   const auto& previous = regions[region_count - 2];
   return previous.address + previous.sector_size * (previous.sector_count - 1U);
 }
@@ -194,7 +194,7 @@ ErrorCode CH32Flash::Erase(size_t offset, size_t size)
   }
   const uint32_t END_ADDR = START_ADDR + static_cast<uint32_t>(size);
   const auto erase_hot_path = g_ch32_flash_hot_paths.erase;
-  ASSERT(erase_hot_path != nullptr);
+  DEV_ASSERT(erase_hot_path != nullptr);
   FlashAccessSession session;
 
   // 当前已验证的 CH32V2/V3 快速擦除路径都按 256B 页对齐工作，
@@ -219,14 +219,12 @@ ErrorCode CH32Flash::Write(size_t offset, ConstRawData data)
 
   if (!data.addr_ || data.size_ == 0)
   {
-    ASSERT(false);
     return ErrorCode::ARG_ERR;
   }
 
   const uint32_t START_ADDR = base_address_ + static_cast<uint32_t>(offset);
   if (!IsInRange(START_ADDR, data.size_))
   {
-    ASSERT(false);
     return ErrorCode::OUT_OF_RANGE;
   }
 
@@ -242,7 +240,7 @@ extern "C" LIBXR_NOINLINE ErrorCode CH32FlashWriteHotPath(uint32_t start_addr,
   const auto write_hot_loop = g_ch32_flash_hot_paths.write_halfword;
   const auto write_page = g_ch32_flash_hot_paths.write_page;
   constexpr uint32_t page_size = 256u;
-  ASSERT(write_hot_loop != nullptr && write_page != nullptr);
+  DEV_ASSERT(write_hot_loop != nullptr && write_page != nullptr);
   FlashAccessSession session;
   ErrorCode ec = ErrorCode::OK;
 

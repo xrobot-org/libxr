@@ -144,7 +144,7 @@ class ReadPort
     template <typename Writer>
     [[nodiscard]] size_t PushWithWriter(size_t limit, Writer&& writer)
     {
-      DEV_ASSERT_FROM_CALLBACK(!finished_, in_isr_);
+      ASSERT_FROM_CALLBACK(!finished_, in_isr_);
 
       const size_t produced = port_.queue_data_->ProduceWithWriter(
           limit,

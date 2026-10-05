@@ -325,7 +325,6 @@ ErrorCode STM32SPI::SetConfig(SPI::Configuration config)
       break;
   }
 
-  ASSERT(ok);
   if (!ok)
   {
     return ErrorCode::NOT_SUPPORT;
@@ -727,8 +726,12 @@ ErrorCode STM32SPI::Transfer(size_t size, OperationRW& op, bool in_isr)
 
 extern "C" void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef* hspi)
 {
-  STM32SPI* spi = STM32SPI::map[STM32_SPI_GetID(hspi->Instance)];
-  ASSERT(spi != nullptr);
+  const auto spi_id = STM32_SPI_GetID(hspi->Instance);
+  STM32SPI* spi = (spi_id == STM32_SPI_ID_ERROR) ? nullptr : STM32SPI::map[spi_id];
+  if (spi == nullptr)
+  {
+    return;
+  }
   if (spi->rw_op_.type == STM32SPI::OperationRW::OperationType::NONE)
   {
     return;
@@ -746,8 +749,12 @@ extern "C" void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef* hspi)
 
 extern "C" void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef* hspi)
 {
-  STM32SPI* spi = STM32SPI::map[STM32_SPI_GetID(hspi->Instance)];
-  ASSERT(spi != nullptr);
+  const auto spi_id = STM32_SPI_GetID(hspi->Instance);
+  STM32SPI* spi = (spi_id == STM32_SPI_ID_ERROR) ? nullptr : STM32SPI::map[spi_id];
+  if (spi == nullptr)
+  {
+    return;
+  }
   if (spi->rw_op_.type == STM32SPI::OperationRW::OperationType::NONE)
   {
     return;
@@ -790,8 +797,12 @@ extern "C" void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef* hspi)
 
 extern "C" void HAL_SPI_ErrorCallback(SPI_HandleTypeDef* hspi)
 {
-  STM32SPI* spi = STM32SPI::map[STM32_SPI_GetID(hspi->Instance)];
-  ASSERT(spi != nullptr);
+  const auto spi_id = STM32_SPI_GetID(hspi->Instance);
+  STM32SPI* spi = (spi_id == STM32_SPI_ID_ERROR) ? nullptr : STM32SPI::map[spi_id];
+  if (spi == nullptr)
+  {
+    return;
+  }
   if (spi->rw_op_.type == STM32SPI::OperationRW::OperationType::NONE)
   {
     return;

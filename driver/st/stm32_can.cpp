@@ -107,7 +107,6 @@ ErrorCode STM32CAN::Init(void)
   else
   {
     ASSERT(false);
-    return ErrorCode::FAILED;
   }
 
   can_filter.FilterFIFOAssignment = fifo_;
@@ -142,11 +141,7 @@ ErrorCode STM32CAN::Init(void)
 
 ErrorCode STM32CAN::SetConfig(const CAN::Configuration& cfg)
 {
-  if (hcan_ == nullptr || hcan_->Instance == nullptr)
-  {
-    ASSERT(false);
-    return ErrorCode::ARG_ERR;
-  }
+  ASSERT(hcan_ != nullptr && hcan_->Instance != nullptr);
 
   CAN_TypeDef* can = hcan_->Instance;
 
@@ -222,7 +217,6 @@ ErrorCode STM32CAN::SetConfig(const CAN::Configuration& cfg)
   {
     if (bt.brp < 1u || bt.brp > BRP_MAX)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
   }
@@ -233,7 +227,6 @@ ErrorCode STM32CAN::SetConfig(const CAN::Configuration& cfg)
   {
     if (tseg1 < 1u || tseg1 > TS1_MAX)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
   }
@@ -242,7 +235,6 @@ ErrorCode STM32CAN::SetConfig(const CAN::Configuration& cfg)
   {
     if (bt.phase_seg2 < 1u || bt.phase_seg2 > TS2_MAX)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
   }
@@ -251,14 +243,12 @@ ErrorCode STM32CAN::SetConfig(const CAN::Configuration& cfg)
   {
     if (bt.sjw < 1u || bt.sjw > SJW_MAX)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
 
     // 规范上 SJW ≤ TSEG2（只在二者都要更新时检查）
     if (bt.phase_seg2 != 0u && bt.sjw > bt.phase_seg2)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
   }

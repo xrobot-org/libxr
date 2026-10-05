@@ -98,11 +98,11 @@ uint32_t SectorSizeAt(const FlashRegion* regions, size_t region_count, uint32_t 
     if (address >= region.address &&
         address - region.address < region.sector_size * region.sector_count)
     {
-      REQUIRE((address - region.address) % region.sector_size == 0U);
+      ASSERT((address - region.address) % region.sector_size == 0U);
       return region.sector_size;
     }
   }
-  REQUIRE(false);
+  ASSERT(false);
   return 0U;
 }
 
@@ -114,7 +114,7 @@ uint32_t SecondToLastSector(const FlashRegion* regions, size_t region_count)
   {
     return last.address + last.sector_size * (last.sector_count - 2U);
   }
-  REQUIRE(region_count >= 2U);
+  ASSERT(region_count >= 2U);
   const auto& previous = regions[region_count - 2];
   return previous.address + previous.sector_size * (previous.sector_count - 1U);
 }

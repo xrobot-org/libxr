@@ -583,7 +583,7 @@ HPMI2C::HPMI2C(I2C_Type* i2c, clock_name_t clock, bool auto_board_init,
     source_clock_hz_ = clock_get_frequency(clock_);
   }
 
-  ASSERT(source_clock_hz_ != 0);
+  REQUIRE(source_clock_hz_ != 0);
   const ErrorCode ans = SetConfig(config);
   REQUIRE(ans == ErrorCode::OK);
 }

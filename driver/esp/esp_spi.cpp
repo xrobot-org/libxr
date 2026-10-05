@@ -417,12 +417,12 @@ void IRAM_ATTR ESP32SPI::FinishAsync(bool in_isr, ErrorCode ec)
     uint8_t* src = static_cast<uint8_t*>(rx.addr_);
     if (mem_read)
     {
-      ASSERT(rx.size_ >= (read_back.size_ + 1U));
+      DEV_ASSERT_FROM_CALLBACK(rx.size_ >= (read_back.size_ + 1U), in_isr);
       src += 1;
     }
     else
     {
-      ASSERT(rx.size_ >= read_back.size_);
+      DEV_ASSERT_FROM_CALLBACK(rx.size_ >= read_back.size_, in_isr);
     }
     Memory::FastCopy(read_back.addr_, src, read_back.size_);
   }

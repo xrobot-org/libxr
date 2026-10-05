@@ -149,11 +149,11 @@ inline void STM32CANFD::BuildTxHeader(const FDPack& p, FDCAN_TxHeaderTypeDef& h)
       break;
 
     default:
-      ASSERT(false);
+      DEV_ASSERT(false);
       return;
   }
 
-  ASSERT(p.len <= 64u);
+  DEV_ASSERT(p.len <= 64u);
   h.DataLength = BytesToDlc(p.len);
 
   h.ErrorStateIndicator = FDCAN_ESI_PASSIVE;
@@ -278,11 +278,7 @@ ErrorCode STM32CANFD::SetConfig(const CAN::Configuration& cfg)
 
 ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
 {
-  if (hcan_ == nullptr || hcan_->Instance == nullptr)
-  {
-    ASSERT(false);
-    return ErrorCode::ARG_ERR;
-  }
+  ASSERT(hcan_ != nullptr && hcan_->Instance != nullptr);
 
   FDCAN_GlobalTypeDef* can = hcan_->Instance;
 
@@ -384,7 +380,6 @@ ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
   {
     if (bt.brp < 1u || bt.brp > NBRP_MAX)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
   }
@@ -394,7 +389,6 @@ ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
   {
     if (tseg1 < 1u || tseg1 > NTSEG1_MAX)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
   }
@@ -403,7 +397,6 @@ ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
   {
     if (bt.phase_seg2 < 1u || bt.phase_seg2 > NTSEG2_MAX)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
   }
@@ -412,12 +405,10 @@ ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
   {
     if (bt.sjw < 1u || bt.sjw > NSJW_MAX)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
     if (bt.phase_seg2 != 0u && bt.sjw > bt.phase_seg2)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
   }
@@ -493,7 +484,6 @@ ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
   {
     if (dbt.brp < 1u || dbt.brp > DBRP_MAX)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
   }
@@ -503,7 +493,6 @@ ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
   {
     if (dtseg1 < 1u || dtseg1 > DTSEG1_MAX)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
   }
@@ -512,7 +501,6 @@ ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
   {
     if (dbt.phase_seg2 < 1u || dbt.phase_seg2 > DTSEG2_MAX)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
   }
@@ -521,12 +509,10 @@ ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
   {
     if (dbt.sjw < 1u || dbt.sjw > DSJW_MAX)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
     if (dbt.phase_seg2 != 0u && dbt.sjw > dbt.phase_seg2)
     {
-      ASSERT(false);
       return ErrorCode::ARG_ERR;
     }
   }
@@ -610,7 +596,7 @@ uint32_t STM32CANFD::GetClockFreq() const
   return HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_FDCAN1);
 #else
   // 理论上不会走到这里，有就说明 HAL/RCC 宏不一致
-  ASSERT(false);
+  static_assert(false, "RCC_PERIPHCLK_FDCAN is not defined by the HAL");
   return 0u;
 #endif
 }
@@ -625,7 +611,6 @@ ErrorCode STM32CANFD::AddMessage(const FDPack& pack)
   ASSERT(pack.len <= 64u);
   if (pack.type != Type::STANDARD && pack.type != Type::EXTENDED)
   {
-    ASSERT(false);
     return ErrorCode::FAILED;
   }
 

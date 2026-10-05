@@ -132,7 +132,7 @@ CH32CAN::CH32CAN(ch32_can_id_t id, uint32_t queue_size)
   {
     // 端点地址在 Stop 后仍有效，不能在分配 PMA 后扩大 CAN 过滤器占用。
     // Endpoint addresses survive Stop; reserve CAN filters before allocating PMA.
-    REQUIRE(!LibXR::CH32UsbCanShared::usb_pma_configured.load(std::memory_order_acquire));
+    ASSERT(!LibXR::CH32UsbCanShared::usb_pma_configured.load(std::memory_order_acquire));
   }
 
 #if LIBXR_CH32_HAS_CAN2
@@ -396,7 +396,6 @@ ErrorCode CH32CAN::SetConfig(const CAN::Configuration& cfg_in)
   // BRP: 1..1024.
   if (bt.brp < 1u || bt.brp > 1024u)
   {
-    ASSERT(false);
     return ErrorCode::ARG_ERR;
   }
 
@@ -404,21 +403,18 @@ ErrorCode CH32CAN::SetConfig(const CAN::Configuration& cfg_in)
   const uint32_t BS1 = bt.prop_seg + bt.phase_seg1;
   if (BS1 < 1u || BS1 > 16u)
   {
-    ASSERT(false);
     return ErrorCode::ARG_ERR;
   }
 
   // BS2: 1..8.
   if (bt.phase_seg2 < 1u || bt.phase_seg2 > 8u)
   {
-    ASSERT(false);
     return ErrorCode::ARG_ERR;
   }
 
   // SJW: 1..4 and SJW <= BS2.
   if (bt.sjw < 1u || bt.sjw > 4u || bt.sjw > bt.phase_seg2)
   {
-    ASSERT(false);
     return ErrorCode::ARG_ERR;
   }
 

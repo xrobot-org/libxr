@@ -17,11 +17,11 @@ ReadPort::ReadQueue ReadPort::GetReadQueue(bool in_isr)
   return ReadQueue(*this, in_isr);
 }
 
-ReadPort::ReadQueue::~ReadQueue() { DEV_ASSERT_FROM_CALLBACK(finished_, in_isr_); }
+ReadPort::ReadQueue::~ReadQueue() { ASSERT_FROM_CALLBACK(finished_, in_isr_); }
 
 ErrorCode ReadPort::ReadQueue::PushBatch(const uint8_t* data, size_t size)
 {
-  DEV_ASSERT_FROM_CALLBACK(!finished_, in_isr_);
+  ASSERT_FROM_CALLBACK(!finished_, in_isr_);
   if (size != 0U)
   {
     ASSERT_FROM_CALLBACK(data != nullptr, in_isr_);
@@ -41,7 +41,7 @@ size_t ReadPort::ReadQueue::Capacity() const { return port_.queue_data_->MaxSize
 
 void ReadPort::ReadQueue::Publish()
 {
-  DEV_ASSERT_FROM_CALLBACK(!finished_, in_isr_);
+  ASSERT_FROM_CALLBACK(!finished_, in_isr_);
   finished_ = true;
   if (dirty_)
   {

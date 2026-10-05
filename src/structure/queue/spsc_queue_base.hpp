@@ -68,11 +68,13 @@ class alignas(LibXR::CONCURRENCY_ALIGNMENT) SPSCQueueBase
  private:
   void InitStorage()
   {
+    // payload_alloc_align_ 是由 alignof(std::max_align_t) 初始化的 const 成员。
+    // payload_alloc_align_ is a const member initialised from alignof(std::max_align_t).
+    static_assert(alignof(std::max_align_t) > 0 &&
+                  (alignof(std::max_align_t) & (alignof(std::max_align_t) - 1)) == 0);
     ASSERT(element_size_ > 0);
-    ASSERT(payload_alloc_align_ > 0);
     ASSERT(capacity_ > 0);
     ASSERT(capacity_ <= std::numeric_limits<size_t>::max() - 1);
-    ASSERT((payload_alloc_align_ & (payload_alloc_align_ - 1)) == 0);
 
     const size_t payload_bytes = MultiplyChecked(payload_stride_, RingCapacity());
     payloads_ = static_cast<std::byte*>(
@@ -604,8 +606,8 @@ class alignas(LibXR::CONCURRENCY_ALIGNMENT) SPSCQueueBase
    */
   static size_t AlignUpChecked(size_t size, size_t align)
   {
-    ASSERT(align > 0);
-    ASSERT((align & (align - 1)) == 0);
+    DEV_ASSERT(align > 0);
+    DEV_ASSERT((align & (align - 1)) == 0);
     ASSERT(size <= std::numeric_limits<size_t>::max() - (align - 1));
     return ((size + align - 1) / align) * align;
   }

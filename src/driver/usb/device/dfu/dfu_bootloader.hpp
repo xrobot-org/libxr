@@ -874,7 +874,6 @@ class DFUClass : public DfuInterfaceClassBase
 
     ResetProtocolState();
     auto ec = backend_.DfuSetAlternate(current_alt_setting_);
-    ASSERT(ec == ErrorCode::OK);
     if (ec != ErrorCode::OK)
     {
       inited_ = false;

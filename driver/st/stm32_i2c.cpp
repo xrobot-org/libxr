@@ -80,7 +80,7 @@ namespace
 static inline uint16_t EncodeHalDevAddress(const I2C_HandleTypeDef* hi2c,
                                            uint16_t slave_addr)
 {
-  ASSERT(hi2c != nullptr);
+  DEV_ASSERT(hi2c != nullptr);
 
 #if defined(I2C_ADDRESSINGMODE_10BIT)
   if (hi2c->Init.AddressingMode == I2C_ADDRESSINGMODE_10BIT)
@@ -132,7 +132,7 @@ static bool ResetI2CPeripheral(I2C_TypeDef* instance);
 
 static void RecoverAfterBlockTimeout(STM32I2C* i2c)
 {
-  ASSERT(i2c != nullptr);
+  DEV_ASSERT(i2c != nullptr);
 
   auto* hi2c = i2c->i2c_handle_;
   const I2CFilterState filter_state = CaptureI2CFilterState(hi2c);
@@ -173,7 +173,7 @@ static void RecoverAfterBlockTimeout(STM32I2C* i2c)
 
 static inline ErrorCode WaitBlockResultAndRecoverTimeout(STM32I2C* i2c, uint32_t timeout)
 {
-  ASSERT(i2c != nullptr);
+  DEV_ASSERT(i2c != nullptr);
   const ErrorCode ans = i2c->block_wait_.Wait(timeout);
   if (ans == ErrorCode::TIMEOUT)
   {
@@ -646,10 +646,6 @@ STM32I2C::STM32I2C(I2C_HandleTypeDef* hi2c, RawData dma_buff,
 {
   ASSERT(id_ != STM32_I2C_ID_ERROR);
   ASSERT(id_ < STM32_I2C_NUMBER);
-  if (id_ == STM32_I2C_ID_ERROR || id_ >= STM32_I2C_NUMBER)
-  {
-    return;
-  }
   map[id_] = this;
 }
 

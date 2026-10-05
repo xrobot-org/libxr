@@ -656,11 +656,6 @@ bool IRAM_ATTR ESP32UART::StartAndReportActive(bool in_isr)
 {
   const bool started = StartActiveTransfer(in_isr);
   REQUIRE_FROM_CALLBACK(started, in_isr);
-  if (!started)
-  {
-    ClearActiveTx();
-    return false;
-  }
   return true;
 }
 
