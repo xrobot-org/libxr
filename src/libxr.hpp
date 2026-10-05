@@ -7,6 +7,7 @@
 #include "flag.hpp"
 #include "inertia.hpp"
 #include "kinematic.hpp"
+#include "latest_snapshot.hpp"
 #include "libxr_assert.hpp"
 #include "libxr_cb.hpp"
 #include "libxr_color.hpp"
