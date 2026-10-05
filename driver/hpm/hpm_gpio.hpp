@@ -7,19 +7,20 @@
  * @details
  * 本文件在 `GPIO_Type` 上实现 `LibXR::GPIO`，通过 HPM SDK `hpm_gpio_drv`
  * 完成引脚读写、方向配置、中断触发模式配置和中断标志分发。当前实现使用同步
- * GPIO API；中断由板级 IRQ handler 调用 `libxr_hpm_gpio_check_interrupt()`
- * 后按 port/pin 映射分发。HPM5301 的 `GPIO0_A/B/X/Y` IRQ 是端口级 PLIC
+ * GPIO API；驱动为每个 GPIO 端口 IRQ 定义中断入口，入口按 port/pin 映射分发，
+ * 应用无需声明这些 ISR。HPM5301 的 `GPIO0_A/B/X/Y` IRQ 是端口级 PLIC
  * 路由，因此同一 port 上多个 pin 会共享同一 IRQ enable/disable 计数。端口表大小
  * 按当前 SDK 头文件暴露的 `GPIO_DI_GPIO*` 宏推导，避免为不同 HPM 系列复制驱动文件。
  *
  * This file implements `LibXR::GPIO` on top of `GPIO_Type` using the HPM SDK
  * `hpm_gpio_drv` APIs for pin read/write, direction setup, interrupt trigger
  * setup, and interrupt-flag dispatch. The current implementation uses synchronous
- * GPIO APIs; interrupts are dispatched after the board IRQ handler calls
- * `libxr_hpm_gpio_check_interrupt()`. HPM5301 routes `GPIO0_A/B/X/Y` IRQs per
- * port through PLIC, so multiple pins on the same port share one IRQ enable/disable
- * reference count. The dispatch table size is derived from the `GPIO_DI_GPIO*`
- * macros exposed by the active SDK headers to avoid per-series driver forks.
+ * GPIO APIs; the driver defines the interrupt entry of every GPIO port IRQ, which
+ * dispatches by port/pin, so the application declares no ISR for these IRQs. HPM5301
+ * routes `GPIO0_A/B/X/Y` IRQs per port through PLIC, so multiple pins on the same port
+ * share one IRQ enable/disable reference count. The dispatch table size is derived from
+ * the `GPIO_DI_GPIO*` macros exposed by the active SDK headers to avoid per-series driver
+ * forks.
  */
 
 #include "gpio.hpp"
@@ -169,8 +170,8 @@ class HPMGPIO final : public GPIO
    * @brief 分发某一端口的 GPIO 中断回调 / Dispatch GPIO interrupt callbacks for one port.
    * @param port GPIO 端口号 / GPIO port index.
    *
-   * 该函数应在板级 GPIO IRQ Handler 中调用。
-   * This function should be called by board IRQ handlers.
+   * 由驱动定义的 GPIO 端口中断入口调用。
+   * Called by the GPIO port interrupt entries that the driver defines.
    *
    * 同时会清除触发引脚的中断标志位。
    * It also clears interrupt flags for triggered pins.
@@ -253,6 +254,9 @@ class HPMGPIO final : public GPIO
 
 /**
  * @brief GPIO 中断分发的 C 接口 / C entry for GPIO interrupt dispatch.
+ * @note 驱动已定义 GPIO 端口中断入口；保留此接口供 C 代码使用。
+ *       The driver already defines the GPIO port interrupt entries; this entry is kept
+ *       for C code.
  * @param port GPIO 端口号 / GPIO port index.
  */
 extern "C" void libxr_hpm_gpio_check_interrupt(uint32_t port);
