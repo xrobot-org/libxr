@@ -15,6 +15,13 @@ constexpr uint8_t MAX_PORTS = 2;
 constexpr uint8_t MAX_PORTS = 1;
 #endif
 
+/**
+ * @brief MSPM0 GPIO / MSPM0 GPIO.
+ *
+ * @note 引脚中断由驱动开关；首次登记端口中断时开启 INT_GROUP1，并设为优先级 1。
+ *       The driver enables and disables the pin interrupts; registering the first port
+ *       interrupt enables INT_GROUP1 at priority 1.
+ */
 class MSPM0GPIO : public GPIO
 {
  public:

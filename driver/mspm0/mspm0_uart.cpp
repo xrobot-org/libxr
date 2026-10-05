@@ -191,6 +191,8 @@ MSPM0UART::MSPM0UART(Resources res, RawData tx_dma_storage, RawData rx_dma_stora
   instance_map_[res_.index] = this;
   StartDataPath();
 
+  // 优先级低于 SysTick 时基 / Below the SysTick timebase.
+  NVIC_SetPriority(res_.irqn, 1U);
   NVIC_EnableIRQ(res_.irqn);
 }
 

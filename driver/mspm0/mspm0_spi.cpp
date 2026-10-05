@@ -33,6 +33,14 @@ MSPM0SPI::MSPM0SPI(Resources res, RawData dma_rx_buffer, RawData dma_tx_buffer,
 
   instance_map_[res_.index] = this;
 
+  // 中断源和优先级由驱动设置，不依赖 SysConfig 的中断配置；优先级低于 SysTick 时基。
+  // The driver sets the interrupt sources and priority instead of relying on the
+  // SysConfig interrupt settings; the priority stays below the SysTick timebase.
+  DL_SPI_disableInterrupt(res_.instance, 0xFFFFFFFFU);
+  DL_SPI_clearInterruptStatus(res_.instance, 0xFFFFFFFFU);
+  DL_SPI_enableInterrupt(res_.instance,
+                         DL_SPI_INTERRUPT_DMA_DONE_RX | DL_SPI_INTERRUPT_DMA_DONE_TX);
+  NVIC_SetPriority(res_.irqn, 1U);
   NVIC_ClearPendingIRQ(res_.irqn);
   NVIC_EnableIRQ(res_.irqn);
 

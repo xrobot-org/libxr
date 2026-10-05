@@ -47,11 +47,16 @@ class MSPM0UARTReadPort : public ReadPort
  * copying into a free TX half; DMA completion only releases that half. Configuration
  * waits for the active transfer and UART idle boundary.
  *
- * @pre BSP 串行初始化实例并独占分配 DMA 通道；UART 和相关 DMA 中断位于同一核心，
- *      使用兼容的抢占优先级。对象及借用缓冲区在运行期间须保持有效。
+ * @pre BSP 串行初始化实例并独占分配 DMA 通道；共享 DMA 中断由 BSP 开启，优先级与
+ *      UART 中断相同（1）。对象及借用缓冲区在运行期间须保持有效。
  *      The BSP initializes instances serially, reserves distinct DMA channels, and
- *      routes UART/DMA IRQs to one core with compatible preemption priorities.
+ *      enables the shared DMA interrupt at the UART interrupt priority (1).
  *      Keep the object and borrowed buffers valid throughout operation.
+ * @note 构造时由驱动设置 UART 中断源，并把 UART 中断设为优先级 1；SysConfig 中该实例
+ *       的中断和优先级设置会被覆盖。
+ *       The constructor sets the UART interrupt sources and the UART interrupt priority
+ *       (1), replacing the interrupt and priority settings SysConfig made for the
+ *       instance.
  * @note 软件接收队列满时，Main 保留 FIFO 字节，Extend 丢弃放不下的 DMA 尾部。
  *       硬件仍持续接收；没有流控时不保证无限输入不丢失。
  *       On a full software queue, Main retains FIFO bytes and Extend drops excess DMA
