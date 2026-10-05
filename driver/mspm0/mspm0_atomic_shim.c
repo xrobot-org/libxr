@@ -26,8 +26,15 @@ static inline void atomic_exit(uint32_t primask_state)
  * @param failure_memorder 失败时内存顺序 / Failure memory order.
  * @return 比较相等时返回 true / True when the comparison matches.
  * @note GCC 定长运行时 ABI 为五个参数，没有 weak 参数；沿用单核中断保护。
+ *       GCC 的内建声明带 weak 参数，与运行时 ABI 不同，因此只在这里关闭该诊断。
  *       The sized GCC runtime ABI has five arguments, without weak; uses the IRQ guard.
+ *       GCC's built-in declaration has the weak argument, unlike the runtime ABI, so the
+ *       diagnostic is turned off for this definition only.
  */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wbuiltin-declaration-mismatch"
+#endif
 __attribute__((weak)) _Bool __atomic_compare_exchange_4(volatile void* ptr,
                                                         void* expected,
                                                         unsigned int desired,  // NOLINT
@@ -58,6 +65,9 @@ __attribute__((weak)) _Bool __atomic_compare_exchange_4(volatile void* ptr,
   atomic_exit(primask);  // 恢复状态
   return result;
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /**
  * @brief 原子置位并返回原值 / Atomically set bits and return the previous value.
