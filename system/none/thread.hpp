@@ -120,7 +120,7 @@ class Thread
   operator libxr_thread_handle() { return thread_handle_; }
 
  private:
-  libxr_thread_handle thread_handle_;  ///< 线程句柄 / Thread handle
+  libxr_thread_handle thread_handle_ = 0;  ///< 线程句柄 / Thread handle
 };
 
 }  // namespace LibXR

@@ -59,7 +59,13 @@ MillisecondTimestamp Timebase::GetMilliseconds()
 {
   return ReadSysTickSnapshot().milliseconds;
 }
-void MSPM0Timebase::OnSysTickInterrupt() { MSPM0Timebase::sys_tick_ms++; }
+void MSPM0Timebase::OnSysTickInterrupt()
+{
+  // 只有 SysTick 中断写入；C++20 弃用 volatile 的 ++，改为显式读改写。
+  // Only the SysTick interrupt writes it; C++20 deprecates ++ on volatile, so read and
+  // write explicitly.
+  MSPM0Timebase::sys_tick_ms = MSPM0Timebase::sys_tick_ms + 1U;
+}
 void MSPM0Timebase::Sync(uint32_t ticks) { MSPM0Timebase::sys_tick_ms = ticks; }
 
 extern "C" void SysTick_Handler(void)  // NOLINT
