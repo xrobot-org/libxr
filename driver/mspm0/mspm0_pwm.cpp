@@ -53,6 +53,14 @@ ErrorCode MSPM0PWM::SetDutyCycle(float value)
   return ErrorCode::OK;
 }
 
+uint32_t MSPM0PWM::SourceClockFromSysCfg(GPTIMER_Regs* timer, uint32_t timer_clock_hz)
+{
+  DL_Timer_ClockConfig config;
+  DL_Timer_getClockConfig(timer, &config);
+  return timer_clock_hz * (static_cast<uint32_t>(config.divideRatio) + 1U) *
+         (static_cast<uint32_t>(config.prescale) + 1U);
+}
+
 ErrorCode MSPM0PWM::SetConfig(Configuration config)
 {
   const uint32_t SOURCE_CLOCK = clock_freq_;
