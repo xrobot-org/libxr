@@ -316,6 +316,12 @@ void MSPM0UART::HandleService(uint32_t events, bool in_isr)
     HandleRxWork(in_isr);
   }
 
+  if ((events & EVENT_EOT_DONE) != 0U)
+  {
+    tx_draining_ = false;
+    DL_UART_disableInterrupt(res_.instance, EOT_INTERRUPT_MASK);
+  }
+
   if ((events & (EVENT_CONFIG | EVENT_DMA_DONE_TX | EVENT_EOT_DONE | EVENT_RX_WORK)) !=
       0U)
   {
@@ -626,13 +632,12 @@ void MSPM0UART::ConfigureRxDma()
 
 void MSPM0UART::ApplyConfig(UART::Configuration config)
 {
-  // 配置路径已等待空闲；保留 FEN，避免反复切换 FIFO 暴露旧的 RX 内容。
-  // The configuration path has reached idle. Keep FEN unchanged: toggling FIFO
-  // mode on G3507 can expose previously consumed RX bytes.
+  // 调用方保证发送已结束（无发送或已收到 EOT）；BUSY 也包含接收，不在这里等待。
+  // 保留 FEN，避免反复切换 FIFO 暴露旧的 RX 内容。
+  // The caller guarantees that transmission has ended (nothing sent, or EOT seen).
+  // BUSY also covers reception and is not waited on here. Keep FEN unchanged:
+  // toggling FIFO mode on G3507 can expose previously consumed RX bytes.
   DL_UART_disable(res_.instance);
-  while (DL_UART_isBusy(res_.instance))
-  {
-  }
 
   DL_UART_WORD_LENGTH word_length = DL_UART_WORD_LENGTH_8_BITS;
   switch (config.data_bits)
@@ -755,6 +760,7 @@ void MSPM0UART::StartTxDma(uint8_t half, size_t size)
   DL_DMA_setTransferSize(DMA, res_.dma_tx_channel, static_cast<uint16_t>(size));
   DL_UART_clearInterruptStatus(res_.instance,
                                TX_DONE_INTERRUPT_MASK | EOT_INTERRUPT_MASK);
+  tx_draining_ = true;
   DL_UART_enableInterrupt(res_.instance, TX_DONE_INTERRUPT_MASK);
   DL_UART_enableDMATransmitEvent(res_.instance);
   __DMB();
@@ -773,16 +779,14 @@ void MSPM0UART::TryApplyPublishedConfig(bool in_isr)
     return;
   }
 
-  if (DL_UART_isBusy(res_.instance))
+  if (tx_draining_)
   {
+    // DMA 已结束但最后的字节可能仍在发送；EOT 置位后（包括开中断前已置位）再配置。
+    // 接收不参与判断，进行中的字节随配置丢弃。
+    // DMA has finished but the last bytes may still be shifting out; configure once
+    // EOT is set, including when it was set before the interrupt is enabled. RX is
+    // not considered; a byte being received is dropped with the configuration.
     DL_UART_enableInterrupt(res_.instance, EOT_INTERRUPT_MASK);
-    if (res_.rx_mode == RxMode::MAIN_BYTE_IRQ)
-    {
-      DL_UART_disableInterrupt(res_.instance, RX_TIMEOUT_INTERRUPT_MASK);
-      DL_UART_clearInterruptStatus(res_.instance, RX_TIMEOUT_INTERRUPT_MASK);
-      DL_UART_setRXInterruptTimeout(res_.instance, CONFIG_RX_TIMEOUT);
-      DL_UART_enableInterrupt(res_.instance, RX_TIMEOUT_INTERRUPT_MASK);
-    }
     return;
   }
 
