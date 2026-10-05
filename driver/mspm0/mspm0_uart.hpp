@@ -227,7 +227,6 @@ class MSPM0UART : public UART
   static constexpr uint32_t RX_INTERRUPT_MASK = DL_UART_INTERRUPT_RX;
   static constexpr uint32_t RX_TIMEOUT_INTERRUPT_MASK =
       DL_UART_INTERRUPT_RX_TIMEOUT_ERROR;
-  static constexpr uint32_t CONFIG_RX_TIMEOUT = 1U;
   static constexpr uint32_t RX_GAP_INTERRUPT_MASK = DL_UART_INTERRUPT_LINC0_MATCH;
   static constexpr uint32_t TX_DONE_INTERRUPT_MASK = DL_UART_INTERRUPT_DMA_DONE_TX;
   static constexpr uint32_t EOT_INTERRUPT_MASK = DL_UART_INTERRUPT_EOT_DONE;
@@ -310,6 +309,9 @@ class MSPM0UART : public UART
   std::array<size_t, 2U> tx_half_size_used_{};
   /// 当前发送半区，负值表示 DMA 空闲 / Active half, negative when DMA is idle.
   int8_t active_half_ = -1;
+  /// 已启动发送且尚未收到 EOT，最后的字节可能仍在发送 / TX was started and EOT has not
+  /// been seen yet, so the last bytes may still be shifting out.
+  bool tx_draining_ = false;
   /// 上次已处理的接收位置 / Last processed RX position.
   size_t rx_dma_cursor_ = 0U;
 
