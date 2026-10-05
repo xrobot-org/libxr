@@ -33,7 +33,8 @@ ErrorCode STDIO::CompiledSink::Write(std::string_view chunk)
     return ErrorCode::OK;
   }
 
-  ec = stream_.Write(chunk.substr(0, copy_size));
+  // copy_size <= chunk.size(); substr would link the libstdc++ exception support.
+  ec = stream_.Write(std::string_view(chunk.data(), copy_size));
   if (ec != ErrorCode::OK)
   {
     return ec;
