@@ -120,9 +120,9 @@ class MSPM0SPI : public SPI
  * @brief 由 SysConfig 宏生成 MSPM0SPI 构造参数 / MSPM0SPI constructor arguments from
  *        SysConfig macros.
  * @param clock_hz SPI 输入时钟，即该实例所在电源域的 BUSCLK（PD0 为 ULPCLK，PD1 为
- *        MCLK）；SysConfig 在 SYSCFG_DL_name##_init 的注释中给出该值 / SPI input clock,
+ *        MCLK）；SysConfig 在 SYSCFG_DL_NAME_init 的注释中给出该值 / SPI input clock,
  *        the BUSCLK of the instance's power domain (ULPCLK for PD0, MCLK for PD1);
- *        SysConfig states it in a comment of SYSCFG_DL_name##_init.
+ *        SysConfig states it in a comment of SYSCFG_DL_NAME_init.
  */
 #define MSPM0_SPI_INIT(name, clock_hz, dma_rx_name, dma_tx_name, rx_buffer_addr,      \
                        rx_buffer_size, tx_buffer_addr, tx_buffer_size, dma_min_size)  \
