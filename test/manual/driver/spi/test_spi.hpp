@@ -28,6 +28,8 @@ namespace LibXR::Test
  *      Reserve the bus; tx/rx must be separate work RAM, disjoint from each other and
  * active backend buffers.
  * @param spi 已初始化的 SPI / Initialized SPI controller.
+ * @param semaphore 调用方保留的 BLOCK 完成信号量 / Caller-retained semaphore for BLOCK
+ * completion.
  * @param tx 发送工作缓冲区，内容会被覆盖 / Transmit work buffer; contents are
  * overwritten.
  * @param rx 接收工作缓冲区，内容会被覆盖 / Receive work buffer; contents are overwritten.
@@ -38,7 +40,7 @@ namespace LibXR::Test
  * @param iterations 重复轮数，每个长度均测试三种完成方式 /
  *        Rounds; every length uses all three completion modes.
  */
-inline void TestSPILoopback(SPI& spi, RawData tx, RawData rx,
+inline void TestSPILoopback(SPI& spi, Semaphore& semaphore, RawData tx, RawData rx,
                             std::initializer_list<size_t> lengths,
                             uint32_t timeout_ms = 1000, uint32_t iterations = 1000)
 {
@@ -55,7 +57,7 @@ inline void TestSPILoopback(SPI& spi, RawData tx, RawData rx,
   }
   auto* sent = static_cast<uint8_t*>(tx.addr_);
   auto* received = static_cast<uint8_t*>(rx.addr_);
-  Detail::TransferTestCompletion completion(timeout_ms);
+  Detail::TransferTestCompletion completion(semaphore, timeout_ms);
   for (uint32_t round = 0; round < iterations; ++round)
   {
     for (size_t length : lengths)
@@ -97,6 +99,8 @@ inline void TestSPILoopback(SPI& spi, RawData tx, RawData rx,
  *      buffering disabled. Call from a normal task with an idle bus and a ready
  *      microsecond timebase.
  * @param spi 已初始化的 SPI / Initialized SPI controller.
+ * @param semaphore 调用方保留的 BLOCK 完成信号量 / Caller-retained semaphore for BLOCK
+ * completion.
  * @param config 后端支持的配置 / Configuration supported by the backend.
  * @param tx 发送工作区，其大小为每次传输长度 / Transmit work buffer; its size is the
  * transfer length.
@@ -114,9 +118,10 @@ inline void TestSPILoopback(SPI& spi, RawData tx, RawData rx,
  *       setup and A-B-A switching. Loopback and timing do not independently verify
  *       the electrical clock polarity or phase.
  */
-inline uint64_t TestSPIConfig(SPI& spi, SPI::Configuration config, RawData tx, RawData rx,
-                              uint64_t min_elapsed_us, uint64_t max_elapsed_us,
-                              uint32_t iterations = 100, uint32_t timeout_ms = 1000)
+inline uint64_t TestSPIConfig(SPI& spi, Semaphore& semaphore, SPI::Configuration config,
+                              RawData tx, RawData rx, uint64_t min_elapsed_us,
+                              uint64_t max_elapsed_us, uint32_t iterations = 100,
+                              uint32_t timeout_ms = 1000)
 {
   TEST_ASSERT(Timebase::IsReady() && iterations > 0);
   TEST_ASSERT(min_elapsed_us > 0 && max_elapsed_us >= min_elapsed_us);
@@ -128,7 +133,6 @@ inline uint64_t TestSPIConfig(SPI& spi, SPI::Configuration config, RawData tx, R
   const auto rx_begin = reinterpret_cast<uintptr_t>(rx.addr_);
   TEST_ASSERT(tx_begin >= rx_begin ? tx_begin - rx_begin >= rx.size_
                                    : rx_begin - tx_begin >= tx.size_);
-  Semaphore semaphore;
   SPI::OperationRW operation(semaphore, timeout_ms);
   TEST_ASSERT(spi.SetConfig(config) == ErrorCode::OK);
   auto* sent = static_cast<uint8_t*>(tx.addr_);

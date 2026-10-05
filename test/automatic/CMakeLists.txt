@@ -110,6 +110,7 @@ add_executable(
   middleware/terminal/input/test_input.cpp
   middleware/terminal/terminal/test_integration.cpp
   structure/double_buffer/test_double_buffer.cpp
+  structure/latest_snapshot/test_latest_snapshot.cpp
   structure/list/test_list.cpp
   structure/lockfree_list/test_lockfree_list.cpp
   structure/object_pool/test_object_pool.cpp
