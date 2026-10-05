@@ -22,8 +22,8 @@ class MSPM0PWM : public PWM
    * @brief 由 SysConfig 的定时器时钟反推源时钟 / Source clock from SysConfig's timer
    *        clock.
    * @param timer 定时器实例 / Timer instance.
-   * @param timer_clock_hz SysConfig 的 <name>_INST_CLK_FREQ（分频后）/ SysConfig's
-   *        <name>_INST_CLK_FREQ (after the dividers).
+   * @param timer_clock_hz SysConfig 的 name##_INST_CLK_FREQ（分频后）/ SysConfig's
+   *        name##_INST_CLK_FREQ (after the dividers).
    * @return 分频前的定时器时钟 / Timer clock before the dividers.
    */
   static uint32_t SourceClockFromSysCfg(GPTIMER_Regs* timer, uint32_t timer_clock_hz);
@@ -44,10 +44,10 @@ class MSPM0PWM : public PWM
 
 /**
  * @brief 由 SysConfig 宏生成 MSPM0PWM 资源 / MSPM0PWM resources from SysConfig macros.
- * @note 须在 SYSCFG_DL_init() 之后求值：源时钟由 <name>_INST_CLK_FREQ 和 SysConfig
+ * @note 须在 SYSCFG_DL_init() 之后求值：源时钟由 name##_INST_CLK_FREQ 和 SysConfig
  *       写入定时器的分频值求出。
  *       Evaluate after SYSCFG_DL_init(): the source clock is derived from
- *       <name>_INST_CLK_FREQ and the divider values SysConfig wrote to the timer.
+ *       name##_INST_CLK_FREQ and the divider values SysConfig wrote to the timer.
  */
 #define MSPM0_PWM_CH(name, ch)                                                      \
   ::LibXR::MSPM0PWM::Resources                                                      \
