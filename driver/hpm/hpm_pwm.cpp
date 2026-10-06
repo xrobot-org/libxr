@@ -1,12 +1,5 @@
 ﻿#include "hpm_pwm.hpp"
 
-#if __has_include("board.h")
-#include "board.h"
-#define LIBXR_HPM_PWM_HAS_BOARD_HELPER 1
-#else
-#define LIBXR_HPM_PWM_HAS_BOARD_HELPER 0
-#endif
-
 using namespace LibXR;
 
 uint8_t HPMPWM::ResolveGptmrReloadCmpIndex(uint8_t duty_cmp_index)
@@ -29,14 +22,13 @@ uint8_t HPMPWM::ResolveGptmrReloadCmpIndex(uint8_t duty_cmp_index)
  * - If only GPTMR compare output is available, `gptmr_` is used as fallback.
  */
 HPMPWM::HPMPWM(LibXRHpmPwmType* pwm, clock_name_t clock, uint8_t pwm_index,
-               uint8_t cmp_index, bool invert, bool auto_board_init)
+               uint8_t cmp_index, Polarity polarity)
     : pwm_(pwm),
       gptmr_(reinterpret_cast<GPTMR_Type*>(pwm)),
       clock_(clock),
       pwm_index_(pwm_index),
       cmp_index_(cmp_index),
-      invert_(invert),
-      auto_board_init_(auto_board_init),
+      invert_(polarity == Polarity::INVERTED),
       reload_(0),
       configured_(false)
 {
@@ -92,22 +84,7 @@ ErrorCode HPMPWM::SetConfig(Configuration config)
     return ErrorCode::ARG_ERR;
   }
 
-  uint32_t clock_hz = 0u;
-
-#if LIBXR_HPM_GPTMR_PWM_FALLBACK && LIBXR_HPM_PWM_HAS_BOARD_HELPER
-  if (auto_board_init_ && gptmr_ != nullptr)
-  {
-    // 为了与 STM32 风格一致，应用层可不显式调用 board_init_*。
-    // To keep STM32-like app style, board_init_* can be hidden inside driver.
-    clock_hz = board_init_gptmr_clock(gptmr_);
-    board_init_gptmr_channel_pin(gptmr_, pwm_index_, true);
-  }
-#endif
-
-  if (clock_hz == 0u)
-  {
-    clock_hz = clock_get_frequency(clock_);
-  }
+  const uint32_t clock_hz = clock_get_frequency(clock_);
 
   if (clock_hz == 0u)
   {
