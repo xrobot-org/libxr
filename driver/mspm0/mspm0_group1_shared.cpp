@@ -2,22 +2,34 @@
 
 namespace LibXR::MSPM0Group1Shared
 {
+namespace
+{
+// INT_GROUP1 的成员共用一个中断号；优先级低于 SysTick 时基。
+// The INT_GROUP1 members share one interrupt number; the priority stays below the
+// SysTick timebase.
+void EnableIRQ(IRQn_Type irqn)
+{
+  NVIC_SetPriority(irqn, 1U);
+  NVIC_EnableIRQ(irqn);
+}
+}  // namespace
+
 void EnableGroup1IRQ()
 {
 #if defined(GPIOA_BASE)
-  NVIC_EnableIRQ(GPIOA_INT_IRQn);
+  EnableIRQ(GPIOA_INT_IRQn);
 #elif defined(GPIOB_BASE)
-  NVIC_EnableIRQ(GPIOB_INT_IRQn);
+  EnableIRQ(GPIOB_INT_IRQn);
 #elif defined(GPIOC_BASE)
-  NVIC_EnableIRQ(GPIOC_INT_IRQn);
+  EnableIRQ(GPIOC_INT_IRQn);
 #elif defined(COMP0_BASE)
-  NVIC_EnableIRQ(COMP0_INT_IRQn);
+  EnableIRQ(COMP0_INT_IRQn);
 #elif defined(COMP1_BASE)
-  NVIC_EnableIRQ(COMP1_INT_IRQn);
+  EnableIRQ(COMP1_INT_IRQn);
 #elif defined(COMP2_BASE)
-  NVIC_EnableIRQ(COMP2_INT_IRQn);
+  EnableIRQ(COMP2_INT_IRQn);
 #elif defined(TRNG_BASE)
-  NVIC_EnableIRQ(TRNG_INT_IRQn);
+  EnableIRQ(TRNG_INT_IRQn);
 #endif
 }
 }  // namespace LibXR::MSPM0Group1Shared

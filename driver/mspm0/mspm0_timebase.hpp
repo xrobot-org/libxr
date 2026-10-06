@@ -13,8 +13,11 @@ class MSPM0Timebase : public Timebase
   /**
    * @brief 构造函数 / Constructor
    *
-   * 配置 MSPM0 SysTick 时间基的回绕范围，并标记时间基已就绪。
-   * Configures the MSPM0 SysTick wrap range and marks the timebase ready.
+   * 配置 MSPM0 SysTick 时间基的回绕范围，开启 SysTick 中断并设为最高优先级（0），
+   * 然后标记时间基已就绪。SysTick 的 1 ms 周期和启动由 SysConfig 配置。
+   * Configures the MSPM0 SysTick wrap range, enables the SysTick interrupt at the
+   * highest priority (0) and marks the timebase ready. SysConfig configures the 1 ms
+   * SysTick period and starts SysTick.
    */
   MSPM0Timebase();
 

@@ -7,6 +7,7 @@ set(_xr_mspm0_driver_sources
     ${CMAKE_CURRENT_LIST_DIR}/mspm0_i2c.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mspm0_uart.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mspm0_atomic_shim.c
+    ${CMAKE_CURRENT_LIST_DIR}/mspm0_syscalls.c
 )
 
 target_sources(${PROJECT_NAME} PRIVATE ${_xr_mspm0_driver_sources})

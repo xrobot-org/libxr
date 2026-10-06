@@ -5,6 +5,10 @@ using namespace LibXR;
 MSPM0Timebase::MSPM0Timebase()
 {
   ConfigureWrapRange(static_cast<uint64_t>(UINT32_MAX) * 1000ULL + 999ULL, UINT32_MAX);
+  // SysTick 中断必须能抢占 LibXR 驱动的中断（优先级 1）。
+  // The SysTick interrupt must preempt the interrupts of the LibXR drivers (priority 1).
+  NVIC_SetPriority(SysTick_IRQn, 0U);
+  DL_SYSTICK_enableInterrupt();
   SetReady();
 }
 

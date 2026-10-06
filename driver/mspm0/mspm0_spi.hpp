@@ -9,6 +9,15 @@
 namespace LibXR
 {
 
+/**
+ * @brief MSPM0 SPI 控制器 / MSPM0 SPI controller.
+ *
+ * @note 构造时开启 DMA 收发完成中断，并把 SPI 中断设为优先级 1；SysConfig 中该实例的
+ *       中断和优先级设置会被覆盖。
+ *       The constructor enables the DMA RX/TX done interrupts and sets the SPI interrupt
+ *       to priority 1, replacing the interrupt and priority settings SysConfig made for
+ *       the instance.
+ */
 class MSPM0SPI : public SPI
 {
  public:
