@@ -92,17 +92,6 @@ ErrorCode HPMI2C::SetWaitPolicy(WaitPolicy policy)
 
 #if LIBXR_HPM_I2C_SUPPORTED
 
-#if __has_include("board.h")
-extern "C"
-{
-#include "board.h"
-  void board_i2c_bus_clear(I2C_Type* ptr);
-}
-#define LIBXR_HPM_I2C_HAS_BOARD_HELPER 1
-#else
-#define LIBXR_HPM_I2C_HAS_BOARD_HELPER 0
-#endif
-
 #if __has_include("hpm_interrupt.h")
 #include "hpm_interrupt.h"
 #define LIBXR_HPM_I2C_HAS_INTERRUPT 1
@@ -166,9 +155,9 @@ constexpr size_t kHpmI2cInstanceCount = 4U;
 HPMI2C* g_hpm_i2c_instance_map[kHpmI2cInstanceCount] = {};
 
 using HPMI2CPlatform::kInvalidDmaSource;
-using HPMI2CPlatform::ResolveBoardI2cDmaSource;
-using HPMI2CPlatform::ResolveBoardI2cIrq;
+using HPMI2CPlatform::ResolveI2cDmaSource;
 using HPMI2CPlatform::ResolveI2cIndex;
+using HPMI2CPlatform::ResolveI2cIrq;
 
 #if LIBXR_HPM_I2C_HAS_L1C
 static bool ResolveDCacheRange(const void* addr, uint32_t size, uint32_t& start,
@@ -550,31 +539,16 @@ void libxr_hpm_i2c7_isr(void) { libxr_hpm_i2c_process_interrupt(HPM_I2C7); }
 extern "C" void libxr_hpm_i2c_process_interrupt(I2C_Type* ptr) { UNUSED(ptr); }
 #endif
 
-HPMI2C::HPMI2C(I2C_Type* i2c, clock_name_t clock, bool auto_board_init,
-               I2C::Configuration config)
-    : i2c_(i2c), clock_(clock), current_config_(config), auto_board_init_(auto_board_init)
+HPMI2C::HPMI2C(I2C_Type* i2c, clock_name_t clock, I2C::Configuration config)
+    : i2c_(i2c), clock_(clock), current_config_(config)
 {
   ASSERT(i2c_ != nullptr);
 
   // Shared dma_mgr init must run in thread context, before any async request.
   HPMDmaManager::EnsureInitialized();
 
-#if LIBXR_HPM_I2C_HAS_BOARD_HELPER
-  if (auto_board_init_)
-  {
-    source_clock_hz_ = board_init_i2c_clock(i2c_);
-    init_i2c_pins(i2c_);
-    TryRecoverBusLines();
-  }
-#else
-  (void)auto_board_init_;
-#endif
-
-  if (source_clock_hz_ == 0)
-  {
-    clock_add_to_group(clock_, 0);
-    source_clock_hz_ = clock_get_frequency(clock_);
-  }
+  clock_add_to_group(clock_, 0);
+  source_clock_hz_ = clock_get_frequency(clock_);
 
   REQUIRE(source_clock_hz_ != 0);
   const ErrorCode ans = SetConfig(config);
@@ -819,17 +793,6 @@ void HPMI2C::TryRecoverBusLines()
   {
     return;
   }
-
-#if LIBXR_HPM_I2C_HAS_BOARD_HELPER
-  if (auto_board_init_)
-  {
-    if (i2c_get_line_scl_status(i2c_) && !i2c_get_line_sda_status(i2c_))
-    {
-      board_i2c_bus_clear(i2c_);
-    }
-    return;
-  }
-#endif
 
 #if defined(HPM_IP_FEATURE_I2C_SUPPORT_RESET) && (HPM_IP_FEATURE_I2C_SUPPORT_RESET == 1)
   if (i2c_get_line_scl_status(i2c_) && !i2c_get_line_sda_status(i2c_))
@@ -1504,26 +1467,17 @@ ErrorCode HPMI2C::EnsureAsyncDmaReady()
     return ErrorCode::PTR_NULL;
   }
 
-  async_dma_source_ = ResolveBoardI2cDmaSource(i2c_);
+  async_dma_source_ = ResolveI2cDmaSource(i2c_);
   if (async_dma_source_ == kInvalidDmaSource)
   {
     return ErrorCode::NOT_SUPPORT;
   }
 
   // dma_mgr was initialized once by the constructor.
-#if defined(BOARD_APP_I2C_DMA)
-  hpm_stat_t status =
-      dma_mgr_request_specified_resource(&async_dma_resource_, BOARD_APP_I2C_DMA);
-#else
-  hpm_stat_t status = status_fail;
-#endif
+  hpm_stat_t status = dma_mgr_request_resource(&async_dma_resource_);
   if (status != status_success)
   {
-    status = dma_mgr_request_resource(&async_dma_resource_);
-    if (status != status_success)
-    {
-      return ConvertDmaStatus(status);
-    }
+    return ConvertDmaStatus(status);
   }
 
   dma_mgr_chn_conf_t cfg{};
@@ -1617,7 +1571,7 @@ ErrorCode HPMI2C::EnableAsyncI2cIrq()
 #if !LIBXR_HPM_I2C_HAS_INTERRUPT
   return ErrorCode::NOT_SUPPORT;
 #else
-  const int32_t irq = ResolveBoardI2cIrq(i2c_);
+  const int32_t irq = ResolveI2cIrq(i2c_);
   const int32_t index = ResolveI2cIndex(i2c_);
   if (irq < 0 || index < 0 || static_cast<size_t>(index) >= kHpmI2cInstanceCount)
   {
@@ -1643,7 +1597,7 @@ void HPMI2C::DisableAsyncI2cIrq()
   if (i2c_ != nullptr)
   {
     i2c_disable_irq(i2c_, I2C_EVENT_TRANSACTION_COMPLETE | I2C_EVENT_LOSS_ARBITRATION);
-    const int32_t irq = ResolveBoardI2cIrq(i2c_);
+    const int32_t irq = ResolveI2cIrq(i2c_);
     if (irq >= 0)
     {
       intc_m_disable_irq(static_cast<uint32_t>(irq));
@@ -2275,13 +2229,11 @@ ErrorCode HPMI2C::MemWrite(uint16_t slave_addr, uint16_t mem_addr,
 
 extern "C" void libxr_hpm_i2c_process_interrupt(LibXRHpmI2cType* ptr) { UNUSED(ptr); }
 
-HPMI2C::HPMI2C(LibXRHpmI2cType* i2c, clock_name_t clock, bool auto_board_init,
-               I2C::Configuration config)
-    : i2c_(i2c), clock_(clock), current_config_(config), auto_board_init_(auto_board_init)
+HPMI2C::HPMI2C(LibXRHpmI2cType* i2c, clock_name_t clock, I2C::Configuration config)
+    : i2c_(i2c), clock_(clock), current_config_(config)
 {
   (void)i2c_;
   (void)clock_;
-  (void)auto_board_init_;
 }
 
 ErrorCode HPMI2C::SetAddressMode(AddressMode mode)
