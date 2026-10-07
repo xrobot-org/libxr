@@ -128,13 +128,15 @@ STM32USBDeviceOtgFS::STM32USBDeviceOtgFS(
   auto rx_cfgs_itr = RX_EP_CFGS.begin();
   auto tx_cfgs_itr = TX_EP_CFGS.begin();
 
-  auto ep0_in = new STM32Endpoint(USB::Endpoint::EPNumber::EP0, id_, hpcd_,
-                                  USB::Endpoint::Direction::IN, (*tx_cfgs_itr).fifo_size,
-                                  (*tx_cfgs_itr).buffer);
-
+  // EP0 OUT 先设置 GRXFSIZ；HAL_PCDEx_SetTxFiFo(0) 以 GRXFSIZ 作为 TX0 起始地址。
+  // EP0 OUT sets GRXFSIZ first; HAL_PCDEx_SetTxFiFo(0) uses GRXFSIZ as the TX0 start.
   auto ep0_out =
       new STM32Endpoint(USB::Endpoint::EPNumber::EP0, id_, hpcd_,
                         USB::Endpoint::Direction::OUT, rx_fifo_size, (*rx_cfgs_itr));
+
+  auto ep0_in = new STM32Endpoint(USB::Endpoint::EPNumber::EP0, id_, hpcd_,
+                                  USB::Endpoint::Direction::IN, (*tx_cfgs_itr).fifo_size,
+                                  (*tx_cfgs_itr).buffer);
 
   USB::EndpointPool::SetEndpoint0(ep0_in, ep0_out);
 
@@ -208,13 +210,15 @@ STM32USBDeviceOtgHS::STM32USBDeviceOtgHS(
   auto rx_cfgs_itr = RX_EP_CFGS.begin();
   auto tx_cfgs_itr = TX_EP_CFGS.begin();
 
-  auto ep0_in = new STM32Endpoint(USB::Endpoint::EPNumber::EP0, id_, hpcd_,
-                                  USB::Endpoint::Direction::IN, (*tx_cfgs_itr).fifo_size,
-                                  (*tx_cfgs_itr).buffer);
-
+  // EP0 OUT 先设置 GRXFSIZ；HAL_PCDEx_SetTxFiFo(0) 以 GRXFSIZ 作为 TX0 起始地址。
+  // EP0 OUT sets GRXFSIZ first; HAL_PCDEx_SetTxFiFo(0) uses GRXFSIZ as the TX0 start.
   auto ep0_out =
       new STM32Endpoint(USB::Endpoint::EPNumber::EP0, id_, hpcd_,
                         USB::Endpoint::Direction::OUT, rx_fifo_size, (*rx_cfgs_itr));
+
+  auto ep0_in = new STM32Endpoint(USB::Endpoint::EPNumber::EP0, id_, hpcd_,
+                                  USB::Endpoint::Direction::IN, (*tx_cfgs_itr).fifo_size,
+                                  (*tx_cfgs_itr).buffer);
 
   USB::EndpointPool::SetEndpoint0(ep0_in, ep0_out);
 
