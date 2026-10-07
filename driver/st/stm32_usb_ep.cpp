@@ -173,9 +173,67 @@ void STM32Endpoint::Configure(const Config& cfg)
   }
 }
 
+#if defined(USB_OTG_FS) || defined(USB_OTG_HS)
+static bool wait_otg_in_ep_flag(USB_OTG_INEndpointTypeDef* in_ep, uint32_t flag)
+{
+  // 正常情况下几个 PHY 时钟内置位；上限只防止 PHY 时钟停止时卡死。
+  // Normally set within a few PHY clocks; the bound only guards a stopped PHY clock.
+  constexpr uint32_t MAX_POLLS = 10000U;
+  for (uint32_t i = 0U; i < MAX_POLLS; ++i)
+  {
+    if ((in_ep->DIEPINT & flag) != 0U)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+static void disable_otg_in_ep(PCD_HandleTypeDef* hpcd, uint8_t ep_num)
+{
+  const uintptr_t base = reinterpret_cast<uintptr_t>(hpcd->Instance);
+  auto* in_ep = reinterpret_cast<USB_OTG_INEndpointTypeDef*>(
+      base + USB_OTG_IN_ENDPOINT_BASE + ep_num * USB_OTG_EP_REG_SIZE);
+  auto* device = reinterpret_cast<USB_OTG_DeviceTypeDef*>(base + USB_OTG_DEVICE_BASE);
+
+  if ((in_ep->DIEPCTL & USB_OTG_DIEPCTL_EPENA) == 0U)
+  {
+    return;
+  }
+
+  // HAL_PCD_EP_Close 只请求禁用；HAL 稍后在 EPDISD 中断里清空该 TxFIFO，
+  // 会清掉关闭后重新开始的传输已写入的数据。这里按参考手册的禁用流程等禁用完成，
+  // 清掉 EPDISD 并立即清空 FIFO。
+  // HAL_PCD_EP_Close only requests the disable; HAL later flushes this TxFIFO in the
+  // EPDISD interrupt, which would discard data already written for a transfer
+  // restarted after the close. Follow the reference-manual disable sequence, wait
+  // for completion, clear EPDISD and flush the FIFO now.
+  device->DIEPEMPMSK &= ~(1UL << ep_num);
+  in_ep->DIEPCTL |= USB_OTG_DIEPCTL_SNAK;
+  (void)wait_otg_in_ep_flag(in_ep, USB_OTG_DIEPINT_INEPNE);
+  in_ep->DIEPCTL |= USB_OTG_DIEPCTL_EPDIS | USB_OTG_DIEPCTL_SNAK;
+  (void)wait_otg_in_ep_flag(in_ep, USB_OTG_DIEPINT_EPDISD);
+  in_ep->DIEPINT = USB_OTG_DIEPINT_INEPNE | USB_OTG_DIEPINT_EPDISD;
+  (void)USB_FlushTxFifo(hpcd->Instance, ep_num);
+}
+#endif
+
 void STM32Endpoint::Close()
 {
   uint8_t addr = EPNumberToAddr(GetNumber(), GetDirection());
+#if defined(USB_OTG_FS) || defined(USB_OTG_HS)
+  bool is_otg = false;
+#if defined(USB_OTG_FS)
+  is_otg = is_otg || id_ == STM32_USB_OTG_FS;
+#endif
+#if defined(USB_OTG_HS)
+  is_otg = is_otg || id_ == STM32_USB_OTG_HS;
+#endif
+  if (is_otg && GetDirection() == Direction::IN)
+  {
+    disable_otg_in_ep(hpcd_, EPNumberToInt8(GetNumber()));
+  }
+#endif
   HAL_PCD_EP_Close(hpcd_, addr);
   SetState(State::DISABLED);
 }
