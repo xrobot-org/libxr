@@ -180,6 +180,25 @@ class CDCUart : public CDCBase, public LibXR::UART
 
  protected:
   /**
+   * @brief 绑定端点并发送配置前已排队的数据 / Bind endpoints and send data queued
+   * before configuration
+   * @param endpoint_pool 端点池 / Endpoint pool
+   * @param start_itf_num 起始接口号 / Starting interface number
+   * @param in_isr 是否在中断中调用 / Whether called in an ISR
+   * @note 未配置时写入只入队，WriteFun 不启动传输；队列满后写入返回 FULL，
+   *       不再触发 WriteFun，所以必须在这里推进发送。
+   *       Writes before configuration are only queued and WriteFun starts no
+   *       transfer; once the queue is full, writes return FULL without calling
+   *       WriteFun, so transmission must be advanced here.
+   */
+  void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num,
+                     bool in_isr) override
+  {
+    CDCBase::BindEndpoints(endpoint_pool, start_itf_num, in_isr);
+    ProgressTx(in_isr);
+  }
+
+  /**
    * @brief 解绑端点并清理接收暂存状态 / Unbind endpoints and clear saved receive state
    * @param endpoint_pool 端点池 / Endpoint pool
    * @param in_isr 是否在中断中调用 / Whether called in an ISR
