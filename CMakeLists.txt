@@ -16,7 +16,25 @@ else()
   add_library(${PROJECT_NAME} STATIC)
 endif()
 
-target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)
+# 需要 C++20。编译器特性探测被跳过时（HPM SDK 的 find_package 强制指定编译器，探测结果
+# 拿不到），直接加 C++20 编译选项，工程因此不必再恢复探测。选项按 CMAKE_CXX_EXTENSIONS
+# 选择，与探测路径得到的 -std=gnu++20 一致；该变量默认开启，强制编译器下探测不给它赋值，
+# 未定义时按默认（开启）处理。
+# C++20 is required. When the compiler feature detection was skipped (HPM SDK's
+# find_package forces the compiler, so the detection results are unavailable), the C++20
+# option is added directly and projects do not have to restore the detection. The option
+# follows CMAKE_CXX_EXTENSIONS, matching the -std=gnu++20 that the detection path produces;
+# the variable is on by default and stays unset under a forced compiler, where the default
+# (on) applies.
+if("cxx_std_20" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+  target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)
+elseif(MSVC)
+  target_compile_options(${PROJECT_NAME} PUBLIC $<$<COMPILE_LANGUAGE:CXX>:/std:c++20>)
+elseif(DEFINED CMAKE_CXX_EXTENSIONS AND NOT CMAKE_CXX_EXTENSIONS)
+  target_compile_options(${PROJECT_NAME} PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-std=c++20>)
+else()
+  target_compile_options(${PROJECT_NAME} PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-std=gnu++20>)
+endif()
 
 target_compile_options(
   ${PROJECT_NAME}
