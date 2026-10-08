@@ -1,5 +1,11 @@
 #include "mspm0_power.hpp"
 
+// 应用使用的 SRAM（SRAM_BANK0）的末尾，来自 SysConfig 的链接脚本；
+// 启动文件也从它取初始栈指针。
+// End of the SRAM the application uses (SRAM_BANK0), from the SysConfig linker
+// script; the startup file takes its initial stack pointer from it too.
+extern "C" uint32_t __StackTop;
+
 using namespace LibXR;
 
 MSPM0PowerManager::MSPM0PowerManager() {}
@@ -21,10 +27,13 @@ void MSPM0PowerManager::Reset() { DL_SYSCTL_resetDevice(DL_SYSCTL_RESET_BOOT); }
  * @brief 进入 SHUTDOWN 低功耗模式 / Enters the SHUTDOWN low-power mode
  *
  * 进入功耗最低的 SHUTDOWN 模式，由 NRST 或配置了唤醒功能的 IO 唤醒；退出 SHUTDOWN 触发
- * BOR，唤醒后等同一次复位重启。
+ * BOR，唤醒后等同一次复位重启。MSPM0Gx51x 上 LFCLK_IN 引脚配成输入且上拉时，退出
+ * SHUTDOWN 后 LFCLK 会卡住（勘误 SYSCTL_ERR_05，SLAZ758E），该引脚应下拉或不配成输入。
  * Enters the SHUTDOWN mode with the lowest current consumption, woken up by NRST or a
  * wake-up capable IO; leaving SHUTDOWN triggers a BOR, so waking up is equivalent to a
- * reset.
+ * reset. On the MSPM0Gx51x, an LFCLK_IN pin configured as an input with a pull-up leaves
+ * the LFCLK stuck after SHUTDOWN (erratum SYSCTL_ERR_05, SLAZ758E); pull that pin down or
+ * do not configure it as an input.
  */
 void MSPM0PowerManager::Shutdown()
 {
@@ -37,8 +46,54 @@ void MSPM0PowerManager::Shutdown()
 
 /**
  * @brief 复位并进入 ROM BSL / Resets into the ROM BSL
+ *
+ * 照 SDK 示例 bsl_software_invoke_app_demo_uart（其中注明为规避 BSL_ERR_01）在复位前清零
+ * SRAM 的数据和 ECC 码，否则 BSL 读到 ECC 不一致的 SRAM，触发 SRAMDED NMI 后停止响应。
+ * 示例从 FACTORY 区的 SRAMFLASH 读 SRAM 大小，而 Flash 等待周期为 2（MCLK 高于 32 MHz）时
+ * 访问 FACTORY 区会 HardFault（勘误 FLASH_ERR_01，SLAZ758E），所以这里改为清零
+ * 0x20200000 至 __StackTop（SRAM_BANK0，BSL 的缓冲区在其中）以及同样大小的 ECC 码区
+ * 0x20300000。清零覆盖栈，因此关中断并且只用寄存器；操作数限定为低位寄存器，因为
+ * Thumb-1 的 str 只接受 r0-r7。
+ * Following the SDK example bsl_software_invoke_app_demo_uart (which names it a
+ * workaround for BSL_ERR_01), the SRAM data and ECC codes are cleared before the reset;
+ * otherwise the BSL reads SRAM with inconsistent ECC, takes an SRAMDED NMI and stops
+ * responding. The example reads the SRAM size from FACTORY SRAMFLASH, but a FACTORY
+ * access with flash wait state 2 (MCLK above 32 MHz) HardFaults (erratum FLASH_ERR_01,
+ * SLAZ758E), so 0x20200000 up to __StackTop (SRAM_BANK0, which holds the BSL buffer) and
+ * the ECC code region of the same size at 0x20300000 are cleared instead. The clear
+ * covers the stack, so interrupts are off and only registers are used; the operands are
+ * low registers because the Thumb-1 str takes r0-r7 only.
  */
 void MSPM0PowerManager::JumpToBootloader()
 {
-  DL_SYSCTL_resetDevice(DL_SYSCTL_RESET_BOOTLOADER_ENTRY);
+  __disable_irq();
+  const uint32_t size = reinterpret_cast<uint32_t>(&__StackTop) - 0x20200000U;
+  __asm volatile(
+      ".syntax unified\n"
+      "ldr     r1, =0x20300000\n"
+      "adds    r2, %[size], r1\n"
+      "movs    r3, #0\n"
+      "1:\n"
+      "str     r3, [r1]\n"
+      "adds    r1, r1, #4\n"
+      "cmp     r1, r2\n"
+      "blo     1b\n"
+      "ldr     r1, =0x20200000\n"
+      "adds    r2, %[size], r1\n"
+      "2:\n"
+      "str     r3, [r1]\n"
+      "adds    r1, r1, #4\n"
+      "cmp     r1, r2\n"
+      "blo     2b\n"
+      "str     %[lvl_val], [%[lvl_addr]]\n"
+      "str     %[cmd_val], [%[cmd_addr]]\n"
+      :
+      : [size] "l"(size), [lvl_addr] "l"(&SYSCTL->SOCLOCK.RESETLEVEL),
+        [lvl_val] "l"(DL_SYSCTL_RESET_BOOTLOADER_ENTRY),
+        [cmd_addr] "l"(&SYSCTL->SOCLOCK.RESETCMD),
+        [cmd_val] "l"(SYSCTL_RESETCMD_KEY_VALUE | SYSCTL_RESETCMD_GO_TRUE)
+      : "r1", "r2", "r3", "memory");
+  while (true)
+  {
+  }
 }

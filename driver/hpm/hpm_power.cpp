@@ -13,7 +13,7 @@ HPMPowerManager::HPMPowerManager() {}
 /**
  * @brief PPOR 软件复位整机 / Resets the whole device through the PPOR
  *
- * 做法 SDK 的 DFU 触发例程一致：使能软件复位源后按 24 个计数（约 1 微秒）触发复位。
+ * 做法与 SDK 的 DFU 触发例程一致：使能软件复位源后按 24 个计数（约 1 微秒）触发复位。
  * The same sequence as the DFU trigger sample of the SDK: enable the software reset
  * source, then issue the reset after 24 counters (about one microsecond).
  */
