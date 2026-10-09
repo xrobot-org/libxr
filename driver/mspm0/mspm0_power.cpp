@@ -8,7 +8,27 @@ extern "C" uint32_t __StackTop;
 
 using namespace LibXR;
 
-MSPM0PowerManager::MSPM0PowerManager() {}
+/**
+ * @brief 构造时释放 SHUTDOWN 锁存的 IO / Releases the IO latched by SHUTDOWN
+ *
+ * 退出 SHUTDOWN 后 IO（包括 SWD 引脚）保持进入时的状态，直到软件写 SHDNIOREL 释放
+ * （SLAU846B 2.4.7）；在此之前串口不能收发，调试器也连不上。TRM 要求先重新配置 IO
+ * 再释放，构造函数在 SysConfig 初始化引脚之后运行，满足这一顺序。判断用 SYSSTATUS 的
+ * SHDNIOLOCK 位，不读会被清除的 RSTCAUSE。
+ * After leaving SHUTDOWN, the IO (the SWD pins included) keep the state they had on
+ * entry until software releases them through SHDNIOREL (SLAU846B 2.4.7); until then the
+ * UART cannot transfer and a debugger cannot connect. The TRM requires the IO to be
+ * reconfigured before the release; the constructor runs after SysConfig has initialized
+ * the pins, which meets that order. The check uses the SHDNIOLOCK bit of SYSSTATUS
+ * rather than RSTCAUSE, which is cleared on read.
+ */
+MSPM0PowerManager::MSPM0PowerManager()
+{
+  if (DL_SYSCTL_getStatus() & DL_SYSCTL_STATUS_SHUTDOWN_IO_LOCK_TRUE)
+  {
+    DL_SYSCTL_releaseShutdownIO();
+  }
+}
 
 /**
  * @brief 复位整机 / Resets the whole device
@@ -26,21 +46,26 @@ void MSPM0PowerManager::Reset() { DL_SYSCTL_resetDevice(DL_SYSCTL_RESET_BOOT); }
 /**
  * @brief 进入 SHUTDOWN 低功耗模式 / Enters the SHUTDOWN low-power mode
  *
- * 进入功耗最低的 SHUTDOWN 模式，由 NRST 或配置了唤醒功能的 IO 唤醒；退出 SHUTDOWN 触发
- * BOR，唤醒后等同一次复位重启。MSPM0Gx51x 上 LFCLK_IN 引脚配成输入且上拉时，退出
- * SHUTDOWN 后 LFCLK 会卡住（勘误 SYSCTL_ERR_05，SLAZ758E），该引脚应下拉或不配成输入。
- * Enters the SHUTDOWN mode with the lowest current consumption, woken up by NRST or a
- * wake-up capable IO; leaving SHUTDOWN triggers a BOR, so waking up is equivalent to a
- * reset. On the MSPM0Gx51x, an LFCLK_IN pin configured as an input with a pull-up leaves
- * the LFCLK stuck after SHUTDOWN (erratum SYSCTL_ERR_05, SLAZ758E); pull that pin down or
- * do not configure it as an input.
+ * 进入功耗最低的 SHUTDOWN 模式，由 NRST、SWD 活动或配置了唤醒功能的 IO 唤醒；退出
+ * SHUTDOWN 触发 BOR，唤醒后等同一次复位重启，锁存的 IO 由构造函数释放。MSPM0Gx51x 上
+ * LFCLK_IN 引脚配成输入且上拉时，退出 SHUTDOWN 后 LFCLK 会卡住（勘误 SYSCTL_ERR_05，
+ * SLAZ758E），该引脚应下拉或不配成输入。
+ * Enters the SHUTDOWN mode with the lowest current consumption, woken up by NRST, SWD
+ * activity or a wake-up capable IO; leaving SHUTDOWN triggers a BOR, so waking up is
+ * equivalent to a reset, and the constructor releases the latched IO. On the
+ * MSPM0Gx51x, an LFCLK_IN pin configured as an input with a pull-up leaves the LFCLK
+ * stuck after SHUTDOWN (erratum SYSCTL_ERR_05, SLAZ758E); pull that pin down or do not
+ * configure it as an input.
  */
 void MSPM0PowerManager::Shutdown()
 {
   DL_SYSCTL_setPowerPolicySHUTDOWN();
-  __WFI();
+  // 有中断挂起时 WFI 立即返回；处理完中断再执行 WFI，直到进入 SHUTDOWN。
+  // WFI returns at once while an interrupt is pending; after it is served, WFI runs
+  // again until the device enters SHUTDOWN.
   while (true)
   {
+    __WFI();
   }
 }
 
