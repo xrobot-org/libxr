@@ -33,6 +33,25 @@ void test_ramfs()
   TEST_ASSERT(command.IsExecutable());
   TEST_ASSERT(!file_1.IsExecutable());
 
+  // A command without an execution context.
+  static int plain_calls = 0;
+  static int plain_argc = -1;
+  auto plain = LibXR::RamFS::CreateCommand("plain",
+                                           [](int argc, char** argv) -> int
+                                           {
+                                             UNUSED(argv);
+                                             plain_calls++;
+                                             plain_argc = argc;
+                                             return 7;
+                                           });
+  TEST_ASSERT(plain.IsExecutable());
+  char plain_name[] = "plain";
+  char* plain_argv[] = {plain_name};
+  TEST_ASSERT(plain.Run(1, plain_argv) == 7);
+  TEST_ASSERT(plain_calls == 1 && plain_argc == 1);
+  ramfs.Add(plain);
+  TEST_ASSERT(ramfs.FindFile("plain") == &plain);
+
   auto dir = LibXR::RamFS::CreateDir("test_dir");
   auto nested_dir = LibXR::RamFS::CreateDir("nested_dir");
 
