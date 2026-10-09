@@ -6,6 +6,21 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(LIBXR_DEV_ASSERT_BUILD "Enable LibXR maintainer-only development assertions" OFF)
+
+# LIBXR_DEBUG_BUILD 默认跟随构建类型：Debug 时开启，其余关闭；可用 -DLIBXR_DEBUG_BUILD=ON/OFF
+# 显式覆盖，例如在 Release/RelWithDebInfo 下单独开启。它与维护者专用的 LIBXR_DEV_ASSERT_BUILD
+# 相互独立。
+# LIBXR_DEBUG_BUILD defaults to the build type: on for Debug and off otherwise; it can be
+# overridden explicitly with -DLIBXR_DEBUG_BUILD=ON/OFF, e.g. to enable it under
+# Release/RelWithDebInfo. It is independent of the maintainer-only LIBXR_DEV_ASSERT_BUILD.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  set(LIBXR_DEBUG_BUILD_DEFAULT ON)
+else()
+  set(LIBXR_DEBUG_BUILD_DEFAULT OFF)
+endif()
+option(LIBXR_DEBUG_BUILD "Enable LibXR failure checks and debug helpers"
+       ${LIBXR_DEBUG_BUILD_DEFAULT})
+
 if(LIBXR_SHARED_BUILD)
   add_library(${PROJECT_NAME} SHARED)
 elseif(LIBXR_STATIC_BUILD)
@@ -44,7 +59,7 @@ target_compile_options(
 
 include(cmake/config.cmake)
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+if(LIBXR_DEBUG_BUILD)
   target_compile_definitions(${PROJECT_NAME} PUBLIC LIBXR_DEBUG_BUILD)
 endif()
 
