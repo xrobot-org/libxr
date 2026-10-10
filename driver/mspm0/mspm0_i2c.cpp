@@ -137,7 +137,7 @@ MSPM0I2C::MSPM0I2C(Resources res, RawData stage_buffer, uint32_t dma_enable_min_
     config.clock_speed = res_.default_bus_speed_hz;
   }
   const ErrorCode SET_CFG_ANS = SetConfig(config);
-  ASSERT(SET_CFG_ANS == ErrorCode::OK);
+  REQUIRE(SET_CFG_ANS == ErrorCode::OK);
 }
 
 ErrorCode MSPM0I2C::CheckControllerError() const

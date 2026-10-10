@@ -170,7 +170,7 @@ const void* MPMCQueueBase::PayloadPtr(size_t index) const
  */
 size_t MPMCQueueBase::AlignUpChecked(size_t value, size_t align)
 {
-  ASSERT(align > 0);
+  DEV_ASSERT(align > 0);
   ASSERT(value <= std::numeric_limits<size_t>::max() - (align - 1));
   return ((value + align - 1) / align) * align;
 }

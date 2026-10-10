@@ -5,6 +5,10 @@ using namespace LibXR;
 MSPM0Timebase::MSPM0Timebase()
 {
   ConfigureWrapRange(static_cast<uint64_t>(UINT32_MAX) * 1000ULL + 999ULL, UINT32_MAX);
+  // SysTick 中断必须能抢占 LibXR 驱动的中断（优先级 1）。
+  // The SysTick interrupt must preempt the interrupts of the LibXR drivers (priority 1).
+  NVIC_SetPriority(SysTick_IRQn, 0U);
+  DL_SYSTICK_enableInterrupt();
   SetReady();
 }
 
@@ -59,7 +63,13 @@ MillisecondTimestamp Timebase::GetMilliseconds()
 {
   return ReadSysTickSnapshot().milliseconds;
 }
-void MSPM0Timebase::OnSysTickInterrupt() { MSPM0Timebase::sys_tick_ms++; }
+void MSPM0Timebase::OnSysTickInterrupt()
+{
+  // 只有 SysTick 中断写入；C++20 弃用 volatile 的 ++，改为显式读改写。
+  // Only the SysTick interrupt writes it; C++20 deprecates ++ on volatile, so read and
+  // write explicitly.
+  MSPM0Timebase::sys_tick_ms = MSPM0Timebase::sys_tick_ms + 1U;
+}
 void MSPM0Timebase::Sync(uint32_t ticks) { MSPM0Timebase::sys_tick_ms = ticks; }
 
 extern "C" void SysTick_Handler(void)  // NOLINT

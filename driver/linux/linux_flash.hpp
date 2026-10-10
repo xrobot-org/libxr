@@ -86,7 +86,6 @@ class LinuxBinaryFileFlash : public Flash
 
     if (offset % MinWriteSize() != 0 || data.size_ % MinWriteSize() != 0)
     {
-      ASSERT(false);
       return ErrorCode::FAILED;
     }
 
@@ -104,7 +103,6 @@ class LinuxBinaryFileFlash : public Flash
       {
         if ((~dst[i] & src[i]))
         {
-          ASSERT(false);
           return ErrorCode::FAILED;
         }
       }

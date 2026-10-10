@@ -141,7 +141,7 @@ class BosManager
    */
   bool AddCapability(BosCapability* cap)
   {
-    ASSERT(bos_buffer_.addr_);
+    DEV_ASSERT(bos_buffer_.addr_);
     ASSERT(cap != nullptr);
     ASSERT(count_ < cap_capacity_);
 
@@ -157,7 +157,7 @@ class BosManager
    */
   ConstRawData GetBosDescriptor()
   {
-    ASSERT(bos_buffer_.addr_);
+    DEV_ASSERT(bos_buffer_.addr_);
 
     bool has_usb2_ext = false;
     for (size_t i = 0; i < count_; ++i)

@@ -189,17 +189,8 @@ static const Resource* Find(I2C_Type* i2c)
   return nullptr;
 }
 
-static uint8_t ResolveBoardI2cDmaSource(I2C_Type* i2c)
+static uint8_t ResolveI2cDmaSource(I2C_Type* i2c)
 {
-#if LIBXR_HPM_I2C_HAS_BOARD_HELPER
-#ifdef BOARD_APP_I2C_BASE
-  if (i2c == BOARD_APP_I2C_BASE)
-  {
-    return BOARD_APP_I2C_DMA_SRC;
-  }
-#endif
-#endif
-
   const Resource* resource = Find(i2c);
   return resource != nullptr ? resource->dma_source : kInvalidDmaSource;
 }
@@ -210,17 +201,8 @@ static int32_t ResolveI2cIndex(I2C_Type* i2c)
   return resource != nullptr ? resource->index : kInvalidIndex;
 }
 
-static int32_t ResolveBoardI2cIrq(I2C_Type* i2c)
+static int32_t ResolveI2cIrq(I2C_Type* i2c)
 {
-#if LIBXR_HPM_I2C_HAS_BOARD_HELPER
-#ifdef BOARD_APP_I2C_BASE
-  if (i2c == BOARD_APP_I2C_BASE)
-  {
-    return BOARD_APP_I2C_IRQ;
-  }
-#endif
-#endif
-
   const Resource* resource = Find(i2c);
   return resource != nullptr ? resource->irq : kInvalidIrq;
 }

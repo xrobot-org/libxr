@@ -465,3 +465,40 @@ extern "C" void libxr_hpm_gpio_check_interrupt(uint32_t port)
 {
   HPMGPIO::CheckInterrupt(port);
 }
+
+/*
+ * GPIO 端口中断入口由驱动定义，应用无需再声明这些 IRQ 的 ISR。
+ * The driver defines the GPIO port interrupt entries; the application does not declare
+ * ISRs for these IRQs.
+ */
+#define LIBXR_HPM_GPIO_PORT_ISR(irq, port)         \
+  SDK_DECLARE_EXT_ISR_M(irq, libxr_hpm_gpio_##irq) \
+  void libxr_hpm_gpio_##irq(void) { HPMGPIO::CheckInterrupt(port); }
+
+#if defined(IRQn_GPIO0_A) && defined(GPIO_DI_GPIOA)
+LIBXR_HPM_GPIO_PORT_ISR(IRQn_GPIO0_A, GPIO_DI_GPIOA)
+#endif
+#if defined(IRQn_GPIO0_B) && defined(GPIO_DI_GPIOB)
+LIBXR_HPM_GPIO_PORT_ISR(IRQn_GPIO0_B, GPIO_DI_GPIOB)
+#endif
+#if defined(IRQn_GPIO0_C) && defined(GPIO_DI_GPIOC)
+LIBXR_HPM_GPIO_PORT_ISR(IRQn_GPIO0_C, GPIO_DI_GPIOC)
+#endif
+#if defined(IRQn_GPIO0_D) && defined(GPIO_DI_GPIOD)
+LIBXR_HPM_GPIO_PORT_ISR(IRQn_GPIO0_D, GPIO_DI_GPIOD)
+#endif
+#if defined(IRQn_GPIO0_E) && defined(GPIO_DI_GPIOE)
+LIBXR_HPM_GPIO_PORT_ISR(IRQn_GPIO0_E, GPIO_DI_GPIOE)
+#endif
+#if defined(IRQn_GPIO0_F) && defined(GPIO_DI_GPIOF)
+LIBXR_HPM_GPIO_PORT_ISR(IRQn_GPIO0_F, GPIO_DI_GPIOF)
+#endif
+#if defined(IRQn_GPIO0_X) && defined(GPIO_DI_GPIOX)
+LIBXR_HPM_GPIO_PORT_ISR(IRQn_GPIO0_X, GPIO_DI_GPIOX)
+#endif
+#if defined(IRQn_GPIO0_Y) && defined(GPIO_DI_GPIOY)
+LIBXR_HPM_GPIO_PORT_ISR(IRQn_GPIO0_Y, GPIO_DI_GPIOY)
+#endif
+#if defined(IRQn_GPIO0_Z) && defined(GPIO_DI_GPIOZ)
+LIBXR_HPM_GPIO_PORT_ISR(IRQn_GPIO0_Z, GPIO_DI_GPIOZ)
+#endif

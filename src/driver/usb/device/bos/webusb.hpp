@@ -72,7 +72,8 @@ class WebUsbBosCapability final : public LibXR::USB::BosCapability
                             WEBUSB_PLATFORM_CAPABILITY_UUID,
                             sizeof(WEBUSB_PLATFORM_CAPABILITY_UUID));
     platform_cap_.bVendorCode = vendor_code_;
-    (void)SetLandingPageUrl(landing_page_url);
+    const bool landing_page_ok = SetLandingPageUrl(landing_page_url);
+    ASSERT(landing_page_ok);
   }
 
   WebUsbBosCapability(const WebUsbBosCapability&) = delete;
@@ -116,7 +117,6 @@ class WebUsbBosCapability final : public LibXR::USB::BosCapability
     const char* url_body = nullptr;
     if (!ParseLandingPageUrl(landing_page_url, scheme, url_body))
     {
-      ASSERT(false);
       enabled_ = false;
       platform_cap_.iLandingPage = 0u;
       return false;
@@ -128,7 +128,6 @@ class WebUsbBosCapability final : public LibXR::USB::BosCapability
       // URL descriptor 的总长度由 1 字节表示，且包含前 3 字节头部。
       // The URL descriptor length is stored in one byte and includes the
       // 3-byte header.
-      ASSERT(false);
       enabled_ = false;
       platform_cap_.iLandingPage = 0u;
       return false;

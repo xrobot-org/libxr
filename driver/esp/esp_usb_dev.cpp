@@ -50,7 +50,7 @@ ESP32USBDevice::ESP32USBDevice(
   for (++cfg_it; cfg_it != ep_cfgs.end();
        ++cfg_it, ep_num = USB::Endpoint::NextEPNumber(ep_num))
   {
-    ASSERT(USB::Endpoint::EPNumberToInt8(ep_num) < ENDPOINT_COUNT);
+    DEV_ASSERT(USB::Endpoint::EPNumberToInt8(ep_num) < ENDPOINT_COUNT);
 
     if (cfg_it->direction_hint == EPConfig::DirectionHint::BothDirections)
     {
@@ -322,7 +322,6 @@ void ESP32USBDevice::ResetFifoState()
   // bookkeeping solely from the current hardware depth and DMA mode, without relying on
   // stale runtime state.
   fifo_state_.depth_words = ESPUSBDetail::GetHardwareFifoDepthWords();
-  ASSERT(fifo_state_.depth_words > 0U);
   fifo_state_.rx_words =
       ESPUSBDetail::CalcConfiguredRxFifoWords(64U, ENDPOINT_COUNT, DmaEnabled());
   fifo_state_.tx_next_words = fifo_state_.rx_words;
@@ -337,6 +336,11 @@ void ESP32USBDevice::ResetDeviceState()
   // reset, clear the device-level register state first; each endpoint later rebuilds its
   // own concrete hardware configuration.
   ResetFifoState();
+  // Init() 在 Start() 打开内核时钟之前也会重置账本，此时读到的深度为 0；
+  // 这里内核已经上电。
+  // Init() also resets the bookkeeping before Start() clocks the core, when the depth
+  // reads as 0; here the core is powered.
+  DEV_ASSERT(fifo_state_.depth_words > 0U);
   ResetControlState();
 
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
@@ -372,9 +376,9 @@ void ESP32USBDevice::ReloadSetupPacketCount()
     dev->doeptsiz0_reg.xfersize = 3U * SETUP_PACKET_BYTES;
     dev->doeptsiz0_reg.pktcnt = 1U;
     dev->doeptsiz0_reg.supcnt = 3U;
-    [[maybe_unused]] const auto cache_sync_dma_buffer_result =
+    const auto cache_sync_dma_buffer_result =
         ESPUSBDetail::CacheSyncDmaBuffer(setup_packet_, SETUP_DMA_BUFFER_BYTES, false);
-    ASSERT(cache_sync_dma_buffer_result);
+    REQUIRE(cache_sync_dma_buffer_result);
     dev->doepdma0_reg.dmaaddr =
         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(setup_packet_));
     dev->doepctl0_reg.cnak = 1;
@@ -430,7 +434,7 @@ void IRAM_ATTR ESP32USBDevice::HandleInterrupt()
       if (enum_speed != ESPUSBDetail::ENUM_SPEED_FULL_30_TO_60_MHZ &&
           enum_speed != ESPUSBDetail::ENUM_SPEED_FULL_48_MHZ)
       {
-        ASSERT(false);
+        REQUIRE_FROM_CALLBACK(false, true);
       }
     }
 

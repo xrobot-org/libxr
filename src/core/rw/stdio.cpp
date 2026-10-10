@@ -33,7 +33,8 @@ ErrorCode STDIO::CompiledSink::Write(std::string_view chunk)
     return ErrorCode::OK;
   }
 
-  ec = stream_.Write(chunk.substr(0, copy_size));
+  // copy_size <= chunk.size(); substr would link the libstdc++ exception support.
+  ec = stream_.Write(std::string_view(chunk.data(), copy_size));
   if (ec != ErrorCode::OK)
   {
     return ec;
@@ -72,8 +73,8 @@ int STDIO::WriteCompiledToStream(WritePort::Stream& stream, void* context,
 
 int STDIO::WriteCompiledSession(void* context, CompiledWriteFun write_fun)
 {
-  ASSERT(write_mutex_ != nullptr);
-  ASSERT(write_fun != nullptr);
+  DEV_ASSERT(write_mutex_ != nullptr);
+  DEV_ASSERT(write_fun != nullptr);
 
   if (write_stream_ != nullptr)
   {
@@ -88,7 +89,7 @@ int STDIO::WriteCompiledSession(void* context, CompiledWriteFun write_fun)
 int STDIO::FinishWriteSession(WritePort::Stream& stream, size_t retained_size,
                               ErrorCode format_result)
 {
-  ASSERT(write_mutex_ != nullptr);
+  DEV_ASSERT(write_mutex_ != nullptr);
 
   // 基于 Stream 的 STDIO 现在明确采用“前缀保留”语义：格式化失败时，
   // 本会话已保留的字节仍然提交，不再尝试伪回滚。

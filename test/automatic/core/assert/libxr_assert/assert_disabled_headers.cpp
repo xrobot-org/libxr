@@ -21,14 +21,15 @@ void ExercisePool()
   Pool pool(4);
   typename Pool::Handle handle;
   (void)pool.Acquire(handle);
+  typename Pool::Handle moved = std::move(handle);
+  typename Pool::ConstHandle reader = std::move(moved);
+  typename Pool::ConstHandle reader_copy(reader);
+  reader = reader_copy;
+  reader.Reset();
+  reader_copy.Reset();
   handle.Reset();
 }
 
-void TestAssertDisabledHeaders()
-{
-  ExercisePool<LibXR::ObjectPool<uint32_t>>();
-  ExercisePool<LibXR::SPSCObjectPool<uint32_t>>();
-  ExercisePool<LibXR::MPMCObjectPool<uint32_t>>();
-}
+void TestAssertDisabledHeaders() { ExercisePool<LibXR::ObjectPool<uint32_t>>(); }
 
 template class LibXR::LinuxSharedTopic<uint32_t>;

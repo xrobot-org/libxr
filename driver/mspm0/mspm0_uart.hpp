@@ -47,11 +47,16 @@ class MSPM0UARTReadPort : public ReadPort
  * copying into a free TX half; DMA completion only releases that half. Configuration
  * waits for the active transfer and UART idle boundary.
  *
- * @pre BSP 串行初始化实例并独占分配 DMA 通道；UART 和相关 DMA 中断位于同一核心，
- *      使用兼容的抢占优先级。对象及借用缓冲区在运行期间须保持有效。
+ * @pre BSP 串行初始化实例并独占分配 DMA 通道；共享 DMA 中断由 BSP 开启，优先级与
+ *      UART 中断相同（1）。对象及借用缓冲区在运行期间须保持有效。
  *      The BSP initializes instances serially, reserves distinct DMA channels, and
- *      routes UART/DMA IRQs to one core with compatible preemption priorities.
+ *      enables the shared DMA interrupt at the UART interrupt priority (1).
  *      Keep the object and borrowed buffers valid throughout operation.
+ * @note 构造时由驱动设置 UART 中断源，并把 UART 中断设为优先级 1；SysConfig 中该实例
+ *       的中断和优先级设置会被覆盖。
+ *       The constructor sets the UART interrupt sources and the UART interrupt priority
+ *       (1), replacing the interrupt and priority settings SysConfig made for the
+ *       instance.
  * @note 软件接收队列满时，Main 保留 FIFO 字节，Extend 丢弃放不下的 DMA 尾部。
  *       硬件仍持续接收；没有流控时不保证无限输入不丢失。
  *       On a full software queue, Main retains FIFO bytes and Extend drops excess DMA
@@ -227,7 +232,6 @@ class MSPM0UART : public UART
   static constexpr uint32_t RX_INTERRUPT_MASK = DL_UART_INTERRUPT_RX;
   static constexpr uint32_t RX_TIMEOUT_INTERRUPT_MASK =
       DL_UART_INTERRUPT_RX_TIMEOUT_ERROR;
-  static constexpr uint32_t CONFIG_RX_TIMEOUT = 1U;
   static constexpr uint32_t RX_GAP_INTERRUPT_MASK = DL_UART_INTERRUPT_LINC0_MATCH;
   static constexpr uint32_t TX_DONE_INTERRUPT_MASK = DL_UART_INTERRUPT_DMA_DONE_TX;
   static constexpr uint32_t EOT_INTERRUPT_MASK = DL_UART_INTERRUPT_EOT_DONE;
@@ -310,6 +314,9 @@ class MSPM0UART : public UART
   std::array<size_t, 2U> tx_half_size_used_{};
   /// 当前发送半区，负值表示 DMA 空闲 / Active half, negative when DMA is idle.
   int8_t active_half_ = -1;
+  /// 已启动发送且尚未收到 EOT，最后的字节可能仍在发送 / TX was started and EOT has not
+  /// been seen yet, so the last bytes may still be shifting out.
+  bool tx_draining_ = false;
   /// 上次已处理的接收位置 / Last processed RX position.
   size_t rx_dma_cursor_ = 0U;
 

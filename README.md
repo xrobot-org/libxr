@@ -263,6 +263,7 @@ They are described in [Data Structures](https://xrobot.work/en/docs/basic_coding
 | `LIBXR_SHARED_BUILD`、`LIBXR_STATIC_BUILD`、`LIBXR_OBJECT_BUILD` | 静态库 / static library | 编译为共享库、静态库或 object 库 | Build a shared, static or object library |
 | `LIBXR_NO_EIGEN` | 未设置 / unset | 不使用 Eigen，依赖 Eigen 的代码一并关闭 | Leave out Eigen and the code that depends on it |
 | `LIBXR_DEFAULT_SCALAR` | `double` | 数学工具类的默认标量类型 | Default scalar type of the math utility classes |
+| `LIBXR_DEBUG_BUILD` | Debug 构建时开启 / on for Debug builds | 启用库内的失败检查（`ASSERT` 等）与调试功能，可在其他构建类型下单独开启 | Enable the in-library failure checks (`ASSERT` etc.) and debug features; can be turned on separately under other build types |
 | `XR_LOG_MESSAGE_MAX_LEN` | Linux、Webots、WebAssembly 为 256，其余为 64 / 256 on Linux, Webots and WebAssembly, otherwise 64 | 单条日志的最大长度 | Maximum length of one log message |
 | `LIBXR_LOG_LEVEL` | `4` | 发布到日志 Topic 的最高等级，4 到 0 依次为 DEBUG、INFO、PASS、WARNING、ERROR | Highest level published to the log Topic; 4 to 0 are DEBUG, INFO, PASS, WARNING and ERROR |
 | `LIBXR_LOG_OUTPUT_LEVEL` | `4` | 打印到 `STDIO::write_` 的最高等级 | Highest level printed to `STDIO::write_` |

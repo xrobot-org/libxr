@@ -32,8 +32,10 @@ static uint32_t basic_time_step_ms = 1;
 static uint64_t step_interval_ns = 1000000ULL;
 LibXR::condition_var_handle* _libxr_webots_time_notify = nullptr;
 
-static LibXR::Semaphore stdo_sem;
-static LibXR::Semaphore stdi_space_sem;
+// STDIO 线程不会退出，信号量须在进程退出期间保持有效。
+// The STDIO threads never exit, so the semaphores stay valid during process exit.
+static LibXR::Semaphore& stdo_sem = *new LibXR::Semaphore();
+static LibXR::Semaphore& stdi_space_sem = *new LibXR::Semaphore();
 static constexpr size_t host_stdio_queue_bytes = 4096;
 
 struct LibXR::WebotsRealtimeThreadRegistration
@@ -275,6 +277,13 @@ void LibXR::PlatformInit(webots::Robot* robot, uint32_t timer_pri,
   // Thread and STDIO setup may log; initialize the global timebase first.
   static LibXR::WebotsTimebase timebase;
 
+  // Thread::Sleep 等待此条件变量，STDIO 读线程启动后可能立即调用它。
+  // Thread::Sleep waits on this condition variable; the STDIO read thread may call it as
+  // soon as it starts.
+  _libxr_webots_time_notify = new condition_var_handle;
+  pthread_mutex_init(&_libxr_webots_time_notify->mutex, nullptr);
+  pthread_cond_init(&_libxr_webots_time_notify->cond, nullptr);
+
   LibXR::Timer::priority_ = static_cast<LibXR::Thread::Priority>(timer_pri);
   LibXR::Timer::stack_depth_ = timer_stack_depth;
   auto write_fun = [](WritePort& port, bool)
@@ -339,10 +348,6 @@ void LibXR::PlatformInit(webots::Robot* robot, uint32_t timer_pri,
       LibXR::max(1LL, std::llround(basic_time_step / sim_flow_rate)));
   step_interval_ns = static_cast<uint64_t>(
       LibXR::max(1LL, std::llround(basic_time_step * 1000000.0 / sim_flow_rate)));
-
-  _libxr_webots_time_notify = new condition_var_handle;
-  pthread_mutex_init(&_libxr_webots_time_notify->mutex, nullptr);
-  pthread_cond_init(&_libxr_webots_time_notify->cond, nullptr);
 
   auto webots_timebase_thread_fun = [](void*)
   {

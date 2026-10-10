@@ -23,12 +23,16 @@ Add `test/` and `test/manual/driver/` to the include paths and call from a norma
 ```cpp
 #include "uart/test_uart.hpp"
 
-void CheckUART(LibXR::UART& uart, LibXR::RawData tx, LibXR::RawData rx,
-               std::initializer_list<size_t> lengths)
+void CheckUART(LibXR::UART& uart, LibXR::Semaphore& semaphore, LibXR::RawData tx,
+               LibXR::RawData rx, std::initializer_list<size_t> lengths)
 {
-  LibXR::Test::TestUARTLoopback(uart, tx, rx, lengths);
+  LibXR::Test::TestUARTLoopback(uart, semaphore, tx, rx, lengths);
 }
 ```
+
+`semaphore` 是阻塞方式等待完成所用的信号量，由调用方提供并保留，可供依次执行的各项测试复用。阻塞方式的发送和接收在调用线程中依次完成，共用这个信号量。
+
+`semaphore` is the semaphore for blocking completion. The caller provides and retains it and may reuse it for tests run one after another. Blocking TX and RX complete one after another in the calling thread and share it.
 
 长度列表由应用选择，可包含短包、较长包和容量边界。最后两个参数是 `timeout_ms` 和 `iterations`，默认 1000 ms 和 100 轮。总包数为“长度数量 × 3 × 轮数”。重复传输能让队列读写位置回绕；具体 DMA 边界由板级工程选择长度和轮数来触及。
 
@@ -71,13 +75,13 @@ Supply separate, equal-size buffers; each buffer's size is the packet length and
 Only the configured low bits of a received byte are valid data. Upper bits are unspecified and callers mask them when needed. The test therefore compares `received & 0x7F` in 7-bit mode and the whole byte in 8-bit mode, leaving the raw received bytes unchanged.
 
 ```cpp
-uint64_t CheckUARTConfig(LibXR::UART& uart, LibXR::UART::Configuration config,
-                         LibXR::RawData tx, LibXR::RawData rx,
-                         uint64_t min_us, uint64_t max_us)
+uint64_t CheckUARTConfig(LibXR::UART& uart, LibXR::Semaphore& semaphore,
+                         LibXR::UART::Configuration config, LibXR::RawData tx,
+                         LibXR::RawData rx, uint64_t min_us, uint64_t max_us)
 {
   // 100 包传输时间的允许范围，由调用工程预先确定。
   // The calling project determines the allowed time for 100 packets in advance.
-  return LibXR::Test::TestUARTConfig(uart, config, tx, rx, min_us, max_us);
+  return LibXR::Test::TestUARTConfig(uart, semaphore, config, tx, rx, min_us, max_us);
 }
 ```
 
@@ -103,19 +107,20 @@ Timing cannot distinguish every frame format: 8E1 and 8N2 both use 11 bits per b
 
 `TestUARTConfigStress()` checks whether repeated configuration changes leave the driver usable. During switching, received data may be lost or changed and reads may time out. After interference stops, the same UART object returns to a fixed configuration and must pass full loopback checks.
 
-仅用于明确支持配置与收发重叠的后端。独占串口，初始没有在途请求和接收残留；TX 接 RX，工作缓冲区独立、等长且不超过两个端口的容量。调用方提供一个独占的、处于 READY 状态的 `ASync`，从普通任务调用。
+仅用于明确支持配置与收发重叠的后端。独占串口，初始没有在途请求和接收残留；TX 接 RX，工作缓冲区独立、等长且不超过两个端口的容量。调用方提供阻塞读取和最终回环所用的信号量，以及一个独占的、处于 READY 状态的 `ASync`，从普通任务调用。
 
-Use only a backend that explicitly supports configuration overlapping I/O. Reserve the UART with no initial in-flight requests or receive residue. Wire TX to RX and supply separate, equal-size work buffers within both port capacities. Borrow an exclusive READY `ASync` from the caller and invoke the test from a normal task.
+Use only a backend that explicitly supports configuration overlapping I/O. Reserve the UART with no initial in-flight requests or receive residue. Wire TX to RX and supply separate, equal-size work buffers within both port capacities. The caller supplies the semaphore used by blocking reads and the final loopback, borrows an exclusive READY `ASync`, and invokes the test from a normal task.
 
 ```cpp
 #include "uart/test_uart_config_stress.hpp"
 
 LibXR::Test::UARTConfigStressResult CheckUARTStress(
-    LibXR::UART& uart, LibXR::ASync& worker, LibXR::RawData tx, LibXR::RawData rx,
+    LibXR::UART& uart, LibXR::Semaphore& semaphore, LibXR::ASync& worker,
+    LibXR::RawData tx, LibXR::RawData rx,
     std::initializer_list<LibXR::UART::Configuration> configs,
     LibXR::UART::Configuration stable_config, uint32_t quiet_ms)
 {
-  return LibXR::Test::TestUARTConfigStress(uart, worker, tx, rx, configs,
+  return LibXR::Test::TestUARTConfigStress(uart, semaphore, worker, tx, rx, configs,
                                            stable_config, quiet_ms);
 }
 ```

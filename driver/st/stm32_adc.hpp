@@ -200,7 +200,7 @@ class STM32ADC
 #if defined(DMA_CIRCULAR)
     ASSERT(hadc->DMA_Handle->Init.Mode == DMA_CIRCULAR);
 #else
-    ASSERT(false);
+    static_assert(sizeof(T) == 0, "DMA_CIRCULAR is not defined by the HAL");
 #endif
   }
 

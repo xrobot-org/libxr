@@ -223,7 +223,9 @@ ErrorCode Writer::Executor<Sink>::WriteString(const Spec& spec, std::string_view
   auto view = text;
   if (spec.HasPrecision() && spec.precision < view.size())
   {
-    view = view.substr(0, spec.precision);
+    // 不用 substr：它的越界分支会链接 libstdc++ 的异常支持。
+    // Not substr: its out-of-range path links the libstdc++ exception support.
+    view = std::string_view(view.data(), spec.precision);
   }
 
   return WriteTextField(view, spec);

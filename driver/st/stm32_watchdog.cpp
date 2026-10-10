@@ -9,7 +9,8 @@ STM32Watchdog::STM32Watchdog(IWDG_HandleTypeDef* hiwdg, uint32_t timeout_ms,
     : hiwdg_(hiwdg), clock_(clock)
 {
   ASSERT(hiwdg);
-  SetConfig({timeout_ms, feed_ms});
+  const ErrorCode config_result = SetConfig({timeout_ms, feed_ms});
+  ASSERT(config_result == ErrorCode::OK);
   Start();
 }
 
@@ -17,7 +18,6 @@ ErrorCode STM32Watchdog::SetConfig(const Configuration& config)
 {
   if (config.feed_ms == 0 || config.timeout_ms == 0 || config.feed_ms > config.timeout_ms)
   {
-    ASSERT(false);
     return ErrorCode::ARG_ERR;
   }
 

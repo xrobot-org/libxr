@@ -338,8 +338,8 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
   {
     const size_t actual =
         device_.DmaEnabled() ? GetCompletedTransferSize() : transfer_actual_size_;
-    [[maybe_unused]] const auto finish_out_transfer_result = FinishOutTransfer(actual);
-    ASSERT(finish_out_transfer_result);
+    const auto finish_out_transfer_result = FinishOutTransfer(actual);
+    REQUIRE_FROM_CALLBACK(finish_out_transfer_result, in_isr);
     if (ep_num == 0U)
     {
       FinishPendingEp0InStatus(in_isr);
@@ -359,10 +359,9 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
   {
     if (device_.DmaEnabled())
     {
-      [[maybe_unused]] const auto cache_sync_dma_buffer_result =
-          ESPUSBDetail::CacheSyncDmaBuffer(device_.setup_packet_,
-                                           ESP32USBDevice::SETUP_DMA_BUFFER_BYTES, false);
-      ASSERT(cache_sync_dma_buffer_result);
+      const auto cache_sync_dma_buffer_result = ESPUSBDetail::CacheSyncDmaBuffer(
+          device_.setup_packet_, ESP32USBDevice::SETUP_DMA_BUFFER_BYTES, false);
+      REQUIRE_FROM_CALLBACK(cache_sync_dma_buffer_result, in_isr);
     }
     device_.UpdateSetupState(device_.setup_packet_);
     const auto* setup = reinterpret_cast<const USB::SetupPacket*>(device_.setup_packet_);
@@ -526,7 +525,7 @@ bool ESP32USBEndpoint::PrepareTransferBuffer(size_t size)
 
   if (GetDirection() == Direction::IN)
   {
-    ASSERT(transfer_buffer_ != nullptr);
+    DEV_ASSERT(transfer_buffer_ != nullptr);
     std::memcpy(transfer_hw_buffer_, transfer_buffer_, size);
     return ESPUSBDetail::CacheSyncDmaBuffer(
         transfer_hw_buffer_, ESPUSBDetail::AlignUp(size, ESPUSBDetail::USB_DMA_ALIGNMENT),
@@ -547,7 +546,7 @@ bool ESP32USBEndpoint::FinishOutTransfer(size_t actual_size)
     return true;
   }
 
-  ASSERT(transfer_hw_buffer_ != nullptr);
+  DEV_ASSERT(transfer_hw_buffer_ != nullptr);
 
   if (!transfer_uses_shadow_)
   {
@@ -559,7 +558,7 @@ bool ESP32USBEndpoint::FinishOutTransfer(size_t actual_size)
                                             transfer_direct_sync_size_, false);
   }
 
-  ASSERT(transfer_buffer_ != nullptr);
+  DEV_ASSERT(transfer_buffer_ != nullptr);
 
   if (!ESPUSBDetail::CacheSyncDmaBuffer(
           transfer_hw_buffer_,

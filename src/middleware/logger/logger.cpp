@@ -89,15 +89,17 @@ void PrintLogToTerminal(const LogData& data, MicrosecondTimestamp timestamp)
  * @brief 订阅内部日志 topic，并在满足输出级别时把日志打印到终端
  *        Subscribe to the internal log topic and print logs to the terminal
  *        when the output level allows them
+ * @param in_isr 当前是否在中断上下文 / Whether currently in ISR context
  * @param tp 日志 topic 句柄；当前实现未直接使用
  *           Log topic handle; unused directly by the current implementation
  * @param log_message 收到的日志消息视图 / Received log-message view
  */
-void OnLogMessage(bool, Topic tp, const Topic::MessageView<LogData>& log_message)
+void OnLogMessage([[maybe_unused]] bool in_isr, Topic tp,
+                  const Topic::MessageView<LogData>& log_message)
 {
   UNUSED(tp);
 
-  ASSERT(log_message.data != nullptr);
+  DEV_ASSERT_FROM_CALLBACK(log_message.data != nullptr, in_isr);
 
   if (LIBXR_LOG_OUTPUT_LEVEL >= static_cast<uint8_t>(log_message.data->level) &&
       STDIO::write_ && STDIO::write_->Writable())

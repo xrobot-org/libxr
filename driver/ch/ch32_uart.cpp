@@ -104,7 +104,7 @@ CH32UART::CH32UART(ch32_uart_id_t id, RawData dma_rx, RawData dma_tx,
   }
   else
   {
-    ASSERT(false);
+    DEV_ASSERT(false);
   }
   RCC_AHBPeriphClockCmd(CH32_UART_RCC_PERIPH_MAP_DMA[id], ENABLE);
 

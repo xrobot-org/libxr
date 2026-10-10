@@ -95,6 +95,28 @@ static File CreateCommand(const char* name,
 }
 
 /**
+ * @brief 创建不需要执行上下文的命令 / Create a command that needs no execution context
+ * @param name 文件名 / File name
+ * @param exec 命令函数，参数为 argc 和 argv / Command function taking argc and argv
+ * @return 可执行文件节点 / Executable file node
+ *
+ * @note 等价于带执行上下文的写法，上下文为函数本身；
+ *       不再需要 `CreateCommand<void*>(name, [](void*, int, char**) {...}, nullptr)`。
+ *       Equivalent to the form with an execution context, the context being the function
+ *       itself; `CreateCommand<void*>(name, [](void*, int, char**) {...}, nullptr)` is no
+ *       longer needed.
+ * @note 包含动态内存分配，命令块按当前设计默认常驻。
+ *       Contains dynamic memory allocation; the command block is retained by design.
+ */
+static File CreateCommand(const char* name, int (*exec)(int argc, char** argv))
+{
+  using CommandFn = int (*)(int, char**);
+  return CreateFile<CommandFn>(
+      name, [](CommandFn fn, int argc, char** argv) -> int { return fn(argc, argv); },
+      std::move(exec));
+}
+
+/**
  * @brief 创建目录节点 / Create a directory node
  * @param name 目录名称 / Directory name
  * @return 目录节点 / Directory node
@@ -106,6 +128,12 @@ static Dir CreateDir(const char* name) { return Dir(name); }
 /**
  * @brief 添加文件节点到根目录 / Add a file node to the root directory
  * @param file 文件节点 / File node
+ *
+ * @note RamFS 只保存节点地址，节点必须是在整个运行期内有效的左值；
+ *       `Add(RamFS::CreateCommand(...))` 传入临时对象会留下悬空指针，因此不接受右值。
+ *       RamFS only stores the node address, so the node must be an lvalue that lives for
+ *       the whole run; passing a temporary from `CreateCommand(...)` would leave a
+ *       dangling pointer, which is why rvalues are not accepted.
  */
 void Add(File& file) { root_.Add(file); }
 

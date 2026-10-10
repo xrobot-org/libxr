@@ -9,6 +9,15 @@
 namespace LibXR
 {
 
+/**
+ * @brief MSPM0 SPI 控制器 / MSPM0 SPI controller.
+ *
+ * @note 构造时开启 DMA 收发完成中断，并把 SPI 中断设为优先级 1；SysConfig 中该实例的
+ *       中断和优先级设置会被覆盖。
+ *       The constructor enables the DMA RX/TX done interrupts and sets the SPI interrupt
+ *       to priority 1, replacing the interrupt and priority settings SysConfig made for
+ *       the instance.
+ */
 class MSPM0SPI : public SPI
 {
  public:
@@ -116,15 +125,23 @@ class MSPM0SPI : public SPI
   static MSPM0SPI* instance_map_[MAX_SPI_INSTANCES];
 };
 
-#define MSPM0_SPI_INIT(name, dma_rx_name, dma_tx_name, rx_buffer_addr, rx_buffer_size, \
-                       tx_buffer_addr, tx_buffer_size, dma_min_size)                   \
-  ::LibXR::MSPM0SPI::Resources{name##_INST,                                            \
-                               name##_INST_INT_IRQN,                                   \
-                               static_cast<uint32_t>(CPUCLK_FREQ),                     \
-                               ::LibXR::MSPM0SPI::ResolveIndex(name##_INST_INT_IRQN),  \
-                               static_cast<uint8_t>(dma_rx_name##_CHAN_ID),            \
-                               static_cast<uint8_t>(dma_tx_name##_CHAN_ID)},           \
-      ::LibXR::RawData{(rx_buffer_addr), (rx_buffer_size)},                            \
+/**
+ * @brief 由 SysConfig 宏生成 MSPM0SPI 构造参数 / MSPM0SPI constructor arguments from
+ *        SysConfig macros.
+ * @param clock_hz SPI 输入时钟，即该实例所在电源域的 BUSCLK（PD0 为 ULPCLK，PD1 为
+ *        MCLK）；SysConfig 在 SYSCFG_DL_NAME_init 的注释中给出该值 / SPI input clock,
+ *        the BUSCLK of the instance's power domain (ULPCLK for PD0, MCLK for PD1);
+ *        SysConfig states it in a comment of SYSCFG_DL_NAME_init.
+ */
+#define MSPM0_SPI_INIT(name, clock_hz, dma_rx_name, dma_tx_name, rx_buffer_addr,      \
+                       rx_buffer_size, tx_buffer_addr, tx_buffer_size, dma_min_size)  \
+  ::LibXR::MSPM0SPI::Resources{name##_INST,                                           \
+                               name##_INST_INT_IRQN,                                  \
+                               static_cast<uint32_t>(clock_hz),                       \
+                               ::LibXR::MSPM0SPI::ResolveIndex(name##_INST_INT_IRQN), \
+                               static_cast<uint8_t>(dma_rx_name##_CHAN_ID),           \
+                               static_cast<uint8_t>(dma_tx_name##_CHAN_ID)},          \
+      ::LibXR::RawData{(rx_buffer_addr), (rx_buffer_size)},                           \
       ::LibXR::RawData{(tx_buffer_addr), (tx_buffer_size)}, (dma_min_size)
 
 }  // namespace LibXR

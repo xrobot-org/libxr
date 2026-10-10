@@ -410,6 +410,7 @@ STM32UART::STM32UART(UART_HandleTypeDef* uart_handle, RawData dma_buff_rx,
 #endif
 {
   ASSERT(id_ != STM32_UART_ID_ERROR);
+  ASSERT(dma_buff_rx.size_ == 0U || dma_buff_rx.addr_ != nullptr);
 
   map[id_] = this;
 
@@ -583,7 +584,6 @@ void STM32UART::HandleRxData(bool in_isr)
   }
 
   auto* const rx_buf = static_cast<uint8_t*>(dma_buff_rx_.addr_);
-  DEV_ASSERT_FROM_CALLBACK(rx_buf != nullptr, in_isr);
 
 #if defined(LIBXR_STM32_UART_GPDMA)
   const uintptr_t destination =

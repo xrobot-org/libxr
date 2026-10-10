@@ -210,11 +210,11 @@ void test_linux_uart_rx_backpressure()
   WaitUntil([&] { return fixture->uart->read_port_->Size() == 64; });
 
   std::vector<uint8_t> received;
+  auto* sem = new Semaphore;
   for (size_t i = 0; i < 3; ++i)
   {
     std::array<uint8_t, 64> chunk{};
-    Semaphore sem;
-    ReadOperation op(sem, 1000);
+    ReadOperation op(*sem, 1000);
     TEST_ASSERT(fixture->uart->Read(RawData{chunk.data(), chunk.size()}, op) ==
                 ErrorCode::OK);
     received.insert(received.end(), chunk.begin(), chunk.end());

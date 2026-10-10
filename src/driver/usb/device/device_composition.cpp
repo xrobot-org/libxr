@@ -404,8 +404,8 @@ DeviceComposition::DeviceComposition(
 
 const DeviceComposition::ConfigItems& DeviceComposition::CurrentConfigItems() const
 {
-  ASSERT(config_num_ > 0);
-  ASSERT(current_cfg_ < config_num_);
+  DEV_ASSERT(config_num_ > 0);
+  DEV_ASSERT(current_cfg_ < config_num_);
   return items_[current_cfg_];
 }
 

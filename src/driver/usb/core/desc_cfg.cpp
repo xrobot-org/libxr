@@ -93,14 +93,14 @@ LibXR::ErrorCode ConfigDescriptor::BuildConfigDescriptor(
     }
 
     auto data = item->GetData();
-    DEV_ASSERT(offset + data.size_ <= buffer_.size_);
+    ASSERT(offset + data.size_ <= buffer_.size_);
     LibXR::Memory::FastCopy(&buffer[offset], data.addr_, data.size_);
     offset += data.size_;
 
     total_interfaces = static_cast<uint8_t>(total_interfaces + item->GetInterfaceCount());
   }
 
-  DEV_ASSERT(offset <= 0xFFFF);
+  ASSERT(offset <= 0xFFFF);
   header->wTotalLength = static_cast<uint16_t>(offset);
   header->bNumInterfaces = total_interfaces;
 

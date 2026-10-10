@@ -124,7 +124,7 @@ class STM32CANFD : public FDCAN
           return 4;
       }
 #else
-      ASSERT(false);
+      static_assert(sizeof(T) == 0, "FDCAN_DATA_BYTES_8 is not defined by the HAL");
       return 4;
 #endif
     };

@@ -49,7 +49,7 @@ MicrosecondTimestamp GetSysTickMicroseconds()
 #ifdef HAL_TIM_MODULE_ENABLED
 MicrosecondTimestamp GetTimerMicroseconds(TIM_HandleTypeDef* htim)
 {
-  ASSERT(htim != nullptr);
+  DEV_ASSERT(htim != nullptr);
 
   do
   {
@@ -95,7 +95,7 @@ MicrosecondTimestamp Timebase::GetMicroseconds()
 #endif
   }
 
-  ASSERT(false);
+  DEV_ASSERT(false);
   return MicrosecondTimestamp(0ULL);
 }
 
@@ -107,6 +107,8 @@ TIM_HandleTypeDef* STM32TimerTimebase::htim = nullptr;
 
 STM32TimerTimebase::STM32TimerTimebase(TIM_HandleTypeDef* timer)
 {
+  ASSERT(timer != nullptr);
+
   htim = timer;
   ConfigureWrapRange(static_cast<uint64_t>(UINT32_MAX) * 1000ULL + 999ULL, UINT32_MAX);
   g_backend = STM32TimebaseBackend::TIMER;

@@ -167,7 +167,6 @@ float ESP32ADC::ReadChannel(uint8_t idx)
       DrainContinuousFrames(0U);
     }
 #endif
-    DEV_ASSERT(channel_ready_[idx]);
     return latest_values_[idx];
   }
 
@@ -268,8 +267,6 @@ bool ESP32ADC::InitCalibration()
 
     adc_cali_handle_t handle = nullptr;
     const esp_err_t err = adc_cali_create_scheme_curve_fitting(&config, &handle);
-    ASSERT((err == ESP_OK) || (err == ESP_ERR_NOT_SUPPORTED) ||
-           (err == ESP_ERR_INVALID_ARG) || (err == ESP_ERR_NO_MEM));
     if (err != ESP_OK)
     {
       continue;
@@ -291,8 +288,6 @@ bool ESP32ADC::InitCalibration()
 
   adc_cali_handle_t handle = nullptr;
   const esp_err_t err = adc_cali_create_scheme_line_fitting(&config, &handle);
-  ASSERT((err == ESP_OK) || (err == ESP_ERR_NOT_SUPPORTED) ||
-         (err == ESP_ERR_INVALID_ARG) || (err == ESP_ERR_NO_MEM));
   if (err != ESP_OK)
   {
     return false;

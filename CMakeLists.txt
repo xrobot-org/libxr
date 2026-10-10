@@ -6,6 +6,25 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(LIBXR_DEV_ASSERT_BUILD "Enable LibXR maintainer-only development assertions" OFF)
+
+# LIBXR_DEBUG_BUILD 默认跟随构建类型：用户未显式设置时，每次配置都按当前构建类型重新计算
+# （Debug 开启、其余关闭），作为普通变量不写入缓存，因此同一构建目录里切换构建类型后立即
+# 生效；用 -DLIBXR_DEBUG_BUILD=ON/OFF 显式设置后该值进入缓存，此后始终按用户的值。它与维护
+# 者专用的 LIBXR_DEV_ASSERT_BUILD 相互独立。
+# LIBXR_DEBUG_BUILD defaults to the build type: when the user has not set it, it is
+# recomputed on every configure from the current build type (on for Debug, off otherwise)
+# as a normal variable that is not written to the cache, so switching the build type in an
+# existing build directory takes effect immediately; once set explicitly with
+# -DLIBXR_DEBUG_BUILD=ON/OFF it becomes a cache entry and the user's value is kept on later
+# reconfigures. It is independent of the maintainer-only LIBXR_DEV_ASSERT_BUILD.
+if(NOT DEFINED LIBXR_DEBUG_BUILD)
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(LIBXR_DEBUG_BUILD ON)
+  else()
+    set(LIBXR_DEBUG_BUILD OFF)
+  endif()
+endif()
+
 if(LIBXR_SHARED_BUILD)
   add_library(${PROJECT_NAME} SHARED)
 elseif(LIBXR_STATIC_BUILD)
@@ -16,7 +35,25 @@ else()
   add_library(${PROJECT_NAME} STATIC)
 endif()
 
-target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)
+# 需要 C++20。编译器特性探测被跳过时（HPM SDK 的 find_package 强制指定编译器，探测结果
+# 拿不到），直接加 C++20 编译选项，工程因此不必再恢复探测。选项按 CMAKE_CXX_EXTENSIONS
+# 选择，与探测路径得到的 -std=gnu++20 一致；该变量默认开启，强制编译器下探测不给它赋值，
+# 未定义时按默认（开启）处理。
+# C++20 is required. When the compiler feature detection was skipped (HPM SDK's
+# find_package forces the compiler, so the detection results are unavailable), the C++20
+# option is added directly and projects do not have to restore the detection. The option
+# follows CMAKE_CXX_EXTENSIONS, matching the -std=gnu++20 that the detection path produces;
+# the variable is on by default and stays unset under a forced compiler, where the default
+# (on) applies.
+if("cxx_std_20" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+  target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_20)
+elseif(MSVC)
+  target_compile_options(${PROJECT_NAME} PUBLIC $<$<COMPILE_LANGUAGE:CXX>:/std:c++20>)
+elseif(DEFINED CMAKE_CXX_EXTENSIONS AND NOT CMAKE_CXX_EXTENSIONS)
+  target_compile_options(${PROJECT_NAME} PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-std=c++20>)
+else()
+  target_compile_options(${PROJECT_NAME} PUBLIC $<$<COMPILE_LANGUAGE:CXX>:-std=gnu++20>)
+endif()
 
 target_compile_options(
   ${PROJECT_NAME}
@@ -26,7 +63,7 @@ target_compile_options(
 
 include(cmake/config.cmake)
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+if(LIBXR_DEBUG_BUILD)
   target_compile_definitions(${PROJECT_NAME} PUBLIC LIBXR_DEBUG_BUILD)
 endif()
 

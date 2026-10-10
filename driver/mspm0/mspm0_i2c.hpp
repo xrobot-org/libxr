@@ -94,9 +94,16 @@ class MSPM0I2C : public I2C
   bool dma_enabled_ = false;
 };
 
-#define MSPM0_I2C_INIT(name, stage_addr, stage_size, dma_min_size)                     \
+/**
+ * @brief 由 SysConfig 宏生成 MSPM0I2C 构造参数 / MSPM0I2C constructor arguments from
+ *        SysConfig macros.
+ * @param clock_hz I2C 输入时钟，即该实例所在电源域的 BUSCLK（PD0 为 ULPCLK，PD1 为
+ *        MCLK）；SysConfig 不导出该频率 / I2C input clock, the BUSCLK of the instance's
+ *        power domain (ULPCLK for PD0, MCLK for PD1); SysConfig does not export it.
+ */
+#define MSPM0_I2C_INIT(name, clock_hz, stage_addr, stage_size, dma_min_size)           \
   ::LibXR::MSPM0I2C::Resources{name##_INST, name##_INST_INT_IRQN,                      \
-                               static_cast<uint32_t>(CPUCLK_FREQ),                     \
+                               static_cast<uint32_t>(clock_hz),                        \
                                static_cast<uint32_t>(name##_BUS_SPEED_HZ),             \
                                ::LibXR::MSPM0I2C::ResolveIndex(name##_INST_INT_IRQN)}, \
       ::LibXR::RawData{(stage_addr), (stage_size)}, (dma_min_size)

@@ -1223,7 +1223,6 @@ class GsUsbClass : public DeviceClass
   void InitDeviceConfigClassic()
   {
     can_count_ = CAN_CH_NUM;
-    ASSERT(can_count_ > 0);
     ASSERT(cans_[0] != nullptr);
 
     dev_cfg_.reserved1 = 0;
@@ -1274,7 +1273,6 @@ class GsUsbClass : public DeviceClass
   void InitDeviceConfigFd()
   {
     can_count_ = CAN_CH_NUM;
-    ASSERT(can_count_ > 0);
     ASSERT(cans_[0] != nullptr);
 
     dev_cfg_.reserved1 = 0;

@@ -91,7 +91,7 @@ struct UsbHsPllTableEntry
   uint32_t ref_cfg = 0u;
 };
 
-inline bool TryGetUsbHsPllConfigForHse(uint32_t hse_hz, UsbHsPllConfig& cfg)
+constexpr bool TryGetUsbHsPllConfigForHse(uint32_t hse_hz, UsbHsPllConfig& cfg)
 {
   // 这里保留显式查表，不做动态推导；
   // USBHS 合法参考时钟是离散集合，精确表更容易审计。
@@ -144,10 +144,14 @@ inline void ConfigureUsbHsPhyFromHse()
   // The USBHS PHY path uses an HSE -> (divider, ref clock) lookup so the
   // legal combinations stay explicit and auditable.
   UsbHsPllConfig cfg = {};
-  const uint32_t hse_hz = static_cast<uint32_t>(HSE_VALUE);
-  [[maybe_unused]] const auto try_get_usb_hs_pll_config_for_hse_result =
-      TryGetUsbHsPllConfigForHse(hse_hz, cfg);
-  ASSERT(try_get_usb_hs_pll_config_for_hse_result);
+  constexpr uint32_t hse_hz = static_cast<uint32_t>(HSE_VALUE);
+  constexpr bool hse_supported = []
+  {
+    UsbHsPllConfig probe = {};
+    return TryGetUsbHsPllConfigForHse(hse_hz, probe);
+  }();
+  static_assert(hse_supported, "HSE_VALUE is not a legal USBHS PHY PLL reference clock");
+  (void)TryGetUsbHsPllConfigForHse(hse_hz, cfg);
 
   RCC_USBHSPLLCLKConfig(RCC_HSBHSPLLCLKSource_HSE);
   RCC_USBHSConfig(cfg.divider_cfg);

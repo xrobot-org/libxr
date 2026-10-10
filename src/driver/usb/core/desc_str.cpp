@@ -57,7 +57,7 @@ DescriptorStrings::DescriptorStrings(
 
 LibXR::ErrorCode DescriptorStrings::GenerateString(Index index, uint16_t lang)
 {
-  ASSERT(buffer_.addr_ != nullptr);
+  DEV_ASSERT(buffer_.addr_ != nullptr);
 
   if (index == Index::LANGUAGE_ID)
   {
@@ -138,7 +138,7 @@ LibXR::ErrorCode DescriptorStrings::GenerateString(Index index, uint16_t lang)
 
 LibXR::RawData DescriptorStrings::GetData()
 {
-  ASSERT(buffer_.addr_ != nullptr);
+  DEV_ASSERT(buffer_.addr_ != nullptr);
   uint8_t* buffer = reinterpret_cast<uint8_t*>(buffer_.addr_);
   return RawData{buffer_.addr_, buffer[0]};
 }

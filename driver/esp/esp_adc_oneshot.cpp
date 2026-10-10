@@ -63,11 +63,7 @@ bool ESP32ADC::InitOneshot()
 
   for (uint8_t i = 0; i < num_channels_; ++i)
   {
-    ASSERT(IsValidChannel(channel_ids_[i]));
-    if (!IsValidChannel(channel_ids_[i]))
-    {
-      return false;
-    }
+    DEV_ASSERT(IsValidChannel(channel_ids_[i]));
 
     portENTER_CRITICAL(&rtc_spinlock);
     adc_oneshot_hal_channel_config(oneshot_hal_, &chan_cfg, channel_ids_[i]);

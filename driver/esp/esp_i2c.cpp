@@ -148,7 +148,7 @@ ESP32I2C::ESP32I2C(i2c_port_t port_num, int scl_pin, int sda_pin, uint32_t clock
   ASSERT(GPIO_IS_VALID_OUTPUT_GPIO(static_cast<gpio_num_t>(scl_pin_)));
   ASSERT(GPIO_IS_VALID_OUTPUT_GPIO(static_cast<gpio_num_t>(sda_pin_)));
   ASSERT(config_.clock_speed > 0U);
-  ASSERT(FIFO_LEN > 2U);
+  static_assert(FIFO_LEN > 2U);
 
   if (InitHardware() != ErrorCode::OK)
   {
@@ -550,7 +550,7 @@ ErrorCode ESP32I2C::KickAsyncTransaction()
       static_cast<uint8_t>((async_slave_addr_ << 1U) | I2C_MASTER_READ);
   const size_t fifo_len = FIFO_LEN;
   const size_t write_chunk_cap = (fifo_len > 1U) ? (fifo_len - 1U) : 0U;
-  DEV_ASSERT(write_chunk_cap > 0U);
+  static_assert(write_chunk_cap > 0U);
 
   while (true)
   {
@@ -871,7 +871,7 @@ ErrorCode ESP32I2C::ExecuteTransaction(uint16_t slave_addr, const uint8_t* write
   const uint8_t read_addr = static_cast<uint8_t>((slave_addr << 1U) | I2C_MASTER_READ);
   const size_t fifo_len = FIFO_LEN;
   const size_t write_chunk_cap = (fifo_len > 1U) ? (fifo_len - 1U) : 0U;
-  DEV_ASSERT(write_chunk_cap > 0U);
+  static_assert(write_chunk_cap > 0U);
 
   int cmd_idx = 0;
 

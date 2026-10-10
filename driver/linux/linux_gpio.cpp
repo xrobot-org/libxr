@@ -331,7 +331,6 @@ bool LinuxGPIO::Read()
     }
     return (values.bits & 1ULL) != 0U;
 #else
-    ASSERT(false);
     return false;
 #endif
   }
@@ -366,7 +365,6 @@ void LinuxGPIO::Write(bool value)
     }
     return;
 #else
-    ASSERT(false);
     return;
 #endif
   }
@@ -810,8 +808,7 @@ ErrorCode LinuxGPIO::OpenRequestV2(Configuration config)
   return ErrorCode::OK;
 #else
   (void)config;
-  ASSERT(false);
-  return ErrorCode::FAILED;
+  return ErrorCode::NOT_SUPPORT;
 #endif
 }
 
@@ -846,8 +843,7 @@ ErrorCode LinuxGPIO::ReconfigureRequestV2(Configuration config)
   return ErrorCode::OK;
 #else
   (void)config;
-  ASSERT(false);
-  return ErrorCode::FAILED;
+  return ErrorCode::NOT_SUPPORT;
 #endif
 }
 
@@ -1004,8 +1000,7 @@ ErrorCode LinuxGPIO::ReadEventsV2(int fd, size_t& event_count) const
 #else
   (void)fd;
   event_count = 0U;
-  ASSERT(false);
-  return ErrorCode::FAILED;
+  return ErrorCode::NOT_SUPPORT;
 #endif
 }
 
@@ -1059,7 +1054,6 @@ ErrorCode LinuxGPIO::EnsureConfigured() const
   if (!has_config_ || (request_fd_.load() < 0))
   {
     XR_LOG_ERROR("GPIO is not configured");
-    ASSERT(false);
     return ErrorCode::STATE_ERR;
   }
 
