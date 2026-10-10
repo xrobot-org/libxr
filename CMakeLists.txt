@@ -6,6 +6,25 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(LIBXR_DEV_ASSERT_BUILD "Enable LibXR maintainer-only development assertions" OFF)
+
+# LIBXR_DEBUG_BUILD 默认跟随构建类型：用户未显式设置时，每次配置都按当前构建类型重新计算
+# （Debug 开启、其余关闭），作为普通变量不写入缓存，因此同一构建目录里切换构建类型后立即
+# 生效；用 -DLIBXR_DEBUG_BUILD=ON/OFF 显式设置后该值进入缓存，此后始终按用户的值。它与维护
+# 者专用的 LIBXR_DEV_ASSERT_BUILD 相互独立。
+# LIBXR_DEBUG_BUILD defaults to the build type: when the user has not set it, it is
+# recomputed on every configure from the current build type (on for Debug, off otherwise)
+# as a normal variable that is not written to the cache, so switching the build type in an
+# existing build directory takes effect immediately; once set explicitly with
+# -DLIBXR_DEBUG_BUILD=ON/OFF it becomes a cache entry and the user's value is kept on later
+# reconfigures. It is independent of the maintainer-only LIBXR_DEV_ASSERT_BUILD.
+if(NOT DEFINED LIBXR_DEBUG_BUILD)
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(LIBXR_DEBUG_BUILD ON)
+  else()
+    set(LIBXR_DEBUG_BUILD OFF)
+  endif()
+endif()
+
 if(LIBXR_SHARED_BUILD)
   add_library(${PROJECT_NAME} SHARED)
 elseif(LIBXR_STATIC_BUILD)
@@ -44,7 +63,7 @@ target_compile_options(
 
 include(cmake/config.cmake)
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+if(LIBXR_DEBUG_BUILD)
   target_compile_definitions(${PROJECT_NAME} PUBLIC LIBXR_DEBUG_BUILD)
 endif()
 
