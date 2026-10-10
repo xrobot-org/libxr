@@ -36,19 +36,20 @@ void test_ramfs()
   // A command without an execution context.
   static int plain_calls = 0;
   static int plain_argc = -1;
+  static char* plain_argv0 = nullptr;
   auto plain = LibXR::RamFS::CreateCommand("plain",
                                            [](int argc, char** argv) -> int
                                            {
-                                             UNUSED(argv);
                                              plain_calls++;
                                              plain_argc = argc;
+                                             plain_argv0 = argv[0];
                                              return 7;
                                            });
   TEST_ASSERT(plain.IsExecutable());
   char plain_name[] = "plain";
   char* plain_argv[] = {plain_name};
   TEST_ASSERT(plain.Run(1, plain_argv) == 7);
-  TEST_ASSERT(plain_calls == 1 && plain_argc == 1);
+  TEST_ASSERT(plain_calls == 1 && plain_argc == 1 && plain_argv0 == plain_name);
   ramfs.Add(plain);
   TEST_ASSERT(ramfs.FindFile("plain") == &plain);
 
