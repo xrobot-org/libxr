@@ -591,6 +591,17 @@ class SwdGeneralGPIO final : public Swd
       const bool PARITY_BIT = (Parity32(DATA) & 0x1u) != 0u;
       WriteBit(PARITY_BIT);
 
+      // 写数据相之后 SWDIO 保持低电平再补几个时钟，让目标完成（可能是 posted 的）写入，
+      // 否则同一批次里紧随 AP 写的下一个请求会在错误的相位采到 ACK。
+      // After a write data phase SWDIO stays low for a few more clocks so the target can
+      // complete a (possibly posted) write; otherwise the request that follows an AP
+      // write in the same batch samples its ACK at the wrong phase.
+      swdio_.Write(false);
+      for (uint32_t k = 0; k < WRITE_TRAILING_IDLE_CLOCKS; ++k)
+      {
+        GenOneClk();
+      }
+
       swdio_.Write(true);
       swclk_.Write(false);
     }
@@ -668,6 +679,13 @@ class SwdGeneralGPIO final : public Swd
       const bool PARITY_BIT = (Parity32(DATA) & 0x1u) != 0u;
       WriteBitWithoutDelay(PARITY_BIT);
 
+      // 同 Transfer() 的写数据相尾部空闲时钟 / Same trailing idle clocks as Transfer().
+      swdio_.Write(false);
+      for (uint32_t k = 0; k < WRITE_TRAILING_IDLE_CLOCKS; ++k)
+      {
+        GenOneClkWithoutDelay();
+      }
+
       swdio_.Write(true);
       swclk_.Write(false);
     }
@@ -682,6 +700,8 @@ class SwdGeneralGPIO final : public Swd
       64u;  ///< 线复位时钟周期数 / Line reset clock cycles.
   static constexpr uint32_t BYTE_BITS = 8u;  ///< 每字节比特数 / Bits per byte.
   static constexpr uint32_t ACK_BITS = 3u;   ///< ACK 比特数 / ACK bits.
+  static constexpr uint32_t WRITE_TRAILING_IDLE_CLOCKS =
+      3u;  ///< 写数据相后的空闲时钟数 / Idle clocks after a write data phase.
 
   static constexpr uint8_t JTAG_TO_SWD_SEQ0 =
       0x9Eu;  ///< JTAG->SWD 序列字节 0 / JTAG-to-SWD sequence byte 0.
