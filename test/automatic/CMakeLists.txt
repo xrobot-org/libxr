@@ -117,6 +117,7 @@ add_executable(
   driver/uart/test_uart.cpp
   driver/timebase/test_timebase.cpp
   driver/usb/core/test_endpoint.cpp
+  driver/usb/core/test_fsdev.cpp
   driver/usb/device/cdc/test_cdc_test.cpp
   driver/usb/device/cdc/test_cdc_uart.cpp
   driver/usb/device/dfu/test_dfu.cpp

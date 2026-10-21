@@ -59,6 +59,7 @@ void test_usb_hid();
 void test_usb_dfu();
 void test_usb_gsusb();
 void test_usb_uac_mic();
+void test_usb_fsdev();
 void test_stack();
 void test_swd_general_gpio();
 void test_swd_protocol();
@@ -223,6 +224,7 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests", {"usb_dfu", &RunVoidEntry<test_usb_dfu>, false}},
     {"usb_tests", {"usb_gsusb", &RunVoidEntry<test_usb_gsusb>, false}},
     {"usb_tests", {"usb_uac_mic", &RunVoidEntry<test_usb_uac_mic>, false}},
+    {"usb_tests", {"usb_fsdev", &RunVoidEntry<test_usb_fsdev>, false}},
     {"core_tests", {"assert", &RunVoidEntry<test_assert>, false}},
     {"core_tests", {"def", &RunVoidEntry<test_def>, false}},
     {"core_tests", {"callback", &RunVoidEntry<test_cb>, false}},
