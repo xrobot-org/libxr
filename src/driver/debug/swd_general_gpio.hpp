@@ -27,6 +27,17 @@ enum class SwdIoDriveMode : uint8_t
  *
  * @note 推荐外围电路：SWCLK/SWDIO 均串联 33Ω 限流电阻，SWDIO 端接 10k 上拉电阻。
  *       Recommended circuit: 33Ω series resistors on SWCLK/SWDIO, 10k pull-up on SWDIO.
+ * @note 裸线（没有串联电阻）上默认的 GPIO 驱动强度会产生振铃，
+ *       引起 SWD 错误；驱动强度由 BSP 设置，本类不改。
+ *       快速 bit-bang 时还要注意：有些芯片上 SWDIO 改成输出后
+ *       要等若干个 CPU 周期才生效（外设寄存器经较慢的总线写入），
+ *       GpioType 的 SetConfig 需要把这段时间算进去。
+ *       On bare wires (no series resistors) the default GPIO drive strength
+ *       rings and causes SWD errors; the drive strength is set by the BSP and
+ *       not changed here. For fast bit-banging also note that on some chips
+ *       SWDIO takes a number of CPU cycles to become an output after the change
+ *       (the peripheral register is written over a slower bus), and the
+ *       GpioType's SetConfig has to account for it.
  */
 template <typename SwclkGpioType, typename SwdioGpioType,
           SwdIoDriveMode IO_DRIVE_MODE = SwdIoDriveMode::PUSH_PULL>
@@ -401,9 +412,14 @@ class SwdGeneralGPIO final : public Swd
     return ErrorCode::OK;
   }
 
-  inline void DelayHalf() { BusyLoop(half_period_loops_); }
+  // 位级辅助函数强制内联：-Os 下编译器不内联它们，每一位都变成一次函数调用，在带 Flash
+  // 等待周期的 MCU 上 SWD 位速率下降一半以上。
+  // The bit-level helpers are forced inline: under -Os the compiler keeps them out of
+  // line, every bit becomes a call, and on MCUs with flash wait states the SWD bit rate
+  // drops by more than half.
+  [[gnu::always_inline]] inline void DelayHalf() { BusyLoop(half_period_loops_); }
 
-  inline void GenOneClk()
+  [[gnu::always_inline]] inline void GenOneClk()
   {
     swclk_.Write(false);
     DelayHalf();
@@ -411,19 +427,19 @@ class SwdGeneralGPIO final : public Swd
     DelayHalf();
   }
 
-  inline void GenOneClkWithoutDelay()
+  [[gnu::always_inline]] inline void GenOneClkWithoutDelay()
   {
     swclk_.Write(false);
     swclk_.Write(true);
   }
 
-  inline void WriteBit(bool bit)
+  [[gnu::always_inline]] inline void WriteBit(bool bit)
   {
     swdio_.Write(bit);
     GenOneClk();
   }
 
-  inline void WriteBitWithoutDelay(bool bit)
+  [[gnu::always_inline]] inline void WriteBitWithoutDelay(bool bit)
   {
     swdio_.Write(bit);
     GenOneClkWithoutDelay();
@@ -445,7 +461,7 @@ class SwdGeneralGPIO final : public Swd
     }
   }
 
-  inline bool ReadBitAndClock()
+  [[gnu::always_inline]] inline bool ReadBitAndClock()
   {
     swclk_.Write(false);
     DelayHalf();
@@ -455,7 +471,7 @@ class SwdGeneralGPIO final : public Swd
     return BIT;
   }
 
-  inline bool ReadBitAndClockWithoutDelay()
+  [[gnu::always_inline]] inline bool ReadBitAndClockWithoutDelay()
   {
     swclk_.Write(false);
     const bool BIT = swdio_.Read();
@@ -490,7 +506,7 @@ class SwdGeneralGPIO final : public Swd
     return v;
   }
 
-  static void BusyLoop(uint32_t loops)
+  [[gnu::always_inline]] static inline void BusyLoop(uint32_t loops)
   {
     // 计数器放在寄存器里；atomic_signal_fence 只约束编译器、不产生指令，使空循环不会被
     // 优化掉。volatile 计数器会在每次迭代读写栈并带内存屏障，每次迭代更慢。
