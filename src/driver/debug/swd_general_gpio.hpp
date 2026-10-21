@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 
@@ -490,9 +491,15 @@ class SwdGeneralGPIO final : public Swd
 
   static void BusyLoop(uint32_t loops)
   {
-    volatile uint32_t sink = loops;
-    while (sink--)
+    // 计数器放在寄存器里；atomic_signal_fence 只约束编译器、不产生指令，使空循环不会被
+    // 优化掉。volatile 计数器会在每次迭代读写栈并带内存屏障，每次迭代更慢。
+    // The counter lives in a register; atomic_signal_fence constrains only the compiler
+    // and emits no instruction, so the empty loop is not optimised away. A volatile
+    // counter would read and write the stack with a memory barrier on every iteration,
+    // which makes each iteration slower.
+    while (loops--)
     {
+      std::atomic_signal_fence(std::memory_order_seq_cst);
     }
   }
 

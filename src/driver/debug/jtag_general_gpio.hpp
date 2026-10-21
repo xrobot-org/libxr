@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 #include "gpio.hpp"
@@ -353,9 +354,14 @@ class JtagGeneralGPIO final : public Jtag
 
   static void BusyLoop(uint32_t loops)
   {
-    volatile uint32_t sink = loops;
-    while (sink--)
+    // 计数器放在寄存器里；atomic_signal_fence 只约束编译器、不产生指令，使空循环不会被
+    // 优化掉（与 SwdGeneralGPIO 相同）。
+    // The counter lives in a register; atomic_signal_fence constrains only the compiler
+    // and emits no instruction, so the empty loop is not optimised away (same as
+    // SwdGeneralGPIO).
+    while (loops--)
     {
+      std::atomic_signal_fence(std::memory_order_seq_cst);
     }
   }
 
