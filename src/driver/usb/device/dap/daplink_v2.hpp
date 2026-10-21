@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -12,9 +14,10 @@
 #include "libxr_def.hpp"
 #include "libxr_mem.hpp"
 #include "libxr_type.hpp"
+#include "semaphore.hpp"
+#include "structure/slot_pool.hpp"
 #include "timebase.hpp"
 #include "usb/core/desc_cfg.hpp"
-#include "winusb_msos20.hpp"
 
 namespace LibXR::USB
 {
@@ -36,8 +39,7 @@ static constexpr bool kEnableJtag = true;
  * @tparam SwdPort SWD link type
  */
 template <typename SwdPort, uint16_t DefaultDapPacketSize = 512u,
-          uint8_t AdvertisedPacketCount = 8u, uint16_t MaxDapPacketSize = 1024u,
-          uint16_t QueuedRequestBufferSize = 2048u, uint16_t QueuedCommandCountMax = 255u>
+          uint8_t AdvertisedPacketCount = 8u, uint16_t MaxDapPacketSize = 1024u>
 class DapLinkV2Class : public DeviceClass
 {
  public:
@@ -82,10 +84,11 @@ class DapLinkV2Class : public DeviceClass
         data_in_ep_num_(data_in_ep_num),
         data_out_ep_num_(data_out_ep_num)
   {
-    (void)swd_.SetClockHz(swj_clock_hz_);
-
-    // Init WinUSB descriptor templates (constant parts)
-    InitWinUsbDescriptors();
+    // 命令由应用线程循环调用 Step() 执行（见 Step）；类自己不起线程，也不起定时任务。
+    // 构造、绑定和解绑都不碰 SWD/JTAG。
+    // Commands run when the application thread calls Step() in a loop (see Step); the
+    // class starts no thread and no timer task of its own. Construction, bind and unbind
+    // never touch SWD/JTAG.
   }
 
   /**
@@ -147,7 +150,7 @@ class DapLinkV2Class : public DeviceClass
   bool EpInBusy()
   {
     auto ep = ep_data_in_;
-    return ep->GetState() != Endpoint::State::IDLE;
+    return ep != nullptr && ep->GetState() != Endpoint::State::IDLE;
   }
 
   /**
@@ -159,7 +162,132 @@ class DapLinkV2Class : public DeviceClass
   bool EpOutBusy()
   {
     auto ep = ep_data_out_;
-    return ep->GetState() != Endpoint::State::IDLE;
+    return ep != nullptr && ep->GetState() != Endpoint::State::IDLE;
+  }
+
+  /**
+   * @brief 在调用线程里同步执行一条 DAP 命令，供 USB 以外的传输使用（例如 TCP）。
+   *        Execute one DAP command synchronously in the caller's thread, for transports
+   *        other than USB (for example TCP).
+   *
+   * 延时类命令（DAP_Delay、ResetTarget、带等待的 SWJ_Pins，以及批里的这些命令）在本
+   * 调用里等到完成，所以返回时响应已完整。out_len 为 0 表示该命令没有响应。
+   * 本入口不检查、也不排他 USB：启用它之前由调用方负责停掉 USB，二者不能同时驱动同
+   * 一个类实例。
+   * Delay-type commands (DAP_Delay, ResetTarget, SWJ_Pins with a wait, and such
+   * commands inside a batch) are waited for inside this call, so the response is
+   * complete on return. out_len of 0 means the command has no response. This entry
+   * neither checks nor excludes USB: the caller stops USB before using it, and the two
+   * must not drive the same instance at the same time.
+   *
+   * @param req       请求缓冲 / Request buffer
+   * @param req_len   请求长度 / Request length
+   * @param resp      响应缓冲 / Response buffer
+   * @param resp_cap  响应缓冲容量 / Response buffer capacity
+   * @param out_len   响应长度 / Response length
+   * @return ErrorCode 命令处理结果 / Command processing result
+   */
+  ErrorCode ExecuteExternal(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                            uint16_t resp_cap, uint16_t& out_len)
+  {
+    out_len = 0u;
+    return ProcessOneCommand(req, req_len, resp, resp_cap, out_len);
+  }
+
+  /**
+   * @brief 在调用线程里做一次 DAP 工作：等一条命令并执行它。
+   *        Do one unit of DAP work in the calling thread: wait for a command and execute
+   *        it.
+   *
+   * 应用起一个线程循环调用即可（例如 while (true) { dap.Step(); }）。SWD/JTAG 只在这个
+   * 线程里访问，所以 SWD 引脚必须能在运行这个线程的核上使用；线程放在哪个核由应用决定。
+   * USB 回调只接收命令、发送响应，不执行命令；绑定/解绑只发布会话的开始/结束，由这个
+   * 线程关闭 SWD 并复位会话状态。延时类命令（DAP_Delay、ResetTarget、带等待的 SWJ_Pins）
+   * 在这个线程里等到完成，不占用 USB 上下文。
+   * Run it from one application thread, for example while (true) { dap.Step(); }.
+   * SWD/JTAG are accessed in this thread only, so the SWD pins must be usable from the
+   * core that runs it; the application decides where the thread runs. The USB callbacks
+   * receive commands and send responses but never execute them; bind/unbind only publish
+   * the session start/end, and this thread closes SWD and resets the session state.
+   * Delay-type commands (DAP_Delay, ResetTarget, SWJ_Pins with a wait) wait in this
+   * thread until they are done and do not occupy the USB context.
+   *
+   * @param timeout_ms 等待命令的最长时间；0 为不等待 / Longest wait for a command; 0 does
+   *                   not wait
+   * @return OK 做了一件事（执行或丢弃一条命令）；TIMEOUT 在期限内没有工作
+   *         / OK when something was done (a command executed or dropped); TIMEOUT when
+   *         no work arrived in time
+   */
+  ErrorCode Step(uint32_t timeout_ms = UINT32_MAX)
+  {
+    if (cur_cmd_ == SLOT_NONE)
+    {
+      size_t slot = SLOT_NONE;
+      if (cmd_pool_.Take(slot) != ErrorCode::OK)
+      {
+        if (cmd_sem_.Wait(timeout_ms) != ErrorCode::OK)
+        {
+          return ErrorCode::TIMEOUT;
+        }
+        if (cmd_pool_.Take(slot) != ErrorCode::OK)
+        {
+          // 被绑定/解绑叫醒，没有命令：把会话的开始/结束落实到 SWD。
+          // Woken by a bind/unbind with no command: apply the session start/end to SWD.
+          SyncSession(epoch_.load(std::memory_order_acquire));
+          return ErrorCode::OK;
+        }
+      }
+      cur_cmd_ = slot;
+      cur_epoch_ = cmd_pool_.At(slot).epoch;
+    }
+    // 收到这条命令之后发生过解绑/重新绑定（包括上一次 Step 超时返回时还拿着它）：
+    // 它属于已经结束的会话，丢弃，不执行。
+    // An unbind/bind happened after this command was received (also while a previous
+    // Step returned on a timeout still holding it): it belongs to a session that has
+    // ended, so it is dropped, not executed.
+    if (!StepStillBound())
+    {
+      AbandonCurrent();
+      SyncSession(epoch_.load(std::memory_order_acquire));
+      return ErrorCode::OK;
+    }
+    SyncSession(cur_epoch_);
+    // 没有暂存的响应在排队、又有空闲的 IN 槽时，响应直接写进 IN 槽，
+    // 由本线程提交，不经过类服务也不拷贝。否则响应先写进响应池的暂存槽，
+    // 不等主机取走前面的响应：SWD 继续往前执行，由 USB 侧在 IN 槽有空时
+    // 把暂存的响应拷进去提交。暂存槽用完（客户端在途数超过通告值）时在这里等；
+    // 命令继续由本线程持有，超时返回后下一次 Step 接着等。
+    // With no staged response waiting and an IN slot free, the response is written
+    // straight into the IN slot and submitted by this thread, without the class service
+    // and without a copy. Otherwise it is first written into a staging slot of the
+    // response pool and does not wait for the host to take earlier responses: SWD goes on
+    // executing, and the USB side copies the staged responses into an IN slot and submits
+    // them as slots come free. With the staging slots used up (a client with more in
+    // flight than advertised) wait here; the command stays with this thread and the next
+    // Step goes on waiting after a timeout.
+    if (cur_resp_ == SLOT_NONE && !cur_in_.Valid())
+    {
+      TakeInSlot();
+    }
+    while (cur_resp_ == SLOT_NONE && !cur_in_.Valid())
+    {
+      if (resp_pool_.Acquire(cur_resp_) == ErrorCode::OK)
+      {
+        break;
+      }
+      cur_resp_ = SLOT_NONE;
+      if (slot_sem_.Wait(timeout_ms) != ErrorCode::OK)
+      {
+        return ErrorCode::TIMEOUT;
+      }
+      if (!StepStillBound())
+      {
+        AbandonCurrent();
+        return ErrorCode::OK;
+      }
+    }
+    ExecuteCurrent();
+    return ErrorCode::OK;
   }
 
  protected:
@@ -169,14 +297,12 @@ class DapLinkV2Class : public DeviceClass
    * @param start_itf_num Start interface number
    * @param in_isr Whether called from ISR context
    */
-  void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num, bool) override
+  void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num,
+                     bool in_isr) override
   {
     inited_ = false;
 
     interface_num_ = start_itf_num;
-
-    // Patch WinUSB function subset to match this interface number
-    UpdateWinUsbInterfaceFields();
 
     // Allocate endpoints
     auto ans =
@@ -186,17 +312,33 @@ class DapLinkV2Class : public DeviceClass
     ans = endpoint_pool.Get(ep_data_in_, Endpoint::Direction::IN, data_in_ep_num_);
     ASSERT(ans == ErrorCode::OK);
 
-    // Configure endpoints
-    // - Use upper bound; core will choose a valid max packet size <= this limit.
-    // - Enable double_buffer for USB pipeline overlap.
-    ep_data_out_->Configure(
-        {Endpoint::Direction::OUT, Endpoint::Type::BULK, UINT16_MAX, true});
-    ep_data_in_->Configure(
-        {Endpoint::Direction::IN, Endpoint::Type::BULK, UINT16_MAX, true});
+    // Configure endpoints with the largest packet size the slots and the controller
+    // hold at the current speed (0 when there is none). A failed Configure leaves the
+    // endpoint in ERROR and the composition rejects the configuration. Both directions
+    // work in borrow mode: the OUT slots lend each received packet to the callback, and
+    // the response is written straight into an IN slot.
+    const uint16_t out_packet = ep_data_out_->LargestPacketSize(Endpoint::Type::BULK);
+    const uint16_t in_packet = ep_data_in_->LargestPacketSize(Endpoint::Type::BULK);
+    (void)ep_data_out_->Configure(
+        {Endpoint::Direction::OUT, Endpoint::Type::BULK, out_packet}, in_isr);
+    (void)ep_data_in_->Configure(
+        {Endpoint::Direction::IN, Endpoint::Type::BULK, in_packet}, in_isr);
 
-    // Hook callbacks
-    ep_data_out_->SetOnTransferCompleteCallback(on_data_out_cb_);
-    ep_data_in_->SetOnTransferCompleteCallback(on_data_in_cb_);
+    // 通告给主机的 DAP 包长不能超过 IN 槽：响应原地写在槽里。
+    // The DAP packet size announced to the host cannot exceed an IN slot: the response is
+    // written in place.
+    {
+      const size_t in_capacity = ep_data_in_->GetGranted().slot_capacity;
+      const uint16_t configured = ConfiguredDapPacketSize();
+      dap_packet_size_.store((in_capacity != 0U && in_capacity < configured)
+                                 ? static_cast<uint16_t>(in_capacity)
+                                 : configured,
+                             std::memory_order_release);
+    }
+
+    // Hook completion callbacks (they run in the owner and must stay shallow).
+    ep_data_out_->SetOnComplete(on_data_out_cb_);
+    ep_data_in_->SetOnComplete(on_data_in_cb_);
 
     // Interface descriptor (vendor specific, 2 endpoints)
     desc_block_.intf = {9,
@@ -225,33 +367,15 @@ class DapLinkV2Class : public DeviceClass
 
     SetData(RawData{reinterpret_cast<uint8_t*>(&desc_block_), sizeof(desc_block_)});
 
-    // Runtime defaults
-    dap_state_ = {};
-    dap_state_.debug_port = LibXR::USB::DapLinkV2Def::DebugPort::DISABLED;
-    dap_state_.transfer_abort = false;
-
-    swj_clock_hz_ = 1'000'000u;
-    (void)swd_.SetClockHz(swj_clock_hz_);
-    if constexpr (JTAG_ENABLED)
-    {
-      if (jtag_ != nullptr)
-      {
-        (void)jtag_->SetClockHz(swj_clock_hz_);
-      }
-    }
-
-    // SWJ shadow defaults: SWDIO=1, nRESET=1, SWCLK=0
-    last_nreset_level_high_ = true;
-    swj_shadow_ = static_cast<uint8_t>(DapLinkV2Def::DAP_SWJ_SWDIO_TMS |
-                                       DapLinkV2Def::DAP_SWJ_NRESET);
-
-    ResetResponseQueue();
-    ResetQueuedCommandState();
-    ResetJtagChainState();
-    ep_data_in_->SetActiveLength(0);
+    // 新会话开始：epoch 加一。会话状态（SWD/JTAG、时钟、引脚影子）由 Step 线程在执行
+    // 这个会话的第一条命令之前复位（见 SyncSession），这里不碰。
+    // A new session starts: the epoch is bumped. The session state (SWD/JTAG, clock, pin
+    // shadow) is reset by the Step thread before the first command of this session (see
+    // SyncSession); it is not touched here.
+    ResetChannels();
 
     inited_ = true;
-    ArmOutTransferIfIdle();
+    TopUpReceives(in_isr);
   }
 
   /**
@@ -259,44 +383,41 @@ class DapLinkV2Class : public DeviceClass
    * @param endpoint_pool Endpoint pool
    * @param in_isr Whether called from ISR context
    */
-  void UnbindEndpoints(EndpointPool& endpoint_pool, bool) override
+  void UnbindEndpoints(EndpointPool& endpoint_pool, bool in_isr) override
   {
     inited_ = false;
-    ResetResponseQueue();
-    ResetQueuedCommandState();
 
-    dap_state_.debug_port = LibXR::USB::DapLinkV2Def::DebugPort::DISABLED;
-    dap_state_.transfer_abort = false;
+    // 正在执行的传输尽快结束；Step 线程开始下一个会话时清掉这个标志。
+    // End a transfer in progress soon; the Step thread clears the flag when the next
+    // session starts.
+    transfer_abort_.store(true, std::memory_order_release);
+
+    // 会话结束：epoch 加一。SWD/JTAG 由 Step 线程关闭（见 SyncSession），这里不碰。
+    // 借出的槽由解绑作废；Close 里送达的 ABORTED 完成因 inited_ 已为 false 被回调入口
+    // 忽略。
+    // The session ends: the epoch is bumped. SWD/JTAG are closed by the Step thread (see
+    // SyncSession), not here. Lent slots are voided by the unbind; the ABORTED
+    // completions delivered inside Close are ignored by the callback entry because
+    // inited_ is already false.
+    ResetChannels();
+    // 叫醒可能在等命令或等 IN 槽的 Step 线程。
+    // Wake a Step thread that may be waiting for a command or for an IN slot.
+    cmd_sem_.PostFromCallback(in_isr);
+    slot_sem_.PostFromCallback(in_isr);
 
     if (ep_data_in_)
     {
-      ep_data_in_->Close();
-      ep_data_in_->SetActiveLength(0);
+      ep_data_in_->Close(in_isr);
       endpoint_pool.Release(ep_data_in_);
       ep_data_in_ = nullptr;
     }
 
     if (ep_data_out_)
     {
-      ep_data_out_->Close();
-      ep_data_out_->SetActiveLength(0);
+      ep_data_out_->Close(in_isr);
       endpoint_pool.Release(ep_data_out_);
       ep_data_out_ = nullptr;
     }
-
-    swd_.Close();
-    if constexpr (JTAG_ENABLED)
-    {
-      if (jtag_ != nullptr)
-      {
-        jtag_->Close();
-      }
-    }
-
-    // Reset shadow defaults
-    last_nreset_level_high_ = true;
-    swj_shadow_ = static_cast<uint8_t>(DapLinkV2Def::DAP_SWJ_SWDIO_TMS |
-                                       DapLinkV2Def::DAP_SWJ_NRESET);
   }
 
   /**
@@ -333,33 +454,33 @@ class DapLinkV2Class : public DeviceClass
   size_t GetMaxConfigSize() override { return sizeof(desc_block_); }
 
   /**
-   * @brief Get WinUSB MS OS 2.0 descriptor set
-   * @return ConstRawData descriptor set bytes
+   * @brief 需要 WinUSB 绑定：返回设备接口 GUID，MS OS 2.0 描述符集由组合设备生成
+   *        Wants WinUSB to bind: returns the device interface GUID; the MS OS 2.0
+   *        descriptor set is built by the composition
    */
-  ConstRawData GetWinUsbMsOs20DescriptorSet() const
+  const char* GetWinUsbInterfaceGuid() const override
   {
-    return ConstRawData{reinterpret_cast<const uint8_t*>(&winusb_msos20_),
-                        sizeof(winusb_msos20_)};
+    return "{CDB3B5AD-293B-4663-AA36-1AAE46463776}";
   }
 
   /**
-   * @brief BOS capability count
-   * @return Capability count
+   * @brief 类服务（owner 上下文）：提交暂存的响应，处理被留住的包，补挂接收。
+   *        Class service (owner context): submit the staged responses, handle the held
+   *        packets and re-arm the receives.
    */
-  size_t GetBosCapabilityCount() override { return 1; }
-
-  /**
-   * @brief Get BOS capability
-   * @param index Capability index
-   * @return Capability pointer
-   */
-  BosCapability* GetBosCapability(size_t index) override
+  void OnService(bool in_isr) override
   {
-    if (index == 0)
+    if (!inited_)
     {
-      return &winusb_msos20_cap_;
+      return;
     }
-    return nullptr;
+    // 服务上下文只做 USB 侧的事：把暂存的响应提交给 IN
+    // 槽，处理被留住的包，补挂接收。命令由 Step() 执行。 The service context only does
+    // the USB side: submit the staged responses to IN slots, handle packets that were
+    // held and re-arm the receives. Commands are executed by Step().
+    SendStagedResponses(in_isr);
+    DrainHeldPackets(in_isr);
+    TopUpReceives(in_isr);
   }
 
  private:
@@ -410,85 +531,6 @@ class DapLinkV2Class : public DeviceClass
 
  private:
   // ============================================================================
-  // WinUSB descriptors
-  // ============================================================================
-
-  void InitWinUsbDescriptors()
-  {
-    winusb_msos20_.set.wLength = static_cast<uint16_t>(sizeof(winusb_msos20_.set));
-    winusb_msos20_.set.wDescriptorType =
-        LibXR::USB::WinUsbMsOs20::MS_OS_20_SET_HEADER_DESCRIPTOR;
-    winusb_msos20_.set.dwWindowsVersion = 0x06030000;  // Win 8.1+
-    winusb_msos20_.set.wTotalLength = static_cast<uint16_t>(sizeof(winusb_msos20_));
-
-    winusb_msos20_.cfg.wLength = static_cast<uint16_t>(sizeof(winusb_msos20_.cfg));
-    winusb_msos20_.cfg.wDescriptorType =
-        LibXR::USB::WinUsbMsOs20::MS_OS_20_SUBSET_HEADER_CONFIGURATION;
-
-    // MS OS 2.0 configuration subset uses a zero-based configuration index.
-    winusb_msos20_.cfg.bConfigurationValue = 0u;
-    winusb_msos20_.cfg.bReserved = 0;
-    winusb_msos20_.cfg.wTotalLength = static_cast<uint16_t>(
-        sizeof(winusb_msos20_) - offsetof(WinUsbMsOs20DescSet, cfg));
-
-    winusb_msos20_.func.wLength = static_cast<uint16_t>(sizeof(winusb_msos20_.func));
-    winusb_msos20_.func.wDescriptorType =
-        LibXR::USB::WinUsbMsOs20::MS_OS_20_SUBSET_HEADER_FUNCTION;
-    winusb_msos20_.func.bReserved = 0;
-    winusb_msos20_.func.wTotalLength = static_cast<uint16_t>(
-        sizeof(winusb_msos20_) - offsetof(WinUsbMsOs20DescSet, func));
-
-    winusb_msos20_.compat.wLength = static_cast<uint16_t>(sizeof(winusb_msos20_.compat));
-    winusb_msos20_.compat.wDescriptorType =
-        LibXR::USB::WinUsbMsOs20::MS_OS_20_FEATURE_COMPATIBLE_ID;
-
-    winusb_msos20_.prop.header.wDescriptorType =
-        LibXR::USB::WinUsbMsOs20::MS_OS_20_FEATURE_REG_PROPERTY;
-    winusb_msos20_.prop.header.wPropertyDataType = LibXR::USB::WinUsbMsOs20::REG_MULTI_SZ;
-    winusb_msos20_.prop.header.wPropertyNameLength =
-        LibXR::USB::WinUsbMsOs20::PROP_NAME_DEVICE_INTERFACE_GUIDS_BYTES;
-
-    Memory::FastCopy(winusb_msos20_.prop.name,
-                     LibXR::USB::WinUsbMsOs20::PROP_NAME_DEVICE_INTERFACE_GUIDS_UTF16,
-                     LibXR::USB::WinUsbMsOs20::PROP_NAME_DEVICE_INTERFACE_GUIDS_BYTES);
-
-    // DeviceInterfaceGUIDs: REG_MULTI_SZ UTF-16LE, include double-NUL terminator
-    // Single GUID plus double-NUL terminator for REG_MULTI_SZ.
-    const char GUID_STR[] = "{CDB3B5AD-293B-4663-AA36-1AAE46463776}";
-    const size_t GUID_LEN = sizeof(GUID_STR) - 1;
-
-    for (size_t i = 0; i < GUID_LEN; ++i)
-    {
-      winusb_msos20_.prop.data[i * 2] = static_cast<uint8_t>(GUID_STR[i]);
-      winusb_msos20_.prop.data[i * 2 + 1] = 0x00;
-    }
-
-    // Append UTF-16 NUL + extra UTF-16 NUL (REG_MULTI_SZ end)
-    winusb_msos20_.prop.data[GUID_LEN * 2 + 0] = 0x00;
-    winusb_msos20_.prop.data[GUID_LEN * 2 + 1] = 0x00;
-    winusb_msos20_.prop.data[GUID_LEN * 2 + 2] = 0x00;
-    winusb_msos20_.prop.data[GUID_LEN * 2 + 3] = 0x00;
-
-    winusb_msos20_.prop.wPropertyDataLength = static_cast<uint16_t>((GUID_LEN * 2) + 4);
-    winusb_msos20_.prop.header.wLength =
-        static_cast<uint16_t>(sizeof(winusb_msos20_.prop));
-
-    // Sync to BOS capability object
-    winusb_msos20_cap_.SetVendorCode(WINUSB_VENDOR_CODE);
-    winusb_msos20_cap_.SetDescriptorSet(GetWinUsbMsOs20DescriptorSet());
-  }
-
-  void UpdateWinUsbInterfaceFields()
-  {
-    // Function subset interface number
-    winusb_msos20_.func.bFirstInterface = interface_num_;
-
-    // Content changes but total size stays the same; resync for consistency.
-    winusb_msos20_cap_.SetDescriptorSet(GetWinUsbMsOs20DescriptorSet());
-  }
-
- private:
-  // ============================================================================
   // USB callbacks
   // ============================================================================
 
@@ -496,11 +538,11 @@ class DapLinkV2Class : public DeviceClass
    * @brief OUT complete callback static entry
    */
   static void OnDataOutCompleteStatic(bool in_isr, DapLinkV2Class* self,
-                                      LibXR::ConstRawData& data)
+                                      const Endpoint::Completion& completion)
   {
     if (self && self->inited_)
     {
-      self->OnDataOutComplete(in_isr, data);
+      self->OnDataOutComplete(in_isr, completion);
     }
   }
 
@@ -508,109 +550,545 @@ class DapLinkV2Class : public DeviceClass
    * @brief IN complete callback static entry
    */
   static void OnDataInCompleteStatic(bool in_isr, DapLinkV2Class* self,
-                                     LibXR::ConstRawData& data)
+                                     const Endpoint::Completion& completion)
   {
     if (self && self->inited_)
     {
-      self->OnDataInComplete(in_isr, data);
+      self->OnDataInComplete(in_isr, completion);
     }
   }
 
   /**
-   * @brief OUT complete callback instance method
+   * @brief OUT 完成回调：借出一个槽，里面是刚收到的一个（或几个）包。
+   *        OUT completion: one slot is lent, holding the packet (or packets) just
+   *        received.
+   *
+   * 包按命令拼装进命令池的槽里，拼完的命令发布给 Step 线程。槽立刻归还，另一个槽一直
+   * 在收下一个包，所以两个槽交替，不用等回调处理完。命令池没有空槽时，这个包不拷走，
+   * 租约留着（最多两个），端点没有可用的槽就会 NAK，等 Step 线程放出命令槽后再处理。
+   * Packets are assembled into slots of the command pool and a finished command is
+   * published to the Step thread. The slot is given back at once and the other slot is
+   * already receiving the next packet, so the two alternate and the callback's work does
+   * not delay the wire. With no free command slot the packet is not copied: the lease is
+   * kept (two at most) and the endpoint NAKs for lack of a slot until the Step thread
+   * gives a command slot back.
    */
-  void OnDataOutComplete(bool in_isr, LibXR::ConstRawData& data)
+  void OnDataOutComplete(bool in_isr, const Endpoint::Completion& completion)
   {
-    (void)in_isr;
-
-    if (!inited_ || !ep_data_in_ || !ep_data_out_)
+    if (!inited_ || !ep_data_in_ || !ep_data_out_) return;
+    if (armed_n_ > 0u)
     {
+      armed_sz_[0] = armed_sz_[1];
+      --armed_n_;
+    }
+    if (completion.result != ErrorCode::OK)
+    {
+      // ABORTED 只在解绑时出现（回调入口已按 inited_
+      // 拦截）；其它错误意味着字节流失去同步， 丢弃正在拼装的命令重新开始。 ABORTED only
+      // appears while unbinding (the entry guard filtered it through inited_); any other
+      // error means the byte stream lost sync: drop the command being assembled and start
+      // over.
+      ResetStream();
+      TopUpReceives(in_isr);
       return;
     }
-
-    const auto* req = static_cast<const uint8_t*>(data.addr_);
-    const uint16_t REQ_LEN = static_cast<uint16_t>(data.size_);
-
-    // Fast path: when IN is idle and no backlog exists, build directly
-    // in the IN endpoint buffer and submit without extra response copy.
-    if (!HasDeferredResponseInEpBuffer() && IsResponseQueueEmpty() &&
-        ep_data_in_->GetState() == Endpoint::State::IDLE &&
-        CanBuildResponseDirectlyInEpBuffer())
+    const uint16_t size = static_cast<uint16_t>(completion.actual);
+    if (held_n_ > 0u || !ConsumePacket(completion.slot, size, in_isr))
     {
-      auto tx_buff = ep_data_in_->GetBuffer();
-      if (tx_buff.addr_ && tx_buff.size_ > 0u)
-      {
-        auto* tx_buf = static_cast<uint8_t*>(tx_buff.addr_);
-        uint16_t out_len = 0u;
-        auto ans = ProcessOneCommand(in_isr, req, REQ_LEN, tx_buf,
-                                     static_cast<uint16_t>(tx_buff.size_), out_len);
-        UNUSED(ans);
-
-        out_len = ClipResponseLength(out_len, static_cast<uint16_t>(tx_buff.size_));
-        if (StartInTransferFromCurrentBuffer(out_len))
-        {
-          return;
-        }
-
-        if (!EnqueueResponse(tx_buf, out_len))
-        {
-          (void)SubmitNextQueuedResponseIfIdle();
-          (void)EnqueueResponse(tx_buf, out_len);
-        }
-
-        (void)SubmitNextQueuedResponseIfIdle();
-        ArmOutTransferIfIdle();
-        return;
-      }
+      REQUIRE(held_n_ < 2u);
+      held_[held_n_++] = {completion.slot, size};
     }
-
-    // Deferred fast path: when IN is busy and no backlog exists, build the next
-    // response in the alternate IN double buffer to avoid queue copy.
-    if (!HasDeferredResponseInEpBuffer() && IsResponseQueueEmpty() &&
-        ep_data_in_->GetState() == Endpoint::State::BUSY &&
-        CanBuildResponseDirectlyInEpBuffer())
-    {
-      auto tx_buff = ep_data_in_->GetBuffer();
-      if (tx_buff.addr_ && tx_buff.size_ > 0u)
-      {
-        auto* tx_buf = static_cast<uint8_t*>(tx_buff.addr_);
-        uint16_t out_len = 0u;
-        auto ans = ProcessOneCommand(in_isr, req, REQ_LEN, tx_buf,
-                                     static_cast<uint16_t>(tx_buff.size_), out_len);
-        UNUSED(ans);
-
-        out_len = ClipResponseLength(out_len, static_cast<uint16_t>(tx_buff.size_));
-        SetDeferredResponseInEpBuffer(out_len);
-        ArmOutTransferIfIdle();
-        return;
-      }
-    }
-
-    if (TryBuildAndEnqueueResponse(in_isr, req, REQ_LEN))
-    {
-      (void)SubmitDeferredResponseIfIdle();
-      (void)SubmitNextQueuedResponseIfIdle();
-      ArmOutTransferIfIdle();
-      return;
-    }
-
-    // Should not happen with proper backpressure; drain once and retry queue build.
-    (void)SubmitNextQueuedResponseIfIdle();
-    (void)TryBuildAndEnqueueResponse(in_isr, req, REQ_LEN);
-
-    (void)SubmitDeferredResponseIfIdle();
-    (void)SubmitNextQueuedResponseIfIdle();
-    ArmOutTransferIfIdle();
+    TopUpReceives(in_isr);
   }
 
-  /**
-   * @brief IN complete callback instance method
-   */
-  void OnDataInComplete(bool /*in_isr*/, LibXR::ConstRawData& /*data*/)
+  /// IN 完成：一个槽回到空闲，叫醒在等 IN 槽的 Step 线程 / IN completion: a slot is free
+  /// again, wake a Step thread waiting for one
+  void OnDataInComplete(bool in_isr, const Endpoint::Completion& completion)
   {
-    (void)SubmitDeferredResponseIfIdle();
-    (void)SubmitNextQueuedResponseIfIdle();
-    ArmOutTransferIfIdle();
+    UNUSED(completion);
+    if (!inited_ || !ep_data_in_ || !ep_data_out_) return;
+    SendStagedResponses(in_isr);
+  }
+
+  /// 把暂存的响应按发布顺序拷进空闲的 IN 槽并提交。两个 IN 槽都忙时留到下一次 IN 完成。
+  /// 拷贝是一个响应的字节数（最多一个 DAP 包），相对一次 SWD 传输和 USB 传输可以忽略。
+  /// Copy the staged responses, in the order they were published, into free IN slots and
+  /// submit them. With both IN slots busy this waits for the next IN completion. The copy
+  /// is one response (a DAP packet at most), negligible against an SWD and a USB
+  /// transfer.
+  void SendStagedResponses(bool in_isr)
+  {
+    if (!inited_ || !ep_data_in_) return;
+    while (true)
+    {
+      if (send_idx_ == SLOT_NONE && resp_pool_.Take(send_idx_) != ErrorCode::OK)
+      {
+        send_idx_ = SLOT_NONE;
+        return;
+      }
+      Endpoint::Slot slot;
+      if (ep_data_in_->AcquireSlot(slot, in_isr) != ErrorCode::OK)
+      {
+        return;  // 两个 IN 槽都忙：下一次 IN 完成再来 / both IN slots busy: next IN
+                 // completion
+      }
+      const ResponseSlot& response = resp_pool_.At(send_idx_);
+      const size_t length = std::min<size_t>(response.len, slot.data.size_);
+      Memory::FastCopy(slot.data.addr_, response.payload, length);
+      const ErrorCode ec =
+          ep_data_in_->Submit(slot, length, NeedZlp(*ep_data_in_, length), in_isr);
+      if (ec != ErrorCode::OK && ec != ErrorCode::ABORTED)
+      {
+        ep_data_in_->ReleaseSlot(slot, in_isr);
+      }
+      resp_pool_.Release(send_idx_);
+      send_idx_ = SLOT_NONE;
+      // 这条暂存响应已进端点队列：计数归零后 Step 可以直接提交而不越过它。
+      // This staged response is in the endpoint queue: once the count is zero Step may
+      // submit directly without overtaking it.
+      uint32_t staged = staged_outstanding_.load(std::memory_order_acquire);
+      while (staged != 0u && !staged_outstanding_.compare_exchange_weak(
+                                 staged, staged - 1u, std::memory_order_acq_rel,
+                                 std::memory_order_acquire))
+      {
+      }
+      slot_sem_.PostFromCallback(in_isr);  // 一个暂存槽空出来了 / a staging slot is free
+    }
+  }
+
+  /// 响应恰好等于 DAP 包长时主机读满 DAP 包长缓冲就结束，不补零长包；补了会留下一个主机
+  /// 不取的零长包，占住 IN 槽，深流水下把命令流堵死。
+  /// A response exactly as long as the DAP packet needs no ZLP: the host's
+  /// DAP-packet-sized read completes when the buffer is full. A ZLP would stay armed,
+  /// keeping an IN slot occupied, which stalls the command stream under a deep pipeline.
+  bool NeedZlp(const Endpoint& ep, size_t length) const
+  {
+    const size_t mps = ep.MaxPacketSize();
+    return (mps != 0U) && (length % mps == 0U) && (length < GetDapPacketSize());
+  }
+
+  /// Step 线程：没有暂存响应在排队时借一个空闲 IN 槽来直接写响应；借不到就走暂存槽。
+  /// Step thread: borrow a free IN slot to write the response in place when no staged
+  /// response is waiting; without one the staging slot is used.
+  void TakeInSlot()
+  {
+    Endpoint* ep = ep_data_in_;
+    if (ep == nullptr || staged_outstanding_.load(std::memory_order_acquire) != 0u)
+    {
+      return;
+    }
+    Endpoint::Slot slot;
+    if (ep->AcquireSlot(slot, false) != ErrorCode::OK)
+    {
+      return;
+    }
+    cur_in_ = slot;
+    cur_in_ep_ = ep;
+  }
+
+  /// Step 线程：提交直接写好的 IN 槽。解绑作废的槽 Submit 得 ABORTED，已回到空闲。
+  /// Step thread: submit the IN slot written in place. A slot voided by an unbind gets
+  /// ABORTED from Submit and is free again.
+  void SubmitInSlot(uint16_t size)
+  {
+    Endpoint* ep = cur_in_ep_;
+    const Endpoint::Slot slot = cur_in_;
+    cur_in_ = {};
+    cur_in_ep_ = nullptr;
+    const ErrorCode ec = ep->Submit(slot, size, NeedZlp(*ep, size), false);
+    if (ec != ErrorCode::OK && ec != ErrorCode::ABORTED)
+    {
+      ep->ReleaseSlot(slot, false);
+    }
+  }
+
+  /// 解绑/重新绑定：放掉 USB 侧持有的东西，排空命令池里已就绪的槽。Step 线程手里的槽由它
+  /// 自己放（见 AbandonCurrent），epoch 让它知道自己的命令已经作废。
+  /// Unbind/bind: give back what the USB side holds and drain the ready slots of the
+  /// command pool. The slots in the Step thread's hands are given back by it (see
+  /// AbandonCurrent); the epoch tells it that its command has been voided.
+  void ResetChannels()
+  {
+    epoch_.fetch_add(1u, std::memory_order_acq_rel);
+    ResetStream();
+    held_n_ = 0u;
+    armed_n_ = 0u;
+    if (send_idx_ != SLOT_NONE)
+    {
+      resp_pool_.Release(send_idx_);
+      send_idx_ = SLOT_NONE;
+    }
+    size_t slot = SLOT_NONE;
+    while (cmd_pool_.Take(slot) == ErrorCode::OK)
+    {
+      cmd_pool_.Release(slot);
+    }
+    while (resp_pool_.Take(slot) == ErrorCode::OK)
+    {
+      resp_pool_.Release(slot);
+    }
+    staged_outstanding_.store(0u, std::memory_order_release);
+  }
+
+  /// 字节流状态归零：放掉正在拼装的命令槽 / Reset the byte-stream state: give back the
+  /// command slot being assembled
+  void ResetStream()
+  {
+    if (rx_slot_ != SLOT_NONE)
+    {
+      cmd_pool_.Release(rx_slot_);
+      rx_slot_ = SLOT_NONE;
+    }
+    rx_off_ = 0u;
+    known_total_ = 0u;
+    pad_base_ = 0u;
+    pad_skip_ = 0u;
+  }
+
+  /// 一个收到的包（或几个包）：拷进命令槽、判断命令是否收齐，租约在拷完后立刻归还。返回
+  /// false 表示命令池没有空槽，什么都没动，租约要留着。
+  /// One received chunk: copy it into the command slot, decide whether the command is
+  /// complete, and give the lease back right after the copy. Returns false when the
+  /// command pool has no free slot: nothing was touched and the lease must be kept.
+  bool ConsumePacket(const Endpoint::Slot& slot, uint16_t n, bool in_isr)
+  {
+    const uint16_t mps = OutChunkSize();
+    const uint16_t packet = GetDapPacketSize();
+    const uint8_t* data = static_cast<const uint8_t*>(slot.data.addr_);
+
+    // 上一条命令的传输被主机补零到 DAP 包长：补零部分整段丢弃，不需要命令槽，也不受命令池
+    // 是否有空槽限制，否则主机的写结束不了。
+    // The previous command's transfer was padded by the host to the DAP packet size: the
+    // padding is dropped without a command slot and regardless of whether the command
+    // pool has a free slot, or the host's write could not finish.
+    if (pad_skip_ > 0u && n <= pad_skip_)
+    {
+      pad_skip_ = static_cast<uint16_t>(pad_skip_ - n);
+      ep_data_out_->ReleaseSlot(slot, in_isr);
+      return true;
+    }
+    // 上一条命令以整包结束后紧接着的整包全零不是命令（命令号 0 后面跟信息 ID 0 不是合法
+    // 命令）：它是补零，这次传输还剩的字节数记在 pad_skip_ 里。
+    // An all-zero whole packet right after a command that ended on a whole packet is not
+    // a command (command 0 with info ID 0 is not valid): it is padding, and the bytes
+    // this transfer still has are kept in pad_skip_.
+    if (rx_off_ == 0u && pad_skip_ == 0u && pad_base_ != 0u && n == mps &&
+        IsAllZero(data, n))
+    {
+      const uint16_t used = static_cast<uint16_t>(pad_base_ + n);
+      pad_skip_ = used < packet ? static_cast<uint16_t>(packet - used) : 0u;
+      pad_base_ = 0u;
+      ep_data_out_->ReleaseSlot(slot, in_isr);
+      return true;
+    }
+
+    // 从这里起要把字节拷进命令槽；没有空槽就什么都不动。
+    // From here the bytes go into a command slot; with no free one nothing is touched.
+    if (rx_slot_ == SLOT_NONE)
+    {
+      if (cmd_pool_.Acquire(rx_slot_) != ErrorCode::OK)
+      {
+        rx_slot_ = SLOT_NONE;
+        return false;
+      }
+      rx_off_ = 0u;
+      known_total_ = 0u;
+    }
+    if (pad_skip_ > 0u)
+    {
+      // 补零之后紧跟着下一条命令的字节。
+      // The padding is followed by the bytes of the next command.
+      data += pad_skip_;
+      n = static_cast<uint16_t>(n - pad_skip_);
+      pad_skip_ = 0u;
+    }
+    pad_base_ = 0u;
+
+    CommandSlot& command = cmd_pool_.At(rx_slot_);
+    if (static_cast<size_t>(rx_off_) + n > MAX_DAP_PACKET_SIZE)
+    {
+      // 超出命令槽：这条命令无法保留，丢弃并重新开始。
+      // Beyond the command slot: the command cannot be kept, drop it and start over.
+      ep_data_out_->ReleaseSlot(slot, in_isr);
+      ResetStream();
+      return true;
+    }
+    Memory::FastCopy(command.data + rx_off_, data, n);
+    rx_off_ = static_cast<uint16_t>(rx_off_ + n);
+    ep_data_out_->ReleaseSlot(slot, in_isr);
+
+    // 主机传输的结束：短包、零长包，或收满 DAP 包长。恰好整包结束的命令没有这些提示
+    // （OpenOCD 的 bulk 写在整倍数长度时不补零长包），所以整包到来后按命令自己的长度
+    // 判断：完整就结束，不完整就只再要缺的那一段。
+    // End of the host transfer: a short packet, a zero-length packet, or a full DAP
+    // packet. A command that ends exactly on a packet boundary has none of these (the
+    // OpenOCD bulk write sends no ZLP for multiples of the packet size), so after a
+    // whole packet the command's own length decides: complete ends it, incomplete asks
+    // only for the missing part.
+    bool done = (n == 0u) || (n % mps != 0u) || (rx_off_ >= packet);
+    bool padded_candidate = false;
+    if (!done)
+    {
+      uint16_t length = 0u;
+      const CommandScan scan = ScanCommand(command.data, rx_off_, length);
+      if (scan == CommandScan::COMPLETE && length <= rx_off_)
+      {
+        done = true;
+        padded_candidate = true;
+      }
+      else if (scan == CommandScan::COMPLETE)
+      {
+        known_total_ = std::min<uint16_t>(length, packet);
+      }
+      else if (scan == CommandScan::NEED_MORE)
+      {
+        known_total_ = 0u;
+      }
+      else
+      {
+        // 长度未知的命令（JTAG、厂商命令）：按包长收，靠短包或收满结束。
+        // Length unknown (JTAG, vendor commands): receive up to the packet size and rely
+        // on a short packet or a full buffer.
+        known_total_ = packet;
+      }
+    }
+    if (!done)
+    {
+      return true;
+    }
+
+    if (rx_off_ == 0u)
+    {
+      cmd_pool_.Release(rx_slot_);  // 空传输（只有零长包）不是命令 / an empty transfer
+    }
+    else if (command.data[0] == ToU8(LibXR::USB::DapLinkV2Def::CommandId::TRANSFER_ABORT))
+    {
+      // DAP_TransferAbort 收到即生效、没有响应：不进命令池。Step 线程正在执行传输时下一次
+      // 检查标志即中止。
+      // DAP_TransferAbort takes effect on reception and has no response: it does not
+      // join the command pool. A transfer the Step thread is executing aborts at its
+      // next flag check.
+      SetTransferAbortFlag(true);
+      cmd_pool_.Release(rx_slot_);
+    }
+    else
+    {
+      command.len = rx_off_;
+      command.epoch = epoch_.load(std::memory_order_relaxed);
+      cmd_pool_.Publish(rx_slot_);
+      cmd_sem_.PostFromCallback(in_isr);
+    }
+    rx_slot_ = SLOT_NONE;
+    pad_base_ = padded_candidate ? rx_off_ : 0u;
+    rx_off_ = 0u;
+    known_total_ = 0u;
+    return true;
+  }
+
+  /// 命令槽放出来之后，处理被留住的包（按到达顺序）/ After a command slot came back,
+  /// handle the packets that were held (in arrival order)
+  void DrainHeldPackets(bool in_isr)
+  {
+    while (held_n_ > 0u)
+    {
+      if (!ConsumePacket(held_[0].slot, held_[0].size, in_isr))
+      {
+        return;
+      }
+      held_[0] = held_[1];
+      --held_n_;
+    }
+  }
+
+  /// 保持两个槽都在收：下一个请求的大小按已知情况定，见 PlanNextSize。
+  /// Keep both slots receiving; the size of the next request depends on what is known,
+  /// see PlanNextSize.
+  void TopUpReceives(bool in_isr)
+  {
+    if (!inited_ || !ep_data_out_) return;
+    while (armed_n_ < 2u)
+    {
+      const size_t size = PlanNextSize();
+      if (ep_data_out_->Receive(size, in_isr) != ErrorCode::OK)
+      {
+        break;
+      }
+      armed_sz_[armed_n_++] = size;
+    }
+  }
+
+  /// 下一个接收请求要多大。已经确定属于当前传输的字节一次要完（补零的剩余部分、已知长度
+  /// 的命令的剩余部分），扣掉已排队请求会收走的；否则只要一个端点包，收到后再看内容。
+  /// How large the next receive request is. Bytes known to belong to the current
+  /// transfer (the rest of the padding, the rest of a command of known length) are
+  /// asked for at once, minus what the requests already queued will take; otherwise one
+  /// endpoint packet, and the content decides after it arrives.
+  size_t PlanNextSize() const
+  {
+    const size_t mps = OutChunkSize();
+    size_t cap = ep_data_out_->GetGranted().slot_capacity;
+    cap -= cap % mps;
+    if (cap < mps) cap = mps;
+    size_t committed = 0u;
+    for (uint8_t i = 0u; i < armed_n_; ++i)
+    {
+      committed += armed_sz_[i];
+    }
+    size_t want = 0u;
+    if (pad_skip_ > committed)
+    {
+      want = pad_skip_ - committed;
+    }
+    else if (rx_off_ > 0u && known_total_ > rx_off_ + committed)
+    {
+      want = known_total_ - rx_off_ - committed;
+    }
+    if (want == 0u)
+    {
+      return mps;
+    }
+    want = ((want + mps - 1u) / mps) * mps;
+    return std::min(want, cap);
+  }
+
+  /// 执行手里的这条命令（Step 线程）：命令槽和响应缓冲（IN 槽或暂存响应槽）都由本线程
+  /// 持有，到响应发布才放出。
+  /// Execute the command in hand (Step thread): the command slot and the response buffer
+  /// (an IN slot or a staging slot) are held by this thread until the response is
+  /// published.
+  void ExecuteCurrent()
+  {
+    CommandSlot& command = cmd_pool_.At(cur_cmd_);
+    uint8_t* resp = nullptr;
+    uint16_t cap = RESP_SLOT_SIZE;
+    if (cur_in_.Valid())
+    {
+      // IN 槽不小于通告的 DAP 包长（见 BindEndpoints）。
+      // An IN slot is not smaller than the announced DAP packet size (see BindEndpoints).
+      resp = static_cast<uint8_t*>(cur_in_.data.addr_);
+      cap = static_cast<uint16_t>(std::min<size_t>(cur_in_.data.size_, RESP_SLOT_SIZE));
+    }
+    else
+    {
+      resp = resp_pool_.At(cur_resp_).payload;
+    }
+    uint16_t size = 0;
+    const auto result = ProcessOneCommand(command.data, command.len, resp, cap, size);
+    UNUSED(result);
+    if (size == 0u)
+    {
+      // 没有响应的命令：不发布，放出两个槽，USB 侧可以继续处理被留住的包。
+      // A command without a response: nothing is published, both slots are given back
+      // and the USB side can go on with the packets it held.
+      AbandonCurrent();
+      RequestClassService(false);
+      return;
+    }
+    REQUIRE(size <= cap);
+    CompleteResponse(size);
+  }
+
+  /// 这条命令收到以来没有发生解绑/重新绑定 / No unbind/bind since this command was
+  /// received
+  bool StepStillBound() const
+  {
+    return inited_ && cur_epoch_ == epoch_.load(std::memory_order_acquire);
+  }
+
+  /// Step 线程：epoch 变了就说明会话结束或开始过。在这个线程里关闭 SWD/JTAG，再把会话
+  /// 状态恢复成默认值，下一条命令从干净的会话开始。绑定/解绑只发布 epoch，不碰这些状态。
+  /// Step thread: a changed epoch means a session ended or started. Close SWD/JTAG in
+  /// this thread and put the session state back to its defaults, so the next command
+  /// starts from a clean session. Bind/unbind only publish the epoch and never touch this
+  /// state.
+  void SyncSession(uint32_t epoch)
+  {
+    if (epoch == session_epoch_)
+    {
+      return;
+    }
+    session_epoch_ = epoch;
+
+    swd_.Close();
+    if constexpr (JTAG_ENABLED)
+    {
+      if (jtag_ != nullptr)
+      {
+        jtag_->Close();
+      }
+    }
+
+    dap_state_ = {};
+    dap_state_.debug_port = LibXR::USB::DapLinkV2Def::DebugPort::DISABLED;
+    transfer_abort_.store(false, std::memory_order_release);
+
+    swj_clock_hz_ = 1'000'000u;
+    (void)swd_.SetClockHz(swj_clock_hz_);
+    if constexpr (JTAG_ENABLED)
+    {
+      if (jtag_ != nullptr)
+      {
+        (void)jtag_->SetClockHz(swj_clock_hz_);
+      }
+    }
+
+    // SWJ shadow defaults: SWDIO=1, nRESET=1, SWCLK=0
+    last_nreset_level_high_ = true;
+    swj_shadow_ = static_cast<uint8_t>(DapLinkV2Def::DAP_SWJ_SWDIO_TMS |
+                                       DapLinkV2Def::DAP_SWJ_NRESET);
+    ResetJtagChainState();
+  }
+
+  /// 放出本线程持有的命令槽和响应缓冲（不发布） / Give back the command slot and the
+  /// response buffer this thread holds (without publishing)
+  void AbandonCurrent()
+  {
+    if (cur_in_.Valid())
+    {
+      cur_in_ep_->ReleaseSlot(cur_in_, false);
+      cur_in_ = {};
+      cur_in_ep_ = nullptr;
+    }
+    if (cur_resp_ != SLOT_NONE)
+    {
+      resp_pool_.Release(cur_resp_);
+      cur_resp_ = SLOT_NONE;
+    }
+    if (cur_cmd_ != SLOT_NONE)
+    {
+      cmd_pool_.Release(cur_cmd_);
+      cur_cmd_ = SLOT_NONE;
+    }
+  }
+
+  /// 发布响应并放出命令槽：直接写在 IN 槽里的响应由本线程提交，暂存的响应交给 USB 侧
+  /// 提交。类服务随后处理被留住的包和补挂接收。
+  /// Publish the response and give back the command slot: a response written in an IN
+  /// slot is submitted by this thread, a staged one is left to the USB side. The class
+  /// service then handles held packets and re-arms the receives.
+  void CompleteResponse(uint16_t size)
+  {
+    if (!StepStillBound())
+    {
+      // 命令执行期间发生了解绑/重新绑定：这条响应作废。
+      // Unbound or rebound while the command ran: the response is void.
+      AbandonCurrent();
+      return;
+    }
+    if (cur_in_.Valid())
+    {
+      SubmitInSlot(size);
+    }
+    else
+    {
+      resp_pool_.At(cur_resp_).len = size;
+      staged_outstanding_.fetch_add(1u, std::memory_order_acq_rel);
+      resp_pool_.Publish(cur_resp_);
+      cur_resp_ = SLOT_NONE;
+    }
+    cmd_pool_.Release(cur_cmd_);
+    cur_cmd_ = SLOT_NONE;
+    RequestClassService(false);
   }
 
  private:
@@ -619,85 +1097,12 @@ class DapLinkV2Class : public DeviceClass
    */
   uint16_t GetDapPacketSize() const
   {
-    constexpr uint16_t OPENOCD_SAFE_PS = static_cast<uint16_t>((255u * 5u) + 4u);
-    constexpr uint16_t RAW_PS =
-        (MaxDapPacketSize == 0u) ? DefaultDapPacketSize : MaxDapPacketSize;
-    return (RAW_PS > OPENOCD_SAFE_PS) ? OPENOCD_SAFE_PS : RAW_PS;
-  }
-  bool CanBuildResponseDirectlyInEpBuffer() const
-  {
-    if (!ep_data_in_)
-    {
-      return false;
-    }
-    auto tx_buff = ep_data_in_->GetBuffer();
-    if (!tx_buff.addr_ || tx_buff.size_ == 0u)
-    {
-      return false;
-    }
-    return GetDapPacketSize() <= static_cast<uint16_t>(tx_buff.size_);
+    return dap_packet_size_.load(std::memory_order_acquire);
   }
 
-  bool StartInTransferFromCurrentBuffer(uint16_t len)
-  {
-    if (!ep_data_in_)
-    {
-      return false;
-    }
-    auto tx_buff = ep_data_in_->GetBuffer();
-    if (!tx_buff.addr_ || tx_buff.size_ == 0u)
-    {
-      return false;
-    }
-    uint16_t tx_len = len;
-    if (tx_len > tx_buff.size_)
-    {
-      tx_len = static_cast<uint16_t>(tx_buff.size_);
-    }
-    if (tx_len <= static_cast<uint16_t>(ep_data_in_->MaxTransferSize()))
-    {
-      return ep_data_in_->Transfer(tx_len) == ErrorCode::OK;
-    }
-    LibXR::RawData in_multi{tx_buff.addr_, tx_len};
-    return ep_data_in_->TransferMultiBulk(in_multi) == ErrorCode::OK;
-  }
-  bool StartInTransferFromPayload(const uint8_t* data, uint16_t len)
-  {
-    if (!ep_data_in_ || !data)
-    {
-      return false;
-    }
-    auto tx_buff = ep_data_in_->GetBuffer();
-    if (!tx_buff.addr_ || tx_buff.size_ == 0u)
-    {
-      return false;
-    }
-    uint16_t tx_len = len;
-    if (tx_len > MAX_DAP_PACKET_SIZE)
-    {
-      tx_len = MAX_DAP_PACKET_SIZE;
-    }
-    const uint16_t MAX_XFER = static_cast<uint16_t>(ep_data_in_->MaxTransferSize());
-    if (tx_len <= MAX_XFER && tx_len <= static_cast<uint16_t>(tx_buff.size_))
-    {
-      if (tx_len > 0u)
-      {
-        Memory::FastCopy(tx_buff.addr_, data, tx_len);
-      }
-      return ep_data_in_->Transfer(tx_len) == ErrorCode::OK;
-    }
-    if (tx_len > static_cast<uint16_t>(sizeof(in_tx_multi_storage_)))
-    {
-      tx_len = static_cast<uint16_t>(sizeof(in_tx_multi_storage_));
-    }
-    if (tx_len > 0u && data != in_tx_multi_storage_)
-    {
-      Memory::FastCopy(in_tx_multi_storage_, data, tx_len);
-    }
-    in_tx_multi_buf_.addr_ = in_tx_multi_storage_;
-    in_tx_multi_buf_.size_ = tx_len;
-    return ep_data_in_->TransferMultiBulk(in_tx_multi_buf_) == ErrorCode::OK;
-  }
+  /// 配置给出的 DAP 包长（还没有按 IN 槽收敛） / The DAP packet size the configuration
+  /// gives (before it is limited by the IN slot)
+  static constexpr uint16_t ConfiguredDapPacketSize() { return MAX_DAP_PACKET_SIZE; }
 
   /**
    * @brief Clip response length by DAP packet size and buffer capacity
@@ -718,57 +1123,6 @@ class DapLinkV2Class : public DeviceClass
       len = cap;
     }
     return len;
-  }
-
-  static constexpr uint8_t NextRespQueueIndex(uint8_t idx)
-  {
-    return static_cast<uint8_t>((idx + 1u) & (RESP_QUEUE_DEPTH - 1u));
-  }
-
-  void ResetResponseQueue()
-  {
-    resp_q_head_ = 0u;
-    resp_q_tail_ = 0u;
-    resp_q_count_ = 0u;
-    deferred_in_resp_valid_ = false;
-    deferred_in_resp_len_ = 0u;
-  }
-
-  bool HasDeferredResponseInEpBuffer() const { return deferred_in_resp_valid_; }
-
-  void SetDeferredResponseInEpBuffer(uint16_t len)
-  {
-    deferred_in_resp_len_ = len;
-    deferred_in_resp_valid_ = true;
-  }
-
-  bool SubmitDeferredResponseIfIdle()
-  {
-    if (!deferred_in_resp_valid_ || !ep_data_in_ ||
-        ep_data_in_->GetState() != Endpoint::State::IDLE)
-    {
-      return false;
-    }
-
-    const uint16_t TX_LEN = deferred_in_resp_len_;
-    if (!StartInTransferFromCurrentBuffer(TX_LEN))
-    {
-      return false;
-    }
-
-    deferred_in_resp_valid_ = false;
-    deferred_in_resp_len_ = 0u;
-    return true;
-  }
-
-  bool IsResponseQueueEmpty() const { return resp_q_count_ == 0u; }
-
-  bool IsResponseQueueFull() const { return resp_q_count_ >= RESP_QUEUE_DEPTH; }
-
-  void ResetQueuedCommandState()
-  {
-    queued_request_length_ = 0u;
-    queued_command_count_ = 0u;
   }
 
   // ============================================================================
@@ -945,44 +1299,48 @@ class DapLinkV2Class : public DeviceClass
   }
 
   /**
-   * @brief Execute queued commands into one combined EXECUTE_COMMANDS response
-   * @param in_isr current context flag
-   * @param resp response buffer
-   * @param resp_cap response capacity
-   * @param out_len output response length
-   * @return true execute success
-   * @return false execute failure
+   * @brief 依次执行请求里的 count 条命令，响应拼成 [0x7F, count, 各条响应...]
+   *        Run the count commands of the request one after another; the response is
+   *        [0x7F, count, each command's response...]
+   *
+   * 命令就地读自请求（请求在执行期间一直有效），延时类命令在本线程里等到完成。
+   * The commands are read in place from the request (it stays valid while they run);
+   * delay-type commands wait in this thread until they are done.
+   *
+   * @param cmds     第一条命令 / First command
+   * @param cmds_len 命令部分的长度 / Length of the command part
+   * @param count    命令数 / Number of commands
+   * @param resp     响应缓冲 / Response buffer
+   * @param resp_cap 响应缓冲容量 / Response buffer capacity
+   * @param out_len  响应长度 / Response length
+   * @return false 表示格式或响应空间不对 / false when the format or the response space
+   *         does not fit
    */
-  bool TryExecuteQueuedCommandStream(bool in_isr, uint8_t* resp, uint16_t resp_cap,
+  bool TryExecuteQueuedCommandStream(const uint8_t* cmds, uint16_t cmds_len,
+                                     uint8_t count, uint8_t* resp, uint16_t resp_cap,
                                      uint16_t& out_len)
   {
     out_len = 0u;
-    if (!resp || resp_cap < 1u)
+    if (!resp || resp_cap < 2u)
     {
       return false;
     }
-
     resp[0] = ToU8(LibXR::USB::DapLinkV2Def::CommandId::EXECUTE_COMMANDS);
-    out_len = 1u;
-
-    if (queued_command_count_ == 0u)
-    {
-      return true;
-    }
+    resp[1] = count;
+    out_len = 2u;
 
     uint16_t req_off = 0u;
-    uint16_t resp_off = 1u;
-    for (uint32_t i = 0u; i < queued_command_count_; ++i)
+    uint16_t resp_off = 2u;
+    for (uint32_t i = 0u; i < count; ++i)
     {
-      if (req_off >= queued_request_length_)
+      if (req_off >= cmds_len)
       {
         return false;
       }
 
       uint16_t cmd_len = 0u;
-      if (!ParseQueuedCommandLength(
-              &queued_request_buffer_[req_off],
-              static_cast<uint16_t>(queued_request_length_ - req_off), cmd_len) ||
+      if (!ParseQueuedCommandLength(&cmds[req_off],
+                                    static_cast<uint16_t>(cmds_len - req_off), cmd_len) ||
           cmd_len == 0u)
       {
         return false;
@@ -994,10 +1352,18 @@ class DapLinkV2Class : public DeviceClass
       }
 
       uint16_t cmd_out = 0u;
-      const ErrorCode ans = ProcessOneCommand(
-          in_isr, &queued_request_buffer_[req_off], cmd_len, &resp[resp_off],
-          static_cast<uint16_t>(resp_cap - resp_off), cmd_out);
+      const ErrorCode ans =
+          ProcessOneCommand(&cmds[req_off], cmd_len, &resp[resp_off],
+                            static_cast<uint16_t>(resp_cap - resp_off), cmd_out);
       UNUSED(ans);
+
+      // 每条命令至少要有 [cmd, status] 两个字节；0 字节会破坏响应流对齐。
+      // Every command answers with at least [cmd, status]; zero bytes would
+      // desynchronise the response stream.
+      if (cmd_out == 0u)
+      {
+        return false;
+      }
 
       if (static_cast<uint32_t>(resp_off) + static_cast<uint32_t>(cmd_out) >
           static_cast<uint32_t>(resp_cap))
@@ -1009,7 +1375,7 @@ class DapLinkV2Class : public DeviceClass
       resp_off = static_cast<uint16_t>(resp_off + cmd_out);
     }
 
-    if (req_off != queued_request_length_)
+    if (req_off != cmds_len)
     {
       return false;
     }
@@ -1018,120 +1384,88 @@ class DapLinkV2Class : public DeviceClass
     return true;
   }
 
-  bool TryBuildAndEnqueueResponse(bool in_isr, const uint8_t* req, uint16_t req_len)
+  /// 一个端点包的大小；端点包长还没确定时用 DAP 包长。
+  /// One endpoint packet; the DAP packet size while the endpoint packet size is not set.
+  uint16_t OutChunkSize() const
   {
-    if (!req || IsResponseQueueFull())
+    const uint16_t mps = ep_data_out_ ? ep_data_out_->MaxPacketSize() : 0u;
+    const uint16_t packet = GetDapPacketSize();
+    return (mps == 0u || mps > packet) ? packet : mps;
+  }
+
+  static bool IsAllZero(const uint8_t* data, size_t size)
+  {
+    for (size_t i = 0u; i < size; ++i)
     {
-      return false;
+      if (data[i] != 0u) return false;
     }
-
-    auto& slot = resp_q_[resp_q_tail_];
-    uint16_t out_len = 0u;
-    auto ans =
-        ProcessOneCommand(in_isr, req, req_len, slot.payload, RESP_SLOT_SIZE, out_len);
-    UNUSED(ans);
-    slot.len = ClipResponseLength(out_len, RESP_SLOT_SIZE);
-
-    resp_q_tail_ = NextRespQueueIndex(resp_q_tail_);
-    ++resp_q_count_;
     return true;
   }
 
-  uint8_t OutstandingResponseCount() const
+  enum class CommandScan : uint8_t
   {
-    const uint8_t IN_FLIGHT =
-        (ep_data_in_ && ep_data_in_->GetState() == Endpoint::State::BUSY) ? 1u : 0u;
-    const uint8_t DEFERRED = deferred_in_resp_valid_ ? 1u : 0u;
-    return static_cast<uint8_t>(resp_q_count_ + IN_FLIGHT + DEFERRED);
+    COMPLETE,   ///< 长度已知且已收齐 / Length known and fully received
+    NEED_MORE,  ///< 命令已识别但还没收齐 / Recognised but not fully received
+    UNKNOWN,    ///< 无法由内容确定长度 / Length cannot be derived from the content
+  };
+
+  /// 已识别的、可由内容确定长度的命令 / Commands whose length follows from the content
+  static bool IsScannableCommand(uint8_t id)
+  {
+    switch (id)
+    {
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::INFO):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::HOST_STATUS):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::CONNECT):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::DISCONNECT):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::TRANSFER_CONFIGURE):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::TRANSFER_ABORT):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::WRITE_ABORT):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::DELAY):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::RESET_TARGET):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::SWJ_PINS):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::SWJ_CLOCK):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::SWD_CONFIGURE):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::SWJ_SEQUENCE):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::SWD_SEQUENCE):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::TRANSFER):
+      case ToU8(LibXR::USB::DapLinkV2Def::CommandId::TRANSFER_BLOCK):
+        return true;
+      default:
+        return false;
+    }
   }
 
-  bool EnqueueResponse(const uint8_t* data, uint16_t len)
+  /// 按命令自己的内容判断已收的 avail 字节是否构成一条完整命令。
+  /// Decide from the command's own content whether the received avail bytes make one
+  /// whole command.
+  CommandScan ScanCommand(const uint8_t* req, uint16_t avail, uint16_t& length) const
   {
-    if (!data || IsResponseQueueFull())
+    length = 0u;
+    if (avail < 1u) return CommandScan::NEED_MORE;
+    const uint8_t id = req[0];
+    if (id == ToU8(LibXR::USB::DapLinkV2Def::CommandId::QUEUE_COMMANDS) ||
+        id == ToU8(LibXR::USB::DapLinkV2Def::CommandId::EXECUTE_COMMANDS))
     {
-      return false;
+      // [ID, 命令数, 命令...]：逐条累加子命令长度。
+      // [ID, count, commands...]: add up the lengths of the sub-commands.
+      if (avail < 2u) return CommandScan::NEED_MORE;
+      uint16_t off = 2u;
+      for (uint8_t i = 0u; i < req[1]; ++i)
+      {
+        if (off >= avail) return CommandScan::NEED_MORE;
+        if (!IsScannableCommand(req[off])) return CommandScan::UNKNOWN;
+        uint16_t sub = 0u;
+        if (!ParseQueuedCommandLength(req + off, static_cast<uint16_t>(avail - off), sub))
+          return CommandScan::NEED_MORE;
+        off = static_cast<uint16_t>(off + sub);
+      }
+      length = off;
+      return CommandScan::COMPLETE;
     }
-
-    auto& slot = resp_q_[resp_q_tail_];
-    const uint16_t CLIPPED = ClipResponseLength(len, RESP_SLOT_SIZE);
-    slot.len = CLIPPED;
-    if (CLIPPED > 0u)
-    {
-      Memory::FastCopy(slot.payload, data, CLIPPED);
-    }
-
-    resp_q_tail_ = NextRespQueueIndex(resp_q_tail_);
-    ++resp_q_count_;
-    return true;
-  }
-
-  bool SubmitNextQueuedResponseIfIdle()
-  {
-    if (!ep_data_in_ || ep_data_in_->GetState() != Endpoint::State::IDLE ||
-        IsResponseQueueEmpty())
-    {
-      return false;
-    }
-    auto& slot = resp_q_[resp_q_head_];
-    if (!StartInTransferFromPayload(slot.payload, slot.len))
-    {
-      return false;
-    }
-    resp_q_head_ = NextRespQueueIndex(resp_q_head_);
-    --resp_q_count_;
-    return true;
-  }
-
-  void ArmOutTransferIfIdle()
-  {
-    if (!inited_ || ep_data_out_ == nullptr || ep_data_in_ == nullptr)
-    {
-      return;
-    }
-
-    if (ep_data_out_->GetState() != Endpoint::State::IDLE)
-    {
-      return;
-    }
-
-    // Backpressure on total outstanding responses (in-flight + queued).
-    if (OutstandingResponseCount() >= MAX_OUTSTANDING_RESPONSES)
-    {
-      return;
-    }
-
-    uint16_t out_rx_len = GetDapPacketSize();
-    if (out_rx_len == 0u)
-    {
-      out_rx_len = DEFAULT_DAP_PACKET_SIZE;
-    }
-    if (out_rx_len > MAX_DAP_PACKET_SIZE)
-    {
-      out_rx_len = MAX_DAP_PACKET_SIZE;
-    }
-
-    const uint16_t OUT_MAX_XFER = static_cast<uint16_t>(ep_data_out_->MaxTransferSize());
-    if (OUT_MAX_XFER == 0u)
-    {
-      return;
-    }
-
-    if (out_rx_len <= OUT_MAX_XFER)
-    {
-      (void)ep_data_out_->Transfer(out_rx_len);
-      return;
-    }
-
-    if (out_rx_len > static_cast<uint16_t>(sizeof(out_req_multi_storage_)))
-    {
-      out_rx_len = static_cast<uint16_t>(sizeof(out_req_multi_storage_));
-    }
-
-    // Endpoint MPS is capped by hardware (HS bulk = 512), so larger DAP requests
-    // must be received with multi-bulk reassembly.
-    out_req_multi_buf_.addr_ = out_req_multi_storage_;
-    out_req_multi_buf_.size_ = out_rx_len;
-    (void)ep_data_out_->TransferMultiBulk(out_req_multi_buf_);
+    if (!IsScannableCommand(id)) return CommandScan::UNKNOWN;
+    return ParseQueuedCommandLength(req, avail, length) ? CommandScan::COMPLETE
+                                                        : CommandScan::NEED_MORE;
   }
 
  private:
@@ -1142,7 +1476,6 @@ class DapLinkV2Class : public DeviceClass
   /**
    * @brief Process one command
    *
-   * @param in_isr   ISR context flag
    * @param req      Request buffer
    * @param req_len  Request length
    * @param resp     Response buffer
@@ -1150,8 +1483,8 @@ class DapLinkV2Class : public DeviceClass
    * @param out_len  Output response length
    * @return Error code
    */
-  ErrorCode ProcessOneCommand(bool in_isr, const uint8_t* req, uint16_t req_len,
-                              uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode ProcessOneCommand(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                              uint16_t resp_cap, uint16_t& out_len)
   {
     out_len = 0;
 
@@ -1169,65 +1502,69 @@ class DapLinkV2Class : public DeviceClass
     switch (CMD)
     {
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::INFO):
-        return HandleInfo(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleInfo(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::HOST_STATUS):
-        return HandleHostStatus(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleHostStatus(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::CONNECT):
-        return HandleConnect(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleConnect(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::DISCONNECT):
-        return HandleDisconnect(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleDisconnect(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::TRANSFER_CONFIGURE):
-        return HandleTransferConfigure(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleTransferConfigure(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::TRANSFER):
-        return HandleTransfer(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleTransfer(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::TRANSFER_BLOCK):
-        return HandleTransferBlock(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleTransferBlock(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::TRANSFER_ABORT):
-        return HandleTransferAbort(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleTransferAbort(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::WRITE_ABORT):
-        return HandleWriteABORT(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleWriteABORT(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::DELAY):
-        return HandleDelay(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleDelay(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::RESET_TARGET):
-        return HandleResetTarget(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleResetTarget(req, req_len, resp, resp_cap, out_len);
 
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::SWJ_PINS):
-        return HandleSWJPins(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleSWJPins(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::SWJ_CLOCK):
-        return HandleSWJClock(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleSWJClock(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::SWJ_SEQUENCE):
-        return HandleSWJSequence(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleSWJSequence(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::SWD_CONFIGURE):
-        return HandleSWDConfigure(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleSWDConfigure(req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::SWD_SEQUENCE):
-        return HandleSWDSequence(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleSWDSequence(req, req_len, resp, resp_cap, out_len);
 
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::JTAG_SEQUENCE):
         if constexpr (JTAG_ENABLED)
         {
-          return HandleJTAGSequence(in_isr, req, req_len, resp, resp_cap, out_len);
+          return HandleJTAGSequence(req, req_len, resp, resp_cap, out_len);
         }
         (void)BuildUnknownCmdResponse(resp, resp_cap, out_len);
         return ErrorCode::NOT_SUPPORT;
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::JTAG_CONFIGURE):
         if constexpr (JTAG_ENABLED)
         {
-          return HandleJTAGConfigure(in_isr, req, req_len, resp, resp_cap, out_len);
+          return HandleJTAGConfigure(req, req_len, resp, resp_cap, out_len);
         }
         (void)BuildUnknownCmdResponse(resp, resp_cap, out_len);
         return ErrorCode::NOT_SUPPORT;
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::JTAG_IDCODE):
         if constexpr (JTAG_ENABLED)
         {
-          return HandleJTAGIdCode(in_isr, req, req_len, resp, resp_cap, out_len);
+          return HandleJTAGIdCode(req, req_len, resp, resp_cap, out_len);
         }
         (void)BuildUnknownCmdResponse(resp, resp_cap, out_len);
         return ErrorCode::NOT_SUPPORT;
 
+      // CMSIS-DAP 参考实现把 DAP_QueueCommands 包改写成 DAP_ExecuteCommands 执行，
+      // 响应也是 DAP_ExecuteCommands 的格式；每个包一条响应，按包的顺序发出。
+      // The CMSIS-DAP reference implementation rewrites a DAP_QueueCommands packet into
+      // DAP_ExecuteCommands and runs it, so the response has the DAP_ExecuteCommands
+      // format; every packet gets one response, in packet order.
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::QUEUE_COMMANDS):
-        return HandleQueueCommands(in_isr, req, req_len, resp, resp_cap, out_len);
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::EXECUTE_COMMANDS):
-        return HandleExecuteCommands(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleExecuteCommands(req, req_len, resp, resp_cap, out_len);
 
       default:
         (void)BuildUnknownCmdResponse(resp, resp_cap, out_len);
@@ -1258,8 +1595,8 @@ class DapLinkV2Class : public DeviceClass
   // DAP_Info
   // ============================================================================
 
-  ErrorCode HandleInfo(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                       uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleInfo(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                       uint16_t resp_cap, uint16_t& out_len)
   {
     if (req_len < 2u)
     {
@@ -1418,9 +1755,8 @@ class DapLinkV2Class : public DeviceClass
   // Simple control handlers
   // ============================================================================
 
-  ErrorCode HandleHostStatus(bool /*in_isr*/, const uint8_t* /*req*/,
-                             uint16_t /*req_len*/, uint8_t* resp, uint16_t resp_cap,
-                             uint16_t& out_len)
+  ErrorCode HandleHostStatus(const uint8_t* /*req*/, uint16_t /*req_len*/, uint8_t* resp,
+                             uint16_t resp_cap, uint16_t& out_len)
   {
     if (resp_cap < 2u)
     {
@@ -1433,8 +1769,8 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleConnect(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                          uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleConnect(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                          uint16_t resp_cap, uint16_t& out_len)
   {
     if (resp_cap < 2u)
     {
@@ -1456,8 +1792,7 @@ class DapLinkV2Class : public DeviceClass
       (void)swd_.SetClockHz(swj_clock_hz_);
 
       dap_state_.debug_port = LibXR::USB::DapLinkV2Def::DebugPort::SWD;
-      dap_state_.transfer_abort = false;
-      ResetQueuedCommandState();
+      transfer_abort_.store(false, std::memory_order_release);
 
       resp[1] = ToU8(LibXR::USB::DapLinkV2Def::Port::SWD);
     }
@@ -1484,8 +1819,7 @@ class DapLinkV2Class : public DeviceClass
           (void)jtag_->ResetTap();
 
           dap_state_.debug_port = LibXR::USB::DapLinkV2Def::DebugPort::JTAG;
-          dap_state_.transfer_abort = false;
-          ResetQueuedCommandState();
+          transfer_abort_.store(false, std::memory_order_release);
           ResetJtagChainState();
           resp[1] = ToU8(LibXR::USB::DapLinkV2Def::Port::JTAG);
         }
@@ -1500,9 +1834,8 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleDisconnect(bool /*in_isr*/, const uint8_t* /*req*/,
-                             uint16_t /*req_len*/, uint8_t* resp, uint16_t resp_cap,
-                             uint16_t& out_len)
+  ErrorCode HandleDisconnect(const uint8_t* /*req*/, uint16_t /*req_len*/, uint8_t* resp,
+                             uint16_t resp_cap, uint16_t& out_len)
   {
     if (resp_cap < 2u)
     {
@@ -1519,8 +1852,7 @@ class DapLinkV2Class : public DeviceClass
       }
     }
     dap_state_.debug_port = LibXR::USB::DapLinkV2Def::DebugPort::DISABLED;
-    dap_state_.transfer_abort = false;
-    ResetQueuedCommandState();
+    transfer_abort_.store(false, std::memory_order_release);
 
     resp[0] = ToU8(LibXR::USB::DapLinkV2Def::CommandId::DISCONNECT);
     resp[1] = ToU8(LibXR::USB::DapLinkV2Def::Status::OK);
@@ -1528,8 +1860,8 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleTransferConfigure(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                                    uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleTransferConfigure(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                                    uint16_t resp_cap, uint16_t& out_len)
   {
     if (resp_cap < 2u)
     {
@@ -1569,26 +1901,21 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleTransferAbort(bool /*in_isr*/, const uint8_t* /*req*/,
-                                uint16_t /*req_len*/, uint8_t* resp, uint16_t resp_cap,
+  ErrorCode HandleTransferAbort(const uint8_t* /*req*/, uint16_t /*req_len*/,
+                                uint8_t* /*resp*/, uint16_t /*resp_cap*/,
                                 uint16_t& out_len)
   {
-    if (resp_cap < 2u)
-    {
-      out_len = 0;
-      return ErrorCode::NOT_FOUND;
-    }
-
+    // DAP_TransferAbort 没有响应。USB 路径在接收时就置位标志（见 OnDataOutComplete），
+    // 这里服务批命令和 ExecuteExternal 里夹带的中止。
+    // DAP_TransferAbort has no response. The USB path sets the flag on reception (see
+    // OnDataOutComplete); this serves an abort carried inside a batch or ExecuteExternal.
     SetTransferAbortFlag(true);
-
-    resp[0] = ToU8(LibXR::USB::DapLinkV2Def::CommandId::TRANSFER_ABORT);
-    resp[1] = ToU8(LibXR::USB::DapLinkV2Def::Status::OK);
-    out_len = 2u;
+    out_len = 0u;
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleWriteABORT(bool in_isr, const uint8_t* req, uint16_t req_len,
-                             uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleWriteABORT(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                             uint16_t resp_cap, uint16_t& out_len)
   {
     if (resp_cap < 2u)
     {
@@ -1600,7 +1927,7 @@ class DapLinkV2Class : public DeviceClass
     {
       if (dap_state_.debug_port == LibXR::USB::DapLinkV2Def::DebugPort::JTAG)
       {
-        return HandleJtagWriteAbort(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleJtagWriteAbort(req, req_len, resp, resp_cap, out_len);
       }
     }
 
@@ -1627,8 +1954,8 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleDelay(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                        uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleDelay(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                        uint16_t resp_cap, uint16_t& out_len)
   {
     if (resp_cap < 2u)
     {
@@ -1648,6 +1975,9 @@ class DapLinkV2Class : public DeviceClass
     uint16_t us = 0u;
     Memory::FastCopy(&us, &req[1], sizeof(us));
 
+    // 在执行命令的线程里按微秒等待（Step 线程或 ExecuteExternal 的调用者）。
+    // Wait the exact microseconds in the thread that executes the command (the Step
+    // thread or the caller of ExecuteExternal).
     LibXR::Timebase::DelayMicroseconds(us);
 
     resp[1] = ToU8(LibXR::USB::DapLinkV2Def::Status::OK);
@@ -1655,8 +1985,8 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleResetTarget(bool in_isr, const uint8_t* /*req*/, uint16_t /*req_len*/,
-                              uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleResetTarget(const uint8_t* /*req*/, uint16_t /*req_len*/, uint8_t* resp,
+                              uint16_t resp_cap, uint16_t& out_len)
   {
     if (!resp || resp_cap < 3u)
     {
@@ -1667,13 +1997,15 @@ class DapLinkV2Class : public DeviceClass
     resp[0] = ToU8(LibXR::USB::DapLinkV2Def::CommandId::RESET_TARGET);
 
     uint8_t execute = 0u;
-
     if (nreset_gpio_ != nullptr)
     {
+      // nRESET 拉低 1 ms、释放后再等 1 ms，都在执行命令的线程里等。
+      // Hold nRESET low for 1 ms and wait 1 ms after releasing it, both in the thread
+      // that executes the command.
       DriveReset(false);
-      DelayUsIfAllowed(in_isr, 1000u);
+      LibXR::Timebase::DelayMicroseconds(1000u);
       DriveReset(true);
-      DelayUsIfAllowed(in_isr, 1000u);
+      LibXR::Timebase::DelayMicroseconds(1000u);
       execute = 1u;
     }
 
@@ -1688,8 +2020,8 @@ class DapLinkV2Class : public DeviceClass
   // ============================================================================
   // SWJ / SWD handlers
   // ============================================================================
-  ErrorCode HandleSWJPins(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                          uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleSWJPins(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                          uint16_t resp_cap, uint16_t& out_len)
   {
     if (!resp || resp_cap < 2u)
     {
@@ -1727,50 +2059,22 @@ class DapLinkV2Class : public DeviceClass
       DriveReset(LEVEL_HIGH);
     }
 
-    // Read helper: start from shadow; override nRESET with physical level if wired.
-    auto read_pins = [&]() -> uint8_t
-    {
-      uint8_t pin_in = swj_shadow_;
-
-      if (nreset_gpio_ != nullptr)
-      {
-        if (nreset_gpio_->Read())
-        {
-          pin_in |= LibXR::USB::DapLinkV2Def::DAP_SWJ_NRESET;
-        }
-        else
-        {
-          pin_in = static_cast<uint8_t>(
-              pin_in & static_cast<uint8_t>(~LibXR::USB::DapLinkV2Def::DAP_SWJ_NRESET));
-        }
-      }
-
-      return pin_in;
-    };
-
-    // 2) PinWait: wait until (PinInput & PinSelect) matches (PinOut & PinSelect), or
-    // timeout. Since SWCLK/SWDIO are shadow-only now, their selected bits will already
-    // match immediately.
-    uint8_t pin_in = 0u;
-
-    if (wait_us == 0u || PIN_SEL == 0u)
-    {
-      pin_in = read_pins();
-    }
-    else
+    // 2) PinWait：在执行命令的线程里等 (PinInput & PinSelect) 匹配
+    //    (PinOut & PinSelect) 或超时；shadow-only 的引脚总是立即匹配。
+    //    PinWait: in the thread that executes the command, wait until
+    //    (PinInput & PinSelect) matches (PinOut & PinSelect) or the timeout; shadow-only
+    //    pins always match at once.
+    const uint8_t EXPECT = static_cast<uint8_t>(PIN_OUT & PIN_SEL);
+    uint8_t pin_in = ReadSwjPins();
+    if (wait_us != 0u && PIN_SEL != 0u)
     {
       const uint64_t START = LibXR::Timebase::GetMicroseconds();
-      const uint8_t EXPECT = static_cast<uint8_t>(PIN_OUT & PIN_SEL);
-
-      do
+      while ((pin_in & PIN_SEL) != EXPECT &&
+             (static_cast<uint64_t>(LibXR::Timebase::GetMicroseconds()) - START) <
+                 wait_us)
       {
-        pin_in = read_pins();
-        if ((pin_in & PIN_SEL) == EXPECT)
-        {
-          break;
-        }
-      } while ((static_cast<uint64_t>(LibXR::Timebase::GetMicroseconds()) - START) <
-               wait_us);
+        pin_in = ReadSwjPins();
+      }
     }
 
     resp[1] = pin_in;
@@ -1778,8 +2082,31 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleSWJClock(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                           uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  /// 读回 SWJ 引脚电平：从 shadow 出发，nRESET 若接了 GPIO 则用实际电平覆盖。
+  /// Sample the SWJ pins: start from the shadow and override nRESET with the wired
+  /// GPIO level when present.
+  uint8_t ReadSwjPins() const
+  {
+    uint8_t pin_in = swj_shadow_;
+
+    if (nreset_gpio_ != nullptr)
+    {
+      if (nreset_gpio_->Read())
+      {
+        pin_in |= LibXR::USB::DapLinkV2Def::DAP_SWJ_NRESET;
+      }
+      else
+      {
+        pin_in = static_cast<uint8_t>(
+            pin_in & static_cast<uint8_t>(~LibXR::USB::DapLinkV2Def::DAP_SWJ_NRESET));
+      }
+    }
+
+    return pin_in;
+  }
+
+  ErrorCode HandleSWJClock(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                           uint16_t resp_cap, uint16_t& out_len)
   {
     if (resp_cap < 2u)
     {
@@ -1814,8 +2141,8 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleSWJSequence(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                              uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleSWJSequence(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                              uint16_t resp_cap, uint16_t& out_len)
   {
     if (!resp || resp_cap < 2u)
     {
@@ -1881,8 +2208,8 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleSWDConfigure(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                               uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleSWDConfigure(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                               uint16_t resp_cap, uint16_t& out_len)
   {
     if (resp_cap < 2u)
     {
@@ -1908,8 +2235,8 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleSWDSequence(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                              uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleSWDSequence(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                              uint16_t resp_cap, uint16_t& out_len)
   {
     if (!req || !resp || resp_cap < 2u)
     {
@@ -2008,8 +2335,8 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleJTAGSequence(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                               uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleJTAGSequence(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                               uint16_t resp_cap, uint16_t& out_len)
   {
     if (!req || !resp || resp_cap < 2u)
     {
@@ -2096,8 +2423,8 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleJTAGConfigure(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                                uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleJTAGConfigure(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                                uint16_t resp_cap, uint16_t& out_len)
   {
     if (!req || !resp || resp_cap < 2u)
     {
@@ -2150,8 +2477,8 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleJTAGIdCode(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                             uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleJTAGIdCode(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                             uint16_t resp_cap, uint16_t& out_len)
   {
     if (!req || !resp || resp_cap < 6u)
     {
@@ -2213,35 +2540,23 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  /**
-   * @brief Queue one packed command batch for later EXECUTE_COMMANDS
-   */
-  ErrorCode HandleQueueCommands(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                                uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  /// 校验 [ID, 命令数, 命令...]：每条命令都能按自己的内容确定长度，且恰好占满请求。
+  /// Validate [ID, count, commands...]: every command's length follows from its content
+  /// and together they fill the request exactly.
+  bool ValidateInlineCommands(const uint8_t* req, uint16_t req_len) const
   {
     if (!req || req_len < 2u)
     {
-      return BuildCmdStatusResponse(
-          ToU8(LibXR::USB::DapLinkV2Def::CommandId::QUEUE_COMMANDS), DAP_ERROR, resp,
-          resp_cap, out_len);
+      return false;
     }
 
     const uint8_t NUM = req[1];
-    if (NUM == 0u)
-    {
-      return BuildCmdStatusResponse(
-          ToU8(LibXR::USB::DapLinkV2Def::CommandId::QUEUE_COMMANDS), DAP_OK, resp,
-          resp_cap, out_len);
-    }
-
     uint16_t req_off = 2u;
     for (uint32_t i = 0u; i < NUM; ++i)
     {
       if (req_off >= req_len)
       {
-        return BuildCmdStatusResponse(
-            ToU8(LibXR::USB::DapLinkV2Def::CommandId::QUEUE_COMMANDS), DAP_ERROR, resp,
-            resp_cap, out_len);
+        return false;
       }
 
       uint16_t cmd_len = 0u;
@@ -2249,59 +2564,32 @@ class DapLinkV2Class : public DeviceClass
                                     static_cast<uint16_t>(req_len - req_off), cmd_len) ||
           cmd_len == 0u)
       {
-        return BuildCmdStatusResponse(
-            ToU8(LibXR::USB::DapLinkV2Def::CommandId::QUEUE_COMMANDS), DAP_ERROR, resp,
-            resp_cap, out_len);
+        return false;
       }
       req_off = static_cast<uint16_t>(req_off + cmd_len);
     }
 
-    if (req_off != req_len)
-    {
-      return BuildCmdStatusResponse(
-          ToU8(LibXR::USB::DapLinkV2Def::CommandId::QUEUE_COMMANDS), DAP_ERROR, resp,
-          resp_cap, out_len);
-    }
-
-    if (static_cast<uint32_t>(queued_request_length_) +
-                static_cast<uint32_t>(req_len - 2u) >
-            static_cast<uint32_t>(QUEUED_REQ_BUFFER_SIZE) ||
-        static_cast<uint32_t>(queued_command_count_) + static_cast<uint32_t>(NUM) >
-            static_cast<uint32_t>(QUEUED_CMD_COUNT_MAX))
-    {
-      return BuildCmdStatusResponse(
-          ToU8(LibXR::USB::DapLinkV2Def::CommandId::QUEUE_COMMANDS), DAP_ERROR, resp,
-          resp_cap, out_len);
-    }
-
-    Memory::FastCopy(&queued_request_buffer_[queued_request_length_], &req[2],
-                     req_len - 2u);
-    queued_request_length_ =
-        static_cast<uint16_t>(queued_request_length_ + (req_len - 2u));
-    queued_command_count_ = static_cast<uint16_t>(queued_command_count_ + NUM);
-
-    return BuildCmdStatusResponse(
-        ToU8(LibXR::USB::DapLinkV2Def::CommandId::QUEUE_COMMANDS), DAP_OK, resp, resp_cap,
-        out_len);
+    return req_off == req_len;
   }
 
   /**
-   * @brief Execute all previously queued commands
+   * @brief DAP_ExecuteCommands（也用于 DAP_QueueCommands）/ DAP_ExecuteCommands (also
+   *        used for DAP_QueueCommands)
+   *
+   * 请求 [ID, 命令数, 命令...]，响应 [0x7F, 命令数, 各条命令的响应...]。
+   * Request [ID, count, commands...], response [0x7F, count, each command's response...].
    */
-  ErrorCode HandleExecuteCommands(bool in_isr, const uint8_t* /*req*/,
-                                  uint16_t /*req_len*/, uint8_t* resp, uint16_t resp_cap,
-                                  uint16_t& out_len)
+  ErrorCode HandleExecuteCommands(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                                  uint16_t resp_cap, uint16_t& out_len)
   {
-    const bool ok = TryExecuteQueuedCommandStream(in_isr, resp, resp_cap, out_len);
-    ResetQueuedCommandState();
-
-    if (!ok)
+    if (!ValidateInlineCommands(req, req_len) ||
+        !TryExecuteQueuedCommandStream(&req[2], static_cast<uint16_t>(req_len - 2u),
+                                       req[1], resp, resp_cap, out_len))
     {
       return BuildCmdStatusResponse(
           ToU8(LibXR::USB::DapLinkV2Def::CommandId::EXECUTE_COMMANDS), DAP_ERROR, resp,
           resp_cap, out_len);
     }
-
     return ErrorCode::OK;
   }
 
@@ -2455,7 +2743,10 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  void SetTransferAbortFlag(bool on) { dap_state_.transfer_abort = on; }
+  void SetTransferAbortFlag(bool on)
+  {
+    transfer_abort_.store(on, std::memory_order_release);
+  }
 
  private:
   // ============================================================================
@@ -2464,8 +2755,8 @@ class DapLinkV2Class : public DeviceClass
 
   // The following long functions are kept as-is; API docs live at the header boundary.
 
-  ErrorCode HandleTransfer(bool in_isr, const uint8_t* req, uint16_t req_len,
-                           uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleTransfer(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                           uint16_t resp_cap, uint16_t& out_len)
   {
     out_len = 0u;
     if (!req || !resp || resp_cap < 3u)
@@ -2477,7 +2768,7 @@ class DapLinkV2Class : public DeviceClass
     {
       if (dap_state_.debug_port == LibXR::USB::DapLinkV2Def::DebugPort::JTAG)
       {
-        return HandleJtagTransfer(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleJtagTransfer(req, req_len, resp, resp_cap, out_len);
       }
     }
 
@@ -2494,13 +2785,12 @@ class DapLinkV2Class : public DeviceClass
       return ErrorCode::ARG_ERR;
     }
 
-    if (dap_state_.transfer_abort)
-    {
-      dap_state_.transfer_abort = false;
-      resp[2] = LibXR::USB::DapLinkV2Def::DAP_TRANSFER_ERROR;
-      out_len = 3u;
-      return ErrorCode::OK;
-    }
+    // 传输开始时清掉旧的中止标志（一个在没有传输时到来的中止不应中止下一条传输）；
+    // 之后到来的中止在传输执行中置位。
+    // Clear a stale abort flag when a transfer starts (an abort that arrives while no
+    // transfer runs must not abort the next one); an abort that arrives later sets it
+    // during the execution.
+    transfer_abort_.store(false, std::memory_order_release);
 
     const uint8_t COUNT = req[2];
     uint16_t req_off = 3u;
@@ -2938,9 +3228,9 @@ class DapLinkV2Class : public DeviceClass
         }
       }
 
-      if (dap_state_.transfer_abort)
+      if (transfer_abort_.load(std::memory_order_acquire))
       {
-        dap_state_.transfer_abort = false;
+        transfer_abort_.store(false, std::memory_order_release);
         break;
       }
     }
@@ -2978,14 +3268,14 @@ class DapLinkV2Class : public DeviceClass
     out_len = resp_off;
     return ErrorCode::OK;
   }
-  ErrorCode HandleTransferBlock(bool in_isr, const uint8_t* req, uint16_t req_len,
-                                uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleTransferBlock(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                                uint16_t resp_cap, uint16_t& out_len)
   {
     if constexpr (JTAG_ENABLED)
     {
       if (dap_state_.debug_port == LibXR::USB::DapLinkV2Def::DebugPort::JTAG)
       {
-        return HandleJtagTransferBlock(in_isr, req, req_len, resp, resp_cap, out_len);
+        return HandleJtagTransferBlock(req, req_len, resp, resp_cap, out_len);
       }
     }
 
@@ -3009,12 +3299,12 @@ class DapLinkV2Class : public DeviceClass
       return ErrorCode::ARG_ERR;
     }
 
-    if (dap_state_.transfer_abort)
-    {
-      dap_state_.transfer_abort = false;
-      resp[3] = LibXR::USB::DapLinkV2Def::DAP_TRANSFER_ERROR;
-      return ErrorCode::OK;
-    }
+    // 传输开始时清掉旧的中止标志（一个在没有传输时到来的中止不应中止下一条传输）；
+    // 之后到来的中止在传输执行中置位。
+    // Clear a stale abort flag when a transfer starts (an abort that arrives while no
+    // transfer runs must not abort the next one); an abort that arrives later sets it
+    // during the execution.
+    transfer_abort_.store(false, std::memory_order_release);
 
     uint16_t count = 0u;
     count = LoadU16Le(&req[2]);
@@ -3281,8 +3571,8 @@ class DapLinkV2Class : public DeviceClass
     }
   }
 
-  ErrorCode HandleJtagTransfer(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                               uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleJtagTransfer(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                               uint16_t resp_cap, uint16_t& out_len)
   {
     out_len = 0u;
     if (!req || !resp || resp_cap < 3u)
@@ -3302,13 +3592,12 @@ class DapLinkV2Class : public DeviceClass
       return ErrorCode::OK;
     }
 
-    if (dap_state_.transfer_abort)
-    {
-      dap_state_.transfer_abort = false;
-      resp[2] = LibXR::USB::DapLinkV2Def::DAP_TRANSFER_ERROR;
-      out_len = 3u;
-      return ErrorCode::OK;
-    }
+    // 传输开始时清掉旧的中止标志（一个在没有传输时到来的中止不应中止下一条传输）；
+    // 之后到来的中止在传输执行中置位。
+    // Clear a stale abort flag when a transfer starts (an abort that arrives while no
+    // transfer runs must not abort the next one); an abort that arrives later sets it
+    // during the execution.
+    transfer_abort_.store(false, std::memory_order_release);
 
     const uint8_t TAP_INDEX = req[1];
     if (TAP_INDEX >= jtag_chain_.count)
@@ -3365,7 +3654,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.DpReadTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            dap_state_.transfer_abort)
+            transfer_abort_.load(std::memory_order_acquire))
         {
           return ec;
         }
@@ -3382,7 +3671,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.DpWriteTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            dap_state_.transfer_abort)
+            transfer_abort_.load(std::memory_order_acquire))
         {
           return ec;
         }
@@ -3399,7 +3688,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.ApReadTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            dap_state_.transfer_abort)
+            transfer_abort_.load(std::memory_order_acquire))
         {
           return ec;
         }
@@ -3416,7 +3705,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.ApWriteTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            dap_state_.transfer_abort)
+            transfer_abort_.load(std::memory_order_acquire))
         {
           return ec;
         }
@@ -3716,9 +4005,9 @@ class DapLinkV2Class : public DeviceClass
         response_value = LibXR::USB::DapLinkV2Def::DAP_TRANSFER_OK;
       }
 
-      if (dap_state_.transfer_abort)
+      if (transfer_abort_.load(std::memory_order_acquire))
       {
-        dap_state_.transfer_abort = false;
+        transfer_abort_.store(false, std::memory_order_release);
         break;
       }
     }
@@ -3738,8 +4027,8 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleJtagTransferBlock(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                                    uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleJtagTransferBlock(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                                    uint16_t resp_cap, uint16_t& out_len)
   {
     if (!req || !resp || resp_cap < 4u)
     {
@@ -3759,12 +4048,12 @@ class DapLinkV2Class : public DeviceClass
       return ErrorCode::OK;
     }
 
-    if (dap_state_.transfer_abort)
-    {
-      dap_state_.transfer_abort = false;
-      resp[3] = LibXR::USB::DapLinkV2Def::DAP_TRANSFER_ERROR;
-      return ErrorCode::OK;
-    }
+    // 传输开始时清掉旧的中止标志（一个在没有传输时到来的中止不应中止下一条传输）；
+    // 之后到来的中止在传输执行中置位。
+    // Clear a stale abort flag when a transfer starts (an abort that arrives while no
+    // transfer runs must not abort the next one); an abort that arrives later sets it
+    // during the execution.
+    transfer_abort_.store(false, std::memory_order_release);
 
     const uint8_t TAP_INDEX = req[1];
     if (TAP_INDEX >= jtag_chain_.count)
@@ -3819,7 +4108,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.DpReadTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            dap_state_.transfer_abort)
+            transfer_abort_.load(std::memory_order_acquire))
         {
           return ec;
         }
@@ -3836,7 +4125,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.DpWriteTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            dap_state_.transfer_abort)
+            transfer_abort_.load(std::memory_order_acquire))
         {
           return ec;
         }
@@ -3853,7 +4142,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.ApReadTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            dap_state_.transfer_abort)
+            transfer_abort_.load(std::memory_order_acquire))
         {
           return ec;
         }
@@ -3870,7 +4159,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.ApWriteTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            dap_state_.transfer_abort)
+            transfer_abort_.load(std::memory_order_acquire))
         {
           return ec;
         }
@@ -4006,8 +4295,8 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleJtagWriteAbort(bool /*in_isr*/, const uint8_t* req, uint16_t req_len,
-                                 uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
+  ErrorCode HandleJtagWriteAbort(const uint8_t* req, uint16_t req_len, uint8_t* resp,
+                                 uint16_t resp_cap, uint16_t& out_len)
   {
     if (!req || !resp || resp_cap < 2u)
     {
@@ -4087,17 +4376,11 @@ class DapLinkV2Class : public DeviceClass
     }
   }
 
-  void DelayUsIfAllowed(bool /*in_isr*/, uint32_t us)
-  {
-    LibXR::Timebase::DelayMicroseconds(us);
-  }
-
  private:
   static constexpr uint16_t DEFAULT_DAP_PACKET_SIZE = DefaultDapPacketSize;
   static constexpr uint8_t PACKET_COUNT_ADVERTISED = AdvertisedPacketCount;
   static constexpr uint8_t PACKET_COUNT_EFFECTIVE =
       (PACKET_COUNT_ADVERTISED > 4u) ? 4u : PACKET_COUNT_ADVERTISED;
-  static constexpr uint8_t MAX_OUTSTANDING_RESPONSES = PACKET_COUNT_EFFECTIVE;
   // OpenOCD 0.12 computes pending_queue_len = (packet_size - 4) / 5 for CMD_DAP_TFER.
   // CMD_DAP_TFER transfer_count is u8, so cap host-visible packet size to avoid
   // transfer_count > 255 and "expected X, got Y" mismatch.
@@ -4105,13 +4388,9 @@ class DapLinkV2Class : public DeviceClass
       static_cast<uint16_t>((255u * 5u) + 4u);
   static constexpr uint8_t JTAG_MAX_DEVICES = 16u;
   // Host-visible CMSIS-DAP packet size; endpoint MPS limits are handled by
-  // TransferMultiBulk segmentation/reassembly.
+  // Endpoint-owned logical segmentation/reassembly.
   static constexpr uint16_t MAX_DAP_PACKET_SIZE = MaxDapPacketSize;
-  static constexpr uint16_t QUEUED_REQ_BUFFER_SIZE = QueuedRequestBufferSize;
-  static constexpr uint16_t QUEUED_CMD_COUNT_MAX = QueuedCommandCountMax;
   static constexpr uint16_t RESP_SLOT_SIZE = MAX_DAP_PACKET_SIZE;
-  static constexpr uint8_t RESP_QUEUE_DEPTH = PACKET_COUNT_EFFECTIVE;
-  static constexpr uint16_t QUEUED_REQ_BUFFER_ALLOC_SIZE = QUEUED_REQ_BUFFER_SIZE;
   static_assert(PACKET_COUNT_ADVERTISED > 0u, "PACKET_COUNT_ADVERTISED must be > 0");
   static_assert(PACKET_COUNT_EFFECTIVE > 0u, "PACKET_COUNT_EFFECTIVE must be > 0");
   static_assert(MAX_DAP_PACKET_SIZE >= DEFAULT_DAP_PACKET_SIZE,
@@ -4120,20 +4399,8 @@ class DapLinkV2Class : public DeviceClass
                 "MAX_DAP_PACKET_SIZE exceeds OpenOCD-safe limit");
   static_assert(((OPENOCD_SAFE_DAP_PACKET_SIZE - 4u) / 5u) <= 255u,
                 "OPENOCD_SAFE_DAP_PACKET_SIZE too large for CMD_DAP_TFER u8 count");
-  static_assert(QUEUED_REQ_BUFFER_SIZE > 0u, "QUEUED_REQ_BUFFER_SIZE must be > 0");
-  static_assert(QUEUED_CMD_COUNT_MAX > 0u, "QUEUED_CMD_COUNT_MAX must be > 0");
   static_assert(RESP_SLOT_SIZE >= DEFAULT_DAP_PACKET_SIZE,
                 "RESP_SLOT_SIZE must cover FS bulk packet size");
-  static_assert((RESP_QUEUE_DEPTH & (RESP_QUEUE_DEPTH - 1u)) == 0u,
-                "Response queue depth must be power-of-two");
-
-  static constexpr uint8_t WINUSB_VENDOR_CODE = 0x20;  ///< WinUSB vendor code
-
-  // REG_MULTI_SZ: "<GUID>\0\0" (UTF-16LE). GUID_STR_UTF16_BYTES should already include
-  // the first UTF-16 NUL.
-  static constexpr uint16_t GUID_MULTI_SZ_UTF_16_BYTES =
-      static_cast<uint16_t>(LibXR::USB::WinUsbMsOs20::GUID_STR_UTF16_BYTES +
-                            2);  ///< extra UTF-16 NUL for REG_MULTI_SZ end
 
   struct ResponseSlot
   {
@@ -4141,48 +4408,94 @@ class DapLinkV2Class : public DeviceClass
     uint8_t payload[RESP_SLOT_SIZE] = {};
   };
 
-  ResponseSlot resp_q_[RESP_QUEUE_DEPTH] = {};
-  uint8_t resp_q_head_ = 0u;
-  uint8_t resp_q_tail_ = 0u;
-  uint8_t resp_q_count_ = 0u;
-  bool deferred_in_resp_valid_ = false;
-  uint16_t deferred_in_resp_len_ = 0u;
-
-  uint8_t queued_request_buffer_[QUEUED_REQ_BUFFER_ALLOC_SIZE] = {};
-  uint16_t queued_request_length_ = 0u;
-  uint16_t queued_command_count_ = 0u;
-
-  uint8_t out_req_multi_storage_[MAX_DAP_PACKET_SIZE] = {};
-  LibXR::RawData out_req_multi_buf_{out_req_multi_storage_, DEFAULT_DAP_PACKET_SIZE};
-  uint8_t in_tx_multi_storage_[MAX_DAP_PACKET_SIZE] = {};
-  LibXR::RawData in_tx_multi_buf_{in_tx_multi_storage_, DEFAULT_DAP_PACKET_SIZE};
-
-  LIBXR_PACKED_BEGIN
-  /**
-   * @brief MS OS 2.0 descriptor set layout
-   */
-  struct WinUsbMsOs20DescSet
+  struct CommandSlot
   {
-    LibXR::USB::WinUsbMsOs20::MsOs20SetHeader set;                  ///< Set header
-    LibXR::USB::WinUsbMsOs20::MsOs20SubsetHeaderConfiguration cfg;  ///< Config subset
-    LibXR::USB::WinUsbMsOs20::MsOs20SubsetHeaderFunction func;      ///< Function subset
-    LibXR::USB::WinUsbMsOs20::MsOs20FeatureCompatibleId compat;  ///< CompatibleId feature
+    uint16_t len = 0u;
+    uint32_t epoch = 0u;  ///< 收到命令时的 epoch_ / epoch_ when the command was received
+    uint8_t data[MAX_DAP_PACKET_SIZE] = {};
+  };
 
-    /**
-     * @brief DeviceInterfaceGUIDs registry property
-     */
-    struct RegProp
-    {
-      LibXR::USB::WinUsbMsOs20::MsOs20FeatureRegPropertyHeader
-          header;  ///< RegProperty header
-      uint8_t name[LibXR::USB::WinUsbMsOs20::
-                       PROP_NAME_DEVICE_INTERFACE_GUIDS_BYTES];  ///< Property name /
-                                                                 ///< Property name
-      uint16_t wPropertyDataLength;                              ///< UTF-16 byte length
-      uint8_t data[GUID_MULTI_SZ_UTF_16_BYTES];                  ///< REG_MULTI_SZ data
-    } prop;
-  } winusb_msos20_{};
-  LIBXR_PACKED_END
+  static constexpr size_t SLOT_NONE = static_cast<size_t>(-1);
+  /// 命令池槽数等于通告的在途命令数：一条大命令在执行时，后面的小命令只占一个槽，下一条大
+  /// 命令仍有槽可以接收，接收和执行才能真正重叠。
+  /// The command pool has as many slots as the advertised commands in flight: while a big
+  /// command executes, the small commands behind it take one slot each and the next big
+  /// command still finds a slot to be received into, so reception and execution really
+  /// overlap.
+  static constexpr size_t CMD_SLOT_COUNT = PACKET_COUNT_EFFECTIVE;
+
+  // ---------------------------------------------------------------------------
+  // Command and response staging / 命令与响应暂存
+  // ---------------------------------------------------------------------------
+
+  /// 命令池：USB 服务上下文 Acquire、拷入、Publish，Step 线程 Take、执行、Release。
+  /// Command pool: the USB service context Acquires, copies in and Publishes; the Step
+  /// thread Takes, executes and Releases.
+  LibXR::SlotPool<CommandSlot> cmd_pool_{CMD_SLOT_COUNT};
+  size_t rx_slot_ = SLOT_NONE;  ///< USB 侧正在拼装的命令槽 / Command slot being assembled
+  size_t cur_cmd_ =
+      SLOT_NONE;  ///< Step 线程持有的命令槽 / Command slot the Step thread holds
+  /// 响应池（暂存）：Step 线程 Acquire、写入、Publish，USB 服务上下文 Take、拷进 IN
+  /// 槽提交、 Release。槽数等于通告的在途命令数，所以执行不必等主机取走前面的响应。
+  /// Response pool (staging): the Step thread Acquires, writes and Publishes; the USB
+  /// service context Takes, copies into an IN slot, submits and Releases. It has as many
+  /// slots as the advertised commands in flight, so execution does not wait for the host
+  /// to take earlier responses.
+  LibXR::SlotPool<ResponseSlot> resp_pool_{PACKET_COUNT_EFFECTIVE};
+  size_t cur_resp_ =
+      SLOT_NONE;  ///< Step 线程持有的暂存响应槽 / Staging slot the Step thread holds
+  size_t send_idx_ = SLOT_NONE;  ///< USB 侧已取出、等 IN 槽的暂存响应 / Staged response
+                                 ///< taken by the USB side, waiting for an IN slot
+  /// 已发布、还没进端点队列的暂存响应数：为 0 时 Step 才直接提交，响应顺序不变。
+  /// Staged responses published but not yet in the endpoint queue: Step submits directly
+  /// only when it is zero, so responses keep their order. Word-sized: some targets have
+  /// no byte atomics.
+  std::atomic<uint32_t> staged_outstanding_{0u};
+  Endpoint::Slot cur_in_{};        ///< Step 线程借来直接写响应的 IN 槽 / IN slot the Step
+                                   ///< thread borrowed to write the response in place
+  Endpoint* cur_in_ep_ = nullptr;  ///< cur_in_ 所属端点 / Endpoint cur_in_ belongs to
+  /// 每发布一条命令发一次，Step() 在它上面等 / Posted per published command, Step() waits
+  /// on it
+  LibXR::Semaphore cmd_sem_{0};
+  /// 每提交一个暂存响应发一次（一个暂存槽空出来），Step() 等暂存槽时在它上面等
+  /// Posted per submitted staged response (a staging slot came free); Step() waits on it
+  /// for a slot
+  LibXR::Semaphore slot_sem_{0};
+  /// 解绑/重新绑定时加一：Step 线程用它丢弃跨越重绑的响应 / Bumped on unbind/bind: the
+  /// Step thread drops a response that spans a rebind
+  std::atomic<uint32_t> epoch_{0u};
+  uint32_t session_epoch_ = 0u;  ///< Step 线程已落实的 epoch_ / epoch_ the Step thread
+                                 ///< has applied to the session state
+  uint32_t cur_epoch_ =
+      0u;  ///< 手里这条命令收到时的 epoch_ / epoch_ when the command in hand was received
+  /// 通告给主机的 DAP 包长：不超过配置值，也不超过 IN 槽 / The DAP packet size announced
+  /// to the host: not above the configured one and not above an IN slot
+  std::atomic<uint16_t> dap_packet_size_{ConfiguredDapPacketSize()};
+
+  // OUT 字节流状态，只在 USB 服务上下文里访问 / OUT byte-stream state, USB service
+  // context only
+  struct HeldPacket
+  {
+    Endpoint::Slot slot;
+    uint16_t size = 0u;
+  };
+  HeldPacket held_[2] =
+      {};  ///< 命令池满时留住的租约 / Leases kept while the pool is full
+  uint8_t held_n_ = 0u;
+  size_t armed_sz_[2] = {};  ///< 已排队接收请求的大小，按到达顺序 / Sizes of the queued
+                             ///< receive requests in arrival order
+  uint8_t armed_n_ = 0u;
+  uint16_t rx_off_ =
+      0u;  ///< 正在拼装的命令已收字节数 / Bytes of the command being assembled
+  uint16_t known_total_ = 0u;  ///< 由内容得知的命令总长，0 为未知 / Total length known
+                               ///< from the content, 0 when unknown
+  /// 上一条命令以整包结束时的字节数；其后的整包全零视为补零 / Bytes of the previous
+  /// command when it ended on a whole packet; a following all-zero whole packet is
+  /// padding
+  uint16_t pad_base_ = 0u;
+  uint16_t pad_skip_ =
+      0u;  ///< 这次传输还剩的补零字节 / Padding bytes this transfer still has
+  std::atomic<bool> transfer_abort_{false};  ///< DAP_TransferAbort 标志 / Abort flag
 
  private:
   SwdPort& swd_;  ///< SWD link
@@ -4213,8 +4526,8 @@ class DapLinkV2Class : public DeviceClass
   Endpoint* ep_data_in_ = nullptr;   ///< Bulk IN endpoint
   Endpoint* ep_data_out_ = nullptr;  ///< Bulk OUT endpoint
 
-  bool inited_ = false;        ///< Initialized flag
-  uint8_t interface_num_ = 0;  ///< Interface number
+  std::atomic<bool> inited_{false};  ///< Initialized flag
+  uint8_t interface_num_ = 0;        ///< Interface number
 
   LIBXR_PACKED_BEGIN
   /**
@@ -4230,16 +4543,18 @@ class DapLinkV2Class : public DeviceClass
   LIBXR_PACKED_END
 
  private:
-  LibXR::USB::WinUsbMsOs20::MsOs20BosCapability winusb_msos20_cap_{
-      LibXR::ConstRawData{nullptr, 0}, WINUSB_VENDOR_CODE};  ///< WinUSB BOS capability
-
   uint32_t match_mask_ = 0xFFFFFFFFu;  ///< Match mask
 
-  LibXR::Callback<LibXR::ConstRawData&> on_data_out_cb_ =
-      LibXR::Callback<LibXR::ConstRawData&>::Create(OnDataOutCompleteStatic, this);
+  // 完成回调在 owner 里执行，必须保持浅操作：只拼装命令、提交暂存的响应和补挂接收，
+  // 命令由 Step() 执行。
+  // Completion callbacks run in the owner and must stay shallow: they only assemble
+  // commands, submit staged responses and re-arm the receives; commands are executed by
+  // Step().
+  LibXR::Callback<const Endpoint::Completion&> on_data_out_cb_ =
+      LibXR::Callback<const Endpoint::Completion&>::Create(OnDataOutCompleteStatic, this);
 
-  LibXR::Callback<LibXR::ConstRawData&> on_data_in_cb_ =
-      LibXR::Callback<LibXR::ConstRawData&>::Create(OnDataInCompleteStatic, this);
+  LibXR::Callback<const Endpoint::Completion&> on_data_in_cb_ =
+      LibXR::Callback<const Endpoint::Completion&>::Create(OnDataInCompleteStatic, this);
 };
 
 }  // namespace LibXR::USB

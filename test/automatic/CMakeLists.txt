@@ -120,6 +120,7 @@ add_executable(
   driver/usb/core/test_fsdev.cpp
   driver/usb/device/cdc/test_cdc_test.cpp
   driver/usb/device/cdc/test_cdc_uart.cpp
+  driver/usb/device/dap/test_daplink_v2.cpp
   driver/usb/device/dfu/test_dfu.cpp
   driver/usb/device/gsusb/test_gsusb.cpp
   driver/usb/device/hid/test_hid.cpp
