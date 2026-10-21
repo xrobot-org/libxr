@@ -1,20 +1,24 @@
 #pragma once
-
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <new>
 #include <type_traits>
 
 #include "can.hpp"
+#include "database.hpp"
 #include "dev_core.hpp"
 #include "gpio.hpp"
 #include "gs_usb_protocol.hpp"
 #include "libxr_def.hpp"
 #include "libxr_mem.hpp"
+#include "structure/queue/spsc_queue.hpp"
 #include "timebase.hpp"
+#include "timer.hpp"
 #include "usb/core/desc_cfg.hpp"
 
 namespace LibXR::USB
@@ -25,6 +29,16 @@ namespace LibXR::USB
  * @brief GsUsb 设备类，实现 Linux gs_usb 协议（经典 CAN + CAN FD） /
  *        GsUsb device class implementing Linux gs_usb protocol (Classic CAN + CAN FD)
  * @tparam CanChNum 编译期固定的 CAN 通道数 / Compile-time fixed CAN channel count
+ *
+ * 接收路径：每个 CAN 源一个 SPSC 队列（rx_queue_size 为每通道容量），echo 单独一个
+ * SPSC 队列（生产者是 USB OUT 处理）。CAN 回调与 OUT 处理只入队并请求类服务，
+ * 服务里取槽、打包、提交。echo 总是优先，其后通道间轮流发送；RX 队列满时丢帧。
+ *
+ * Receive path: one SPSC queue per CAN source (rx_queue_size is the per-channel
+ * capacity) plus one echo SPSC queue whose producer is the USB OUT handling. CAN
+ * callbacks and the OUT handler only enqueue and request the class service; the
+ * service acquires slots, packs and submits. Echo frames always go first, then the
+ * channels are drained round-robin; a full RX queue drops the frame.
  */
 template <std::size_t CanChNum>
 class GsUsbClass : public DeviceClass
@@ -35,6 +49,14 @@ class GsUsbClass : public DeviceClass
   // GS USB 功能的默认接口字符串。
   // Default interface string for the GS USB function.
   static constexpr const char* DEFAULT_INTERFACE_STRING = "XRUSB GS USB";
+
+  // SET_USER_ID 落库周期（暂定 100 ms）。
+  // USER_ID write-back period (tentatively 100 ms).
+  static constexpr uint32_t USER_ID_WRITE_PERIOD_MS = 100;
+
+  // 每通道错误帧队列容量。
+  // Per-channel error-frame queue capacity.
+  static constexpr std::size_t ERR_QUEUE_SIZE = 8;
 
  private:
   // ===== Linux gs_usb 线缆格式（固定 12 字节头） / Linux gs_usb wire format
@@ -84,8 +106,8 @@ class GsUsbClass : public DeviceClass
    * must equal CAN_CH_NUM
    * @param data_in_ep_num Bulk IN 端点号 / Bulk IN endpoint number
    * @param data_out_ep_num Bulk OUT 端点号 / Bulk OUT endpoint number
-   * @param rx_queue_size 接收队列大小 / RX queue size
-   * @param echo_queue_size 回显队列大小 / Echo queue size
+   * @param rx_queue_size 每通道接收队列容量 / Per-channel RX queue capacity
+   * @param echo_queue_size 回显队列容量 / Echo queue capacity
    * @param identify_gpio Identify GPIO（可选） / Identify GPIO (optional)
    * @param termination_gpios 每通道终端电阻 GPIO（可选） / Per-channel termination GPIOs
    * (optional)
@@ -101,11 +123,12 @@ class GsUsbClass : public DeviceClass
              const char* interface_string = DEFAULT_INTERFACE_STRING)
       : data_in_ep_num_(data_in_ep_num),
         data_out_ep_num_(data_out_ep_num),
+        interface_string_(interface_string),
         identify_gpio_(identify_gpio),
         database_(database),
-        rx_queue_(rx_queue_size),
         echo_queue_(echo_queue_size),
-        interface_string_(interface_string)
+        rx_queues_(rx_queue_size),
+        err_queues_(ERR_QUEUE_SIZE)
   {
     ASSERT(cans.size() == CAN_CH_NUM);
     std::size_t i = 0;
@@ -129,13 +152,8 @@ class GsUsbClass : public DeviceClass
     }
 
     InitDeviceConfigClassic();
-  }
-
-  const char* GetInterfaceString(size_t local_interface_index) const override
-  {
-    // GS USB 暴露一个 vendor-specific 接口。
-    // GS USB contributes one vendor-specific interface.
-    return (local_interface_index == 0u) ? interface_string_ : nullptr;
+    RegisterCanCallbacks();
+    InitUserIdStorage();
   }
 
   /**
@@ -144,8 +162,8 @@ class GsUsbClass : public DeviceClass
    * equal CAN_CH_NUM
    * @param data_in_ep_num Bulk IN 端点号（必填） / Bulk IN endpoint number (required)
    * @param data_out_ep_num Bulk OUT 端点号（必填） / Bulk OUT endpoint number (required)
-   * @param rx_queue_size 接收队列大小 / RX queue size
-   * @param echo_queue_size 回显队列大小 / Echo queue size
+   * @param rx_queue_size 每通道接收队列容量 / Per-channel RX queue capacity
+   * @param echo_queue_size 回显队列容量 / Echo queue capacity
    * @param identify_gpio Identify GPIO（可选） / Identify GPIO (optional)
    * @param termination_gpios 每通道终端电阻 GPIO（可选） / Per-channel termination GPIOs
    * (optional)
@@ -162,11 +180,12 @@ class GsUsbClass : public DeviceClass
       : fd_supported_(true),
         data_in_ep_num_(data_in_ep_num),
         data_out_ep_num_(data_out_ep_num),
+        interface_string_(interface_string),
         identify_gpio_(identify_gpio),
         database_(database),
-        rx_queue_(rx_queue_size),
         echo_queue_(echo_queue_size),
-        interface_string_(interface_string)
+        rx_queues_(rx_queue_size),
+        err_queues_(ERR_QUEUE_SIZE)
   {
     ASSERT(fd_cans.size() == CAN_CH_NUM);
     std::size_t i = 0;
@@ -192,6 +211,8 @@ class GsUsbClass : public DeviceClass
     }
 
     InitDeviceConfigFd();
+    RegisterCanCallbacks();
+    InitUserIdStorage();
   }
 
   /**
@@ -199,7 +220,66 @@ class GsUsbClass : public DeviceClass
    * @return true 协商通过 / Passed
    * @return false 协商未通过 / Not passed
    */
-  bool IsHostFormatOK() const { return host_format_ok_; }
+  bool IsHostFormatOK() const
+  {
+    return host_format_ok_.load(std::memory_order_acquire) != 0U;
+  }
+
+  void OnService(bool in_isr) override
+  {
+    if (!inited_) return;
+
+    // echo 队列满时被压住的帧：现在有空位就补推并归还 OUT 租约（主机恢复收发）。
+    // A frame held by echo backpressure: push it now that a slot freed up and give the
+    // OUT lease back (the host resumes).
+    if (out_hold_)
+    {
+      if (echo_queue_.Push(out_hold_item_) == ErrorCode::OK)
+      {
+        out_hold_ = false;
+        ReturnLease(in_isr, out_hold_slot_);
+      }
+      // echo 队列仍满：继续持有租约背压，等下一次服务。
+      // Echo queue still full: keep holding the lease and wait for the next service.
+    }
+
+    // 取槽 → 选帧 → 打包 → 提交；IN 槽都在途时停下，完成回调再请求服务。
+    // Acquire a slot, pick a frame, pack and submit; stop when no IN slot is free, the
+    // completion callback re-requests the service.
+    while (true)
+    {
+      Endpoint::Slot slot;
+      if (ep_data_in_ == nullptr ||
+          ep_data_in_->AcquireSlot(slot, in_isr) != ErrorCode::OK)
+      {
+        break;
+      }
+
+      QueueItem item;
+      if (!PickFrame(item))
+      {
+        ep_data_in_->ReleaseSlot(slot, in_isr);
+        break;
+      }
+
+      const std::size_t size = PackQueueItemToWire(
+          item, static_cast<uint8_t*>(slot.data.addr_), slot.data.size_);
+      if (size == 0U)
+      {
+        // Granted 校验已保证槽装得下一帧，这里正常不可达。
+        // The Granted check guarantees the slot holds one frame; unreachable normally.
+        ep_data_in_->ReleaseSlot(slot, in_isr);
+        break;
+      }
+
+      if (ep_data_in_->Submit(slot, size, false, in_isr) == ErrorCode::ABORTED)
+      {
+        // 槽在解绑前借出：本帧随解绑丢弃。
+        // The slot went stale before submission: the frame is dropped with the binding.
+        break;
+      }
+    }
+  }
 
  protected:
   /**
@@ -208,10 +288,12 @@ class GsUsbClass : public DeviceClass
    * @param start_itf_num 起始接口号 / Starting interface number
    * @param in_isr 是否在中断中 / Whether in ISR
    */
-  void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num, bool) override
+  void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num,
+                     bool in_isr) override
   {
     inited_ = false;
     interface_num_ = start_itf_num;
+    out_hold_ = false;
 
     auto ans = endpoint_pool.Get(ep_data_in_, Endpoint::Direction::IN, data_in_ep_num_);
     ASSERT(ans == ErrorCode::OK);
@@ -219,13 +301,28 @@ class GsUsbClass : public DeviceClass
     ans = endpoint_pool.Get(ep_data_out_, Endpoint::Direction::OUT, data_out_ep_num_);
     ASSERT(ans == ErrorCode::OK);
 
-    // UINT16_MAX 只是上限，底层会选不超过该值的可用最大长度。
-    // UINT16_MAX is only an upper bound; the backend still chooses the largest valid
-    // length.
-    ep_data_in_->Configure(
-        {Endpoint::Direction::IN, Endpoint::Type::BULK, UINT16_MAX, true});
-    ep_data_out_->Configure(
-        {Endpoint::Direction::OUT, Endpoint::Type::BULK, UINT16_MAX, true});
+    const uint16_t in_packet = ep_data_in_->LargestPacketSize(Endpoint::Type::BULK);
+    const uint16_t out_packet = ep_data_out_->LargestPacketSize(Endpoint::Type::BULK);
+    (void)ep_data_in_->Configure(
+        {Endpoint::Direction::IN, Endpoint::Type::BULK, in_packet}, in_isr);
+    // receive_size = 0：ReturnSlot 按整槽重新挂接收，一帧一个请求，短包结束。
+    // receive_size = 0: ReturnSlot rearms the whole slot; one frame per request, ended
+    // by the short packet.
+    (void)ep_data_out_->Configure(
+        {Endpoint::Direction::OUT, Endpoint::Type::BULK, out_packet, 0}, in_isr);
+
+    // 单帧上限 WIRE_MAX_SIZE：IN 槽要装下一整帧提交，OUT 槽要装下一整帧接收。
+    // BSP 槽数组不足时绑定即断言；每端点（两个槽）需要 >= 2 * WIRE_MAX_SIZE。
+    // WIRE_MAX_SIZE is the per-frame bound: the IN slot must hold a whole frame for
+    // submission and the OUT slot a whole frame for reception. A BSP slot array below
+    // that asserts at bind time; each endpoint (two slots) needs >= 2 * WIRE_MAX_SIZE.
+    // 用 REQUIRE：槽太小在 release 构建里也不能静默通过——IN 槽 < 80 会静默
+    // 丢弃 FD 帧，OUT 槽 < 76 会把帧切成两段破坏同步。
+    // Use REQUIRE: an undersized slot must not pass silently in release builds —
+    // an IN slot below 80 silently drops FD frames and an OUT slot below 76 splits
+    // frames and breaks synchronisation.
+    REQUIRE(ep_data_in_->GetGranted().slot_capacity >= WIRE_MAX_SIZE);
+    REQUIRE(ep_data_out_->GetGranted().slot_capacity >= WIRE_MAX_SIZE);
 
     desc_block_.intf = {9,
                         static_cast<uint8_t>(DescriptorType::INTERFACE),
@@ -239,7 +336,7 @@ class GsUsbClass : public DeviceClass
 
     desc_block_.ep_out = {7,
                           static_cast<uint8_t>(DescriptorType::ENDPOINT),
-                          static_cast<uint8_t>(ep_data_out_->GetAddress()),
+                          ep_data_out_->GetAddress(),
                           static_cast<uint8_t>(Endpoint::Type::BULK),
                           ep_data_out_->MaxPacketSize(),
                           0};
@@ -253,10 +350,10 @@ class GsUsbClass : public DeviceClass
 
     SetData(RawData{reinterpret_cast<uint8_t*>(&desc_block_), sizeof(desc_block_)});
 
-    ep_data_out_->SetOnTransferCompleteCallback(on_data_out_cb_);
-    ep_data_in_->SetOnTransferCompleteCallback(on_data_in_cb_);
+    ep_data_out_->SetOnComplete(on_data_out_cb_);
+    ep_data_in_->SetOnComplete(on_data_in_cb_);
 
-    host_format_ok_ = false;
+    host_format_ok_.store(0U, std::memory_order_release);
 
     for (uint8_t i = 0; i < can_count_; ++i)
     {
@@ -267,51 +364,15 @@ class GsUsbClass : public DeviceClass
       timestamps_enabled_ch_[i] = false;
     }
 
-    // 注册 CAN RX 回调 / Register CAN RX callbacks
-    if (!can_rx_registered_)
-    {
-      for (uint8_t ch = 0; ch < can_count_; ++ch)
-      {
-        if (!cans_[ch])
-        {
-          continue;
-        }
-
-        can_rx_ctx_[ch].self = this;
-        can_rx_ctx_[ch].ch = ch;
-        can_rx_cb_[ch] = LibXR::CAN::Callback::Create(OnCanRxStatic, &can_rx_ctx_[ch]);
-
-        cans_[ch]->Register(can_rx_cb_[ch], LibXR::CAN::Type::STANDARD);
-        cans_[ch]->Register(can_rx_cb_[ch], LibXR::CAN::Type::EXTENDED);
-        cans_[ch]->Register(can_rx_cb_[ch], LibXR::CAN::Type::REMOTE_STANDARD);
-        cans_[ch]->Register(can_rx_cb_[ch], LibXR::CAN::Type::REMOTE_EXTENDED);
-        cans_[ch]->Register(can_rx_cb_[ch], LibXR::CAN::Type::ERROR);
-      }
-      can_rx_registered_ = true;
-    }
-
-    if (fd_supported_ && !fd_can_rx_registered_)
-    {
-      for (uint8_t ch = 0; ch < can_count_; ++ch)
-      {
-        if (!fdcans_[ch])
-        {
-          continue;
-        }
-
-        fd_can_rx_ctx_[ch].self = this;
-        fd_can_rx_ctx_[ch].ch = ch;
-        fd_can_rx_cb_[ch] =
-            LibXR::FDCAN::CallbackFD::Create(OnFdCanRxStatic, &fd_can_rx_ctx_[ch]);
-
-        fdcans_[ch]->Register(fd_can_rx_cb_[ch], LibXR::CAN::Type::STANDARD);
-        fdcans_[ch]->Register(fd_can_rx_cb_[ch], LibXR::CAN::Type::EXTENDED);
-      }
-      fd_can_rx_registered_ = true;
-    }
-
+    // 先置 inited_ 再挂初始接收：RearmOut 会检查 inited_，否则初始那一次被静默跳过，
+    // OUT 端点永远收不到主机的帧。
+    // Set inited_ before arming the initial receive: RearmOut checks inited_, otherwise
+    // that first arm is silently skipped and the OUT endpoint never receives a frame.
     inited_ = true;
-    MaybeArmOutTransfer();
+
+    // 挂初始接收：一条 OUT 租约在途，处理完 ReturnSlot 自动重挂。
+    // Arm the initial receive: one OUT lease in flight, ReturnSlot rearms it.
+    RearmOut(in_isr);
   }
 
   /**
@@ -319,10 +380,22 @@ class GsUsbClass : public DeviceClass
    * @param endpoint_pool 端点池 / Endpoint pool
    * @param in_isr 是否在中断中 / Whether in ISR
    */
-  void UnbindEndpoints(EndpointPool& endpoint_pool, bool) override
+  void UnbindEndpoints(EndpointPool& endpoint_pool, bool in_isr) override
   {
     inited_ = false;
-    host_format_ok_ = false;
+    host_format_ok_.store(0U, std::memory_order_release);
+
+    // 持有的 OUT 租约先释放（避免新绑定少一个槽）；被压住的 echo 随之丢弃，它属于
+    // 这里结束的这次绑定。
+    // Release the held OUT lease first so the next binding keeps both slots; the
+    // backpressured echo is dropped with it, since it belongs to the binding that ends
+    // here.
+    if (out_hold_ && ep_data_out_ != nullptr)
+    {
+      ep_data_out_->ReleaseSlot(out_hold_slot_, in_isr);
+      out_hold_ = false;
+    }
+    out_armed_ = false;
 
     for (uint8_t i = 0; i < can_count_; ++i)
     {
@@ -333,18 +406,16 @@ class GsUsbClass : public DeviceClass
       timestamps_enabled_ch_[i] = false;
     }
 
-    if (ep_data_in_)
+    if (ep_data_in_ != nullptr)
     {
-      ep_data_in_->Close();
-      ep_data_in_->SetActiveLength(0);
+      ep_data_in_->Close(in_isr);
       endpoint_pool.Release(ep_data_in_);
       ep_data_in_ = nullptr;
     }
 
-    if (ep_data_out_)
+    if (ep_data_out_ != nullptr)
     {
-      ep_data_out_->Close();
-      ep_data_out_->SetActiveLength(0);
+      ep_data_out_->Close(in_isr);
       endpoint_pool.Release(ep_data_out_);
       ep_data_out_ = nullptr;
     }
@@ -404,7 +475,7 @@ class GsUsbClass : public DeviceClass
    * @param wValue wValue
    * @param wLength 数据阶段长度 / Data stage length
    * @param wIndex wIndex
-   * @param result 读写缓冲设置 / Read/write buffer setup
+   * @param result IN 数据阶段设置 / IN data stage setup
    * @return ErrorCode 错误码 / Error code
    */
   ErrorCode OnVendorRequest(bool in_isr, uint8_t bRequest, uint16_t wValue,
@@ -543,7 +614,10 @@ class GsUsbClass : public DeviceClass
 
       case GsUsb::BReq::GET_USER_ID:
       {
-        ctrl_buf_.user_id = GetUserIdFromStorage();
+        // 只读 RAM 值；构造期已从 Database 载入，SET 后由 Timer 任务落库。
+        // Read the RAM value only; it was loaded from the Database at construction and
+        // SET writes it back through the Timer task.
+        ctrl_buf_.user_id = user_id_ram_;
         if (wLength < sizeof(ctrl_buf_.user_id))
         {
           return ErrorCode::ARG_ERR;
@@ -555,15 +629,15 @@ class GsUsbClass : public DeviceClass
         return ErrorCode::OK;
       }
 
-      // ===== Host -> Device（有 DATA 阶段） / Host -> Device (with DATA stage) =====
+      // ===== Host -> Device（有 DATA 阶段，数据经 OnControlData 交给 OnClassData）/
+      // ===== Host -> Device (with a DATA stage delivered to OnClassData via
+      // OnControlData)
       case GsUsb::BReq::HOST_FORMAT:
       {
         if (wLength != sizeof(GsUsb::HostConfig))
         {
           return ErrorCode::ARG_ERR;
         }
-        result.read_data = RawData{reinterpret_cast<uint8_t*>(&ctrl_buf_.host_cfg),
-                                   sizeof(GsUsb::HostConfig)};
         return ErrorCode::OK;
       }
 
@@ -574,8 +648,6 @@ class GsUsbClass : public DeviceClass
           return ErrorCode::ARG_ERR;
         }
         ctrl_target_channel_ = static_cast<uint8_t>(wValue);
-        result.read_data = RawData{reinterpret_cast<uint8_t*>(&ctrl_buf_.bt),
-                                   sizeof(GsUsb::DeviceBitTiming)};
         return ErrorCode::OK;
       }
 
@@ -590,8 +662,6 @@ class GsUsbClass : public DeviceClass
           return ErrorCode::ARG_ERR;
         }
         ctrl_target_channel_ = static_cast<uint8_t>(wValue);
-        result.read_data = RawData{reinterpret_cast<uint8_t*>(&ctrl_buf_.bt),
-                                   sizeof(GsUsb::DeviceBitTiming)};
         return ErrorCode::OK;
       }
 
@@ -602,8 +672,6 @@ class GsUsbClass : public DeviceClass
           return ErrorCode::ARG_ERR;
         }
         ctrl_target_channel_ = static_cast<uint8_t>(wValue);
-        result.read_data = RawData{reinterpret_cast<uint8_t*>(&ctrl_buf_.mode),
-                                   sizeof(GsUsb::DeviceMode)};
         return ErrorCode::OK;
       }
 
@@ -614,8 +682,6 @@ class GsUsbClass : public DeviceClass
           return ErrorCode::ARG_ERR;
         }
         ctrl_target_channel_ = static_cast<uint8_t>(wValue);
-        result.read_data =
-            RawData{reinterpret_cast<uint8_t*>(&ctrl_buf_.berr_on), sizeof(uint32_t)};
         return ErrorCode::OK;
       }
 
@@ -626,8 +692,6 @@ class GsUsbClass : public DeviceClass
           return ErrorCode::ARG_ERR;
         }
         ctrl_target_channel_ = static_cast<uint8_t>(wValue);
-        result.read_data = RawData{reinterpret_cast<uint8_t*>(&ctrl_buf_.identify),
-                                   sizeof(GsUsb::Identify)};
         return ErrorCode::OK;
       }
 
@@ -638,8 +702,6 @@ class GsUsbClass : public DeviceClass
           return ErrorCode::ARG_ERR;
         }
         ctrl_target_channel_ = static_cast<uint8_t>(wValue);
-        result.read_data = RawData{reinterpret_cast<uint8_t*>(&ctrl_buf_.term),
-                                   sizeof(GsUsb::DeviceTerminationState)};
         return ErrorCode::OK;
       }
 
@@ -649,8 +711,6 @@ class GsUsbClass : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
-        result.read_data =
-            RawData{reinterpret_cast<uint8_t*>(&ctrl_buf_.user_id), sizeof(uint32_t)};
         return ErrorCode::OK;
       }
 
@@ -663,7 +723,8 @@ class GsUsbClass : public DeviceClass
    * @brief Vendor Request 的 DATA 阶段处理 / Handle DATA stage for vendor requests
    * @param in_isr 是否在中断上下文 / Whether in ISR
    * @param bRequest 请求号 / Request number
-   * @param data DATA 阶段数据 / DATA stage data
+   * @param data DATA 阶段数据（由核心缓冲，需要保留须自行拷贝） / DATA stage data
+   * (buffered by the core; copy it to keep it)
    * @return ErrorCode 错误码 / Error code
    */
   ErrorCode OnClassData(bool in_isr, uint8_t bRequest, LibXR::ConstRawData& data) override
@@ -679,6 +740,7 @@ class GsUsbClass : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
+        Memory::FastCopy(&ctrl_buf_.host_cfg, data.addr_, sizeof(GsUsb::HostConfig));
         return HandleHostFormat(ctrl_buf_.host_cfg);
 
       case GsUsb::BReq::BITTIMING:
@@ -686,6 +748,7 @@ class GsUsbClass : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
+        Memory::FastCopy(&ctrl_buf_.bt, data.addr_, sizeof(GsUsb::DeviceBitTiming));
         return HandleBitTiming(ctrl_target_channel_, ctrl_buf_.bt);
 
       case GsUsb::BReq::DATA_BITTIMING:
@@ -697,6 +760,7 @@ class GsUsbClass : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
+        Memory::FastCopy(&ctrl_buf_.bt, data.addr_, sizeof(GsUsb::DeviceBitTiming));
         return HandleDataBitTiming(ctrl_target_channel_, ctrl_buf_.bt);
 
       case GsUsb::BReq::MODE:
@@ -704,6 +768,7 @@ class GsUsbClass : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
+        Memory::FastCopy(&ctrl_buf_.mode, data.addr_, sizeof(GsUsb::DeviceMode));
         return HandleMode(ctrl_target_channel_, ctrl_buf_.mode);
 
       case GsUsb::BReq::BERR:
@@ -711,6 +776,7 @@ class GsUsbClass : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
+        Memory::FastCopy(&ctrl_buf_.berr_on, data.addr_, sizeof(uint32_t));
         return HandleBerr(ctrl_target_channel_, ctrl_buf_.berr_on);
 
       case GsUsb::BReq::IDENTIFY:
@@ -718,6 +784,7 @@ class GsUsbClass : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
+        Memory::FastCopy(&ctrl_buf_.identify, data.addr_, sizeof(GsUsb::Identify));
         return HandleIdentify(ctrl_target_channel_, ctrl_buf_.identify);
 
       case GsUsb::BReq::SET_TERMINATION:
@@ -725,6 +792,8 @@ class GsUsbClass : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
+        Memory::FastCopy(&ctrl_buf_.term, data.addr_,
+                         sizeof(GsUsb::DeviceTerminationState));
         return HandleSetTermination(ctrl_target_channel_, ctrl_buf_.term);
 
       case GsUsb::BReq::SET_USER_ID:
@@ -732,7 +801,11 @@ class GsUsbClass : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
-        SetUserIdToStorage(ctrl_buf_.user_id);
+        // 中断/owner 里只改内存值并置待写标志，Database 由 Timer 周期任务写入。
+        // Only update the in-memory value and set the pending flag here; the Timer task
+        // writes the Database.
+        Memory::FastCopy(&user_id_ram_, data.addr_, sizeof(uint32_t));
+        user_id_write_pending_.store(1U, std::memory_order_release);
         return ErrorCode::OK;
 
       case GsUsb::BReq::DEVICE_CONFIG:
@@ -749,141 +822,76 @@ class GsUsbClass : public DeviceClass
     }
   }
 
+  /**
+   * @brief 设备事件：端点解除 STALL 后恢复收发 / Device events: restart after an
+   * endpoint stall is cleared
+   */
+  void OnDeviceEvent(bool in_isr, DeviceEvent event, uint8_t endpoint) override
+  {
+    if (event != DeviceEvent::ENDPOINT_RESUMED || !inited_)
+    {
+      return;
+    }
+
+    if (ep_data_out_ != nullptr && endpoint == ep_data_out_->GetAddress())
+    {
+      // 被压住时租约仍在手里，服务补推后 ReturnSlot 重挂；否则直接重挂接收。
+      // While backpressured the lease is still held and the service returns it; otherwise
+      // arm the receive directly.
+      if (!out_hold_)
+      {
+        RearmOut(in_isr);
+      }
+      RequestClassService(in_isr);
+    }
+
+    if (ep_data_in_ != nullptr && endpoint == ep_data_in_->GetAddress())
+    {
+      RequestClassService(in_isr);
+    }
+  }
+
   // ================= Bulk 端点回调 / Bulk endpoint callbacks =================
 
   /**
    * @brief Bulk OUT 完成静态回调包装 / Static wrapper for Bulk OUT completion
    * @param in_isr 是否在中断上下文 / Whether in ISR
    * @param self this 指针 / this pointer
-   * @param data 收到的数据 / Received data
+   * @param completion 完成信息 / Completion info
    */
-  static void OnDataOutCompleteStatic(bool in_isr, GsUsbClass* self, ConstRawData& data)
+  static void OnDataOutCompleteStatic(bool in_isr, GsUsbClass* self,
+                                      const Endpoint::Completion& completion)
   {
-    if (self == nullptr || !self->inited_)
+    if (!self->inited_)
     {
+      // 解绑后交付的租约立即归还，不重新挂接收。
+      // A lease delivered after unbinding is returned at once, without rearming.
+      if (completion.slot.Valid() && self->ep_data_out_)
+      {
+        self->ep_data_out_->ReleaseSlot(completion.slot, in_isr);
+      }
       return;
     }
-    self->OnDataOutComplete(in_isr, data);
+    self->OnDataOutComplete(in_isr, completion);
   }
 
   /**
    * @brief Bulk IN 完成静态回调包装 / Static wrapper for Bulk IN completion
    * @param in_isr 是否在中断上下文 / Whether in ISR
    * @param self this 指针 / this pointer
-   * @param data 发送完成的数据视图 / Completed transfer data view
+   * @param completion 完成信息 / Completion info
    */
-  static void OnDataInCompleteStatic(bool in_isr, GsUsbClass* self, ConstRawData& data)
+  static void OnDataInCompleteStatic(bool in_isr, GsUsbClass* self,
+                                     const Endpoint::Completion& completion)
   {
-    if (self == nullptr || !self->inited_)
+    UNUSED(completion);
+    if (!self->inited_)
     {
       return;
     }
-    self->OnDataInComplete(in_isr, data);
-  }
-
-  /**
-   * @brief Bulk OUT 完成处理（Host->Device） / Handle Bulk OUT completion (Host->Device)
-   * @param in_isr 是否在中断上下文 / Whether in ISR
-   * @param data 收到的数据 / Received data
-   */
-  void OnDataOutComplete(bool in_isr, ConstRawData& data)
-  {
-    UNUSED(in_isr);
-
-    if (!ep_data_out_)
-    {
-      return;
-    }
-    if (!host_format_ok_)
-    {
-      MaybeArmOutTransfer();
-      return;
-    }
-
-    const std::size_t RXLEN = data.size_;
-    if (RXLEN < WIRE_CLASSIC_SIZE)
-    {
-      MaybeArmOutTransfer();
-      return;
-    }
-
-    // 解析 wire header / Parse wire header
-    const WireHeader& wh = *reinterpret_cast<const WireHeader*>(data.addr_);
-
-    const uint8_t CH = wh.channel;
-    if (CH >= can_count_ || !cans_[CH])
-    {
-      MaybeArmOutTransfer();
-      return;
-    }
-
-    const bool IS_FD = (wh.flags & GsUsb::CAN_FLAG_FD) != 0;
-    const uint8_t* payload = reinterpret_cast<const uint8_t*>(data.addr_) + WIRE_HDR_SIZE;
-
-    if (IS_FD)
-    {
-      if (!fd_supported_ || !fdcans_[CH] || !fd_enabled_[CH])
-      {
-        MaybeArmOutTransfer();
-        return;
-      }
-
-      if (RXLEN < WIRE_FD_SIZE)
-      {
-        MaybeArmOutTransfer();
-        return;
-      }
-
-      LibXR::FDCAN::FDPack pack;
-      HostWireToFdPack(wh, payload, pack);
-      (void)fdcans_[CH]->AddMessage(pack);
-    }
-    else
-    {
-      if (!can_enabled_[CH])
-      {
-        MaybeArmOutTransfer();
-        return;
-      }
-
-      if (RXLEN < WIRE_CLASSIC_SIZE)
-      {
-        MaybeArmOutTransfer();
-        return;
-      }
-
-      LibXR::CAN::ClassicPack pack;
-      HostWireToClassicPack(wh, payload, pack);
-      (void)cans_[CH]->AddMessage(pack);
-    }
-
-    // TX echo：host 通过 echo_id 跟踪 TX buffer；设备需回送 echo_id。
-    // TX echo: the host tracks TX buffers via echo_id, and the device should echo it
-    // back.
-    if (wh.echo_id != ECHO_ID_RX)
-    {
-      QueueItem qi;
-      qi.hdr = wh;
-      qi.is_fd = IS_FD;
-      qi.data_len = IS_FD ? 64u : 8u;
-      qi.timestamp_us = MakeTimestampUs(CH);
-      Memory::FastCopy(qi.data.data(), payload, qi.data_len);
-      (void)EnqueueFrame(qi, true, in_isr);
-    }
-
-    MaybeArmOutTransfer();
-  }
-
-  /**
-   * @brief Bulk IN 完成处理（Device->Host） / Handle Bulk IN completion (Device->Host)
-   * @param in_isr 是否在中断上下文 / Whether in ISR
-   * @param data 发送完成的数据视图 / Completed transfer data view
-   */
-  void OnDataInComplete(bool in_isr, ConstRawData& data)
-  {
-    UNUSED(in_isr);
-    UNUSED(data);
-    TryKickTx(false);
+    // 一帧已被主机取走：请求服务继续从队列取帧发送。
+    // A frame was taken by the host: ask the service to keep draining the queues.
+    self->RequestClassService(in_isr);
   }
 
  private:
@@ -901,7 +909,7 @@ class GsUsbClass : public DeviceClass
   Endpoint* ep_data_in_ = nullptr;   ///< Bulk IN 端点对象 / Bulk IN endpoint object
   Endpoint* ep_data_out_ = nullptr;  ///< Bulk OUT 端点对象 / Bulk OUT endpoint object
 
-  bool inited_ = false;                     ///< 是否已初始化 / Initialized
+  std::atomic<uint32_t> inited_{0};         ///< 是否已初始化 / Initialized
   uint8_t interface_num_ = 0;               ///< 接口号 / Interface number
   const char* interface_string_ = nullptr;  ///< 接口字符串 / Interface string
 
@@ -912,14 +920,22 @@ class GsUsbClass : public DeviceClass
 
   LibXR::Database* database_ = nullptr;  ///< 数据库存储（可选，用于 USER_ID） / Database
                                          ///< storage (optional, used by USER_ID)
-  uint32_t user_id_ram_ = 0;             ///< USER_ID 的 RAM 备份 / USER_ID RAM backup
+  uint32_t user_id_ram_ = 0;             ///< USER_ID 的 RAM 值 / USER_ID RAM value
+  // 构造期创建一次的数据库键；SET_USER_ID 只置标志，Timer 任务负责写库。
+  // Database key created once at construction; SET_USER_ID only sets a flag, the Timer
+  // task writes it back.
+  LibXR::Database::Key<uint32_t>* user_id_key_ = nullptr;
+  std::atomic<uint32_t> user_id_write_pending_{
+      0};  ///< USER_ID 待写标志 / USER_ID write-pending flag
+  LibXR::Timer::TimerHandle user_id_timer_ = nullptr;  ///< USER_ID 落库定时任务 /
+                                                       ///< USER_ID write-back timer task
 
-  LibXR::Callback<LibXR::ConstRawData&> on_data_out_cb_ =
-      LibXR::Callback<LibXR::ConstRawData&>::Create(OnDataOutCompleteStatic,
+  Callback<const Endpoint::Completion&> on_data_out_cb_ =
+      Callback<const Endpoint::Completion&>::Create(OnDataOutCompleteStatic,
                                                     this);  ///< OUT 回调 / OUT callback
 
-  LibXR::Callback<LibXR::ConstRawData&> on_data_in_cb_ =
-      LibXR::Callback<LibXR::ConstRawData&>::Create(OnDataInCompleteStatic,
+  Callback<const Endpoint::Completion&> on_data_in_cb_ =
+      Callback<const Endpoint::Completion&>::Create(OnDataInCompleteStatic,
                                                     this);  ///< IN 回调 / IN callback
 
   GsUsb::DeviceConfig dev_cfg_{};    ///< 设备配置 / Device configuration
@@ -940,7 +956,7 @@ class GsUsbClass : public DeviceClass
     uint32_t timestamp_us;               ///< TIMESTAMP
     GsUsb::DeviceTerminationState term;  ///< SET_TERMINATION / GET_TERMINATION
     GsUsb::DeviceState dev_state;        ///< GET_STATE
-    uint32_t user_id;                    ///< GET_USER_ID / SET_USER_ID
+    uint32_t user_id;                    ///< GET_USER_ID
   } ctrl_buf_{};
 
   std::array<LibXR::CAN::Configuration, CanChNum>
@@ -948,15 +964,18 @@ class GsUsbClass : public DeviceClass
   std::array<LibXR::FDCAN::Configuration, CanChNum>
       fd_config_{};  ///< FD 配置 / FD configuration
 
-  bool host_format_ok_ = false;  ///< HOST_FORMAT 是否通过 / HOST_FORMAT OK
+  std::atomic<uint32_t> host_format_ok_{0};  ///< Public cross-context status snapshot.
 
-  bool can_enabled_[CanChNum] = {
-      false};  ///< 通道启用（classic） / Channel enabled (classic)
-  bool berr_enabled_[CanChNum] = {false};  ///< 错误报告启用 / Bus error reporting enabled
-  bool fd_enabled_[CanChNum] = {false};    ///< 通道启用（FD） / Channel enabled (FD)
+  std::atomic<uint32_t>
+      can_enabled_[CanChNum]{};  ///< 通道启用（classic） / Channel enabled (classic)
+  std::atomic<uint32_t>
+      berr_enabled_[CanChNum]{};  ///< 错误报告启用 / Bus error reporting enabled
+  std::atomic<uint32_t>
+      fd_enabled_[CanChNum]{};  ///< 通道启用（FD） / Channel enabled (FD)
 
-  bool timestamps_enabled_ch_[CanChNum] = {
-      false};  ///< 通道时间戳启用 / Per-channel timestamp enabled
+  std::atomic<uint32_t>
+      timestamps_enabled_ch_[CanChNum]{};  ///< 通道时间戳启用 / Per-channel timestamp
+                                           ///< enabled
   GsUsb::TerminationState term_state_[CanChNum] = {
       GsUsb::TerminationState::OFF};  ///< 终端电阻状态 / Termination state
   uint8_t ctrl_target_channel_ =
@@ -974,11 +993,7 @@ class GsUsbClass : public DeviceClass
   } desc_block_{};
   LIBXR_PACKED_END
 
-  uint8_t rx_buf_[WIRE_MAX_SIZE]{};  ///< OUT 接收缓冲区 / OUT receive buffer
-  std::array<uint8_t, WIRE_MAX_SIZE>
-      tx_buf_{};  ///< IN 发送暂存区 / IN transmit staging buffer
-
-  // ================= CAN RX 回调 & BULK IN 发送队列 / CAN RX callbacks & Bulk IN TX
+  // ================= CAN RX 回调 & Bulk IN 发送队列 / CAN RX callbacks & Bulk IN TX
   // queues =================
 
   /**
@@ -999,14 +1014,10 @@ class GsUsbClass : public DeviceClass
     uint8_t ch;        ///< 通道号 / Channel index
   };
 
-  bool can_rx_registered_ =
-      false;  ///< classic RX 回调是否已注册 / Classic RX callback registered
   CanRxCtx can_rx_ctx_[CanChNum]{};  ///< classic RX 上下文数组 / Classic RX contexts
   LibXR::CAN::Callback
       can_rx_cb_[CanChNum]{};  ///< classic RX 回调数组 / Classic RX callbacks
 
-  bool fd_can_rx_registered_ =
-      false;  ///< FD RX 回调是否已注册 / FD RX callback registered
   FdCanRxCtx fd_can_rx_ctx_[CanChNum]{};  ///< FD RX 上下文数组 / FD RX contexts
   LibXR::FDCAN::CallbackFD
       fd_can_rx_cb_[CanChNum]{};  ///< FD RX 回调数组 / FD RX callbacks
@@ -1050,17 +1061,162 @@ class GsUsbClass : public DeviceClass
     std::array<uint8_t, 64> data;  ///< 数据段 / Data bytes
   };
 
+  /**
+   * @brief 每通道一个 SPSC 队列的定长数组 / Fixed-size array of one SPSC queue per
+   *        channel
+   *
+   * 队列容量是构造参数，元素不可默认构造也不可移动，用 placement new 就地构造。
+   * The queue capacity is a constructor argument; the elements are neither default
+   * constructible nor movable, so they are constructed in place.
+   */
+  class RxQueueArray
+  {
+   public:
+    explicit RxQueueArray(size_t capacity)
+    {
+      for (std::size_t i = 0; i < CanChNum; ++i)
+      {
+        new (Slot(i)) LibXR::SPSCQueue<QueueItem>(capacity);
+      }
+    }
+
+    ~RxQueueArray()
+    {
+      for (std::size_t i = 0; i < CanChNum; ++i)
+      {
+        Slot(i)->~SPSCQueue();
+      }
+    }
+
+    RxQueueArray(const RxQueueArray&) = delete;
+    RxQueueArray& operator=(const RxQueueArray&) = delete;
+
+    LibXR::SPSCQueue<QueueItem>& operator[](std::size_t index) { return *Slot(index); }
+
+   private:
+    LibXR::SPSCQueue<QueueItem>* Slot(std::size_t index)
+    {
+      return std::launder(reinterpret_cast<LibXR::SPSCQueue<QueueItem>*>(
+          storage_ + index * sizeof(LibXR::SPSCQueue<QueueItem>)));
+    }
+
+    alignas(LibXR::SPSCQueue<QueueItem>)
+        std::byte storage_[sizeof(LibXR::SPSCQueue<QueueItem>) * CanChNum];
+  };
+
   LibXR::SPSCQueue<QueueItem>
-      rx_queue_;  ///< RX 队列（Device->Host） / RX queue (Device->Host)
-  LibXR::SPSCQueue<QueueItem>
-      echo_queue_;  ///< Echo 队列（回送 echo_id） / Echo queue (echo back echo_id)
+      echo_queue_;          ///< Echo 队列（回送 echo_id，生产者是 OUT 处理） / Echo queue
+                            ///< (echoes echo_id; produced by the OUT handler)
+  RxQueueArray rx_queues_;  ///< 每通道一个接收队列（Device->Host） / One RX queue per
+                            ///< channel (Device->Host)
+  // 错误帧由 CAN 的错误中断产生，数据帧由接收中断产生，两者优先级不必相同，所以错误帧
+  // 单独一个队列，保证每个队列只有一个生产者上下文。
+  // Error frames come from the CAN error interrupt and data frames from the receive
+  // interrupt, whose priorities need not be equal, so error frames get their own queue
+  // and every queue keeps one producer context.
+  RxQueueArray err_queues_;
+
+  // 发往主机的调度状态，只在 owner（完成回调与服务）上下文访问。
+  // Host-send scheduling state, accessed only in the owner (completions and service).
+  uint8_t rr_ = 0;  ///< 通道轮流游标 / Round-robin channel cursor
+
+  // echo 背压：OUT 租约被持有，echo 帧暂存，服务补推后归还租约。
+  // Echo backpressure: the OUT lease is held with the frame stashed until the service
+  // pushes it and returns the lease.
+  bool out_hold_ = false;
+  // 是否有一条 Bulk OUT 接收在途（RearmOut 幂等用）/ Whether a Bulk OUT receive is in
+  // flight (keeps RearmOut idempotent)
+  bool out_armed_ = false;
+  Endpoint::Slot out_hold_slot_{};
+  QueueItem out_hold_item_{};
+
+  /**
+   * @brief 构造期注册 CAN RX 回调（含错误帧；FD 时另注册 FD 回调） /
+   *        Register CAN RX callbacks at construction (plus error frames; FD callbacks
+   *        when supported)
+   */
+  void RegisterCanCallbacks()
+  {
+    for (uint8_t ch = 0; ch < can_count_; ++ch)
+    {
+      if (!cans_[ch])
+      {
+        continue;
+      }
+
+      can_rx_ctx_[ch].self = this;
+      can_rx_ctx_[ch].ch = ch;
+      can_rx_cb_[ch] = LibXR::CAN::Callback::Create(OnCanRxStatic, &can_rx_ctx_[ch]);
+
+      cans_[ch]->Register(can_rx_cb_[ch], LibXR::CAN::Type::STANDARD);
+      cans_[ch]->Register(can_rx_cb_[ch], LibXR::CAN::Type::EXTENDED);
+      cans_[ch]->Register(can_rx_cb_[ch], LibXR::CAN::Type::REMOTE_STANDARD);
+      cans_[ch]->Register(can_rx_cb_[ch], LibXR::CAN::Type::REMOTE_EXTENDED);
+      cans_[ch]->Register(can_rx_cb_[ch], LibXR::CAN::Type::ERROR);
+    }
+
+    if (fd_supported_)
+    {
+      for (uint8_t ch = 0; ch < can_count_; ++ch)
+      {
+        if (!fdcans_[ch])
+        {
+          continue;
+        }
+
+        fd_can_rx_ctx_[ch].self = this;
+        fd_can_rx_ctx_[ch].ch = ch;
+        fd_can_rx_cb_[ch] =
+            LibXR::FDCAN::CallbackFD::Create(OnFdCanRxStatic, &fd_can_rx_ctx_[ch]);
+
+        fdcans_[ch]->Register(fd_can_rx_cb_[ch], LibXR::CAN::Type::STANDARD);
+        fdcans_[ch]->Register(fd_can_rx_cb_[ch], LibXR::CAN::Type::EXTENDED);
+      }
+    }
+  }
+
+  /**
+   * @brief 构造期初始化 USER_ID 存储（Database 键 + 落库定时任务） /
+   *        Initialize USER_ID storage at construction (Database key + write-back task)
+   */
+  void InitUserIdStorage()
+  {
+    if (database_ == nullptr)
+    {
+      return;
+    }
+
+    user_id_key_ =
+        new LibXR::Database::Key<uint32_t>(*database_, "user_id", user_id_ram_);
+    user_id_ram_ = static_cast<uint32_t>(*user_id_key_);
+
+    user_id_timer_ =
+        LibXR::Timer::CreateTask(OnUserIdTimerStatic, this, USER_ID_WRITE_PERIOD_MS);
+    LibXR::Timer::Add(user_id_timer_);
+    LibXR::Timer::Start(user_id_timer_);
+  }
+
+  /**
+   * @brief USER_ID 落库定时任务入口 / Timer task entry that writes USER_ID back
+   */
+  static void OnUserIdTimerStatic(GsUsbClass* self)
+  {
+    if (self->user_id_write_pending_.exchange(0U, std::memory_order_acq_rel) == 0U)
+    {
+      return;
+    }
+    if (self->user_id_key_ != nullptr)
+    {
+      (void)self->user_id_key_->Set(self->user_id_ram_);
+    }
+  }
 
   /**
    * @brief classic CAN RX 处理 / Handle classic CAN RX
    */
   void OnCanRx(bool in_isr, uint8_t ch, const LibXR::CAN::ClassicPack& pack)
   {
-    if (ch >= can_count_ || !ep_data_in_)
+    if (ch >= can_count_ || !inited_.load(std::memory_order_acquire))
     {
       return;
     }
@@ -1068,21 +1224,22 @@ class GsUsbClass : public DeviceClass
     if (pack.type == LibXR::CAN::Type::ERROR)
     {
       QueueItem qi;
-      if (ErrorPackToHostErrorFrame(ch, pack, qi))
+      if (ErrorPackToHostErrorFrame(ch, pack, qi) &&
+          err_queues_[ch].Push(qi) == ErrorCode::OK)
       {
-        (void)EnqueueFrame(qi, false, in_isr);
+        RequestClassService(in_isr);
       }
       return;
     }
 
-    if (!can_enabled_[ch])
+    if (!can_enabled_[ch].load(std::memory_order_relaxed))
     {
       return;
     }
 
     QueueItem qi;
     ClassicPackToQueueItem(pack, ch, qi);
-    (void)EnqueueFrame(qi, false, in_isr);
+    PushRx(ch, qi, in_isr);
   }
 
   /**
@@ -1090,7 +1247,11 @@ class GsUsbClass : public DeviceClass
    */
   void OnFdCanRx(bool in_isr, uint8_t ch, const LibXR::FDCAN::FDPack& pack)
   {
-    if (!fd_supported_ || ch >= can_count_ || !fd_enabled_[ch] || !ep_data_in_)
+    // CAN 生产者只碰自己的队列与服务请求，不碰绑定持有的端点指针。
+    // CAN producers only touch their own queue and the service request, never the
+    // binding-owned endpoint pointers.
+    if (!fd_supported_ || ch >= can_count_ || !inited_.load(std::memory_order_acquire) ||
+        !fd_enabled_[ch].load(std::memory_order_relaxed))
     {
       return;
     }
@@ -1108,93 +1269,82 @@ class GsUsbClass : public DeviceClass
       qi.hdr.flags |= GsUsb::CAN_FLAG_ESI;
     }
 
-    (void)EnqueueFrame(qi, false, in_isr);
+    PushRx(ch, qi, in_isr);
   }
 
   /**
-   * @brief 入队并尝试触发发送 / Enqueue and try to trigger TX
-   * @param qi 队列元素 / Queue item
-   * @param is_echo 是否 echo 队列 / Whether enqueue to echo queue
-   * @param in_isr 是否在中断上下文 / Whether in ISR
-   * @return true 入队成功 / Enqueued
-   * @return false 入队失败 / Failed
+   * @brief 入队一帧 RX；队列满则丢帧 /
+   *        Enqueue one RX frame; a full queue drops it
    */
-  bool EnqueueFrame(const QueueItem& qi, bool is_echo, bool in_isr)
+  void PushRx(uint8_t ch, const QueueItem& qi, bool in_isr)
   {
-    UNUSED(in_isr);
-
-    const ErrorCode EC = is_echo ? echo_queue_.Push(qi) : rx_queue_.Push(qi);
-    if (EC != ErrorCode::OK)
+    if (rx_queues_[ch].Push(qi) != ErrorCode::OK)
     {
-      return false;
+      return;
     }
-
-    TryKickTx(in_isr);
-    MaybeArmOutTransfer();
-    return true;
+    RequestClassService(in_isr);
   }
 
   /**
-   * @brief 尝试启动 Bulk IN 发送 / Try to start Bulk IN transmit
-   * @param in_isr 是否在中断上下文 / Whether in ISR
+   * @brief 选下一帧发往主机：echo 优先，通道间轮流，通道内 FIFO /
+   *        Pick the next frame for the host: echo first, channels round-robin, FIFO
+   *        within a channel
    */
-  void TryKickTx(bool in_isr)
+  bool PickFrame(QueueItem& item)
   {
-    UNUSED(in_isr);
-
-    if (!ep_data_in_)
+    if (echo_queue_.Pop(item) == ErrorCode::OK)
     {
-      return;
-    }
-    if (ep_data_in_->GetState() != Endpoint::State::IDLE)
-    {
-      return;
+      return true;
     }
 
-    QueueItem qi;
-    ErrorCode ec = echo_queue_.Pop(qi);
-    if (ec != ErrorCode::OK)
+    for (std::size_t k = 0; k < can_count_; ++k)
     {
-      ec = rx_queue_.Pop(qi);
-      if (ec != ErrorCode::OK)
+      const uint8_t ch = static_cast<uint8_t>((rr_ + k) % can_count_);
+      if (err_queues_[ch].Pop(item) == ErrorCode::OK ||
+          rx_queues_[ch].Pop(item) == ErrorCode::OK)
       {
-        return;
+        rr_ = static_cast<uint8_t>((ch + 1U) % can_count_);
+        return true;
       }
     }
-
-    const std::size_t SEND_LEN = PackQueueItemToWire(qi, tx_buf_.data(), tx_buf_.size());
-    if (SEND_LEN == 0)
-    {
-      return;
-    }
-
-    RawData tx_raw{tx_buf_.data(), SEND_LEN};
-    (void)ep_data_in_->TransferMultiBulk(tx_raw);
-
-    MaybeArmOutTransfer();
+    return false;
   }
 
   /**
-   * @brief 确保 Bulk OUT 保持挂起接收 / Ensure Bulk OUT is armed for receiving
+   * @brief 归还 OUT 租约（按 receive_size 自动重挂接收） / Return the OUT lease (the
+   *        receive is rearmed per receive_size)
    */
-  void MaybeArmOutTransfer()
+  void ReturnLease(bool in_isr, const Endpoint::Slot& slot)
   {
-    if (!ep_data_out_)
-    {
-      return;
-    }
-    if (ep_data_out_->GetState() != Endpoint::State::IDLE)
-    {
-      return;
-    }
+    // OK：租约重新挂接收；ABORTED：槽随解绑作废，无需处理。
+    // OK: the lease rearms the receive; ABORTED: the slot went stale, nothing to do.
+    (void)ep_data_out_->ReturnSlot(slot, in_isr);
+  }
 
-    if (rx_queue_.EmptySize() == 0 || echo_queue_.EmptySize() == 0)
+  /**
+   * @brief 挂一条整槽接收（单条 OUT 租约在途） / Arm one whole-slot receive (a single
+   *        OUT lease in flight)
+   */
+  void RearmOut(bool in_isr)
+  {
+    // out_hold_ 表示背压中（租约在手里），out_armed_ 表示已经有一条接收在途：
+    // HALT 后的 ABORTED 重挂与 ENDPOINT_RESUMED 重挂可能同时发生，没有在途
+    // 判断就会挂出第二条接收，两个租约同时在途时后到的完成会覆盖
+    // out_hold_slot_（前一个槽泄漏、echo 丢失）。
+    // out_hold_ means backpressured (lease held), out_armed_ means a receive is
+    // already in flight: the ABORTED rearm after a HALT and the ENDPOINT_RESUMED
+    // rearm can both fire, and without the in-flight check a second receive is
+    // armed; the later completion then overwrites out_hold_slot_ (leaking the
+    // earlier slot and losing the echo).
+    if (!inited_ || ep_data_out_ == nullptr || out_hold_ || out_armed_)
     {
       return;
     }
-
-    RawData rx_raw{rx_buf_, static_cast<size_t>(WIRE_MAX_SIZE)};
-    (void)ep_data_out_->TransferMultiBulk(rx_raw);
+    if (ep_data_out_->Receive(ep_data_out_->GetGranted().slot_capacity, in_isr) ==
+        ErrorCode::OK)
+    {
+      out_armed_ = true;
+    }
   }
 
   // ================= 业务处理函数 / Handlers =================
@@ -1325,7 +1475,8 @@ class GsUsbClass : public DeviceClass
    */
   ErrorCode HandleHostFormat(const GsUsb::HostConfig& cfg)
   {
-    host_format_ok_ = (cfg.byte_order == 0x0000beefu);
+    host_format_ok_.store(cfg.byte_order == 0x0000beefu ? 1U : 0U,
+                          std::memory_order_release);
     return ErrorCode::OK;
   }
 
@@ -1517,6 +1668,115 @@ class GsUsbClass : public DeviceClass
   }
 
   /**
+   * @brief Bulk OUT 完成处理（Host->Device） / Handle Bulk OUT completion (Host->Device)
+   * @param in_isr 是否在中断上下文 / Whether in ISR
+   * @param completion 完成信息（含借出的租约） / Completion info (with the lent lease)
+   */
+  void OnDataOutComplete(bool in_isr, const Endpoint::Completion& completion)
+  {
+    // 这一条接收已经结束（无论成功与否）：清掉在途标记，RearmOut 才能再挂。
+    // This receive is over either way: clear the in-flight flag so RearmOut can
+    // arm again.
+    out_armed_ = false;
+
+    if (completion.result != ErrorCode::OK)
+    {
+      // 异常完成（ABORTED 等）没有可用租约；保持 OUT 可收。
+      // An abnormal completion (ABORTED etc.) carries no usable lease; keep OUT armed.
+      if (completion.slot.Valid() && ep_data_out_)
+      {
+        ep_data_out_->ReleaseSlot(completion.slot, in_isr);
+      }
+      RearmOut(in_isr);
+      return;
+    }
+
+    const std::size_t RXLEN = completion.actual;
+    if (host_format_ok_.load(std::memory_order_acquire) == 0U ||
+        RXLEN < WIRE_CLASSIC_SIZE)
+    {
+      ReturnLease(in_isr, completion.slot);
+      return;
+    }
+
+    // 解析 wire 头并校验 / Parse the wire header and validate.
+    const WireHeader& wh =
+        *reinterpret_cast<const WireHeader*>(completion.slot.data.addr_);
+    const uint8_t CH = wh.channel;
+    const bool IS_FD = (wh.flags & GsUsb::CAN_FLAG_FD) != 0;
+    const uint8_t* payload =
+        reinterpret_cast<const uint8_t*>(completion.slot.data.addr_) + WIRE_HDR_SIZE;
+
+    LibXR::CAN::ClassicPack classic{};
+    LibXR::FDCAN::FDPack fd{};
+    bool accept = false;
+
+    if (CH < can_count_ && cans_[CH] && !IS_FD &&
+        can_enabled_[CH].load(std::memory_order_relaxed) && RXLEN >= WIRE_CLASSIC_SIZE)
+    {
+      HostWireToClassicPack(wh, payload, classic);
+      accept = true;
+    }
+    else if (CH < can_count_ && cans_[CH] && IS_FD && fd_supported_ && fdcans_[CH] &&
+             fd_enabled_[CH].load(std::memory_order_relaxed) && RXLEN >= WIRE_FD_SIZE)
+    {
+      HostWireToFdPack(wh, payload, fd);
+      accept = true;
+    }
+
+    if (!accept)
+    {
+      ReturnLease(in_isr, completion.slot);
+      return;
+    }
+
+    // CAN TX 先提交，且只提交一次：echo 队列满时只把 echo 与租约暂存下来，
+    // 服务补推 echo 后归还租约，不会再次提交 CAN。
+    // Submit the CAN TX first and exactly once: a full echo queue only holds the echo
+    // and the lease, and the service returns the lease after pushing the echo without
+    // submitting the CAN frame again.
+    if (IS_FD)
+    {
+      (void)fdcans_[CH]->AddMessage(fd);
+    }
+    else
+    {
+      (void)cans_[CH]->AddMessage(classic);
+    }
+
+    // TX echo：host 通过 echo_id 跟踪 TX buffer；设备需回送 echo_id。
+    // TX echo: the host tracks TX buffers via echo_id, and the device should echo it
+    // back.
+    if (wh.echo_id != ECHO_ID_RX)
+    {
+      QueueItem qi;
+      qi.hdr = wh;
+      qi.is_fd = IS_FD;
+      qi.data_len = IS_FD ? 64u : 8u;
+      qi.timestamp_us = MakeTimestampUs(CH);
+      Memory::FastCopy(qi.data.data(), payload, qi.data_len);
+
+      if (echo_queue_.Push(qi) != ErrorCode::OK)
+      {
+        // echo 队列满：不归还 OUT 租约（主机收到 NAK），不再静默丢弃；
+        // 服务腾出空间后补推并归还租约。
+        // Echo queue full: keep the OUT lease (the host gets NAK) instead of dropping
+        // the echo silently; the service pushes it later and returns the lease.
+        out_hold_ = true;
+        out_hold_slot_ = completion.slot;
+        out_hold_item_ = qi;
+        RequestClassService(in_isr);
+        return;
+      }
+      RequestClassService(in_isr);
+    }
+
+    ReturnLease(in_isr, completion.slot);
+  }
+
+  // ================= 转换函数 / Converters =================
+
+  /**
    * @brief wire -> ClassicPack / Convert wire frame to ClassicPack
    */
   static void HostWireToClassicPack(const WireHeader& wh, const uint8_t* payload,
@@ -1692,7 +1952,9 @@ class GsUsbClass : public DeviceClass
     }
 
     const uint8_t CH = qi.hdr.channel;
-    const bool TS = (CH < can_count_) ? timestamps_enabled_ch_[CH] : false;
+    const bool TS = (CH < can_count_)
+                        ? timestamps_enabled_ch_[CH].load(std::memory_order_relaxed) != 0U
+                        : false;
     const std::size_t PAYLOAD = qi.is_fd ? WIRE_FD_DATA_SIZE : WIRE_CLASSIC_DATA_SIZE;
     const std::size_t TOTAL = WIRE_HDR_SIZE + PAYLOAD + (TS ? WIRE_TS_SIZE : 0);
 
@@ -1716,7 +1978,7 @@ class GsUsbClass : public DeviceClass
    * @brief 将 LibXR 错误帧转换为 Host 错误帧（SocketCAN 语义） /
    *        Convert LibXR error pack to host error frame (SocketCAN semantics)
    * @param ch 通道号 / Channel index
-   * @param err_pack 错误帧 / Error pack
+   * @param err_pack 错误帧 / Error frame
    * @param qi 输出队列元素 / Output queue item
    * @return true 转换成功并应上报 / Converted and should report
    * @return false 不上报 / Do not report
@@ -1728,7 +1990,7 @@ class GsUsbClass : public DeviceClass
     {
       return false;
     }
-    if (!berr_enabled_[ch])
+    if (!berr_enabled_[ch].load(std::memory_order_relaxed))
     {
       return false;
     }
@@ -1895,7 +2157,7 @@ class GsUsbClass : public DeviceClass
    */
   uint32_t MakeTimestampUs(uint8_t ch) const
   {
-    if (ch < can_count_ && timestamps_enabled_ch_[ch])
+    if (ch < can_count_ && timestamps_enabled_ch_[ch].load(std::memory_order_relaxed))
     {
       return static_cast<uint32_t>(LibXR::Timebase::GetMicroseconds() & 0xFFFFFFFFu);
     }
@@ -1955,38 +2217,6 @@ class GsUsbClass : public DeviceClass
       return 14;
     }
     return 15;
-  }
-
-  /**
-   * @brief 读取 USER_ID（RAM 或 Database） / Read USER_ID (RAM or Database)
-   * @return uint32_t USER_ID
-   */
-  uint32_t GetUserIdFromStorage() const
-  {
-    if (database_ == nullptr)
-    {
-      return user_id_ram_;
-    }
-
-    LibXR::Database::Key<uint32_t> key(*database_, "user_id", user_id_ram_);
-    return static_cast<uint32_t>(key);
-  }
-
-  /**
-   * @brief 写入 USER_ID（RAM 或 Database） / Write USER_ID (RAM or Database)
-   * @param value USER_ID
-   */
-  void SetUserIdToStorage(uint32_t value)
-  {
-    user_id_ram_ = value;
-
-    if (database_ == nullptr)
-    {
-      return;
-    }
-
-    LibXR::Database::Key<uint32_t> key(*database_, "user_id", 0u);
-    (void)key.Set(value);
   }
 };
 
