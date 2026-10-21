@@ -56,6 +56,7 @@ void test_usb_endpoint();
 void test_usb_cdc_test();
 void test_usb_cdc_uart();
 void test_usb_hid();
+void test_usb_dfu();
 void test_stack();
 void test_swd_general_gpio();
 void test_swd_protocol();
@@ -217,6 +218,7 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests", {"usb_cdc_test", &RunVoidEntry<test_usb_cdc_test>, false}},
     {"usb_tests", {"usb_cdc_uart", &RunVoidEntry<test_usb_cdc_uart>, false}},
     {"usb_tests", {"usb_hid", &RunVoidEntry<test_usb_hid>, false}},
+    {"usb_tests", {"usb_dfu", &RunVoidEntry<test_usb_dfu>, false}},
     {"core_tests", {"assert", &RunVoidEntry<test_assert>, false}},
     {"core_tests", {"def", &RunVoidEntry<test_def>, false}},
     {"core_tests", {"callback", &RunVoidEntry<test_cb>, false}},

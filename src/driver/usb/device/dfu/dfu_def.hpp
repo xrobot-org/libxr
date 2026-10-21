@@ -88,37 +88,20 @@ class DfuInterfaceClassBase : public DeviceClass
  protected:
   static constexpr const char* DEFAULT_WINUSB_DEVICE_INTERFACE_GUID =
       "{4066E5F4-3B02-4B90-9475-12F770A7841B}";
-  static constexpr uint8_t DEFAULT_WINUSB_VENDOR_CODE = 0x20u;
-  enum class WinUsbMsOs20Scope : uint8_t
-  {
-    NONE = 0u,
-    DEVICE = 1u,
-    FUNCTION = 2u,
-  };
-  using DeviceWinUsbMsOs20DescSet =
-      LibXR::USB::WinUsbMsOs20::DeviceScopedWinUsbMsOs20DescSet<
-          LibXR::USB::WinUsbMsOs20::GUID_MULTI_SZ_UTF16_BYTES>;
-  using FunctionWinUsbMsOs20DescSet =
-      LibXR::USB::WinUsbMsOs20::FunctionScopedWinUsbMsOs20DescSet<
-          LibXR::USB::WinUsbMsOs20::GUID_MULTI_SZ_UTF16_BYTES>;
 
   // Shared single-interface DFU state:
   // - one interface string
   // - optional WebUSB BOS capability
-  // - WinUSB BOS capability enabled by default for dedicated DFU bootloaders
+  // - the WinUSB interface GUID; the composition builds the MS OS 2.0 descriptor set
   // - current interface/alt-setting pair
   DfuInterfaceClassBase(
       const char* interface_string, const char* webusb_landing_page_url = nullptr,
       uint8_t webusb_vendor_code = LibXR::USB::WebUsb::WEBUSB_VENDOR_CODE_DEFAULT,
-      const char* winusb_device_interface_guid = DEFAULT_WINUSB_DEVICE_INTERFACE_GUID,
-      uint8_t winusb_vendor_code = DEFAULT_WINUSB_VENDOR_CODE,
-      WinUsbMsOs20Scope winusb_scope = WinUsbMsOs20Scope::DEVICE)
+      const char* winusb_device_interface_guid = DEFAULT_WINUSB_DEVICE_INTERFACE_GUID)
       : interface_string_(interface_string),
-        winusb_scope_(winusb_scope),
+        winusb_device_interface_guid_(winusb_device_interface_guid),
         webusb_cap_(webusb_landing_page_url, webusb_vendor_code)
   {
-    InitWinUsbDescriptors(ResolveWinUsbDeviceInterfaceGuid(winusb_device_interface_guid),
-                          winusb_vendor_code);
   }
 
   const char* GetInterfaceString(size_t local_interface_index) const override
@@ -126,22 +109,19 @@ class DfuInterfaceClassBase : public DeviceClass
     return (local_interface_index == 0u) ? interface_string_ : nullptr;
   }
 
-  size_t GetBosCapabilityCount() override
+  /// nullptr 或空串表示不请求 WinUSB 绑定。 / nullptr or "" requests no WinUSB binding.
+  const char* GetWinUsbInterfaceGuid() const override
   {
-    return (HasWinUsbBosCapability() ? 1u : 0u) + (webusb_cap_.Enabled() ? 1u : 0u);
+    return (winusb_device_interface_guid_ != nullptr &&
+            winusb_device_interface_guid_[0] != '\0')
+               ? winusb_device_interface_guid_
+               : nullptr;
   }
+
+  size_t GetBosCapabilityCount() override { return webusb_cap_.Enabled() ? 1u : 0u; }
 
   BosCapability* GetBosCapability(size_t index) override
   {
-    if (HasWinUsbBosCapability())
-    {
-      if (index == 0u)
-      {
-        return &winusb_msos20_cap_;
-      }
-      return (index == 1u && webusb_cap_.Enabled()) ? &webusb_cap_ : nullptr;
-    }
-
     return (index == 0u && webusb_cap_.Enabled()) ? &webusb_cap_ : nullptr;
   }
 
@@ -149,57 +129,11 @@ class DfuInterfaceClassBase : public DeviceClass
   uint8_t current_alt_setting_ = 0u;
   bool inited_ = false;
 
-  void UpdateWinUsbFunctionInterface(uint8_t interface_num,
-                                     uint8_t configuration_index = 0u)
-  {
-    function_winusb_msos20_.SetFirstInterface(interface_num);
-    function_winusb_msos20_.cfg.bConfigurationValue = configuration_index;
-    if (winusb_scope_ == WinUsbMsOs20Scope::FUNCTION)
-    {
-      winusb_msos20_cap_.SetDescriptorSet(GetWinUsbMsOs20DescriptorSet());
-    }
-  }
-
  private:
-  bool HasWinUsbBosCapability() const { return winusb_scope_ != WinUsbMsOs20Scope::NONE; }
-
-  static const char* ResolveWinUsbDeviceInterfaceGuid(const char* guid)
-  {
-    return (guid != nullptr && guid[0] != '\0') ? guid
-                                                : DEFAULT_WINUSB_DEVICE_INTERFACE_GUID;
-  }
-
-  ConstRawData GetWinUsbMsOs20DescriptorSet() const
-  {
-    if (winusb_scope_ == WinUsbMsOs20Scope::FUNCTION)
-    {
-      return ConstRawData{reinterpret_cast<const uint8_t*>(&function_winusb_msos20_),
-                          sizeof(function_winusb_msos20_)};
-    }
-    if (winusb_scope_ == WinUsbMsOs20Scope::DEVICE)
-    {
-      return ConstRawData{reinterpret_cast<const uint8_t*>(&device_winusb_msos20_),
-                          sizeof(device_winusb_msos20_)};
-    }
-    return ConstRawData{nullptr, 0};
-  }
-
-  void InitWinUsbDescriptors(const char* guid, uint8_t vendor_code)
-  {
-    device_winusb_msos20_.Init(guid);
-    function_winusb_msos20_.Init(0u, 0u, guid);
-    winusb_msos20_cap_.SetVendorCode(vendor_code);
-    winusb_msos20_cap_.SetDescriptorSet(GetWinUsbMsOs20DescriptorSet());
-  }
-
   const char* interface_string_ = nullptr;
-  WinUsbMsOs20Scope winusb_scope_ = WinUsbMsOs20Scope::DEVICE;
-  DeviceWinUsbMsOs20DescSet device_winusb_msos20_{};
-  FunctionWinUsbMsOs20DescSet function_winusb_msos20_{};
+  const char* winusb_device_interface_guid_ = nullptr;
 
  protected:
-  LibXR::USB::WinUsbMsOs20::MsOs20BosCapability winusb_msos20_cap_{
-      LibXR::ConstRawData{nullptr, 0}, DEFAULT_WINUSB_VENDOR_CODE};
   LibXR::USB::WebUsb::WebUsbBosCapability webusb_cap_;
 };
 
