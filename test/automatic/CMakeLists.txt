@@ -122,6 +122,7 @@ add_executable(
   driver/usb/device/dfu/test_dfu.cpp
   driver/usb/device/gsusb/test_gsusb.cpp
   driver/usb/device/hid/test_hid.cpp
+  driver/usb/device/uac/test_uac_mic.cpp
   middleware/database/database/test_database.cpp
   middleware/database/raw/raw/test_linux_database_raw.cpp
   middleware/database/raw_sequential/test_linux_database_sequential.cpp
