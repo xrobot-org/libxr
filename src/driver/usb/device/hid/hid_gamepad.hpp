@@ -99,25 +99,26 @@ class HIDGamepadT
    * @return 错误码 / Error code
    * @note 轴值会被夹到 [LOG_MIN, LOG_MAX] / Axis values are clamped to [LOG_MIN, LOG_MAX]
    */
-  ErrorCode Send(int x, int y, int z, int rx, uint8_t buttons)
+  ErrorCode Send(int x, int y, int z, int rx, uint8_t buttons, bool in_isr = false)
   {
     last_.x = Clamp(x);
     last_.y = Clamp(y);
     last_.z = Clamp(z);
     last_.rx = Clamp(rx);
     last_.buttons = buttons;
-    return SendInputReport(ConstRawData{&last_, sizeof(last_)});
+    return SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
   }
 
   /**
    * @brief 仅更新按钮（保持轴不变） / Update buttons only (axes unchanged)
    * @param buttons 按钮位掩码 / Button bit mask
+   * @param in_isr 是否在中断中 / Whether in ISR
    * @return 错误码 / Error code
    */
-  ErrorCode SendButtons(uint8_t buttons)
+  ErrorCode SendButtons(uint8_t buttons, bool in_isr = false)
   {
     last_.buttons = buttons;
-    return SendInputReport(ConstRawData{&last_, sizeof(last_)});
+    return SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
   }
 
   /**
@@ -126,15 +127,16 @@ class HIDGamepadT
    * @param y Y 轴 / Y axis
    * @param z Z 轴 / Z axis
    * @param rx Rx 轴 / Rx axis
+   * @param in_isr 是否在中断中 / Whether in ISR
    * @return 错误码 / Error code
    */
-  ErrorCode SendAxes(int x, int y, int z, int rx)
+  ErrorCode SendAxes(int x, int y, int z, int rx, bool in_isr = false)
   {
     last_.x = Clamp(x);
     last_.y = Clamp(y);
     last_.z = Clamp(z);
     last_.rx = Clamp(rx);
-    return SendInputReport(ConstRawData{&last_, sizeof(last_)});
+    return SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
   }
 
  protected:
