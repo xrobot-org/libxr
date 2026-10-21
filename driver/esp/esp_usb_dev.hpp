@@ -4,8 +4,10 @@
 #include <cstdint>
 #include <initializer_list>
 
+#include "driver_async_condition.hpp"
 #include "esp_def.hpp"
 #include "esp_intr_alloc.h"
+#include "freertos/FreeRTOS.h"
 #include "libxr_type.hpp"
 #include "usb/core/ep_pool.hpp"
 #include "usb/device/dev_core.hpp"
@@ -22,7 +24,8 @@ class ESP32USBEndpoint;
 /**
  * @brief ESP32-S3 USB OTG 设备核心实现 / ESP32-S3 USB OTG device-core implementation
  */
-class ESP32USBDevice : public USB::EndpointPool, public USB::DeviceCore
+class ESP32USBDevice : public USB::EndpointPool,
+                       public USB::DeviceCore<USB::FullSpeedCapabilities>
 {
  public:
   /**
@@ -97,12 +100,14 @@ class ESP32USBDevice : public USB::EndpointPool, public USB::DeviceCore
    * @brief 去初始化 USB device core 状态 / Deinitialize the USB device-core state
    */
   void Deinit(bool in_isr) override;
+  void OnControllerReset() override;
+  void OnControlReady() override;
 
   /**
    * @brief 在控制传输阶段写入设备地址 / Write the device address during control-transfer
    * sequencing
    */
-  ErrorCode SetAddress(uint8_t address, USB::DeviceCore::Context context) override;
+  ErrorCode SetAddress(uint8_t address, USB::ControlContext context) override;
 
   /**
    * @brief 启动 USB device controller / Start the USB device controller
@@ -113,6 +118,20 @@ class ESP32USBDevice : public USB::EndpointPool, public USB::DeviceCore
    * @brief 停止 USB device controller / Stop the USB device controller
    */
   void Stop(bool in_isr) override;
+
+  /**
+   * @brief 停止超时（核心按 1 ms 帧计数后调用）：升级为控制器复位
+   *        Stop timeout (the core calls this after counting 1 ms frames): escalate to a
+   *        controller reset
+   */
+  void OnStopTimeout(bool in_isr) override;
+
+  /**
+   * @brief 所有等待中的停止都已确认：按 WantsBusTime 重新决定是否保留 SOF 中断
+   *        All waiting stops are confirmed: decide again whether the SOF interrupt
+   *        stays on from WantsBusTime
+   */
+  void OnStopsSettled() override;
 
  private:
   friend class ESP32USBEndpoint;
@@ -185,7 +204,7 @@ class ESP32USBDevice : public USB::EndpointPool, public USB::DeviceCore
   /**
    * @brief USB 中断跳板函数 / USB interrupt trampoline
    */
-  static void IRAM_ATTR IsrEntry(void* arg);
+  static void IsrEntry(void* arg);
 
   /**
    * @brief 确保内部 PHY 已就绪 / Ensure the internal PHY is ready
@@ -215,7 +234,7 @@ class ESP32USBDevice : public USB::EndpointPool, public USB::DeviceCore
   /**
    * @brief 冲刷 RX/TX FIFO / Flush the RX/TX FIFOs
    */
-  void FlushFifos();
+  bool FlushFifos();
 
   /**
    * @brief 重置 FIFO 分配账本 / Reset the FIFO-allocation bookkeeping state
@@ -290,6 +309,32 @@ class ESP32USBDevice : public USB::EndpointPool, public USB::DeviceCore
    */
   bool EnsureRxFifo(uint16_t packet_size);
 
+  /// 复位 core 寄存器（自清位的等待都有上界；超界返回 false）/ Reset the core registers
+  /// (every wait on a self-clearing bit is bounded; false when a bound is exceeded)
+  bool ResetCoreRegisters();
+  /// 重建寄存器基线（复位之后；FIFO 冲刷超界返回 false）/ Rebuild the register baseline
+  /// (after a reset; false when the FIFO flush exceeds its bound)
+  bool RebuildCoreRegisters();
+  /// 重新计算 SOF 中断是否需要打开：类要总线时间，或有停止在等（核心靠 SOF 帧数判停止
+  /// 超时）/ Recompute whether the SOF interrupt must be on: a class wants bus time, or a
+  /// stop is waiting (the core counts SOF frames to detect a stop timeout)
+  void UpdateTick();
+  /// 确认所有等待中的停止（控制器复位路径）/ Confirm every waiting stop (the
+  /// controller-reset path)
+  void ForceStopAll(bool in_isr);
+  /// 复位链的条件：单段，节拍上直接执行 / Reset-chain condition: one stage, runs on the
+  /// tick directly
+  static bool ResetCheck(void* arg);
+  /// 复位链的完成：复位并重连 / Reset-chain completion: reset and reconnect
+  static void ResetDone(void* arg, ErrorCode result);
+
+  /// 复位确认的最长等待 / Longest wait for the reset to confirm
+  static constexpr uint32_t RESET_STEP_TIMEOUT_MS = 20U;
+  /// 停止超时后的控制器复位链（毫秒节拍驱动）/ Controller-reset chain after a stop
+  /// timeout (driven by the millisecond tick)
+  DriverAsyncCondition reset_wait_;
+
+  portMUX_TYPE hardware_mux_ = portMUX_INITIALIZER_UNLOCKED;
   EndpointMap endpoint_map_ = {};  ///< Endpoint 所有权映射表 / Endpoint ownership map
   FifoState fifo_state_ =
       {};  ///< FIFO 尺寸与分配账本 / FIFO sizing and allocation bookkeeping

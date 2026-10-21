@@ -22,13 +22,35 @@ class ESP32USBEndpoint : public USB::Endpoint
 
   friend class ESP32USBDevice;
 
-  void Configure(const Config& cfg) override;
-  void Close() override;
-  ErrorCode Stall() override;
-  ErrorCode ClearStall() override;
-  ErrorCode Transfer(size_t size) override;
+  ErrorCode ConfigureHardware(const Config& cfg) override;
+  void CloseHardware(bool in_isr) override;
+  ErrorCode StallHardware(bool in_isr) override;
+  ErrorCode ClearStallHardware(bool in_isr) override;
+  ErrorCode StartHardware(const HwRequest& request, bool in_isr) override;
+  StopResult StopHardware(bool in_isr) override;
+  size_t ReapProgress(const HwRequest& request, bool& retired) override;
 
-  size_t MaxTransferSize() const override;
+  /// 停止时序的阶段（由中断推进，不忙等）/ Stop sequence phase (advanced by
+  /// interrupts, never busy-waiting)
+  enum class StopPhase : uint8_t
+  {
+    NONE = 0,
+    SNAK_WAIT,
+    DIS_WAIT,
+  };
+
+  /// 由 IN/OUT 中断调用，推进停止时序 / Called from the IN/OUT interrupts to
+  /// advance the stop sequence
+  void AdvanceStop(bool in_isr);
+  /// 有停止在等硬件确认（设备据此打开 SOF，核心靠帧数判停止超时）/ A stop is waiting for
+  /// the hardware (the device keeps SOF on for it; the core counts frames to time it out)
+  bool StopPending() const { return stop_phase_ != StopPhase::NONE; }
+
+  /// 控制器复位升级路径：收掉软件状态并确认停止（不再碰寄存器）/ Controller-reset
+  /// escalation: drop the software state and confirm the stop (no register access)
+  void ForceStop(bool in_isr);
+
+  size_t MaxPacketSizeLimit(Type type) const override;
 
  private:
   enum class Ep0OutPhase : uint8_t
@@ -39,13 +61,15 @@ class ESP32USBEndpoint : public USB::Endpoint
   };
 
   void ResetHardwareState();
+  /// 总线复位里硬件已被禁用：确认还在等待的停止 / The hardware is disabled by a bus
+  /// reset: confirm a stop that is still waiting
+  void ConfirmStopAfterReset(bool in_isr);
   void HandleInInterrupt(bool in_isr);
   void FinishPendingEp0InStatus(bool in_isr);
   void HandleOutInterrupt(bool in_isr);
   void HandleRxData(size_t size);
   void ObserveDmaRxStatus(uint8_t pktsts, size_t size);
   void ResetTransferState();
-  bool EnsureDmaShadow(size_t size);
   bool PrepareTransferBuffer(size_t size);
   bool FinishOutTransfer(size_t actual_size);
   size_t GetRemainingTransferSize() const;
@@ -57,15 +81,18 @@ class ESP32USBEndpoint : public USB::Endpoint
   ESP32USBDevice& device_;
   bool fifo_allocated_ = false;
   uint16_t fifo_words_ = 0U;
-  uint8_t* dma_shadow_buffer_ = nullptr;
-  size_t dma_shadow_size_ = 0U;
   uint8_t* transfer_buffer_ = nullptr;
   uint8_t* transfer_hw_buffer_ = nullptr;
   size_t transfer_request_size_ = 0U;
+  uint32_t transfer_tag_ = 0U;
+  bool transfer_active_ = false;
+  StopPhase stop_phase_ = StopPhase::NONE;
+  /// EP0 OUT 停止后的 DMA 落点，避免仍指向被借出的槽 / DMA target after an EP0
+  /// OUT stop so it no longer points at the lent slot
+  uint8_t ep0_scratch_[64] =
+      {};  ///< 在途请求由后端自持 / In-flight tracked by the backend
   size_t transfer_actual_size_ = 0U;
   size_t transfer_queued_size_ = 0U;
-  bool transfer_uses_shadow_ = false;
-  size_t transfer_direct_sync_size_ = 0U;
   size_t dma_rx_status_bytes_ = 0U;
   bool dma_rx_status_seen_ = false;
   Ep0OutPhase ep0_out_phase_ = Ep0OutPhase::SETUP;
