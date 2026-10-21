@@ -5,12 +5,14 @@
  *
  * 覆盖槽模型迁移改动的路径：每通道一个 SPSC 接收队列加一个 echo 队列、
  * 服务里取槽打包提交、echo 总是优先、echo 队列满时保留 OUT 租约作背压、
- * RX 队列满时丢帧，以及 SET_USER_ID 只改 RAM 与待写标志、由 100 ms Timer
+ * RX 队列满时丢帧计数并在该通道发往主机的下一帧（含 echo）置
+ * CAN_FLAG_OVERFLOW，以及 SET_USER_ID 只改 RAM 与待写标志、由 100 ms Timer
  * 任务落库。
  * Covers the paths the slot-model migration changed: one SPSC RX queue per channel
  * plus one echo queue, slot packing and submission in the class service, absolute
  * echo priority, the OUT lease held as backpressure while the echo queue is full,
- * a full RX queue dropping the frame, and SET_USER_ID only touching RAM plus a
+ * dropped frames counted per channel with CAN_FLAG_OVERFLOW on that channel's next
+ * frame to the host (echoes included), and SET_USER_ID only touching RAM plus a
  * pending flag with the 100 ms Timer task writing the Database.
  */
 
@@ -296,6 +298,77 @@ void TestCanRxToHost()
   f.in.Complete();
 }
 
+void TestRxQueueOverflowFlag()
+{
+  FreshTimerList();
+  GsFixture f(4, 32);  // four frames per channel
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f, true, false);
+
+  // Two IN slots are in flight and the four-deep RX queue fills, so the seventh frame
+  // has nowhere to go and is dropped.
+  for (unsigned i = 0; i < 7; ++i)
+  {
+    f.can0.Inject(0x100u + i, {static_cast<uint8_t>(i)});
+  }
+  // Drain: two frames are on the wire, the rest follow once slots free up.
+  for (unsigned i = 0; i < 12 && f.in.active; ++i)
+  {
+    f.in.Complete();
+  }
+
+  TEST_ASSERT(f.in.sent.size() == 6);  // seven injected, one dropped
+  // The Linux host delivers the frame that carries the flag as usual and then adds
+  // its own RX-overflow error frame, so the flag rides on a real frame of channel 0
+  // and that frame stays intact.
+  size_t overflow = 0;
+  for (std::size_t i = 0; i < f.in.sent.size(); ++i)
+  {
+    const auto& frame = f.in.sent[i];
+    TEST_ASSERT(ReadU32(frame, 0) == 0xFFFFFFFFu && frame[9] == 0);
+    TEST_ASSERT(ReadU32(frame, 4) == 0x100u + i && frame[WIRE_HEADER] == i);
+    if ((frame[10] & GsUsb::CAN_FLAG_OVERFLOW) != 0U) ++overflow;
+  }
+  // The drop is reported exactly once, on that channel's next frame.
+  TEST_ASSERT(overflow == 1);
+}
+
+/// The Linux host checks GS_CAN_FLAG_OVERFLOW after handling any frame, an echo
+/// included, and counts it for that frame's channel. A drop is therefore reported on
+/// the channel's next frame to the host even when that frame is an echo, and never on
+/// another channel's frame.
+void TestOverflowFlagRidesOnTheChannelsNextFrame()
+{
+  FreshTimerList();
+  GsFixture f(4, 32);  // four frames per channel
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f);
+
+  // Two IN slots in flight, four frames queued, the seventh dropped.
+  for (unsigned i = 0; i < 7; ++i)
+  {
+    f.can0.Inject(0x100u + i, {static_cast<uint8_t>(i)});
+  }
+  // Echoes for channel 1 and channel 0 queue next; echoes go first.
+  f.out.HostSends(ClassicFrame(0x10u, 0x301u, 1, 1, 0, {0x11}));
+  f.out.HostSends(ClassicFrame(0x20u, 0x300u, 1, 0, 0, {0x22}));
+  for (unsigned i = 0; i < 16 && f.in.active; ++i)
+  {
+    f.in.Complete();
+  }
+
+  TEST_ASSERT(f.in.sent.size() == 8);
+  size_t overflow = 0;
+  for (const auto& frame : f.in.sent)
+  {
+    if ((frame[10] & GsUsb::CAN_FLAG_OVERFLOW) == 0U) continue;
+    ++overflow;
+    // Channel 0's echo is its first frame after the drop; it keeps its echo_id.
+    TEST_ASSERT(ReadU32(frame, 0) == 0x20u && frame[9] == 0);
+  }
+  TEST_ASSERT(overflow == 1);
+}
+
 /// Echo frames go to the host before any queued RX frame: the host's TX path (echo ->
 /// netif_wake_queue in the Linux driver) is not delayed behind received traffic.
 void TestEchoHasPriority()
@@ -484,6 +557,8 @@ void test_usb_gsusb()
   TestBindAndConfiguration();
   TestHostFrameToCanAndEcho();
   TestCanRxToHost();
+  TestRxQueueOverflowFlag();
+  TestOverflowFlagRidesOnTheChannelsNextFrame();
   TestEchoHasPriority();
   TestEchoBackpressure();
   TestUserIdRoundTripAndDatabaseWrite();

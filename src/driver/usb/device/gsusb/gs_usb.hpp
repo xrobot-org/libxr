@@ -32,13 +32,16 @@ namespace LibXR::USB
  *
  * 接收路径：每个 CAN 源一个 SPSC 队列（rx_queue_size 为每通道容量），echo 单独一个
  * SPSC 队列（生产者是 USB OUT 处理）。CAN 回调与 OUT 处理只入队并请求类服务，
- * 服务里取槽、打包、提交。echo 总是优先，其后通道间轮流发送；RX 队列满时丢帧。
+ * 服务里取槽、打包、提交。echo 总是优先，其后通道间轮流发送；RX 队列满时丢帧并
+ * 按通道计数，溢出标志随该通道发往主机的下一帧（RX、错误帧或 echo）上报。
  *
  * Receive path: one SPSC queue per CAN source (rx_queue_size is the per-channel
  * capacity) plus one echo SPSC queue whose producer is the USB OUT handling. CAN
  * callbacks and the OUT handler only enqueue and request the class service; the
  * service acquires slots, packs and submits. Echo frames always go first, then the
- * channels are drained round-robin; a full RX queue drops the frame.
+ * channels are drained round-robin; a full RX queue drops the frame and counts it
+ * per channel, and the overflow flag rides on that channel's next frame to the host
+ * (RX, error or echo).
  */
 template <std::size_t CanChNum>
 class GsUsbClass : public DeviceClass
@@ -261,6 +264,8 @@ class GsUsbClass : public DeviceClass
         ep_data_in_->ReleaseSlot(slot, in_isr);
         break;
       }
+
+      ApplyOverflowFlag(item);
 
       const std::size_t size = PackQueueItemToWire(
           item, static_cast<uint8_t*>(slot.data.addr_), slot.data.size_);
@@ -1130,6 +1135,13 @@ class GsUsbClass : public DeviceClass
   Endpoint::Slot out_hold_slot_{};
   QueueItem out_hold_item_{};
 
+  std::atomic<uint32_t> rx_drop_[CanChNum]{};  ///< 每通道丢帧计数（仅该通道生产者写） /
+                                               ///< Per-channel dropped-frame count
+                                               ///< (written by that channel's producer)
+  uint32_t rx_drop_reported_[CanChNum] = {};   ///< 已上报的丢帧数（仅服务上下文读写） /
+                                               ///< Reported drop count (service context
+                                               ///< only)
+
   /**
    * @brief 构造期注册 CAN RX 回调（含错误帧；FD 时另注册 FD 回调） /
    *        Register CAN RX callbacks at construction (plus error frames; FD callbacks
@@ -1273,13 +1285,15 @@ class GsUsbClass : public DeviceClass
   }
 
   /**
-   * @brief 入队一帧 RX；队列满则丢帧 /
-   *        Enqueue one RX frame; a full queue drops it
+   * @brief 入队一帧 RX；队列满则丢帧并计数（溢出标志随下一帧上报） /
+   *        Enqueue one RX frame; a full queue drops it and counts the loss (the
+   *        overflow flag rides on the next frame)
    */
   void PushRx(uint8_t ch, const QueueItem& qi, bool in_isr)
   {
     if (rx_queues_[ch].Push(qi) != ErrorCode::OK)
     {
+      rx_drop_[ch].fetch_add(1U, std::memory_order_relaxed);
       return;
     }
     RequestClassService(in_isr);
@@ -1308,6 +1322,31 @@ class GsUsbClass : public DeviceClass
       }
     }
     return false;
+  }
+
+  /**
+   * @brief 通道丢过帧时在该通道发往主机的下一帧置 OVERFLOW 标志 /
+   *        Set CAN_FLAG_OVERFLOW on the channel's next frame to the host after drops
+   *
+   * 主机对任何一帧（RX 数据帧、错误帧或 echo）都先按原样处理，再按该帧所属通道
+   * 记一次 RX 溢出，所以标志带在该通道的下一帧上，不论是哪一类，也不另造帧。
+   * The host handles any frame (RX data, error or echo) as usual and then counts one
+   * RX overflow for that frame's channel, so the flag rides on the channel's next
+   * frame of whatever kind, and no extra frame is made up.
+   */
+  void ApplyOverflowFlag(QueueItem& item)
+  {
+    const uint8_t ch = item.hdr.channel;
+    if (ch >= can_count_)
+    {
+      return;
+    }
+    const uint32_t drops = rx_drop_[ch].load(std::memory_order_relaxed);
+    if (rx_drop_reported_[ch] != drops)
+    {
+      item.hdr.flags |= GsUsb::CAN_FLAG_OVERFLOW;
+      rx_drop_reported_[ch] = drops;
+    }
   }
 
   /**
