@@ -126,20 +126,72 @@ class CDCToUart : public CDCUart
 
     op_write_cdc_ = WriteOperation(cb_cdc_write_);
 
-    // 5) LineCoding 回调：USB CDC 侧配置变化同步到 UART。
-    // 5) LineCoding callback: forward CDC line-coding changes to UART configuration.
-    set_line_coding_cb_ = LibXR::Callback<LibXR::UART::Configuration>::Create(
-        [](bool in_isr, CDCToUart* self, LibXR::UART::Configuration cfg)
-        { self->uart_.SetConfig(cfg, in_isr); }, this);
-
-    SetOnSetLineCodingCallback(set_line_coding_cb_);
-
     // 启动搬运：挂起一次 CDC 读与 UART 读，以进入回调链。
     // Kick the pump: schedule one CDC read and one UART read to enter the callback chain.
     this->Read({nullptr, 0}, op_read_cdc_, false);
     uart_.Read({nullptr, 0}, op_read_uart_, false);
   }
 
+ protected:
+  /**
+   * @brief 把线路编码应用到被桥接的 UART / Apply the line coding to the bridged UART
+   *
+   * SET_LINE_CODING 总是应答，不 STALL。UART 不支持主机要的配置时，按顺序逐项放宽：
+   * 先停止位改 1 位，再去掉校验，再改 8 数据位，最后回到上一次生效的配置；第一个被
+   * UART 接受的就是生效值。一个都不接受时保留上一次的线路编码。GET_LINE_CODING
+   * 返回生效值（CDC PSTN 6.3.11）。
+   * SET_LINE_CODING is always acknowledged, never stalled. When the UART does not
+   * support the requested configuration it is relaxed one field at a time: 1 stop bit
+   * first, then no parity, then 8 data bits, and finally the previously applied
+   * configuration; the first one the UART accepts is applied. If none is accepted the
+   * previous line coding stays. GET_LINE_CODING returns the applied value
+   * (CDC PSTN 6.3.11).
+   */
+  void ApplyLineCoding(bool in_isr, CDCLineCoding& coding,
+                       UART::Configuration& config) override
+  {
+    UART::Configuration candidates[5];
+    size_t count = 0;
+    auto add = [&](const UART::Configuration& candidate)
+    {
+      for (size_t i = 0; i < count; ++i)
+      {
+        if (SameConfiguration(candidates[i], candidate)) return;
+      }
+      candidates[count++] = candidate;
+    };
+
+    UART::Configuration relaxed = config;
+    add(relaxed);
+    relaxed.stop_bits = 1U;
+    add(relaxed);
+    relaxed.parity = UART::Parity::NO_PARITY;
+    add(relaxed);
+    relaxed.data_bits = 8U;
+    add(relaxed);
+    add(ToUartConfiguration(GetLineCoding()));
+
+    for (size_t i = 0; i < count; ++i)
+    {
+      if (uart_.SetConfig(candidates[i], in_isr) == ErrorCode::OK)
+      {
+        config = candidates[i];
+        coding = ToLineCoding(config);
+        return;
+      }
+    }
+    coding = GetLineCoding();
+    config = ToUartConfiguration(coding);
+  }
+
+  static bool SameConfiguration(const UART::Configuration& a,
+                                const UART::Configuration& b)
+  {
+    return a.baudrate == b.baudrate && a.parity == b.parity &&
+           a.data_bits == b.data_bits && a.stop_bits == b.stop_bits;
+  }
+
+ public:
   RawData rx_buffer_;  ///< CDC->UART 临时缓存 / Temp buffer for CDC->UART
   RawData tx_buffer_;  ///< UART->CDC 临时缓存 / Temp buffer for UART->CDC
 
@@ -149,9 +201,6 @@ class CDCToUart : public CDCUart
   LibXR::Callback<ErrorCode> cb_uart_read_;  ///< UART 读完成回调 / UART read callback
   LibXR::Callback<ErrorCode>
       cb_cdc_write_;  ///< CDC 写完成回调 / CDC write-complete callback
-
-  LibXR::Callback<LibXR::UART::Configuration>
-      set_line_coding_cb_;  ///< LineCoding 同步回调 / Line coding sync callback
 
   LibXR::WriteOperation op_write_cdc_;   ///< CDC 写操作句柄 / CDC write operation
   LibXR::WriteOperation op_write_uart_;  ///< UART 写操作句柄 / UART write operation

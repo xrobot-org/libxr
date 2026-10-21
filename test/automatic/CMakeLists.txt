@@ -115,8 +115,10 @@ add_executable(
   driver/driver_async_condition/test_driver_async_condition.cpp
   driver/power/test_power.cpp
   driver/uart/test_uart.cpp
-  driver/usb/test_cdc_uart.cpp
   driver/timebase/test_timebase.cpp
+  driver/usb/core/test_endpoint.cpp
+  driver/usb/device/cdc/test_cdc_test.cpp
+  driver/usb/device/cdc/test_cdc_uart.cpp
   middleware/database/database/test_database.cpp
   middleware/database/raw/raw/test_linux_database_raw.cpp
   middleware/database/raw_sequential/test_linux_database_sequential.cpp

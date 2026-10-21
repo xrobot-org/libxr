@@ -52,6 +52,9 @@ void test_ramfs();
 void test_power();
 void test_semaphore();
 void test_mutex();
+void test_usb_endpoint();
+void test_usb_cdc_test();
+void test_usb_cdc_uart();
 void test_stack();
 void test_swd_general_gpio();
 void test_swd_protocol();
@@ -90,7 +93,6 @@ void test_linux_uart_reconnect();
 void test_linux_uart_partial_disconnect();
 void test_linux_uart_initial_open_recovery();
 void test_slot_pool();
-void test_usb_cdc_tx();
 
 namespace LinuxSharedTopicBench
 {
@@ -208,9 +210,11 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"linux_uart_tests",
      {"uart_initial_recovery", &RunVoidEntry<test_linux_uart_initial_open_recovery>,
       true}},
-    {"usb_tests", {"cdc_tx", &RunVoidEntry<test_usb_cdc_tx>, false}},
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},
+    {"usb_tests", {"usb_endpoint", &RunVoidEntry<test_usb_endpoint>, false}},
+    {"usb_tests", {"usb_cdc_test", &RunVoidEntry<test_usb_cdc_test>, false}},
+    {"usb_tests", {"usb_cdc_uart", &RunVoidEntry<test_usb_cdc_uart>, false}},
     {"core_tests", {"assert", &RunVoidEntry<test_assert>, false}},
     {"core_tests", {"def", &RunVoidEntry<test_def>, false}},
     {"core_tests", {"callback", &RunVoidEntry<test_cb>, false}},

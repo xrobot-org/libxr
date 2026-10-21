@@ -100,6 +100,9 @@ class ConfigDescriptorItem : public BosCapabilityProvider
 
   /**
    * @brief 绑定端点资源 / Bind endpoint resources
+   *
+   * 在 owner 中调用（中断或应用线程，见 DeviceClass），不得阻塞 / Called in the owner (an
+   * interrupt or an application thread, see DeviceClass); must not block.
    * @param endpoint_pool 端点池 / Endpoint pool
    * @param start_itf_num 起始接口号 / Start interface number
    * @param in_isr 是否在中断中 / Whether in ISR
@@ -109,6 +112,9 @@ class ConfigDescriptorItem : public BosCapabilityProvider
 
   /**
    * @brief 解绑端点资源 / Unbind endpoint resources
+   *
+   * 在 owner 中调用（中断或应用线程，见 DeviceClass），不得阻塞 / Called in the owner (an
+   * interrupt or an application thread, see DeviceClass); must not block.
    * @param endpoint_pool 端点池 / Endpoint pool
    * @param in_isr 是否在中断中 / Whether in ISR
    */

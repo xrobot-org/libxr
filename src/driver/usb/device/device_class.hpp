@@ -1,14 +1,18 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
+#include "device_events.hpp"
 #include "libxr_type.hpp"
 #include "usb/core/desc_cfg.hpp"
+#include "usb/core/ep_pool.hpp"
 
 namespace LibXR::USB
 {
 class DeviceComposition;
+template <typename Capabilities>
 class DeviceCore;
 
 /**
@@ -16,6 +20,23 @@ class DeviceCore;
  *
  * 所有自定义 USB 类（HID/CDC/MSC 等）应派生自本类。
  * All custom USB classes (HID/CDC/MSC, etc.) should derive from this class.
+ *
+ * 执行上下文：BindEndpoints/UnbindEndpoints、OnDeviceEvent、控制请求回调
+ * （OnGetDescriptor、OnControl*、OnClass*、OnVendorRequest）、OnService、OnBusTime 和
+ * 端点完成回调都在设备的 owner 中执行。owner 由赢得 `SerializedService::Invoke` 的调用者
+ * 执行：控制器中断，或者任何调用 Submit/Receive/ReturnSlot/RequestClassService/Init 的
+ * 应用线程。所以每个回调都可能在中断里（in_isr=true）运行，也可能在任意应用线程里
+ * （in_isr=false）运行，必须不阻塞；同一设备的回调不会并发。线程持有 owner 时，中断只发布
+ * 工作，要等这个线程处理。
+ * Execution context: BindEndpoints/UnbindEndpoints, OnDeviceEvent, the control request
+ * callbacks (OnGetDescriptor, OnControl*, OnClass*, OnVendorRequest), OnService,
+ * OnBusTime and the endpoint completions all run in the device's owner. The owner pass
+ * runs in whichever caller wins `SerializedService::Invoke`: the controller interrupt,
+ * or any application thread that calls Submit/Receive/ReturnSlot/RequestClassService/
+ * Init. Every callback can therefore run in an interrupt (in_isr=true) or in an
+ * arbitrary application thread (in_isr=false), and must not block; callbacks of one
+ * device never run concurrently. While a thread owns, interrupt work is only published
+ * and waits for that thread.
  */
 class DeviceClass : public ConfigDescriptorItem
 {
@@ -54,7 +75,48 @@ class DeviceClass : public ConfigDescriptorItem
     return nullptr;
   }
 
+  /**
+   * @brief 本类需要 WinUSB 绑定时返回设备接口 GUID，否则返回 nullptr
+   *        The device interface GUID when this class wants WinUSB to bind, else nullptr
+   *
+   * MS OS 2.0 描述符集由组合设备统一生成：只有一个功能的非复合设备用设备级形式，其余用
+   * 配置/功能子集形式，类自己不需要关心。
+   * The MS OS 2.0 descriptor set is built by the composition: a single function on a
+   * non-composite device gets the device-level form and every other case the
+   * configuration/function subset form, so the class does not have to care.
+   */
+  virtual const char* GetWinUsbInterfaceGuid() const { return nullptr; }
+  /// RequestClassService 之后在 owner 中执行（中断或应用线程），不得阻塞 / Runs in the
+  /// owner after RequestClassService (an interrupt or an application thread); must not
+  /// block
+  virtual void OnService(bool in_isr) { UNUSED(in_isr); }
+  virtual size_t GetControlReceiveCapacity() const { return 64U; }
+  virtual bool WantsBusTime() const { return false; }
+  /// 在 owner 中执行（中断或应用线程），不得阻塞 / Runs in the owner (an interrupt or an
+  /// application thread); must not block
+  virtual void OnBusTime(bool in_isr, const BusTime& time)
+  {
+    UNUSED(in_isr);
+    UNUSED(time);
+  }
+  /// 在 owner 中执行（中断或应用线程），不得阻塞 / Runs in the owner (an interrupt or an
+  /// application thread); must not block
+  virtual void OnDeviceEvent(bool in_isr, DeviceEvent event, uint8_t endpoint = 0)
+  {
+    UNUSED(in_isr);
+    UNUSED(event);
+    UNUSED(endpoint);
+  }
+
  protected:
+  /// 请 owner 调用本类的 OnService；可在任何上下文调用，没有 owner 时就地执行 / Ask the
+  /// owner to run OnService; any context, runs the owner in place when there is none
+  void RequestClassService(bool in_isr)
+  {
+    service_pending_.store(1U, std::memory_order_release);
+    if (service_pool_) service_pool_->PostControl(EndpointPool::CLASS_EVENT, in_isr);
+  }
+
   /**
    * @brief 返回已分配的接口字符串索引
    *        Return the assigned USB string index for a local interface.
@@ -68,28 +130,20 @@ class DeviceClass : public ConfigDescriptorItem
    * @brief 控制请求（Class/Vendor）处理结果 / Control request (Class/Vendor) handling
    * result
    *
+   * 以下控制请求回调都在 owner 中执行（中断或应用线程，见类说明），不得阻塞；参数
+   * in_isr 指明当前是哪一种 / The control request callbacks below run in the owner (an
+   * interrupt or an application thread, see the class note) and must not block; in_isr
+   * tells which one it is.
    */
   struct ControlTransferResult
   {
-    RawData read_data{nullptr, 0};  ///< OUT 数据阶段接收缓冲区（Host->Device）/ OUT data
-                                    ///< stage buffer (Host->Device)
-    ConstRawData write_data{nullptr, 0};  ///< IN 数据阶段发送数据（Device->Host）/ IN
-                                          ///< data stage payload (Device->Host)
-    bool read_zlp = false;   ///< 期望 STATUS OUT（arm OUT 等待 ZLP）/ Expect STATUS OUT
-                             ///< (arm OUT for ZLP)
-    bool write_zlp = false;  ///< 发送 STATUS IN（发送 ZLP）/ Send STATUS IN (send ZLP)
-
-    RawData& OutData() { return read_data; }
-    const RawData& OutData() const { return read_data; }
+    /// IN 数据阶段发送的数据（Device->Host）；OUT 数据阶段由核心收进自己的缓冲区，
+    /// 完整后经 OnControlData 交给类 / IN data stage payload (Device->Host). OUT data is
+    /// received into the core's own buffer and handed over by OnControlData.
+    ConstRawData write_data{nullptr, 0};
 
     ConstRawData& InData() { return write_data; }
     const ConstRawData& InData() const { return write_data; }
-
-    bool& ExpectStatusOutZLP() { return read_zlp; }
-    bool ExpectStatusOutZLP() const { return read_zlp; }
-
-    bool& SendStatusInZLP() { return write_zlp; }
-    bool SendStatusInZLP() const { return write_zlp; }
   };
 
   /**
@@ -197,13 +251,43 @@ class DeviceClass : public ConfigDescriptorItem
     return ErrorCode::NOT_SUPPORT;
   }
 
+  virtual ErrorCode OnControlRequest(bool in_isr, const SetupPacket& setup,
+                                     ControlTransferResult& result)
+  {
+    if ((setup.bmRequestType & REQ_TYPE_MASK) ==
+        static_cast<uint8_t>(RequestType::VENDOR))
+      return OnVendorRequest(in_isr, setup.bRequest, setup.wValue, setup.wLength,
+                             setup.wIndex, result);
+    return OnClassRequest(in_isr, setup.bRequest, setup.wValue, setup.wLength,
+                          setup.wIndex, result);
+  }
+  virtual ErrorCode OnControlData(bool in_isr, const SetupPacket& setup,
+                                  ConstRawData& data)
+  {
+    if ((setup.bmRequestType & REQ_DIRECTION_MASK) != 0U) return ErrorCode::OK;
+    return OnClassData(in_isr, setup.bRequest, data);
+  }
+  virtual void OnControlComplete(bool in_isr, const SetupPacket& setup)
+  {
+    if ((setup.bmRequestType & REQ_DIRECTION_MASK) != 0U)
+      OnClassInDataStatusComplete(in_isr, setup.bRequest);
+  }
+  virtual void OnControlAbort(bool in_isr, const SetupPacket& setup)
+  {
+    UNUSED(in_isr);
+    UNUSED(setup);
+  }
+
  private:
   // 这些辅助函数只在初始化期由 DeviceComposition 调用，不属于对外类接口。
   // These helpers are driven by DeviceComposition during initialization-time string
   // registration and are not part of the public class contract.
   void SetInterfaceStringBaseIndex(uint8_t string_index);
 
+  EndpointPool* service_pool_ = nullptr;  // Immutable after composition construction.
+  std::atomic<uint32_t> service_pending_{0};
   friend class DeviceComposition;
+  template <typename Capabilities>
   friend class DeviceCore;
 
   uint8_t interface_string_base_index_ =

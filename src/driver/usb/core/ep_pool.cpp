@@ -11,6 +11,8 @@ LibXR::ErrorCode EndpointPool::Put(Endpoint* ep)
     return LibXR::ErrorCode::ARG_ERR;
   }
 
+  ep->Attach(*this);
+
   const auto ep_num = static_cast<size_t>(ep->GetNumber());
   if (ep_num >= SLOT_COUNT)
   {
@@ -36,6 +38,7 @@ LibXR::ErrorCode EndpointPool::Put(Endpoint* ep)
       slots_[ep_num][d] = ep;
       use_[ep_num][d] = SlotUse::AVAILABLE;
     }
+    Register(ep, ep_num, 0);
     return LibXR::ErrorCode::OK;
   }
 
@@ -46,6 +49,7 @@ LibXR::ErrorCode EndpointPool::Put(Endpoint* ep)
   }
   slots_[ep_num][d] = ep;
   use_[ep_num][d] = SlotUse::AVAILABLE;
+  Register(ep, ep_num, d);
   return LibXR::ErrorCode::OK;
 }
 
@@ -113,6 +117,8 @@ LibXR::ErrorCode EndpointPool::Release(Endpoint* ep_info)
     }
   }
 
+  // The completion callback stays until the next binding replaces it: a request that
+  // is still being stopped completes to the binding that submitted it.
   return released ? LibXR::ErrorCode::OK : LibXR::ErrorCode::NOT_FOUND;
 }
 
@@ -161,4 +167,96 @@ void EndpointPool::SetEndpoint0(Endpoint* ep0_in, Endpoint* ep0_out)
 {
   ep0_in_ = ep0_in;
   ep0_out_ = ep0_out;
+  if (ep0_in_)
+  {
+    ep0_in_->Attach(*this);
+    Register(ep0_in_, 0, 1);
+  }
+  if (ep0_out_)
+  {
+    ep0_out_->Attach(*this);
+    Register(ep0_out_, 0, 0);
+  }
+}
+
+void EndpointPool::PostControl(uint32_t events, bool in_isr)
+{
+  PublishControl(events);
+  RequestService(in_isr);
+}
+
+void EndpointPool::RequestService(bool in_isr)
+{
+  if (interrupt_depth_.load(std::memory_order_acquire) != 0U)
+  {
+    irq_deferred_.store(1U, std::memory_order_release);
+    service_.Publish(1U);
+    return;
+  }
+  service_.Invoke(
+      1U, in_isr,
+      [this](uint32_t, bool current_isr)
+      {
+        if (interrupt_depth_.load(std::memory_order_acquire) != 0U)
+        {
+          irq_deferred_.store(1U, std::memory_order_release);
+          return;
+        }
+        const uint32_t events = control_pending_.exchange(0U, std::memory_order_acq_rel);
+        if ((events & ~ENDPOINT_EVENT) != 0U)
+          control_handler_.Run(current_isr, events & ~ENDPOINT_EVENT);
+        if ((events & ENDPOINT_EVENT) == 0U) return;
+        uint32_t bits = endpoint_pending_.exchange(0U, std::memory_order_acq_rel);
+        while (bits != 0U)
+        {
+          const unsigned i = static_cast<unsigned>(__builtin_ctz(bits));
+          bits &= bits - 1U;
+          if (by_bit_[i] != nullptr) by_bit_[i]->Service(current_isr);
+        }
+      });
+}
+
+void EndpointPool::Register(Endpoint* ep, size_t number, size_t dir)
+{
+  const size_t index = number * DIR_COUNT + dir;
+  by_bit_[index] = ep;
+  ep->pending_bit_ = uint32_t{1} << index;
+}
+
+void EndpointPool::KickEndpoints(bool in_isr)
+{
+  uint32_t bits = 0U;
+  for (size_t i = 0; i < 2U * SLOT_COUNT; ++i)
+    if (by_bit_[i] != nullptr) bits |= uint32_t{1} << i;
+  endpoint_pending_.fetch_or(bits, std::memory_order_release);
+  PostControl(ENDPOINT_EVENT, in_isr);
+}
+
+void EndpointPool::StopFinished(bool in_isr)
+{
+  ASSERT(stopping_count_.load(std::memory_order_relaxed) != 0U);
+  if (stopping_count_.fetch_sub(1U, std::memory_order_relaxed) == 1U)
+    PostControl(STOP_DONE_EVENT, in_isr);
+}
+
+void EndpointPool::SetDataEnabled(bool enabled, bool in_isr)
+{
+  data_enabled_ = enabled;
+  if (enabled) KickEndpoints(in_isr);
+}
+
+void EndpointPool::SetSuspended(bool suspended, bool in_isr)
+{
+  suspended_ = suspended;
+  if (!suspended) KickEndpoints(in_isr);
+}
+
+bool EndpointPool::ConfigurationValid() const
+{
+  for (size_t n = 1; n < SLOT_COUNT; ++n)
+    for (size_t d = 0; d < DIR_COUNT; ++d)
+      if (use_[n][d] == SlotUse::IN_USE && slots_[n][d] &&
+          slots_[n][d]->GetState() == Endpoint::State::ERROR)
+        return false;
+  return true;
 }
