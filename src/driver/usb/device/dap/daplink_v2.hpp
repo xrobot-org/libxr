@@ -2727,20 +2727,8 @@ class DapLinkV2Class : public DeviceClass
 
   ErrorCode CheckPostedApWriteFast(LibXR::Debug::SwdProtocol::Ack& ack_out)
   {
-    LibXR::Debug::SwdProtocol::Response swd_resp = {};
-    const auto req = LibXR::Debug::SwdProtocol::MakeDpReadRequest(
-        LibXR::Debug::SwdProtocol::DpReadReg::CTRL_STAT);
-    const ErrorCode ec = TransferTxnFast(req, swd_resp);
-    ack_out = swd_resp.ack;
-    if (ec != ErrorCode::OK)
-    {
-      return ec;
-    }
-    if (swd_resp.ack != LibXR::Debug::SwdProtocol::Ack::OK || !swd_resp.parity_ok)
-    {
-      return ErrorCode::FAILED;
-    }
-    return ErrorCode::OK;
+    uint32_t value = 0u;
+    return DpReadRdbuffFast(value, ack_out);
   }
 
   ErrorCode ApReadPostedFast(uint8_t addr2b, uint32_t& posted,
@@ -2842,7 +2830,7 @@ class DapLinkV2Class : public DeviceClass
     uint8_t response_value = 0u;
 
     // AP writes are posted by the target. Keep the write batch fast and check
-    // it once at a transfer boundary with DP CTRL/STAT, not DP RDBUFF.
+    // it once at a transfer boundary with a DP RDBUFF read.
     bool pending_ap_write = false;
 
     // -------- posted-read pipeline state (AP read only) --------
