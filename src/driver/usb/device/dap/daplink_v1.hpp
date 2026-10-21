@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -12,6 +13,7 @@
 #include "libxr_def.hpp"
 #include "libxr_mem.hpp"
 #include "libxr_type.hpp"
+#include "semaphore.hpp"
 #include "timebase.hpp"
 
 namespace LibXR::USB
@@ -78,6 +80,29 @@ class DapLinkV1Class
   const LibXR::USB::DapLinkV1Def::State& GetState() const;
   bool IsInited() const;
 
+  /**
+   * @brief 在调用线程里做一次 DAP 工作：等一条命令，执行它并提交响应。
+   *        Do one unit of DAP work in the calling thread: wait for a command, execute it
+   *        and submit its response.
+   *
+   * 应用起一个线程循环调用（例如 while (true) { dap.Step(); }）。SWD/JTAG 只在这个线程
+   * 里访问；USB 回调只登记收到的报告、叫醒这个线程，不执行命令；绑定/解绑只发布会话的
+   * 开始/结束，由这个线程关闭 SWD 并复位会话状态。延时类命令在这个线程里等到完成。
+   * Run it from one application thread, for example while (true) { dap.Step(); }.
+   * SWD/JTAG are accessed in this thread only; the USB callbacks only record the received
+   * report and wake this thread, they never execute commands; bind/unbind only publish
+   * the session start/end, and this thread closes SWD and resets the session state.
+   * Delay-type commands wait in this thread until they are done.
+   *
+   * @param timeout_ms 等待命令或 IN 槽的最长时间；0 为不等待 / Longest wait for a
+   *                   command or an IN slot; 0 does not wait
+   * @return OK 做了一件事（执行、提交或丢弃一条命令）；TIMEOUT 在期限内没有工作，或响应
+   *         还在等 IN 槽（下一次 Step 接着提交）/ OK when something was done (a command
+   *         executed, submitted or dropped); TIMEOUT when no work arrived in time or the
+   *         response still waits for an IN slot (the next Step goes on submitting it)
+   */
+  ErrorCode Step(uint32_t timeout_ms = UINT32_MAX);
+
  protected:
   ErrorCode WriteDeviceDescriptor(DeviceDescriptor& header) override;
   ConstRawData GetReportDesc() override;
@@ -86,16 +111,23 @@ class DapLinkV1Class
                      bool in_isr) override;
   void UnbindEndpoints(EndpointPool& endpoint_pool, bool in_isr) override;
 
-  void OnDataOutComplete(bool in_isr, LibXR::ConstRawData& data) override;
-  void OnDataInComplete(bool in_isr, LibXR::ConstRawData& data) override;
+  void OnDataOutComplete(bool in_isr, const Endpoint::Completion& completion) override;
+  void OnDataInComplete(bool in_isr, const Endpoint::Completion& completion) override;
 
  private:
-  static void OnDataOutCompleteStatic(bool in_isr, DapLinkV1Class* self,
-                                      LibXR::ConstRawData& data);
-  static void OnDataInCompleteStatic(bool in_isr, DapLinkV1Class* self,
-                                     LibXR::ConstRawData& data);
+  /// 一个收到的报告：OUT 租约、所属端点和收到时的绑定 epoch / One received report: the
+  /// OUT lease, its endpoint and the binding epoch it was received in
+  struct Lease
+  {
+    Endpoint::Slot slot{};
+    Endpoint* ep = nullptr;
+    uint32_t epoch = 0u;
+  };
 
-  void ArmOutTransferIfIdle();
+  bool TakeLease(Lease& lease);
+  void DropCurrent();
+  bool SubmitCurrent();
+  void SyncSession(uint32_t epoch);
 
   ErrorCode ProcessOneCommand(bool in_isr, const uint8_t* req, uint16_t req_len,
                               uint8_t* resp, uint16_t resp_cap, uint16_t& out_len);
@@ -164,7 +196,6 @@ class DapLinkV1Class
   void SetTransferAbortFlag(bool on);
 
   void DriveReset(bool release);
-  void DelayUsIfAllowed(bool in_isr, uint32_t us);
 
  private:
   template <typename E>
@@ -225,15 +256,36 @@ class DapLinkV1Class
   uint32_t swj_clock_hz_ = 1000000u;
   uint32_t match_mask_ = 0xFFFFFFFFu;
 
-  Endpoint* ep_in_ = nullptr;   // Cached HID IN endpoint
-  Endpoint* ep_out_ = nullptr;  // Cached HID OUT endpoint
+  Endpoint* ep_out_ = nullptr;  // Cached HID OUT endpoint (owner only)
 
-  LibXR::Callback<LibXR::ConstRawData&> on_data_out_cb_ =
-      LibXR::Callback<LibXR::ConstRawData&>::Create(OnDataOutCompleteStatic, this);
-  LibXR::Callback<LibXR::ConstRawData&> on_data_in_cb_ =
-      LibXR::Callback<LibXR::ConstRawData&>::Create(OnDataInCompleteStatic, this);
+  // 收到的报告从 owner 交给 Step 线程：最多两个（OUT 端点只有两个槽），按到达顺序。
+  // 租约在写进环之后才发布（release），响应提交之前一直保留作背压。
+  // Received reports go from the owner to the Step thread: two at most (the OUT
+  // endpoint has two slots), in arrival order. A lease is published (release) only after
+  // it was written into the ring, and it is kept until its response is submitted
+  // (backpressure).
+  static constexpr uint32_t LEASE_RING_SIZE = 2u;
+  Lease lease_ring_[LEASE_RING_SIZE] = {};
+  std::atomic<uint32_t> lease_head_{0u};  ///< owner 写 / Written by the owner
+  std::atomic<uint32_t> lease_tail_{0u};  ///< Step 线程写 / Written by the Step thread
+  /// 每个报告和每次绑定/解绑发一次 / Posted per report and per bind/unbind
+  LibXR::Semaphore cmd_sem_{0};
+  /// 每次 IN 完成和解绑发一次 / Posted per IN completion and per unbind
+  LibXR::Semaphore in_sem_{0};
+  /// 绑定/解绑时加一：Step 线程用它丢弃旧会话的命令，并在自己的线程里落实会话的
+  /// 开始/结束 / Bumped on bind/unbind: the Step thread drops commands of an old session
+  /// with it and applies the session start/end in its own thread
+  std::atomic<uint32_t> epoch_{0u};
+  uint32_t session_epoch_ = 0u;  ///< Step 线程已落实的 epoch_ / Applied epoch_
 
-  bool inited_ = false;
+  // 以下只由 Step 线程访问 / Step thread only
+  Lease cur_{};                   ///< 手里的报告 / Report in hand
+  bool cur_done_ = false;         ///< 已执行，响应在 resp_buf_ / Executed, response ready
+  uint8_t resp_buf_[MAX_RESP]{};  ///< 响应缓冲 / Response buffer
+
+  std::atomic<Endpoint*> in_ep_{nullptr};  ///< 当前绑定的 IN 端点 / Bound IN endpoint
+
+  std::atomic<bool> inited_{false};
 };
 
 template <typename SwdPort>
@@ -250,7 +302,10 @@ DapLinkV1Class<SwdPort>::DapLinkV1Class(Endpoint::EPNumber in_ep_num,
     jtag_chain_.count = 0u;
     jtag_chain_.index = 0u;
   }
-  (void)swd_.SetClockHz(swj_clock_hz_);
+  // 命令由应用线程循环调用 Step() 执行；类不起线程也不起定时任务，构造、绑定和解绑都
+  // 不碰 SWD/JTAG。
+  // Commands run when the application thread calls Step() in a loop; the class starts no
+  // thread and no timer task, and construction, bind and unbind never touch SWD/JTAG.
 }
 
 template <typename SwdPort>
@@ -303,30 +358,249 @@ template <typename SwdPort>
 void DapLinkV1Class<SwdPort>::BindEndpoints(EndpointPool& endpoint_pool,
                                             uint8_t start_itf_num, bool in_isr)
 {
+  // 端点配置、回调和 OUT 接收挂载都由 HID 基类完成：包长取报告长度（MAX_REQ/MAX_RESP
+  // = 64）与当前速度合法包长的较小者。
+  // The HID base configures the endpoints, installs the completion callbacks and arms
+  // the OUT receive; the packet size is the report length (MAX_REQ / MAX_RESP = 64)
+  // capped by the largest legal packet at this speed.
   HID::BindEndpoints(endpoint_pool, start_itf_num, in_isr);
 
-  ep_in_ = GetInEndpoint();
   ep_out_ = GetOutEndpoint();
+  in_ep_.store(GetInEndpoint(), std::memory_order_release);
 
-  if (ep_in_ != nullptr)
+  // 新会话开始：epoch 加一。会话状态由 Step 线程在这个会话的第一条命令之前复位（见
+  // SyncSession）；上一个会话留在环里的报告由 Step 线程丢弃。
+  // A new session starts: the epoch is bumped. The session state is reset by the Step
+  // thread before the first command of this session (see SyncSession); reports of the
+  // previous session left in the ring are dropped by the Step thread.
+  epoch_.fetch_add(1u, std::memory_order_acq_rel);
+  inited_.store(true, std::memory_order_release);
+  cmd_sem_.PostFromCallback(in_isr);
+}
+
+template <typename SwdPort>
+void DapLinkV1Class<SwdPort>::UnbindEndpoints(EndpointPool& endpoint_pool, bool in_isr)
+{
+  inited_.store(false, std::memory_order_release);
+  in_ep_.store(nullptr, std::memory_order_release);
+
+  // 会话结束：epoch 加一，叫醒 Step 线程。它丢弃手里和环里的报告（解绑作废的租约归还
+  // 后回到空闲），并在自己的线程里关闭 SWD/JTAG。
+  // The session ends: the epoch is bumped and the Step thread is woken. It drops the
+  // reports in hand and in the ring (a lease voided by the unbind is free again once
+  // returned) and closes SWD/JTAG in its own thread.
+  epoch_.fetch_add(1u, std::memory_order_acq_rel);
+  HID::UnbindEndpoints(endpoint_pool, in_isr);
+  ep_out_ = nullptr;
+  cmd_sem_.PostFromCallback(in_isr);
+  in_sem_.PostFromCallback(in_isr);
+}
+
+template <typename SwdPort>
+void DapLinkV1Class<SwdPort>::OnDataOutComplete(bool in_isr,
+                                                const Endpoint::Completion& completion)
+{
+  // 接收失败会释放槽：必须重新挂上，否则 OUT 从此收不到报告（HID 基类的行为）。
+  // A failed receive frees its slot: arm it again or OUT never receives another
+  // report (this is what the HID base does).
+  if (completion.result != ErrorCode::OK || !completion.slot.Valid())
   {
-    // Double buffer splits RawData into two halves; ensure EP IN buffer >= 2 * MAX_RESP.
-    ep_in_->Configure(
-        {Endpoint::Direction::IN, Endpoint::Type::INTERRUPT, MAX_RESP, true});
-    ep_in_->SetOnTransferCompleteCallback(on_data_in_cb_);
+    if (completion.result != ErrorCode::ABORTED && ep_out_ != nullptr)
+    {
+      (void)ep_out_->Receive(ep_out_->MaxPacketSize(), in_isr);
+    }
+    return;
   }
 
-  if (ep_out_ != nullptr)
+  // owner 只把租约放进环并叫醒 Step 线程（浅操作）；命令在 Step 线程里执行，响应提交前
+  // 租约一直保留作背压，OUT 端点不会重新挂接收。先写环再发布。
+  // The owner only puts the lease into the ring and wakes the Step thread (shallow); the
+  // command runs in the Step thread and the lease is kept until the response is
+  // submitted, so the OUT endpoint is not rearmed meanwhile. The ring entry is written
+  // before it is published.
+  const uint32_t head = lease_head_.load(std::memory_order_relaxed);
+  if (head - lease_tail_.load(std::memory_order_acquire) >= LEASE_RING_SIZE)
   {
-    // Double buffer splits RawData into two halves; ensure EP OUT buffer >= 2 * MAX_REQ.
-    ep_out_->Configure(
-        {Endpoint::Direction::OUT, Endpoint::Type::INTERRUPT, MAX_REQ, true});
-    ep_out_->SetOnTransferCompleteCallback(on_data_out_cb_);
+    // 环满（只在端点借出的租约多于两个时才会发生）：不留租约，归还并重新挂接收。
+    // Ring full (only if the endpoint lent more than two leases): keep no lease, return
+    // it and rearm the receive.
+    (void)ep_out_->ReturnSlot(completion.slot, in_isr);
+    return;
+  }
+  lease_ring_[head % LEASE_RING_SIZE] = {completion.slot, ep_out_,
+                                         epoch_.load(std::memory_order_relaxed)};
+  lease_head_.store(head + 1u, std::memory_order_release);
+  cmd_sem_.PostFromCallback(in_isr);
+}
+
+template <typename SwdPort>
+void DapLinkV1Class<SwdPort>::OnDataInComplete(bool in_isr,
+                                               const Endpoint::Completion& completion)
+{
+  UNUSED(completion);
+  // 主机取走一个响应：一个 IN 槽空出来，叫醒在等 IN 槽的 Step 线程。
+  // The host took a response: an IN slot is free, wake a Step thread waiting for one.
+  in_sem_.PostFromCallback(in_isr);
+}
+
+template <typename SwdPort>
+bool DapLinkV1Class<SwdPort>::TakeLease(Lease& lease)
+{
+  const uint32_t tail = lease_tail_.load(std::memory_order_relaxed);
+  if (tail == lease_head_.load(std::memory_order_acquire))
+  {
+    return false;
+  }
+  lease = lease_ring_[tail % LEASE_RING_SIZE];
+  lease_tail_.store(tail + 1u, std::memory_order_release);
+  return true;
+}
+
+template <typename SwdPort>
+void DapLinkV1Class<SwdPort>::DropCurrent()
+{
+  // 归还租约：当前绑定的租约重新挂接收；解绑作废的租约回到空闲。
+  // Return the lease: a lease of the current binding is rearmed; one voided by an unbind
+  // is free again.
+  if (cur_.slot.Valid() && cur_.ep != nullptr)
+  {
+    (void)cur_.ep->ReturnSlot(cur_.slot, false);
+  }
+  cur_ = {};
+  cur_done_ = false;
+}
+
+template <typename SwdPort>
+bool DapLinkV1Class<SwdPort>::SubmitCurrent()
+{
+  Endpoint* in = in_ep_.load(std::memory_order_acquire);
+  if (in == nullptr)
+  {
+    return false;
+  }
+  Endpoint::Slot slot;
+  if (in->AcquireSlot(slot, false) != ErrorCode::OK)
+  {
+    return false;
+  }
+  // 槽容量必须装得下整个报告；装不下就不提交，不越界拷贝。
+  // The slot must hold the whole report; if it does not, nothing is submitted and nothing
+  // is copied out of bounds.
+  if (slot.data.size_ < MAX_RESP)
+  {
+    in->ReleaseSlot(slot, false);
+    return false;
+  }
+  Memory::FastCopy(slot.data.addr_, resp_buf_, MAX_RESP);
+  const ErrorCode ec = in->Submit(slot, MAX_RESP, false, false);
+  // ABORTED：槽在解绑前借出，Submit 已把它放回空闲，不能再归还。
+  // ABORTED: the slot was borrowed before an unbind and Submit already freed it; it must
+  // not be released again.
+  if (ec != ErrorCode::OK && ec != ErrorCode::ABORTED)
+  {
+    in->ReleaseSlot(slot, false);
+  }
+  return ec == ErrorCode::OK;
+}
+
+template <typename SwdPort>
+ErrorCode DapLinkV1Class<SwdPort>::Step(uint32_t timeout_ms)
+{
+  if (!cur_.slot.Valid())
+  {
+    if (!TakeLease(cur_))
+    {
+      if (cmd_sem_.Wait(timeout_ms) != ErrorCode::OK)
+      {
+        return ErrorCode::TIMEOUT;
+      }
+      if (!TakeLease(cur_))
+      {
+        // 被绑定/解绑叫醒，没有报告：把会话的开始/结束落实到 SWD。
+        // Woken by a bind/unbind with no report: apply the session start/end to SWD.
+        SyncSession(epoch_.load(std::memory_order_acquire));
+        return ErrorCode::OK;
+      }
+    }
   }
 
-  inited_ = true;
+  if (!cur_done_)
+  {
+    // 收到这条报告之后发生过解绑/重新绑定：它属于已经结束的会话，丢弃，不执行。
+    // An unbind/bind happened after this report was received: it belongs to a session
+    // that has ended, so it is dropped, not executed.
+    if (cur_.epoch != epoch_.load(std::memory_order_acquire))
+    {
+      DropCurrent();
+      SyncSession(epoch_.load(std::memory_order_acquire));
+      return ErrorCode::OK;
+    }
+    SyncSession(cur_.epoch);
+    // 请求直接读自保留的 OUT 租约，响应写进 resp_buf_；延时类命令在本线程里等到完成。
+    // The request is read straight from the held OUT lease and the response goes into
+    // resp_buf_; delay-type commands wait in this thread until they are done.
+    Memory::FastSet(resp_buf_, 0, MAX_RESP);
+    uint16_t length = 0;
+    const auto result = ProcessOneCommand(
+        false, static_cast<const uint8_t*>(cur_.slot.data.addr_),
+        static_cast<uint16_t>(cur_.slot.data.size_), resp_buf_, MAX_RESP, length);
+    UNUSED(result);
+    REQUIRE(length <= MAX_RESP);
+    cur_done_ = true;
+  }
+
+  // 提交响应；两个 IN 槽都忙时等主机取走一个。超时返回时报告和响应继续由本线程持有。
+  // Submit the response; with both IN slots busy wait for the host to take one. On a
+  // timeout the report and the response stay with this thread.
+  while (true)
+  {
+    if (cur_.epoch != epoch_.load(std::memory_order_acquire))
+    {
+      // 执行期间或等 IN 槽期间发生了解绑/重新绑定：这条响应作废。
+      // Unbound or rebound while the command ran or waited for an IN slot: the response
+      // is void.
+      DropCurrent();
+      SyncSession(epoch_.load(std::memory_order_acquire));
+      return ErrorCode::OK;
+    }
+    if (SubmitCurrent())
+    {
+      // 响应已被接受：归还 OUT 租约（按 receive_size 重新挂接收）。
+      // The response was accepted: return the OUT lease (rearmed by receive_size).
+      DropCurrent();
+      return ErrorCode::OK;
+    }
+    if (in_sem_.Wait(timeout_ms) != ErrorCode::OK)
+    {
+      return ErrorCode::TIMEOUT;
+    }
+  }
+}
+
+template <typename SwdPort>
+void DapLinkV1Class<SwdPort>::SyncSession(uint32_t epoch)
+{
+  // epoch 变了就说明会话结束或开始过：在本线程里关闭 SWD/JTAG，再把会话状态恢复成默认
+  // 值。绑定/解绑只发布 epoch，不碰这些状态。
+  // A changed epoch means a session ended or started: close SWD/JTAG in this thread and
+  // put the session state back to its defaults. Bind/unbind only publish the epoch and
+  // never touch this state.
+  if (epoch == session_epoch_)
+  {
+    return;
+  }
+  session_epoch_ = epoch;
+
+  swd_.Close();
+  if constexpr (JTAG_ENABLED)
+  {
+    if (jtag_ != nullptr)
+    {
+      jtag_->Close();
+    }
+  }
+
   match_mask_ = 0xFFFFFFFFu;
-
   dap_state_ = {};
   dap_state_.debug_port = LibXR::USB::DapLinkV1Def::DebugPort::DISABLED;
   dap_state_.transfer_abort = false;
@@ -355,125 +629,6 @@ void DapLinkV1Class<SwdPort>::BindEndpoints(EndpointPool& endpoint_pool,
   last_nreset_level_high_ = true;
   swj_shadow_ = static_cast<uint8_t>(DapLinkV1Def::DAP_SWJ_SWDIO_TMS |
                                      DapLinkV1Def::DAP_SWJ_NRESET);
-
-  ArmOutTransferIfIdle();
-}
-
-template <typename SwdPort>
-void DapLinkV1Class<SwdPort>::UnbindEndpoints(EndpointPool& endpoint_pool, bool in_isr)
-{
-  inited_ = false;
-
-  dap_state_.debug_port = LibXR::USB::DapLinkV1Def::DebugPort::DISABLED;
-  dap_state_.transfer_abort = false;
-
-  HID::UnbindEndpoints(endpoint_pool, in_isr);
-
-  ep_in_ = nullptr;
-  ep_out_ = nullptr;
-
-  swd_.Close();
-  if constexpr (JTAG_ENABLED)
-  {
-    if (jtag_ != nullptr)
-    {
-      jtag_->Close();
-    }
-  }
-
-  last_nreset_level_high_ = true;
-  swj_shadow_ = static_cast<uint8_t>(DapLinkV1Def::DAP_SWJ_SWDIO_TMS |
-                                     DapLinkV1Def::DAP_SWJ_NRESET);
-}
-
-template <typename SwdPort>
-void DapLinkV1Class<SwdPort>::OnDataOutCompleteStatic(bool in_isr, DapLinkV1Class* self,
-                                                      LibXR::ConstRawData& data)
-{
-  if (self && self->inited_)
-  {
-    self->OnDataOutComplete(in_isr, data);
-  }
-}
-
-template <typename SwdPort>
-void DapLinkV1Class<SwdPort>::OnDataInCompleteStatic(bool in_isr, DapLinkV1Class* self,
-                                                     LibXR::ConstRawData& data)
-{
-  if (self && self->inited_)
-  {
-    self->OnDataInComplete(in_isr, data);
-  }
-}
-
-template <typename SwdPort>
-void DapLinkV1Class<SwdPort>::OnDataOutComplete(bool in_isr, LibXR::ConstRawData& data)
-{
-  if (!inited_ || !ep_in_ || !ep_out_)
-  {
-    return;
-  }
-
-  const auto* REQ = static_cast<const uint8_t*>(data.addr_);
-  const uint16_t REQ_LEN = static_cast<uint16_t>(data.size_);
-
-  auto tx_buff = ep_in_->GetBuffer();
-  const uint16_t RESP_CAP = static_cast<uint16_t>(tx_buff.size_);
-  const uint16_t TX_LEN = (RESP_CAP < MAX_RESP) ? RESP_CAP : MAX_RESP;
-
-  if (ep_in_->GetState() == Endpoint::State::IDLE)
-  {
-    ArmOutTransferIfIdle();
-  }
-
-  Memory::FastSet(tx_buff.addr_, 0, RESP_CAP);
-  uint16_t out_len = 0u;
-  auto ans = ProcessOneCommand(
-      in_isr, REQ, REQ_LEN, reinterpret_cast<uint8_t*>(tx_buff.addr_), RESP_CAP, out_len);
-  UNUSED(ans);
-  UNUSED(out_len);
-
-  if (ep_in_->GetState() == Endpoint::State::IDLE)
-  {
-    ep_in_->Transfer(TX_LEN);
-    ep_in_->SetActiveLength(0);
-  }
-  else
-  {
-    ep_in_->SetActiveLength(TX_LEN);
-  }
-}
-
-template <typename SwdPort>
-void DapLinkV1Class<SwdPort>::OnDataInComplete(bool in_isr, LibXR::ConstRawData& data)
-{
-  UNUSED(in_isr);
-  UNUSED(data);
-
-  auto act_len = ep_in_->GetActiveLength();
-  if (act_len > 0)
-  {
-    ep_in_->Transfer(act_len);
-    ep_in_->SetActiveLength(0);
-  }
-
-  ArmOutTransferIfIdle();
-}
-
-template <typename SwdPort>
-void DapLinkV1Class<SwdPort>::ArmOutTransferIfIdle()
-{
-  if (!inited_ || !ep_out_)
-  {
-    return;
-  }
-
-  if (ep_out_->GetState() != Endpoint::State::IDLE)
-  {
-    return;
-  }
-
-  (void)ep_out_->Transfer(ep_out_->MaxTransferSize());
 }
 
 template <typename SwdPort>
@@ -972,9 +1127,9 @@ ErrorCode DapLinkV1Class<SwdPort>::HandleResetTarget(bool in_isr, const uint8_t*
   if (nreset_gpio_ != nullptr)
   {
     DriveReset(false);
-    DelayUsIfAllowed(in_isr, 1000u);
+    LibXR::Timebase::DelayMicroseconds(1000u);
     DriveReset(true);
-    DelayUsIfAllowed(in_isr, 1000u);
+    LibXR::Timebase::DelayMicroseconds(1000u);
     execute = 1u;
   }
 
@@ -3104,12 +3259,6 @@ void DapLinkV1Class<SwdPort>::DriveReset(bool release)
   {
     (void)nreset_gpio_->Write(release);
   }
-}
-
-template <typename SwdPort>
-void DapLinkV1Class<SwdPort>::DelayUsIfAllowed(bool /*in_isr*/, uint32_t us)
-{
-  LibXR::Timebase::DelayMicroseconds(us);
 }
 
 }  // namespace LibXR::USB
