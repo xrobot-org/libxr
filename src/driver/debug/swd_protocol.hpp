@@ -163,4 +163,54 @@ constexpr Request make_ap_write_req(uint8_t addr2b, uint32_t wdata)
   return Request{Port::AP, false, static_cast<uint8_t>(addr2b & 0x03u), wdata};
 }
 
+/**
+ * @brief 编码 SWD 包请求字节 / Encode the SWD packet request byte
+ *
+ * 8 位按线上顺序（LSB 先发）：Start=1、APnDP、RnW、A[2]、A[3]、Parity、Stop=0、Park=1；
+ * Parity 是 APnDP、RnW、A[2]、A[3] 的偶校验。
+ * The 8 bits in wire order (LSB first): Start=1, APnDP, RnW, A[2], A[3], Parity, Stop=0,
+ * Park=1; Parity is the even parity of APnDP, RnW, A[2] and A[3].
+ *
+ * @param req 请求（只用 port、rnw、addr2b）/ Request (port, rnw and addr2b only)
+ * @return 请求字节，bit0 最先发出 / Request byte, bit 0 goes out first
+ */
+constexpr uint8_t MakeRequest(const Request& req)
+{
+  const uint8_t APNDP = (req.port == Port::AP) ? 1u : 0u;
+  const uint8_t RNW = req.rnw ? 1u : 0u;
+  const uint8_t A2 = req.addr2b & 0x1u;
+  const uint8_t A3 = (req.addr2b >> 1) & 0x1u;
+  const uint8_t PARITY = (APNDP ^ RNW ^ A2 ^ A3) & 0x1u;
+  return static_cast<uint8_t>(0x01u | (APNDP << 1) | (RNW << 2) | (A2 << 3) | (A3 << 4) |
+                              (PARITY << 5) | (0u << 6) | (1u << 7));
+}
+
+/**
+ * @brief 解码 3 位 SWD ACK / Decode the 3-bit SWD ACK
+ *
+ * ACK[0] 最先收到：0b001 为 OK，0b010 为 WAIT，0b100 为 FAULT；全 0 视为无应答，其余
+ * 组合都是协议错误。
+ * ACK[0] is received first: 0b001 is OK, 0b010 WAIT, 0b100 FAULT; all zero is taken as
+ * no answer, every other pattern is a protocol error.
+ *
+ * @param bits 收到的 ACK 位，bit0 为最先收到的一位 / Received ACK bits, bit 0 first
+ * @return 解码后的 ACK / Decoded ACK
+ */
+constexpr Ack DecodeAck(uint8_t bits)
+{
+  switch (bits)
+  {
+    case 0x1u:
+      return Ack::OK;
+    case 0x2u:
+      return Ack::WAIT;
+    case 0x4u:
+      return Ack::FAULT;
+    case 0x0u:
+      return Ack::NO_ACK;
+    default:
+      return Ack::PROTOCOL;
+  }
+}
+
 }  // namespace LibXR::Debug::SwdProtocol

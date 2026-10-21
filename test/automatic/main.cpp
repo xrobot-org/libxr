@@ -54,6 +54,7 @@ void test_semaphore();
 void test_mutex();
 void test_stack();
 void test_swd_general_gpio();
+void test_swd_protocol();
 void test_terminal_command();
 void test_terminal_display();
 void test_terminal();
@@ -209,6 +210,7 @@ constexpr GroupedTestCase kMainTestCases[] = {
       true}},
     {"usb_tests", {"cdc_tx", &RunVoidEntry<test_usb_cdc_tx>, false}},
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
+    {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},
     {"core_tests", {"assert", &RunVoidEntry<test_assert>, false}},
     {"core_tests", {"def", &RunVoidEntry<test_def>, false}},
     {"core_tests", {"callback", &RunVoidEntry<test_cb>, false}},

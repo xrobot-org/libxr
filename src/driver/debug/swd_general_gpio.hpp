@@ -316,21 +316,6 @@ class SwdGeneralGPIO final : public Swd
   }
 
  private:
-  static inline uint8_t MakeReq(bool apndp, bool rnw, uint8_t addr2b)
-  {
-    const uint8_t A2 = addr2b & 0x1u;
-    const uint8_t A3 = (addr2b >> 1) & 0x1u;
-    const uint8_t PAR = static_cast<uint8_t>((apndp ^ rnw ^ A2 ^ A3) & 0x1u);
-
-    // 请求字节位域：start(1), APnDP, RnW, A2, A3, PAR, stop(0), park(1)。
-    // Request bit fields: start(1), APnDP, RnW, A2, A3, PAR, stop(0), park(1).
-    return static_cast<uint8_t>((1u << 0) | (static_cast<uint8_t>(apndp) << 1) |
-                                (static_cast<uint8_t>(rnw) << 2) |
-                                (static_cast<uint8_t>(A2) << 3) |
-                                (static_cast<uint8_t>(A3) << 4) |
-                                (static_cast<uint8_t>(PAR) << 5) | (0u << 6) | (1u << 7));
-  }
-
   static inline uint8_t Parity32(uint32_t x)
   {
     x ^= x >> 16;
@@ -342,23 +327,6 @@ class SwdGeneralGPIO final : public Swd
         1, 0, 0, 1, 0, 1, 1, 0};  ///< 奇偶校验查找表（4-bit 折叠） / Parity lookup table
                                   ///< (4-bit fold).
     return LUT[x];
-  }
-
-  static inline SwdProtocol::Ack DecodeAck(uint8_t ack_bits)
-  {
-    switch (ack_bits)
-    {
-      case 0x1:
-        return SwdProtocol::Ack::OK;
-      case 0x2:
-        return SwdProtocol::Ack::WAIT;
-      case 0x4:
-        return SwdProtocol::Ack::FAULT;
-      case 0x0:
-        return SwdProtocol::Ack::NO_ACK;
-      default:
-        return SwdProtocol::Ack::PROTOCOL;
-    }
   }
 
  private:
@@ -528,8 +496,7 @@ class SwdGeneralGPIO final : public Swd
     resp.rdata = 0u;
     resp.parity_ok = true;
 
-    const bool APNDP = (req.port == SwdProtocol::Port::AP);
-    const uint8_t REQUEST_BYTE = MakeReq(APNDP, req.rnw, req.addr2b);
+    const uint8_t REQUEST_BYTE = SwdProtocol::MakeRequest(req);
 
     (void)SetSwdioDriveMode();
     WriteByteLSB(REQUEST_BYTE);
@@ -546,7 +513,7 @@ class SwdGeneralGPIO final : public Swd
         ack_raw |= static_cast<uint8_t>(1u << i);
       }
     }
-    resp.ack = DecodeAck(static_cast<uint8_t>(ack_raw & 0x7u));
+    resp.ack = SwdProtocol::DecodeAck(static_cast<uint8_t>(ack_raw & 0x7u));
 
     if (resp.ack != SwdProtocol::Ack::OK)
     {
@@ -616,8 +583,7 @@ class SwdGeneralGPIO final : public Swd
     resp.rdata = 0u;
     resp.parity_ok = true;
 
-    const bool APNDP = (req.port == SwdProtocol::Port::AP);
-    const uint8_t REQUEST_BYTE = MakeReq(APNDP, req.rnw, req.addr2b);
+    const uint8_t REQUEST_BYTE = SwdProtocol::MakeRequest(req);
 
     (void)SetSwdioDriveMode();
     WriteByteLSBWithoutDelay(REQUEST_BYTE);
@@ -634,7 +600,7 @@ class SwdGeneralGPIO final : public Swd
         ack_raw |= static_cast<uint8_t>(1u << i);
       }
     }
-    resp.ack = DecodeAck(static_cast<uint8_t>(ack_raw & 0x7u));
+    resp.ack = SwdProtocol::DecodeAck(static_cast<uint8_t>(ack_raw & 0x7u));
 
     if (resp.ack != SwdProtocol::Ack::OK)
     {

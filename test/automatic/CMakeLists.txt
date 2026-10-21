@@ -111,6 +111,7 @@ add_executable(
   core/rw/write_port/test_write_port.cpp
   core/rw/write_stream/test_write_stream.cpp
   driver/debug/swd_general_gpio/test_swd_general_gpio.cpp
+  driver/debug/swd_protocol/test_swd_protocol.cpp
   driver/driver_async_condition/test_driver_async_condition.cpp
   driver/power/test_power.cpp
   driver/uart/test_uart.cpp
