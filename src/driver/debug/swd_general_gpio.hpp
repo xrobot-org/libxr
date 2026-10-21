@@ -205,10 +205,11 @@ class SwdGeneralGPIO final : public Swd
   void IdleClocks(uint32_t cycles) override
   {
     // CMSIS-DAP 空闲周期插入 / CMSIS-DAP idle cycles insertion.
-    // 保留历史序列：周期内驱动 SWDIO 高电平，结束后拉低。
-    // Keep the legacy sequence: drive SWDIO high during cycles, then pull low.
+    // 空闲周期里 SWDIO 驱动为低：高电平会被目标当成起始位，下一个请求就对不齐。
+    // SWDIO is driven low during the idle cycles: a high level is taken by the target as
+    // a start bit and the next request would be misaligned.
     (void)SetSwdioDriveMode();
-    swdio_.Write(true);
+    swdio_.Write(false);
 
     for (uint32_t i = 0; i < cycles; ++i)
     {
