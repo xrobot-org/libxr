@@ -243,3 +243,21 @@ add_test(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xrobot_freshness.cmake"
 )
 set_tests_properties(xrobot_freshness PROPERTIES TIMEOUT 60)
+
+# CH32 USBHS IN endpoint against a fake register block: ACKed packets that INT_ST
+# reports as busy NAKs are found by their toggle.
+add_executable(
+  test_ch32_usbhs_in driver/usb/ch32/test_ch32_usbhs_in.cpp
+                     "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/ch/ch32_usb_endpoint_otghs.cpp"
+)
+target_link_libraries(test_ch32_usbhs_in PRIVATE xr)
+target_include_directories(
+  test_ch32_usbhs_in PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.."
+                             "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/ch32"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/ch"
+)
+target_compile_definitions(
+  test_ch32_usbhs_in PRIVATE LIBXR_CH32_CONFIG_FILE=fake_ch32v30x_usbhs.h
+)
+add_test(NAME ch32_usbhs_in COMMAND test_ch32_usbhs_in)
+set_tests_properties(ch32_usbhs_in PROPERTIES TIMEOUT 30)
