@@ -22,6 +22,7 @@ class GPIO
     OUTPUT_PUSH_PULL,      ///< 推挽输出模式。Push-pull output mode.
     OUTPUT_OPEN_DRAIN,     ///< 开漏输出模式。Open-drain output mode.
     FALL_INTERRUPT,        ///< 下降沿中断模式。Falling edge interrupt mode.
+    LOW_LEVEL_INTERRUPT,   ///< 低电平中断模式。Active-low level interrupt mode.
     RISING_INTERRUPT,      ///< 上升沿中断模式。Rising edge interrupt mode.
     FALL_RISING_INTERRUPT  ///< 双沿触发中断模式。Both edge interrupt mode.
   };
