@@ -267,11 +267,17 @@ struct FakeHw
     {
       return;  // NAK：主机稍后重试 / NAK, the host retries later
     }
+    // SETUP bypasses NAK, but still needs initialized receive buffer capacity.
+    const uint16_t count = *BtField(num, 3U);
+    const size_t blocks = (count >> 10U) & 0x1FU;
+    const size_t capacity =
+        (count & 0x8000U) != 0U ? (blocks + 1U) * 32U : blocks * 2U;
+    TEST_ASSERT(len <= capacity);
     if (len != 0U)
     {
       PmaWrite(RxAddr(num), data, len);
     }
-    *BtField(num, 3U) = static_cast<uint16_t>(len & 0x3FFU);
+    *BtField(num, 3U) = static_cast<uint16_t>((count & 0xFC00U) | (len & 0x3FFU));
     ep[num] = (ep[num] & ~kEpStatRx) | kEpCtrRx | 0x2000U;
     // SETUP 位由硬件在收到非 SETUP token 时清除 / cleared by hardware on a non-SETUP
     // token.
@@ -547,6 +553,26 @@ struct Done
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+void TestEp0ReceiveCapacityAfterColdStartAndBusReset()
+{
+  // USB packet SRAM has no guaranteed power-on contents.
+  for (const uint8_t power_on_byte : {0x00U, 0xA5U, 0xFFU})
+  {
+    FakeHw::pma.fill(power_on_byte);
+    Fixture f;
+    TEST_ASSERT((*FakeHw::BtField(0, 3U) & 0xFC00U) == FakeHw::EncodeRxCount(64));
+    *FakeHw::BtField(0, 3U) = 0U;
+    FakeHw::BusReset();
+    Pump();
+    TEST_ASSERT((*FakeHw::BtField(0, 3U) & 0xFC00U) == FakeHw::EncodeRxCount(64));
+    f.Setup(MakeSetup(0x80, 6, 0x0100, 0, 18));
+    const auto descriptor = AwaitInPacket(0);
+    TEST_ASSERT(descriptor.size() == 18U && descriptor[0] == 18U &&
+                descriptor[1] == 1U);
+    f.StatusOut();
+  }
+}
 
 void TestEnumerationAndControlRead()
 {
@@ -974,6 +1000,7 @@ void TestArmNotRearmedByRace()
 
 int main()
 {
+  TestEp0ReceiveCapacityAfterColdStartAndBusReset();
   TestEnumerationAndControlRead();
   TestControlWrite();
   TestBulkInMultiPacket();
