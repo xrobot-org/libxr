@@ -608,6 +608,11 @@ ErrorCode FSDevEndpoint<HW>::ConfigureHardware(const Config& cfg)
   else
   {
     HW::SetRxBuf(num, pma_addr_);
+    // EP0 在 NAK 下也收 SETUP，早于第一次 ArmRx()；包缓冲 SRAM 上电内容不确定，
+    // 接收容量在这里就写好。
+    // EP0 accepts SETUP while NAK, before the first ArmRx(). Initialize
+    // receive capacity here; packet SRAM contents are undefined at power-on.
+    HW::SetRxCountEncoded(num, cfg.max_packet_size);
   }
   // 重新绑定从 DATA0 开始；EP0 的 DATA0/1 由硬件在 SETUP 后自动设置。
   // A new binding starts at DATA0; the hardware sets the EP0 DATA0/1 after SETUP.
@@ -928,6 +933,10 @@ void FSDevDevice<HW>::OnBusResetRegs()
   HW::WriteDaddr(0x0080U);  // EF | 0
   if (out_[0] != nullptr)
   {
+    // 总线复位后、SETUP 到来之前恢复 EP0 的缓冲地址和接收容量。
+    // Restore EP0's buffer before SETUP can arrive after a bus reset.
+    HW::SetRxBuf(0U, out_[0]->pma_addr_);
+    HW::SetRxCountEncoded(0U, static_cast<uint16_t>(out_[0]->MaxPacketSize()));
     out_[0]->SetStat(false, kFsDevStatRxNak);  // EP0 OUT NAK：SETUP 照常接收
   }
   OnBusReset(true);
