@@ -618,6 +618,41 @@ void TestVendorCommandsInBatch()
 /// WaitForWork waits for what the next Step(0) would do, without doing it: nothing
 /// pending times out; a queued command, an unbind wake-up and a freed response slot each
 /// return OK, and Step(0) then does that work.
+void TestWakeStep()
+{
+  // WakeStep wakes WaitForWork with no command, from another thread; Step(0) then finds
+  // nothing to execute and returns OK, absorbing the spare wake-up.
+  DapFixture f;
+  f.dap.BindEndpoints(f.pool, 0, false);
+  Run(f);
+  TEST_ASSERT(f.dap.WaitForWork(0) == ErrorCode::TIMEOUT);
+
+  std::atomic<bool> woke{false};
+  std::thread waiter(
+      [&]()
+      {
+        woke.store(f.dap.WaitForWork(2000) == ErrorCode::OK);
+      });
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  f.dap.WakeStep(false);
+  waiter.join();
+  TEST_ASSERT(woke.load());
+  TEST_ASSERT(!f.in.active);
+  TEST_ASSERT(f.dap.Step(0) == ErrorCode::OK);
+  TEST_ASSERT(!f.in.active);  // nothing was executed
+  TEST_ASSERT(f.dap.WaitForWork(0) == ErrorCode::TIMEOUT);  // the wake-up was absorbed
+
+  // A command that arrives together with a wake-up is still executed by one Step(0).
+  f.out.HostSends({INFO, PACKET_SIZE_ID});
+  f.dap.WakeStep(false);
+  TEST_ASSERT(f.dap.Step(0) == ErrorCode::OK);
+  TEST_ASSERT(f.in.active && f.in.Last().data[0] == INFO);
+  f.in.Complete();
+  Run(f);
+  (void)f.dap.Step(0);  // absorbs the spare wake-up
+  TEST_ASSERT(f.dap.WaitForWork(0) == ErrorCode::TIMEOUT);
+}
+
 void TestWaitForWork()
 {
   {
@@ -1252,6 +1287,7 @@ int main()
   TestQueueAndExecuteAnswerPerPacket();
   TestVendorCommandsInBatch();
   TestWaitForWork();
+  TestWakeStep();
   TestSessionResetGate();
   TestHostAboveAdvertisedPacketCount();
   TestHostAboveAdvertisedPacketCountThreaded();

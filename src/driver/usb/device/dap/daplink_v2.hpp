@@ -403,6 +403,23 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief 从任何线程或中断叫醒等在 WaitForWork / Step 里的线程，不带命令。
+   *        Wake the thread waiting in WaitForWork / Step from any thread or an
+   *        interrupt, without a command.
+   *
+   * 让执行 Step 的线程还能处理 USB 之外的工作（别的传输投来的命令、定时器节拍）：投递方
+   * 先放好自己的工作，再调用它；WaitForWork 返回 OK，Step(0) 发现没有命令就直接返回 OK，
+   * 多出来的唤醒由 Step 吸收（与绑定/解绑的唤醒相同）。
+   * Lets the thread that runs Step also handle work that does not come over USB (commands
+   * posted by other transports, timer ticks): the poster puts its work in place first and
+   * then calls this; WaitForWork returns OK, and Step(0) finds no command and returns OK,
+   * so a spare wake-up is absorbed by Step exactly like the wake-up of a bind or unbind.
+   *
+   * @param in_isr 是否在中断里调用 / Whether called from an interrupt
+   */
+  void WakeStep(bool in_isr = false) { cmd_sem_.PostFromCallback(in_isr); }
+
  protected:
   /**
    * @brief Bind endpoint resources
