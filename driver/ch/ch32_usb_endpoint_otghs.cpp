@@ -466,6 +466,43 @@ ErrorCode CH32EndpointOtgHs::StartHardware(const HwRequest& request, bool /*in_i
   const bool IS_IN = (GetDirection() == Direction::IN);
   const bool IS_EP0 = (GetNumber() == EPNumber::EP0);
 
+  // UEPn_TX_LEN、TX_CTRL、RX_CTRL 在同一个 32 位字里。下面写本方向寄存器时，另一方向恰好
+  // 有一个包完成，控制器对另一方向 toggle 的自动推进会丢：OUT 的下一包被当作重发丢掉，IN
+  // 的下一包带着旧相位发出、被主机当作重复包丢掉（深流水下 IN 挂包与 OUT 收包并发，几千条
+  // 命令一次）。写之前 UIF_TRANSFER 未置位、写完已置位，就说明这期间完成了事务；记下另一
+  // 方向写之前的 toggle，它下一次报好包时由 RepairLostToggle 核对。UIF_TRANSFER 置位期间
+  // 控制器对一切事务回忙 NAK，此时写不会撞上。
+  // UEPn_TX_LEN, TX_CTRL and RX_CTRL share one 32-bit word. When a packet of the other
+  // direction completes while the writes below change this direction's registers, the
+  // controller loses its automatic advance of the other direction's toggle: OUT drops
+  // its next packet as a resend, IN sends its next packet with the old phase and the
+  // host drops it as a repeat (with IN armed while OUT packets arrive, about once in a
+  // few thousand commands at pipeline depth 3-4). UIF_TRANSFER clear before the writes
+  // and set after them means a transaction completed meanwhile: the other direction's
+  // toggle from before the writes is kept and checked by RepairLostToggle at its next
+  // good packet. While UIF_TRANSFER is set the controller busy-NAKs every transaction,
+  // so writes made then cannot collide.
+  // 先取 toggle 再看 UIF_TRANSFER：两次读之间完成的事务已让 UIF_TRANSFER 置位，不记。
+  // The toggle first, then UIF_TRANSFER: a transaction completing between the two reads
+  // has already set UIF_TRANSFER and is not recorded.
+  CH32EndpointOtgHs* other = nullptr;
+  uint8_t other_tog = 0;
+  if (!IS_EP0 && GetType() != Type::ISOCHRONOUS)
+  {
+    other = map_otg_hs_[EPNumberToInt8(GetNumber())]
+                       [static_cast<uint8_t>(IS_IN ? Direction::OUT : Direction::IN)];
+    if (other != nullptr && other->GetType() != Type::ISOCHRONOUS)
+    {
+      other_tog = IS_IN ? (*get_rx_control_addr(GetNumber()) & USBHS_UEP_R_TOG_MASK)
+                        : (*get_tx_control_addr(GetNumber()) & USBHS_UEP_T_TOG_MASK);
+    }
+    else
+    {
+      other = nullptr;
+    }
+  }
+  const bool idle = (USBHSD->INT_FG & USBHS_UIF_TRANSFER) == 0u;
+
   transfer_tag_ = request.tag;
   transfer_requested_ = request.length;
   transfer_accumulated_ = 0;
@@ -565,7 +602,41 @@ ErrorCode CH32EndpointOtgHs::StartHardware(const HwRequest& request, bool /*in_i
     tog0_ = !tog0_;
   }
 
+  if (other != nullptr && idle && (USBHSD->INT_FG & USBHS_UIF_TRANSFER) != 0u)
+  {
+    other->tog_window_ = static_cast<uint8_t>(TOG_WINDOW | other_tog);
+  }
+
   return ErrorCode::OK;
+}
+
+void CH32EndpointOtgHs::RepairLostToggle()
+{
+  if (tog_window_ == 0u)
+  {
+    return;
+  }
+  const uint8_t before = static_cast<uint8_t>(tog_window_ & ~TOG_WINDOW);
+  tog_window_ = 0u;
+  // 好包之后 toggle 必然离开写之前的值；没离开就是这次推进丢了。
+  // After a good packet the toggle must have left its value from before the writes; if
+  // it has not, this advance was lost.
+  if (GetDirection() == Direction::IN)
+  {
+    auto* ctrl = get_tx_control_addr(GetNumber());
+    if ((*ctrl & USBHS_UEP_T_TOG_MASK) == before)
+    {
+      *ctrl = static_cast<uint8_t>(*ctrl ^ USBHS_UEP_T_TOG_DATA1);
+    }
+  }
+  else
+  {
+    auto* ctrl = get_rx_control_addr(GetNumber());
+    if ((*ctrl & USBHS_UEP_R_TOG_MASK) == before)
+    {
+      *ctrl = static_cast<uint8_t>(*ctrl ^ USBHS_UEP_R_TOG_DATA1);
+    }
+  }
 }
 
 USB::Endpoint::StopResult CH32EndpointOtgHs::StopHardware(bool /*in_isr*/)
@@ -708,6 +779,10 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
   if (IS_IN)
   {
     auto* tx_ctrl = get_tx_control_addr(GetNumber());
+    if (!IS_EP0 && !IS_ISO)
+    {
+      RepairLostToggle();
+    }
 
     // 还有后续分包：续发下一包，整请求发完才向核心报一次完成。
     // More packets to go: send the next one and report a single completion for
@@ -748,6 +823,7 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
         ((USBHSD->INT_ST & USBHS_UIS_TOG_OK) == USBHS_UIS_TOG_OK);  // NOLINT
     if (!TOG_OK)
     {
+      tog_window_ = 0u;  // 重发的包不推进 toggle / a resend does not advance the toggle
       HwRequest retry{};
       retry.slot = transfer_dma_;
       retry.length = transfer_requested_;
@@ -755,6 +831,7 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
       (void)StartHardware(retry, true);
       return;
     }
+    RepairLostToggle();
   }
 
   if (IS_EP0)

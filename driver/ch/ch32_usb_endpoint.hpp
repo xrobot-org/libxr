@@ -92,6 +92,12 @@ class CH32EndpointOtgHs : public USB::Endpoint
   size_t ReapProgress(const HwRequest& request, bool& retired) override;
 
   void TransferComplete(size_t size);
+  /// 一个好包（OUT 的 TOG_OK、IN 的 ACK）已收发：若另一方向挂包时控制器丢了这次自动推进，
+  /// 由软件补推一次。
+  /// A good packet (OUT with TOG_OK, IN ACKed) was transferred: if the controller lost
+  /// its automatic advance while the other direction was being armed, advance it once in
+  /// software.
+  void RepairLostToggle();
   /// 非 EP0 BULK/INTERRUPT IN：挂起的包是否已被主机 ACK（TOG_AUTO 下 toggle 已翻转）。
   /// Non-EP0 bulk/interrupt IN: whether the host has ACKed the armed packet (the
   /// TOG_AUTO toggle moved since it was armed).
@@ -127,6 +133,11 @@ class CH32EndpointOtgHs : public USB::Endpoint
   // IN：挂包时 TX_CTRL 的 toggle 位（USBHS_UEP_T_TOG_MASK）。
   // IN: the TX_CTRL toggle bits (USBHS_UEP_T_TOG_MASK) when the packet was armed.
   uint8_t tx_tog_armed_ = 0;
+  // 另一方向挂包期间完成了一个事务时，本方向在那之前的 toggle 位（| TOG_WINDOW），否则 0。
+  // The toggle bits of this direction before the other direction's arm, during which a
+  // transaction completed (| TOG_WINDOW); 0 otherwise.
+  uint8_t tog_window_ = 0;
+  static constexpr uint8_t TOG_WINDOW = 0x80;
 
   // 同 OtgFs：IRQ 分发（自由函数）经端点对象读取槽内存。
   // Same as OtgFs: the IRQ dispatch (free functions) reads slot memory through

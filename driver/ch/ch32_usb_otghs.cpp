@@ -116,6 +116,12 @@ static void HandleTransferOut(CH32EndpointOtgHs* ep_out, uint8_t ep_num, uint8_t
   }
   if (!busy || rx_len == 0u)
   {
+    // 不报出的零长包也推进了 toggle：它若是挂包期间完成的那个事务，下一个好包之后 toggle
+    // 会回到写之前的值，不能再当作丢了推进。
+    // An unreported zero-length packet also advanced the toggle: if it was the
+    // transaction that completed during the arm, the toggle is back at its earlier value
+    // after the next good packet, which must not count as a lost advance.
+    ep_out->tog_window_ = 0u;
     return;
   }
 
