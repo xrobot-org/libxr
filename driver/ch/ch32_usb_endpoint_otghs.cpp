@@ -816,7 +816,11 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
     return;
   }
 
-  // TOG 不匹配表示数据同步失败：丢弃本包并按原请求重新挂接收。
+  // TOG 不匹配：主机重发了已经收下的包（它没收到我们的 ACK）。丢弃它，原样重新挂
+  // 接收；请求、RX DMA 位置和已收字节数都不动，前面收下的包照常计入。
+  // Toggle mismatch: the host resent a packet already taken (it missed our ACK). Drop
+  // it and arm the receive again as it was; the request, the RX DMA position and the
+  // received count stay, so the packets accepted earlier still count.
   if (!IS_EP0 && !IS_ISO)
   {
     const bool TOG_OK =
@@ -824,11 +828,8 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
     if (!TOG_OK)
     {
       tog_window_ = 0u;  // 重发的包不推进 toggle / a resend does not advance the toggle
-      HwRequest retry{};
-      retry.slot = transfer_dma_;
-      retry.length = transfer_requested_;
-      retry.tag = transfer_tag_;
-      (void)StartHardware(retry, true);
+      auto* rx_ctrl = get_rx_control_addr(GetNumber());
+      *rx_ctrl = (*rx_ctrl & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
       return;
     }
     RepairLostToggle();

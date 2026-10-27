@@ -267,6 +267,43 @@ void TestResendEndsWindow()
   TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_RES_MASK) == USBHS_UEP_R_RES_ACK);
 }
 
+// A multi-packet OUT request: the host resends a packet that was already taken (it
+// missed the ACK). The resend is dropped and the receive armed again as it was: the
+// request, the DMA position and the received count stay, so the packets accepted earlier
+// still count. Restarting the request from its start lost them.
+void TestResendKeepsAcceptedPackets()
+{
+  MapReset reset;
+  fake_usbhsd = {};
+  Block<2048> storage;
+  EndpointPool pool{2};
+  CH32EndpointOtgHs ep{Endpoint::EPNumber::EP1, Direction::OUT, storage.Raw()};
+  Recorder rec;
+  pool.SetSpeed(Speed::HIGH);
+  TEST_ASSERT(pool.Put(&ep) == ErrorCode::OK);
+  ep.SetOnComplete(rec.Bind());
+  TEST_ASSERT(ep.Configure({Direction::OUT, Endpoint::Type::BULK, 512}, false) ==
+              ErrorCode::OK);
+  TEST_ASSERT(ep.Receive(1024, false) == ErrorCode::OK);
+  const uint32_t first_dma = fake_usbhsd.UEP1_RX_DMA;
+
+  fake_usbhsd.INT_ST = USBHS_UIS_TOG_OK;
+  ep.TransferComplete(512);  // first packet taken
+  TEST_ASSERT(rec.list.empty());
+  const uint32_t second_dma = fake_usbhsd.UEP1_RX_DMA;
+  TEST_ASSERT(second_dma == first_dma + 512u);
+
+  fake_usbhsd.INT_ST = 0u;  // the host resends: TOG mismatch
+  ep.TransferComplete(512);
+  TEST_ASSERT(rec.list.empty());
+  TEST_ASSERT(fake_usbhsd.UEP1_RX_DMA == second_dma);
+  TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_RES_MASK) == USBHS_UEP_R_RES_ACK);
+
+  fake_usbhsd.INT_ST = USBHS_UIS_TOG_OK;
+  ep.TransferComplete(512);  // second packet taken
+  TEST_ASSERT(rec.list.size() == 1 && rec.list[0].actual == 1024);
+}
+
 // The advance of an ACKed IN packet was lost: the next response would go out with the
 // old phase and be dropped by the host as a repeat, so the toggle is advanced once.
 void TestLostTxAdvanceRepaired()
@@ -318,6 +355,7 @@ int main()
   TestLostRxAdvanceRepaired();
   TestKeptRxAdvanceUntouched();
   TestResendEndsWindow();
+  TestResendKeepsAcceptedPackets();
   TestLostTxAdvanceRepaired();
   TestArmWithoutCompletionRecordsNothing();
   std::puts("CH32 USBHS IN completions and lost toggle advances passed");
