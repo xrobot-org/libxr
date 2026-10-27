@@ -290,6 +290,24 @@ target_compile_definitions(
 add_test(NAME ch32_usbhs_in COMMAND test_ch32_usbhs_in)
 set_tests_properties(ch32_usbhs_in PROPERTIES TIMEOUT 30)
 
+# CH32 USBFS endpoints against a fake register block: the shared bidirectional block, the
+# IN packets below 64 bytes and the resend of an OUT packet.
+add_executable(
+  test_ch32_usbfs driver/usb/ch32/test_ch32_usbfs.cpp
+                  "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/ch/ch32_usb_endpoint_otgfs.cpp"
+)
+target_link_libraries(test_ch32_usbfs PRIVATE xr)
+target_include_directories(
+  test_ch32_usbfs PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.."
+                          "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/ch32"
+                          "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/ch"
+)
+target_compile_definitions(
+  test_ch32_usbfs PRIVATE LIBXR_CH32_CONFIG_FILE=fake_ch32v30x_usbfs.h
+)
+add_test(NAME ch32_usbfs COMMAND test_ch32_usbfs)
+set_tests_properties(ch32_usbfs PROPERTIES TIMEOUT 30)
+
 # cdc_test classes: lease return, DTR-triggered packet and the read re-arm.
 add_executable(test_usb_cdc_test driver/usb/device/cdc/test_cdc_test.cpp)
 target_link_libraries(test_usb_cdc_test PRIVATE xr)

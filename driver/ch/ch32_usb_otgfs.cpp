@@ -230,13 +230,14 @@ CH32USBOtgFS::CH32USBOtgFS(
     if (rx[i].addr_ != nullptr && tx[i].addr_ != nullptr)
     {
       // 双向共享（单 bank）：IN 必须落在 OUT +64 且两块各 ≥64 B（手册表 23-4
-      // p.359）；两个端点对象都传块基址，由端点构造按方向二分。
+      // p.359）；两个端点对象都拿整个 128 B 共享块，由端点构造按方向二分。
       REQUIRE(tx[i].addr_ == reinterpret_cast<uint8_t*>(rx[i].addr_) + 64U);
       REQUIRE(rx[i].size_ >= 64U && tx[i].size_ >= 64U);
+      const LibXR::RawData shared(rx[i].addr_, 128U);
       USB::EndpointPool::Put(
-          new CH32EndpointOtgFs(ep_index, USB::Endpoint::Direction::OUT, rx[i], false));
+          new CH32EndpointOtgFs(ep_index, USB::Endpoint::Direction::OUT, shared, false));
       USB::EndpointPool::Put(
-          new CH32EndpointOtgFs(ep_index, USB::Endpoint::Direction::IN, rx[i], false));
+          new CH32EndpointOtgFs(ep_index, USB::Endpoint::Direction::IN, shared, false));
     }
     else if (rx[i].addr_ != nullptr)
     {

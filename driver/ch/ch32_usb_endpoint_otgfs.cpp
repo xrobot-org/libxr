@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <cstring>
 
 #include "ch32_usb_endpoint.hpp"
 #include "ep.hpp"
@@ -29,7 +30,7 @@ static inline volatile uint32_t* get_dma_addr(USB::Endpoint::EPNumber ep)
 static void set_dma_buffer(USB::Endpoint::EPNumber ep_num, void* value,
                            bool double_buffer)
 {
-  *get_dma_addr(ep_num) = (uint32_t)value;
+  *get_dma_addr(ep_num) = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(value));
 
   switch (ep_num)
   {
@@ -236,12 +237,12 @@ CH32EndpointOtgFs::CH32EndpointOtgFs(EPNumber ep_num, Direction dir,
 {
   map_otg_fs_[EPNumberToInt8(GetNumber())][static_cast<uint8_t>(dir)] = this;
 
-  // 共享双向端点：IN 对象拿到的地址是 OUT+64，块基址要回退 64。
-  // For a shared bidirectional endpoint the IN object receives OUT+64; step
-  // back to the block base.
-  block_dma_base_ = (!single_direction && ep_num != EPNumber::EP0 && dir == Direction::IN)
-                        ? static_cast<uint8_t*>(buffer.addr_) - SHARED_BLOCK_HALF
-                        : static_cast<uint8_t*>(buffer.addr_);
+  // 共享双向端点两个方向都拿整个共享块：UEPn_DMA 指向块基址，OUT 用前 64 B，硬件
+  // 把 IN 放在 +64。
+  // Both directions of a shared bidirectional endpoint receive the whole shared block:
+  // UEPn_DMA points at the block base, OUT uses the first 64 B and the hardware puts
+  // IN at +64.
+  block_dma_base_ = static_cast<uint8_t*>(buffer.addr_);
 
   set_dma_buffer(GetNumber(), block_dma_base_, false);
 
@@ -509,24 +510,20 @@ void CH32EndpointOtgFs::TransferComplete(size_t size)
       }
       else
       {
-        // 共享模式只有 64 B 的 IN 区，请求长度不会超过一个包；走到这里说明
-        // 配置有误，按剩余字节整包发出，不再续发。
-        // Shared mode only has a 64 B IN area, so a request never exceeds one
-        // packet; reaching here means a misconfiguration — send what is left as
-        // one packet and stop splitting.
-        transfer_remaining_ = 0U;
-      }
-      if (transfer_remaining_ > 0U)
-      {
-        set_tx_len(GetNumber(), chunk);
-        transfer_cursor_ += chunk;
-        transfer_remaining_ -= chunk;
-        *get_tx_ctrl_addr(GetNumber()) =
-            (*get_tx_ctrl_addr(GetNumber()) & ~USBFS_UEP_T_RES_MASK) |
-            (IS_ISO ? USBFS_UEP_T_RES_NONE : USBFS_UEP_T_RES_ACK);
-        return;
+        // 共享模式的 IN 区固定在块基址 +64、只有一个 64 B 槽：包长小于 64（8/16/32）
+        // 时请求可以有多包，下一包要先挪到 IN 区开头再发。
+        // In shared mode the IN area is fixed at block base +64 with one 64 B slot:
+        // with a packet below 64 (8/16/32) a request can span packets, and the next
+        // one is moved to the start of the IN area before it goes out.
+        std::memmove(block_dma_base_ + SHARED_BLOCK_HALF, transfer_cursor_, chunk);
       }
       set_tx_len(GetNumber(), chunk);
+      transfer_cursor_ += chunk;
+      transfer_remaining_ -= chunk;
+      *get_tx_ctrl_addr(GetNumber()) =
+          (*get_tx_ctrl_addr(GetNumber()) & ~USBFS_UEP_T_RES_MASK) |
+          (IS_ISO ? USBFS_UEP_T_RES_NONE : USBFS_UEP_T_RES_ACK);
+      return;
     }
     // 完成后恢复 NAK；IN 一次请求一次完成，actual = 请求长度。
     *get_tx_ctrl_addr(GetNumber()) =
@@ -538,23 +535,20 @@ void CH32EndpointOtgFs::TransferComplete(size_t size)
     return;
   }
 
-  // TOG 不匹配表示数据同步失败：丢弃本包并按原请求重新挂接收。
+  // TOG 不匹配：丢弃本包，按原样重新挂接收。
+  // Toggle mismatch: drop this packet and arm the receive again as it was.
   if (!IS_ISO)
   {
     const bool TOG_OK = ((USBFSD->INT_ST & USBFS_U_TOG_OK) == USBFS_U_TOG_OK);  // NOLINT
     if (!TOG_OK)
     {
-      // 重试只补收没到的部分：单向模式可能已经 ACK 了前几包，整请求重来会丢掉
-      // 它们（shared/EP0/ISO 每包完成，remaining == requested，行为不变）。
-      // Retry only the missing part: in single-direction mode earlier packets may
-      // already be ACKed and a full restart would drop them (shared/EP0/ISO
-      // complete per packet, so remaining == requested and nothing changes).
-      HwRequest retry{};
-      const size_t remaining = transfer_requested_ - transfer_accumulated_;
-      retry.slot = LibXR::RawData(transfer_cursor_, remaining);
-      retry.length = remaining;
-      retry.tag = transfer_tag_;
-      (void)StartHardware(retry, true);
+      // 这是主机重发的、已经收下的包（它没收到我们的 ACK）：丢弃，原样重新挂接收。
+      // 请求、DMA 位置和已收字节数都不动，前面收下的包照常计入。
+      // This is a packet the host resent after missing our ACK, already taken: drop
+      // it and arm the receive again as it was. The request, the DMA position and the
+      // received count stay, so the packets accepted earlier still count.
+      *get_rx_ctrl_addr(GetNumber()) =
+          (*get_rx_ctrl_addr(GetNumber()) & ~USBFS_UEP_R_RES_MASK) | USBFS_UEP_R_RES_ACK;
       return;
     }
   }
@@ -566,7 +560,7 @@ void CH32EndpointOtgFs::TransferComplete(size_t size)
     if (transfer_accumulated_ < transfer_requested_ && size == MaxPacketSize())
     {
       transfer_cursor_ += size;
-      *get_dma_addr(GetNumber()) = reinterpret_cast<uint32_t>(transfer_cursor_);
+      *get_dma_addr(GetNumber()) = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(transfer_cursor_));
       return;  // RES 仍为 ACK，继续收下一包
     }
     *get_rx_ctrl_addr(GetNumber()) =

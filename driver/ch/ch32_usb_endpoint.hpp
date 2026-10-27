@@ -55,12 +55,11 @@ class CH32EndpointOtgFs : public USB::Endpoint
   // IN splitting: bytes of the request not sent yet (0 = last packet in flight).
   size_t transfer_remaining_ = 0;
   // 共享双向端点的块基址：硬件 OUT 用 [base, base+64)，IN 固定用 [base+64,
-  // base+128)，UEPn_DMA 必须一直是 base。IN 端点对象从构造参数拿到的是
-  // base+64（TX 列表项），故这里回退 64 得到块基址。
+  // base+128)，UEPn_DMA 必须一直是 base。两个方向的端点对象都从构造参数拿到整个
+  // 共享块。
   // Block base of a shared bidirectional endpoint: the hardware uses [base,
   // base+64) for OUT and always [base+64, base+128) for IN, so UEPn_DMA must
-  // stay at base. The IN endpoint object is given base+64 (its TX list entry),
-  // so step back to the block base.
+  // stay at base. Both direction objects receive the whole shared block.
   uint8_t* block_dma_base_ = nullptr;
 
   // IRQ 分发（自由函数）需要经端点对象读取槽内存（EP0 setup 包）。
