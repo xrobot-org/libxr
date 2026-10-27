@@ -485,7 +485,7 @@ class DapLinkV2Class : public DeviceClass
     // A new session starts: the epoch is bumped. The session state (SWD/JTAG, clock, pin
     // shadow) is reset by the Step thread before the first command of this session (see
     // SyncSession); it is not touched here.
-    ResetChannels();
+    ResetChannels(in_isr);
 
     inited_ = true;
     TopUpReceives(in_isr);
@@ -512,7 +512,7 @@ class DapLinkV2Class : public DeviceClass
     // SyncSession), not here. Lent slots are voided by the unbind; the ABORTED
     // completions delivered inside Close are ignored by the callback entry because
     // inited_ is already false.
-    ResetChannels();
+    ResetChannels(in_isr);
     // 叫醒可能在等命令或等 IN 槽的 Step 线程。
     // Wake a Step thread that may be waiting for a command or for an IN slot.
     cmd_sem_.PostFromCallback(in_isr);
@@ -820,10 +820,18 @@ class DapLinkV2Class : public DeviceClass
   /// Unbind/bind: give back what the USB side holds and drain the ready slots of the
   /// command pool. The slots in the Step thread's hands are given back by it (see
   /// AbandonCurrent); the epoch tells it that its command has been voided.
-  void ResetChannels()
+  void ResetChannels(bool in_isr)
   {
     epoch_.fetch_add(1u, std::memory_order_acq_rel);
     ResetStream();
+    // 持有的 OUT 槽还给端点：只清计数的话槽一直借在外面，关闭后成为 STALE，下一次会话
+    // 少了接收槽。
+    // Give the held OUT slots back to the endpoint: clearing only the count would leave
+    // them lent, STALE after the close, and the next session short of receive slots.
+    for (uint8_t i = 0u; i < held_n_; ++i)
+    {
+      if (ep_data_out_ != nullptr) ep_data_out_->ReleaseSlot(held_[i].slot, in_isr);
+    }
     held_n_ = 0u;
     armed_n_ = 0u;
     if (send_idx_ != SLOT_NONE)

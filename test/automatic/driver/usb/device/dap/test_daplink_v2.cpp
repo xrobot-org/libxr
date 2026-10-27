@@ -1196,6 +1196,42 @@ void TestUnbind()
   TEST_ASSERT(f.in.active && f.in.Last().length == 4);
   f.in.Complete();
 }
+
+/// 命令池满时到达的包被类持有；解绑要把这些 OUT 槽还给端点，否则下一次会话收不到
+/// 命令（PR 评审发现）。
+/// Packets arriving while the command pool is full are held by the class; unbinding must
+/// return those OUT slots to the endpoint, or the next session receives no commands
+/// (found in PR review).
+void TestUnbindReturnsHeldPackets()
+{
+  DapFixture f;
+  f.dap.BindEndpoints(f.pool, 0, false);
+  // 不运行 Step：命令池填满后，再来的包被持有，接收不再挂起。
+  // Step does not run: once the command pool is full, further packets are held and no
+  // receive stays armed.
+  unsigned sent = 0;
+  while (f.out.active && sent < 16)
+  {
+    f.out.HostSends({INFO, PACKET_COUNT_ID});
+    ++sent;
+  }
+  TEST_ASSERT(!f.out.active && sent >= 3 && sent < 16);
+
+  f.dap.UnbindEndpoints(f.pool, false);
+  f.dap.BindEndpoints(f.pool, 0, false);
+  Run(f);
+  // 两个 OUT 槽都可用：先后两个命令都能收下 / Both OUT slots are usable: two commands in
+  // a row are taken.
+  TEST_ASSERT(f.out.active);
+  Send(f, {INFO, PACKET_COUNT_ID});
+  TEST_ASSERT(f.in.active && f.in.Last().length == 3);
+  f.in.Complete();
+  Run(f);
+  TEST_ASSERT(f.out.active);
+  Send(f, {INFO, PACKET_SIZE_ID});
+  TEST_ASSERT(f.in.active && f.in.Last().length == 4);
+  f.in.Complete();
+}
 }  // namespace
 
 int main()
@@ -1205,6 +1241,7 @@ int main()
   TestResponseNeedsNoClassService();
   TestDirectAndStagedResponsesKeepOrder();
   TestUnbindWhileHoldingInSlot();
+  TestUnbindReturnsHeldPackets();
   TestDelayedCommand();
   TestBatchWithDelay();
   TestNextCommandReceivedDuringDelay();
