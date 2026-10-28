@@ -112,6 +112,9 @@ class TestDap2 : public DapV2
 {
  public:
   using DapV2::BindEndpoints;
+  using DapV2::OnControlData;
+  using DapV2::OnControlRequest;
+  using DapV2::ControlTransferResult;
   using DapV2::DapV2;
   using DapV2::OnService;
   using DapV2::UnbindEndpoints;
@@ -618,6 +621,55 @@ void TestVendorCommandsInBatch()
 /// WaitForWork waits for what the next Step(0) would do, without doing it: nothing
 /// pending times out; a queued command, an unbind wake-up and a freed response slot each
 /// return OK, and Step(0) then does that work.
+class EchoPort final : public DapV2::VendorPort
+{
+ public:
+  ErrorCode OnVendorOut(bool, uint8_t request, ConstRawData data) override
+  {
+    last_request = request;
+    size = std::min<size_t>(data.size_, sizeof(buf));
+    std::memcpy(buf, data.addr_, size);
+    return ErrorCode::OK;
+  }
+  ConstRawData OnVendorIn(bool, uint8_t request) override
+  {
+    last_request = request;
+    return {buf, size};
+  }
+  uint8_t last_request = 0;
+  uint8_t buf[16] = {};
+  size_t size = 0;
+};
+
+void TestVendorPort()
+{
+  // Vendor requests reach the port; without one they are NOT_SUPPORT; DAP commands are not
+  // affected.
+  DapFixture f;
+  f.dap.BindEndpoints(f.pool, 0, false);
+  Run(f);
+  SetupPacket out_req{0x41U, 0x10U, 0U, 0U, 3U};
+  SetupPacket in_req{0xC1U, 0x11U, 0U, 0U, 16U};
+  TestDap2::ControlTransferResult result{};
+  TEST_ASSERT(f.dap.OnControlRequest(false, out_req, result) != ErrorCode::OK);
+
+  EchoPort port;
+  f.dap.SetVendorPort(&port);
+  TEST_ASSERT(f.dap.OnControlRequest(false, out_req, result) == ErrorCode::OK);
+  const uint8_t payload[3] = {1, 2, 3};
+  ConstRawData data{payload, sizeof(payload)};
+  TEST_ASSERT(f.dap.OnControlData(false, out_req, data) == ErrorCode::OK);
+  TEST_ASSERT(port.last_request == 0x10U && port.size == 3U && port.buf[2] == 3U);
+  result = {};
+  TEST_ASSERT(f.dap.OnControlRequest(false, in_req, result) == ErrorCode::OK);
+  TEST_ASSERT(port.last_request == 0x11U);
+  TEST_ASSERT(result.write_data.size_ == 3U && result.write_data.addr_ == port.buf);
+
+  // A class request is still not handled by the port.
+  SetupPacket cls{0x21U, 0x01U, 0U, 0U, 0U};
+  TEST_ASSERT(f.dap.OnControlRequest(false, cls, result) != ErrorCode::OK);
+}
+
 void TestWakeStep()
 {
   // WakeStep wakes WaitForWork with no command, from another thread; Step(0) then finds
@@ -1288,6 +1340,7 @@ int main()
   TestVendorCommandsInBatch();
   TestWaitForWork();
   TestWakeStep();
+  TestVendorPort();
   TestSessionResetGate();
   TestHostAboveAdvertisedPacketCount();
   TestHostAboveAdvertisedPacketCountThreaded();

@@ -420,7 +420,67 @@ class DapLinkV2Class : public DeviceClass
    */
   void WakeStep(bool in_isr = false) { cmd_sem_.PostFromCallback(in_isr); }
 
+  /**
+   * @brief EP0 上的厂商控制口：探针自己的设置，与 DAP 命令无关。
+   *        Vendor control port on EP0: the probe's own settings, apart from DAP commands.
+   *
+   * 主机对 DAP 接口发厂商请求：OUT 方向的数据阶段交给 OnVendorOut（USB 上下文，可能在中断
+   * 里，只应拷贝并通知应用线程）；IN 方向的数据阶段取 OnVendorIn 给出的数据。请求和应答分两
+   * 次传输，应用在两次之间自己处理。
+   * The host sends vendor requests to the DAP interface: the data stage of an OUT request is
+   * handed to OnVendorOut (USB context, possibly an interrupt: copy and notify the
+   * application thread only); an IN request's data stage carries what OnVendorIn returns.
+   * Request and answer are two transfers, and the application handles the request between
+   * them.
+   */
+  class VendorPort
+  {
+   public:
+    /// 收到一个 OUT 请求的数据 / Data of an OUT request arrived.
+    virtual ErrorCode OnVendorOut(bool in_isr, uint8_t request, ConstRawData data) = 0;
+    /// IN 请求要返回的数据，可以为空 / Data an IN request returns; may be empty.
+    virtual ConstRawData OnVendorIn(bool in_isr, uint8_t request) = 0;
+
+   protected:
+    ~VendorPort() = default;
+  };
+
+  /// 设置厂商控制口；不设置时厂商请求回 NOT_SUPPORT / Set the vendor port; without one
+  /// vendor requests answer NOT_SUPPORT.
+  void SetVendorPort(VendorPort* port) { vendor_port_ = port; }
+
  protected:
+  /// 厂商请求交给 VendorPort / Vendor requests go to the VendorPort.
+  ErrorCode OnControlRequest(bool in_isr, const SetupPacket& setup,
+                             ControlTransferResult& result) override
+  {
+    if ((setup.bmRequestType & REQ_TYPE_MASK) != static_cast<uint8_t>(RequestType::VENDOR) ||
+        vendor_port_ == nullptr)
+    {
+      return DeviceClass::OnControlRequest(in_isr, setup, result);
+    }
+    if ((setup.bmRequestType & REQ_DIRECTION_MASK) != 0U)
+    {
+      result.write_data = vendor_port_->OnVendorIn(in_isr, setup.bRequest);
+    }
+    return ErrorCode::OK;
+  }
+
+  ErrorCode OnControlData(bool in_isr, const SetupPacket& setup,
+                          ConstRawData& data) override
+  {
+    if ((setup.bmRequestType & REQ_TYPE_MASK) != static_cast<uint8_t>(RequestType::VENDOR) ||
+        vendor_port_ == nullptr)
+    {
+      return DeviceClass::OnControlData(in_isr, setup, data);
+    }
+    if ((setup.bmRequestType & REQ_DIRECTION_MASK) != 0U)
+    {
+      return ErrorCode::OK;
+    }
+    return vendor_port_->OnVendorOut(in_isr, setup.bRequest, data);
+  }
+
   /**
    * @brief Bind endpoint resources
    * @param endpoint_pool Endpoint pool
@@ -4698,6 +4758,7 @@ class DapLinkV2Class : public DeviceClass
 
   std::atomic<bool> inited_{false};  ///< Initialized flag
   uint8_t interface_num_ = 0;        ///< Interface number
+  VendorPort* vendor_port_ = nullptr;  ///< EP0 vendor control port (nullable)
 
   LIBXR_PACKED_BEGIN
   /**
