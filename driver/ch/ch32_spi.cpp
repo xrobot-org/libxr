@@ -592,7 +592,7 @@ void CH32SPI::AbortDma()
   DMA_ClearITPendingBit(CH32_SPI_RX_DMA_IT_MAP[id_]);
   DMA_ClearITPendingBit(CH32_SPI_TX_DMA_IT_MAP[id_]);
   // 丢掉已移入数据寄存器的字节（读 DATAR 再读 STATR 也清掉 OVR）。
-  // Drop a byte already in the data register (reading DATAR, then STATR, also clears OVR).
+  // Drop a byte left in the data register (reading DATAR, then STATR, also clears OVR).
   (void)instance_->DATAR;
   (void)instance_->STATR;
   read_buff_.size_ = 0;
