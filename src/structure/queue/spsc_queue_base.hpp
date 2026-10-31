@@ -566,17 +566,19 @@ class alignas(LibXR::CONCURRENCY_ALIGNMENT) SPSCQueueBase
    * @param count payload 个数，调用者已确认空间足够 / Number of payloads; the caller has
    *              checked that they fit
    *
-   * 槽位间距等于 payload 大小时，环形区域是连续字节，最多两段整块拷贝；否则逐个
-   * payload 拷贝。
+   * 槽位间距等于 payload 大小时，环形区域是连续字节，最多两段整块拷贝；payload 大小
+   * 不是对齐的整数倍时槽位带填充，逐个 payload 拷贝。
    * When the slot stride equals the payload size the ring is contiguous bytes and at
-   * most two block copies are needed; otherwise payloads are copied one by one.
+   * most two block copies are needed; when the payload size is not a multiple of its
+   * alignment the slots are padded and payloads are copied one by one.
    */
   void CopyIntoRing(IndexType start, const std::byte* src, size_t count)
   {
     const size_t capacity = RingCapacity();
+    DEV_ASSERT(start < capacity);
     if (payload_stride_ == element_size_)
     {
-      const size_t first = LibXR::min(count, capacity - start);
+      const size_t first = std::min(count, capacity - start);
       LibXR::Memory::FastCopy(PayloadPtr(start), src, first * element_size_);
       if (count > first)
       {
@@ -609,9 +611,10 @@ class alignas(LibXR::CONCURRENCY_ALIGNMENT) SPSCQueueBase
   void CopyFromRing(IndexType start, std::byte* dst, size_t count) const
   {
     const size_t capacity = RingCapacity();
+    DEV_ASSERT(start < capacity);
     if (payload_stride_ == element_size_)
     {
-      const size_t first = LibXR::min(count, capacity - start);
+      const size_t first = std::min(count, capacity - start);
       LibXR::Memory::FastCopy(dst, PayloadPtr(start), first * element_size_);
       if (count > first)
       {
