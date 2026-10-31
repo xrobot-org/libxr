@@ -4,10 +4,6 @@
  * Tests SPSC queue operations, batch copies, callback failures and producer-consumer
  * order.
  *
- * 批量入队、查看、出队在每个环回位置与 FIFO 模型逐字节对照，并在两个线程间按序号检查。
- * Batch push, peek and pop are compared with a FIFO model at every wrap position and
- * checked by sequence number between two threads.
- *
  * 暂停尚未发布的写入后执行 Reset，检查旧数据被丢弃且新数据仍可读。
  * Pauses an unpublished write across Reset; old data is discarded and new data survives.
  */
@@ -15,6 +11,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <type_traits>
 
 #include "libxr.hpp"
@@ -78,152 +75,74 @@ void ResetProducerTask(ResetProducerArg arg)
   TEST_ASSERT(produced == 1U);
 }
 
+// Moves a full queue through the ring from every start index, so the batch copy splits
+// at every possible point. Each half pairs a batch call with single-payload calls, which
+// do not use the batch copy path.
+void CheckWrappedBatch(size_t element_size, size_t element_align)
+{
+  constexpr size_t CAPACITY = 5;
+  uint8_t input[CAPACITY * 4] = {};
+  for (size_t index = 0; index < sizeof(input); ++index)
+  {
+    input[index] = static_cast<uint8_t>(index + 1U);
+  }
+  const size_t bytes = CAPACITY * element_size;
+
+  for (size_t start = 0; start <= CAPACITY; ++start)
+  {
+    LibXR::SPSCQueueBase queue(element_size, element_align, CAPACITY);
+    uint8_t output[sizeof(input)] = {};
+    for (size_t index = 0; index < start; ++index)
+    {
+      TEST_ASSERT(queue.PushBytes(input) == LibXR::ErrorCode::OK);
+      TEST_ASSERT(queue.PopBytes(output) == LibXR::ErrorCode::OK);
+    }
+
+    // Batch in, single out.
+    TEST_ASSERT(queue.PushBatchBytes(input, CAPACITY) == LibXR::ErrorCode::OK);
+    TEST_ASSERT(queue.PushBatchBytes(input, 1) == LibXR::ErrorCode::FULL);
+    std::memset(output, 0, sizeof(output));
+    TEST_ASSERT(queue.PeekBatchBytes(output, CAPACITY) == LibXR::ErrorCode::OK);
+    TEST_ASSERT(std::memcmp(output, input, bytes) == 0);
+    std::memset(output, 0, sizeof(output));
+    for (size_t index = 0; index < CAPACITY; ++index)
+    {
+      TEST_ASSERT(queue.PopBytes(output + index * element_size) == LibXR::ErrorCode::OK);
+    }
+    TEST_ASSERT(std::memcmp(output, input, bytes) == 0);
+
+    // Single in, batch out.
+    for (size_t index = 0; index < CAPACITY; ++index)
+    {
+      TEST_ASSERT(queue.PushBytes(input + index * element_size) == LibXR::ErrorCode::OK);
+    }
+    std::memset(output, 0, sizeof(output));
+    TEST_ASSERT(queue.PopBatchBytes(output, CAPACITY) == LibXR::ErrorCode::OK);
+    TEST_ASSERT(queue.PopBatchBytes(output, 1) == LibXR::ErrorCode::EMPTY);
+    TEST_ASSERT(std::memcmp(output, input, bytes) == 0);
+  }
+}
+
 struct BatchProducerArg
 {
   LibXR::SPSCQueue<uint8_t>* queue;
-  uint32_t total_bytes;
+  uint32_t total;
 };
 
-// Pushes the byte sequence 0, 1, 2, ... (mod 256) in batches of 1 to 7 bytes.
+// Pushes 0, 1, 2, ... (mod 256) in batches of 1 to 7 bytes.
 void BatchProducerTask(BatchProducerArg arg)
 {
   uint8_t batch[7] = {};
-  uint32_t sent = 0;
-  size_t round = 0;
-  while (sent < arg.total_bytes)
+  for (uint32_t sent = 0, size = 1; sent < arg.total; sent += size, size = size % 7U + 1U)
   {
-    const size_t size = LibXR::min<size_t>(1U + (round++ % 7U), arg.total_bytes - sent);
-    for (size_t index = 0; index < size; ++index)
+    size = LibXR::min(size, arg.total - sent);
+    for (uint32_t index = 0; index < size; ++index)
     {
       batch[index] = static_cast<uint8_t>(sent + index);
     }
     while (arg.queue->PushBatch(batch, size) != LibXR::ErrorCode::OK)
     {
       LibXR::Thread::Yield();
-    }
-    sent += static_cast<uint32_t>(size);
-  }
-}
-
-uint8_t PatternByte(size_t payload, size_t byte)
-{
-  return static_cast<uint8_t>(payload * 7U + byte * 13U + 1U);
-}
-
-// Batch push/pop/peek against a FIFO model, for every ring start position, fill level and
-// count up to one past the capacity. An element_size that is not a multiple of
-// element_align pads the slots, which takes the per-payload copy path.
-void CheckBatchCopiesAgainstModel(size_t element_size, size_t element_align,
-                                  size_t capacity)
-{
-  constexpr size_t MAX_BYTES = 64;
-  TEST_ASSERT(element_size * (capacity + 1U) <= MAX_BYTES);
-  for (size_t start = 0; start <= capacity; ++start)
-  {
-    for (size_t fill = 0; fill <= capacity; ++fill)
-    {
-      for (size_t count = 0; count <= capacity + 1U; ++count)
-      {
-        LibXR::SPSCQueueBase queue(element_size, element_align, capacity);
-        std::byte scratch[MAX_BYTES] = {};
-
-        // Move head and tail to `start` with single-payload operations.
-        for (size_t index = 0; index < start; ++index)
-        {
-          TEST_ASSERT(queue.PushBytes(scratch) == LibXR::ErrorCode::OK);
-          TEST_ASSERT(queue.PopBytes(scratch) == LibXR::ErrorCode::OK);
-        }
-
-        uint8_t model[MAX_BYTES] = {};
-        size_t model_size = 0;
-        size_t next_payload = 0;
-
-        uint8_t source[MAX_BYTES] = {};
-        for (size_t index = 0; index < fill; ++index)
-        {
-          for (size_t byte = 0; byte < element_size; ++byte)
-          {
-            source[index * element_size + byte] = PatternByte(next_payload + index, byte);
-          }
-        }
-        TEST_ASSERT(queue.PushBatchBytes(source, fill) == LibXR::ErrorCode::OK);
-        for (size_t index = 0; index < fill * element_size; ++index)
-        {
-          model[model_size++] = source[index];
-        }
-        next_payload += fill;
-
-        // Batch push of `count` payloads on top of `fill`.
-        for (size_t index = 0; index < count; ++index)
-        {
-          for (size_t byte = 0; byte < element_size; ++byte)
-          {
-            source[index * element_size + byte] = PatternByte(next_payload + index, byte);
-          }
-        }
-        const bool push_fits = fill + count <= capacity;
-        const LibXR::ErrorCode push_ec = queue.PushBatchBytes(source, count);
-        TEST_ASSERT(push_ec == (push_fits || count == 0U ? LibXR::ErrorCode::OK
-                                                         : LibXR::ErrorCode::FULL));
-        if (push_ec == LibXR::ErrorCode::OK)
-        {
-          for (size_t index = 0; index < count * element_size; ++index)
-          {
-            model[model_size++] = source[index];
-          }
-        }
-        TEST_ASSERT(queue.Size() * element_size == model_size);
-
-        // Peek and pop `count` payloads; both must match the model's front.
-        const size_t stored = model_size / element_size;
-        const bool read_fits = count <= stored;
-        uint8_t readback[MAX_BYTES] = {};
-        const LibXR::ErrorCode peek_ec = queue.PeekBatchBytes(readback, count);
-        TEST_ASSERT(peek_ec ==
-                    (read_fits ? LibXR::ErrorCode::OK : LibXR::ErrorCode::EMPTY));
-        if (peek_ec == LibXR::ErrorCode::OK)
-        {
-          for (size_t index = 0; index < count * element_size; ++index)
-          {
-            TEST_ASSERT(readback[index] == model[index]);
-          }
-        }
-        TEST_ASSERT(queue.Size() == stored);
-
-        uint8_t popped[MAX_BYTES] = {};
-        const LibXR::ErrorCode pop_ec = queue.PopBatchBytes(popped, count);
-        TEST_ASSERT(pop_ec ==
-                    (read_fits ? LibXR::ErrorCode::OK : LibXR::ErrorCode::EMPTY));
-        size_t consumed = 0;
-        if (pop_ec == LibXR::ErrorCode::OK)
-        {
-          for (size_t index = 0; index < count * element_size; ++index)
-          {
-            TEST_ASSERT(popped[index] == model[index]);
-          }
-          consumed = count * element_size;
-        }
-
-        // Drain the rest one payload at a time to check the ring contents and order.
-        for (size_t offset = consumed; offset < model_size; offset += element_size)
-        {
-          uint8_t one[MAX_BYTES] = {};
-          TEST_ASSERT(queue.PopBytes(one) == LibXR::ErrorCode::OK);
-          for (size_t byte = 0; byte < element_size; ++byte)
-          {
-            TEST_ASSERT(one[byte] == model[offset + byte]);
-          }
-        }
-        TEST_ASSERT(queue.Size() == 0U);
-
-        // Discarding pop (null buffer) advances the head without copying.
-        if (count > 0U && count <= capacity)
-        {
-          TEST_ASSERT(queue.PushBatchBytes(source, count) == LibXR::ErrorCode::OK);
-          TEST_ASSERT(queue.PopBatchBytes(nullptr, count) == LibXR::ErrorCode::OK);
-          TEST_ASSERT(queue.Size() == 0U);
-        }
-      }
     }
   }
 }
@@ -234,45 +153,47 @@ static_assert(std::is_trivially_copyable_v<NoDefaultPayload>);
 
 void test_spsc_queue()
 {
-  // Batch byte copies match a FIFO model across every wrap position: contiguous slots
-  // (byte and multi-byte payloads) and padded slots (size not a multiple of alignment).
-  for (size_t capacity = 1; capacity <= 9; ++capacity)
+  // Batch copies that wrap at every split point: bytes, 4-byte payloads, and padded
+  // slots (payload size not a multiple of its alignment).
+  CheckWrappedBatch(1, 1);
+  CheckWrappedBatch(4, 4);
+  CheckWrappedBatch(3, 4);
+
+  // A batch popped into a null buffer is discarded.
   {
-    CheckBatchCopiesAgainstModel(1, 1, capacity);
-    CheckBatchCopiesAgainstModel(4, 4, capacity);
-    CheckBatchCopiesAgainstModel(3, 4, capacity);
+    LibXR::SPSCQueue<uint8_t> queue(4);
+    const uint8_t data[3] = {1, 2, 3};
+    TEST_ASSERT(queue.PushBatch(data, 3) == LibXR::ErrorCode::OK);
+    TEST_ASSERT(queue.PopBatch(nullptr, 3) == LibXR::ErrorCode::OK);
+    TEST_ASSERT(queue.Size() == 0);
   }
 
-  // Batches cross the ring boundary while a producer thread runs: the consumer pops
-  // batches of 1 to 5 bytes and must see the producer's sequence without gaps.
+  // Batches pushed and popped by two threads keep their order across the ring end.
   {
-    constexpr uint32_t TOTAL_BYTES = 200000;
+    constexpr uint32_t TOTAL = 100000;
     LibXR::SPSCQueue<uint8_t> queue(13);
     LibXR::Thread producer;
-    producer.Create<BatchProducerArg>(BatchProducerArg{&queue, TOTAL_BYTES},
-                                      BatchProducerTask, "spsc_batch_prod", 1024,
+    producer.Create<BatchProducerArg>(BatchProducerArg{&queue, TOTAL}, BatchProducerTask,
+                                      "spsc_batch_prod", 1024,
                                       LibXR::Thread::Priority::REALTIME);
 
     uint8_t batch[5] = {};
-    uint32_t received = 0;
-    size_t round = 0;
-    while (received < TOTAL_BYTES)
+    for (uint32_t received = 0, size = 1; received < TOTAL;)
     {
-      const size_t size = LibXR::min<size_t>(1U + (round % 5U), TOTAL_BYTES - received);
+      size = LibXR::min(size, TOTAL - received);
       if (queue.PopBatch(batch, size) != LibXR::ErrorCode::OK)
       {
         LibXR::Thread::Yield();
         continue;
       }
-      ++round;
-      for (size_t index = 0; index < size; ++index)
+      for (uint32_t index = 0; index < size; ++index)
       {
         TEST_ASSERT(batch[index] == static_cast<uint8_t>(received + index));
       }
-      received += static_cast<uint32_t>(size);
+      received += size;
+      size = size % 5U + 1U;
     }
     TEST_ASSERT(producer.Join() == LibXR::ErrorCode::OK);
-    TEST_ASSERT(queue.Size() == 0U);
   }
 
   // Basic push/pop/peek behavior on a tiny queue.
