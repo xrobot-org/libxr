@@ -59,6 +59,8 @@ class CH32SPI : public SPI
 
   void StartDmaDuplex(uint32_t count);
   void StopDma();
+  void AbortDma();
+  ErrorCode WaitBlock(uint32_t timeout);
 
   void PrepareTxBuffer(ConstRawData write_data, uint32_t need_len, uint32_t prefix = 0,
                        uint8_t dummy = 0x00);
