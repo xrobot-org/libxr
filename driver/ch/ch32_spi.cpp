@@ -342,7 +342,7 @@ ErrorCode CH32SPI::ReadAndWrite(RawData read_data, ConstRawData write_data,
     op.MarkAsRunning();
     if (op.type == OperationRW::OperationType::BLOCK)
     {
-      return block_wait_.Wait(op.data.sem_info.timeout);
+      return WaitBlock(op.data.sem_info.timeout);
     }
     return ErrorCode::OK;
   }
@@ -427,7 +427,7 @@ ErrorCode CH32SPI::MemRead(uint16_t reg, RawData read_data, OperationRW& op, boo
     op.MarkAsRunning();
     if (op.type == OperationRW::OperationType::BLOCK)
     {
-      return block_wait_.Wait(op.data.sem_info.timeout);
+      return WaitBlock(op.data.sem_info.timeout);
     }
     return ErrorCode::OK;
   }
@@ -498,7 +498,7 @@ ErrorCode CH32SPI::MemWrite(uint16_t reg, ConstRawData write_data, OperationRW& 
     op.MarkAsRunning();
     if (op.type == OperationRW::OperationType::BLOCK)
     {
-      return block_wait_.Wait(op.data.sem_info.timeout);
+      return WaitBlock(op.data.sem_info.timeout);
     }
     return ErrorCode::OK;
   }
@@ -566,6 +566,37 @@ void CH32SPI::StopDma()
 {
   DMA_Cmd(dma_tx_channel_, DISABLE);
   DMA_Cmd(dma_rx_channel_, DISABLE);
+}
+
+// 阻塞传输超时后停掉两路 DMA 并清掉忙状态，否则 RX 通道会接着取走后面传输的字节，
+// DmaBusy() 也一直为真。
+// After a blocking transfer times out, stop both DMA channels and clear the busy state;
+// otherwise the RX channel goes on taking the bytes of later transfers and DmaBusy()
+// stays true.
+ErrorCode CH32SPI::WaitBlock(uint32_t timeout)
+{
+  const ErrorCode ec = block_wait_.Wait(timeout);
+  if (ec != ErrorCode::OK)
+  {
+    AbortDma();
+  }
+  return ec;
+}
+
+void CH32SPI::AbortDma()
+{
+  SPI_I2S_DMACmd(instance_, SPI_I2S_DMAReq_Rx | SPI_I2S_DMAReq_Tx, DISABLE);
+  StopDma();
+  dma_rx_channel_->CNTR = 0;
+  dma_tx_channel_->CNTR = 0;
+  DMA_ClearITPendingBit(CH32_SPI_RX_DMA_IT_MAP[id_]);
+  DMA_ClearITPendingBit(CH32_SPI_TX_DMA_IT_MAP[id_]);
+  // 丢掉已移入数据寄存器的字节（读 DATAR 再读 STATR 也清掉 OVR）。
+  // Drop a byte already in the data register (reading DATAR, then STATR, also clears OVR).
+  (void)instance_->DATAR;
+  (void)instance_->STATR;
+  read_buff_.size_ = 0;
+  busy_ = false;
 }
 
 void CH32SPI::RxDmaIRQHandler()
@@ -671,7 +702,7 @@ ErrorCode CH32SPI::Transfer(size_t size, OperationRW& op, bool in_isr)
     op.MarkAsRunning();
     if (op.type == OperationRW::OperationType::BLOCK)
     {
-      return block_wait_.Wait(op.data.sem_info.timeout);
+      return WaitBlock(op.data.sem_info.timeout);
     }
     return ErrorCode::OK;
   }
