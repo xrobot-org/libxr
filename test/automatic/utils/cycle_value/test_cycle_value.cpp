@@ -33,6 +33,10 @@ void test_cycle_value()
   TEST_ASSERT(equal(static_cast<double>(neg), LibXR::TWO_PI - LibXR::PI / 2));
   UNUSED(neg);
 
+  // float 实例按 float 的 2π 归一化。
+  // A float instance wraps with the float value of 2π.
+  TEST_ASSERT(CycleValue<float>(static_cast<float>(LibXR::TWO_PI)).Value() == 0.0f);
+
   // float 实例：归一化和差值与 double 参考相差不超过 float 精度。
   // float instance: wrap and difference match a double reference within float precision.
   for (int k = -40; k <= 40; ++k)
