@@ -63,6 +63,32 @@ target_compile_features(test_async_cooperative PRIVATE cxx_std_20)
 add_test(NAME test_async_cooperative COMMAND test_async_cooperative)
 set_tests_properties(test_async_cooperative PROPERTIES TIMEOUT 10)
 
+# LinuxCANFD 的自动化测试：默认创建临时 vcan 接口，需要 CAP_NET_ADMIN；
+# 无法创建时以退出码 77 跳过（CTest 的 SKIP_RETURN_CODE）。也可用
+# --a can0 --b can1 在真实互连接口上运行。
+# Automated LinuxCANFD test: creates a temporary vcan interface (CAP_NET_ADMIN) and
+# exits 77 when that is unavailable, or runs on real interfaces via --a/--b.
+if(_xr_driver STREQUAL "linux")
+  find_package(Threads REQUIRED)
+  add_executable(test_linux_can driver/can/linux_can_vcan.cpp)
+  target_include_directories(
+    test_linux_can PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+  target_link_libraries(test_linux_can PRIVATE xr Threads::Threads)
+  add_test(NAME test_linux_can COMMAND test_linux_can)
+  set_tests_properties(test_linux_can PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+  # 无硬件协议错误解码回归；即使 vcan 不可用也必须运行。
+  # Hardware-independent decoding regression, including when vcan is unavailable.
+  add_executable(test_linux_can_error driver/can/linux_can_error.cpp)
+  target_include_directories(
+    test_linux_can_error PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+  target_link_libraries(test_linux_can_error PRIVATE xr)
+  add_test(NAME test_linux_can_error COMMAND test_linux_can_error)
+  set_tests_properties(test_linux_can_error PROPERTIES TIMEOUT 10)
+endif()
+
 add_executable(
   libxr_test
   main.cpp

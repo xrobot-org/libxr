@@ -16,8 +16,8 @@
 | UART | ✅ |
 | SPI | ❌ |
 | I2C | ❌ |
-| CAN | ❌ |
-| CANFD | ❌ |
+| CAN | 🔄 |
+| CANFD | 🔄 |
 | ADC | ❌ |
 | DAC | ❌ |
 | PWM | ❌ |
