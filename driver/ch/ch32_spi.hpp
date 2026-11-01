@@ -59,6 +59,8 @@ class CH32SPI : public SPI
 
   void StartDmaDuplex(uint32_t count);
   void StopDma();
+  void AbortDma(uint32_t transfer);
+  ErrorCode WaitBlock(uint32_t timeout);
 
   void PrepareTxBuffer(ConstRawData write_data, uint32_t need_len, uint32_t prefix = 0,
                        uint8_t dummy = 0x00);
@@ -78,6 +80,7 @@ class CH32SPI : public SPI
   RawData read_buff_;
   bool mem_read_ = false;
   bool busy_ = false;
+  uint32_t dma_transfer_ = 0;  ///< 已开始的 DMA 传输数 / DMA transfers started
 
   /// SPI 寄存器配置缓存 / Cached SPI register configuration
   uint16_t mode_;       ///< SPI_Mode_Master / SPI_Mode_Slave

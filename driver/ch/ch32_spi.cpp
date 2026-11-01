@@ -342,7 +342,7 @@ ErrorCode CH32SPI::ReadAndWrite(RawData read_data, ConstRawData write_data,
     op.MarkAsRunning();
     if (op.type == OperationRW::OperationType::BLOCK)
     {
-      return block_wait_.Wait(op.data.sem_info.timeout);
+      return WaitBlock(op.data.sem_info.timeout);
     }
     return ErrorCode::OK;
   }
@@ -427,7 +427,7 @@ ErrorCode CH32SPI::MemRead(uint16_t reg, RawData read_data, OperationRW& op, boo
     op.MarkAsRunning();
     if (op.type == OperationRW::OperationType::BLOCK)
     {
-      return block_wait_.Wait(op.data.sem_info.timeout);
+      return WaitBlock(op.data.sem_info.timeout);
     }
     return ErrorCode::OK;
   }
@@ -498,7 +498,7 @@ ErrorCode CH32SPI::MemWrite(uint16_t reg, ConstRawData write_data, OperationRW& 
     op.MarkAsRunning();
     if (op.type == OperationRW::OperationType::BLOCK)
     {
-      return block_wait_.Wait(op.data.sem_info.timeout);
+      return WaitBlock(op.data.sem_info.timeout);
     }
     return ErrorCode::OK;
   }
@@ -546,6 +546,7 @@ void CH32SPI::PrepareTxBuffer(ConstRawData write_data, uint32_t need_len, uint32
 
 void CH32SPI::StartDmaDuplex(uint32_t count)
 {
+  ++dma_transfer_;
   RawData rx = GetRxBuffer();
   RawData tx = GetTxBuffer();
 
@@ -566,6 +567,68 @@ void CH32SPI::StopDma()
 {
   DMA_Cmd(dma_tx_channel_, DISABLE);
   DMA_Cmd(dma_rx_channel_, DISABLE);
+}
+
+// 阻塞传输超时后停掉这次传输的 DMA 并清掉忙状态，否则 RX 通道会接着取走后面传输的
+// 字节，DmaBusy() 也一直为真。
+// After a blocking transfer times out, stop its DMA and clear the busy state; otherwise
+// the RX channel goes on taking the bytes of later transfers and DmaBusy() stays true.
+ErrorCode CH32SPI::WaitBlock(uint32_t timeout)
+{
+  const uint32_t transfer = dma_transfer_;
+  const ErrorCode ec = block_wait_.Wait(timeout);
+  if (ec != ErrorCode::OK)
+  {
+    AbortDma(transfer);
+  }
+  return ec;
+}
+
+// 完成中断可能在等待超时之后才结束这次传输，之后别的调用者可能已开始下一次传输：
+// 关中断确认这次传输仍在进行，才停它的 DMA。busy_ 保持到 SPI 空闲，期间不会开始新传输。
+// The completion interrupt may finish this transfer after the wait timed out, and another
+// caller may then have started the next one: the DMA is stopped only when, with
+// interrupts off, this transfer still runs. busy_ stays set until the SPI is idle, so no
+// transfer starts meanwhile.
+void CH32SPI::AbortDma(uint32_t transfer)
+{
+  __disable_irq();
+  std::atomic_signal_fence(std::memory_order_seq_cst);
+  const bool RUNNING = busy_ && dma_transfer_ == transfer;
+  if (RUNNING)
+  {
+    SPI_I2S_DMACmd(instance_, SPI_I2S_DMAReq_Rx | SPI_I2S_DMAReq_Tx, DISABLE);
+    StopDma();
+    dma_rx_channel_->CNTR = 0;
+    dma_tx_channel_->CNTR = 0;
+    DMA_ClearITPendingBit(CH32_SPI_RX_DMA_IT_MAP[id_]);
+    DMA_ClearITPendingBit(CH32_SPI_TX_DMA_IT_MAP[id_]);
+  }
+  std::atomic_signal_fence(std::memory_order_seq_cst);
+  __enable_irq();
+  if (!RUNNING)
+  {
+    return;
+  }
+
+  // 已在发送缓冲和移位寄存器里的字节仍会发出：等 SPI 空闲（有上限，多于 PCLK/256 下
+  // 两个字节的时间），再丢掉收到的字节（读 DATAR 再读 STATR 也清掉 OVR）。
+  // Bytes already in the transmit buffer and the shift register still go out: wait until
+  // the SPI is idle (bounded, longer than two bytes at PCLK/256), then drop the received
+  // bytes (reading DATAR, then STATR, also clears OVR).
+  constexpr uint32_t IDLE_SPINS = 0x10000u;
+  for (uint32_t spin = 0; spin < IDLE_SPINS; ++spin)
+  {
+    if (SPI_I2S_GetFlagStatus(instance_, SPI_I2S_FLAG_TXE) == SET &&
+        SPI_I2S_GetFlagStatus(instance_, SPI_I2S_FLAG_BSY) == RESET)
+    {
+      break;
+    }
+  }
+  (void)instance_->DATAR;
+  (void)instance_->STATR;
+  read_buff_.size_ = 0;
+  busy_ = false;
 }
 
 void CH32SPI::RxDmaIRQHandler()
@@ -671,7 +734,7 @@ ErrorCode CH32SPI::Transfer(size_t size, OperationRW& op, bool in_isr)
     op.MarkAsRunning();
     if (op.type == OperationRW::OperationType::BLOCK)
     {
-      return block_wait_.Wait(op.data.sem_info.timeout);
+      return WaitBlock(op.data.sem_info.timeout);
     }
     return ErrorCode::OK;
   }
