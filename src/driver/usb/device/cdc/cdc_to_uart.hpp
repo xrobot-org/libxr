@@ -126,20 +126,21 @@ class CDCToUart : public CDCUart
 
     op_write_cdc_ = WriteOperation(cb_cdc_write_);
 
-    // 5) LineCoding 回调：USB CDC 侧配置变化同步到 UART。
-    // 5) LineCoding callback: forward CDC line-coding changes to UART configuration.
-    set_line_coding_cb_ = LibXR::Callback<LibXR::UART::Configuration>::Create(
-        [](bool in_isr, CDCToUart* self, LibXR::UART::Configuration cfg)
-        { self->uart_.SetConfig(cfg, in_isr); }, this);
-
-    SetOnSetLineCodingCallback(set_line_coding_cb_);
-
     // 启动搬运：挂起一次 CDC 读与 UART 读，以进入回调链。
     // Kick the pump: schedule one CDC read and one UART read to enter the callback chain.
     this->Read({nullptr, 0}, op_read_cdc_, false);
     uart_.Read({nullptr, 0}, op_read_uart_, false);
   }
 
+ protected:
+  ErrorCode ApplyLineCoding(bool in_isr, UART::Configuration config) override
+  {
+    // A rejected UART reconfiguration must reject the control data stage rather
+    // than ACK a line coding that the physical port did not apply.
+    return uart_.SetConfig(config, in_isr);
+  }
+
+ public:
   RawData rx_buffer_;  ///< CDC->UART 临时缓存 / Temp buffer for CDC->UART
   RawData tx_buffer_;  ///< UART->CDC 临时缓存 / Temp buffer for UART->CDC
 
@@ -149,9 +150,6 @@ class CDCToUart : public CDCUart
   LibXR::Callback<ErrorCode> cb_uart_read_;  ///< UART 读完成回调 / UART read callback
   LibXR::Callback<ErrorCode>
       cb_cdc_write_;  ///< CDC 写完成回调 / CDC write-complete callback
-
-  LibXR::Callback<LibXR::UART::Configuration>
-      set_line_coding_cb_;  ///< LineCoding 同步回调 / Line coding sync callback
 
   LibXR::WriteOperation op_write_cdc_;   ///< CDC 写操作句柄 / CDC write operation
   LibXR::WriteOperation op_write_uart_;  ///< UART 写操作句柄 / UART write operation

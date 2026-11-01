@@ -1,5 +1,7 @@
 #include "stm32_timebase.hpp"
 
+#include "driver_async_condition.hpp"
+
 using namespace LibXR;
 
 namespace
@@ -100,6 +102,17 @@ MicrosecondTimestamp Timebase::GetMicroseconds()
 }
 
 MillisecondTimestamp Timebase::GetMilliseconds() { return HAL_GetTick(); }
+
+// 替换 HAL 的弱定义：照常推进 HAL tick，再推进驱动的条件等待。CubeMX 的 SysTick 和 TIMx
+// 时基都调用它。
+// Replaces the weak HAL definition: advances the HAL tick as usual, then the drivers'
+// condition waits. Both the CubeMX SysTick and TIMx timebases call it.
+extern "C" void HAL_IncTick(void)  // NOLINT
+{
+  const auto elapsed_ms = static_cast<uint32_t>(uwTickFreq);
+  uwTick = uwTick + elapsed_ms;
+  DriverAsyncCondition::OnTick(elapsed_ms);
+}
 
 #ifdef HAL_TIM_MODULE_ENABLED
 

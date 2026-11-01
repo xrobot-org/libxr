@@ -16,10 +16,19 @@ namespace LibXR
  *       up-counter before initialization. The counter must not be stopped or reset,
  *       and HCLK must remain unchanged and at least 1 MHz during use.
  * @note 微秒和毫秒均由硬件计数值换算，不依赖 SysTick 中断的软件计数。
- *       初始化完成后可在任务或中断中读取，比较值和 tick 中断由 BSP 管理。
+ *       初始化完成后可在任务或中断中读取。
  *       Microseconds and milliseconds are derived from the hardware counter without
  *       a software interrupt count. Reads are allowed from tasks or interrupts after
- *       initialization; the BSP manages compare deadlines and tick interrupts.
+ *       initialization.
+ * @note 毫秒节拍（DriverAsyncCondition）：使用 FreeRTOS 时比较值和 SysTick
+ *       中断归 FreeRTOS 移植层，节拍来自 vApplicationTickHook（configUSE_TICK_HOOK
+ *       须为 1）；不使用 RTOS 时本类在构造时打开 SysTick 比较中断作为 1 kHz 节拍并
+ *       定义 SysTick_Handler，HCLK 须为 1 kHz 的整数倍。
+ *       Millisecond tick (DriverAsyncCondition): with FreeRTOS the compare value and the
+ *       SysTick interrupt belong to the FreeRTOS port and the tick comes from
+ *       vApplicationTickHook (configUSE_TICK_HOOK must be 1); without an RTOS this class
+ *       enables the SysTick compare interrupt as the 1 kHz tick at construction and
+ *       defines SysTick_Handler; HCLK must be a multiple of 1 kHz.
  */
 class CH32Timebase : public Timebase
 {

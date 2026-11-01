@@ -1,5 +1,7 @@
 #include "mspm0_timebase.hpp"
 
+#include "driver_async_condition.hpp"
+
 using namespace LibXR;
 
 MSPM0Timebase::MSPM0Timebase()
@@ -75,4 +77,5 @@ void MSPM0Timebase::Sync(uint32_t ticks) { MSPM0Timebase::sys_tick_ms = ticks; }
 extern "C" void SysTick_Handler(void)  // NOLINT
 {
   LibXR::MSPM0Timebase::OnSysTickInterrupt();
+  LibXR::DriverAsyncCondition::OnTick();
 }

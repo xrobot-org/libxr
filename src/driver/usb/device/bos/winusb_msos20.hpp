@@ -258,6 +258,119 @@ static_assert(sizeof(FunctionScopedWinUsbMsOs20DescSet<GUID_MULTI_SZ_UTF16_BYTES
                   0x00B2,
               "Function-scoped WinUSB MS OS 2.0 set size mismatch");
 
+// ---- descriptor set of a composition ----
+
+/// One WinUSB function of a composition: where it sits and the interface GUID Windows
+/// registers for it.
+struct WinUsbFunctionInfo
+{
+  uint8_t configuration_index = 0u;  ///< zero-based configuration index
+  uint8_t first_interface = 0u;      ///< first interface number of the function
+  const char* guid = nullptr;        ///< DeviceInterfaceGUID, "{...}"
+};
+
+/// The MS OS 2.0 descriptor set of a composition, built once from the functions its
+/// classes declare. A single function on a non-composite device gets the device-level
+/// form (Windows ignores subset headers on such a device); every other case gets one
+/// configuration subset per configuration with one function subset per function.
+class WinUsbDescriptorSet
+{
+ public:
+  /// @param functions Functions in configuration order
+  /// @param device_level Device-level form; needs exactly one function
+  void Build(const WinUsbFunctionInfo* functions, size_t count, bool device_level)
+  {
+    using Property = DeviceInterfaceGuidsRegProperty<GUID_MULTI_SZ_UTF16_BYTES>;
+    data_ = nullptr;
+    size_ = 0u;
+    if (functions == nullptr || count == 0u) return;
+    ASSERT(!device_level || count == 1u);
+
+    constexpr size_t FEATURES = sizeof(MsOs20FeatureCompatibleId) + sizeof(Property);
+    size_t total = sizeof(MsOs20SetHeader);
+    if (device_level)
+    {
+      total += FEATURES;
+    }
+    else
+    {
+      for (size_t i = 0u; i < count; ++i)
+      {
+        if (i == 0u ||
+            functions[i].configuration_index != functions[i - 1u].configuration_index)
+        {
+          total += sizeof(MsOs20SubsetHeaderConfiguration);
+        }
+        total += sizeof(MsOs20SubsetHeaderFunction) + FEATURES;
+      }
+    }
+
+    auto* out = new uint8_t[total];
+    size_t off = 0u;
+    auto put = [&](const void* source, size_t length)
+    {
+      Memory::FastCopy(out + off, source, length);
+      off += length;
+    };
+    auto patch_total_length = [&](size_t header_offset, size_t header_size)
+    {
+      const uint16_t length = static_cast<uint16_t>(off - header_offset);
+      Memory::FastCopy(out + header_offset + header_size - sizeof(uint16_t), &length,
+                       sizeof(length));
+    };
+
+    MsOs20SetHeader set;
+    set.wLength = static_cast<uint16_t>(sizeof(set));
+    set.wTotalLength = static_cast<uint16_t>(total);
+    put(&set, sizeof(set));
+
+    MsOs20FeatureCompatibleId compat;
+    Property property;
+    if (device_level)
+    {
+      property.Init(functions[0].guid);
+      put(&compat, sizeof(compat));
+      put(&property, sizeof(property));
+    }
+    else
+    {
+      size_t configuration_offset = 0u;
+      for (size_t i = 0u; i < count; ++i)
+      {
+        if (i == 0u ||
+            functions[i].configuration_index != functions[i - 1u].configuration_index)
+        {
+          if (i != 0u)
+            patch_total_length(configuration_offset,
+                               sizeof(MsOs20SubsetHeaderConfiguration));
+          configuration_offset = off;
+          MsOs20SubsetHeaderConfiguration configuration;
+          configuration.bConfigurationValue = functions[i].configuration_index;
+          put(&configuration, sizeof(configuration));
+        }
+        const size_t function_offset = off;
+        MsOs20SubsetHeaderFunction function;
+        function.bFirstInterface = functions[i].first_interface;
+        put(&function, sizeof(function));
+        property.Init(functions[i].guid);
+        put(&compat, sizeof(compat));
+        put(&property, sizeof(property));
+        patch_total_length(function_offset, sizeof(MsOs20SubsetHeaderFunction));
+      }
+      patch_total_length(configuration_offset, sizeof(MsOs20SubsetHeaderConfiguration));
+    }
+    ASSERT(off == total);
+    data_ = out;
+    size_ = total;
+  }
+
+  LibXR::ConstRawData Data() const { return LibXR::ConstRawData{data_, size_}; }
+
+ private:
+  const uint8_t* data_ = nullptr;
+  size_t size_ = 0u;
+};
+
 // ---- platform capability helper ----
 
 inline void init_msos20_platform_capability(MsOs20PlatformCapability& cap,

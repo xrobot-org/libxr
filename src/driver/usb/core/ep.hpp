@@ -1,32 +1,42 @@
 #pragma once
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 
-#include "double_buffer.hpp"
+#include "core.hpp"
 #include "libxr_cb.hpp"
 #include "libxr_def.hpp"
-#include "libxr_mem.hpp"
-#include "libxr_rw.hpp"
 #include "libxr_type.hpp"
+#include "usb_macro_guard.hpp"
 
 namespace LibXR::USB
 {
 
+class EndpointPool;
+
 /**
  * @class Endpoint
- * @brief USB 端点基类 / USB Endpoint base class
+ * @brief USB 端点基类 / USB endpoint base class
  *
- * 用于描述与操作 USB 端点，提供端点配置、传输控制、状态管理与回调接口。
- * Used for describing and manipulating USB endpoints, providing endpoint configuration,
- * transfer control, state management, and callback interfaces.
+ * 端点的内存由 BSP
+ * 提供，构造时分成固定的一个或两个槽，之后不随包长和速度变化。取槽、往槽里
+ * 写数据、提交、归还可以在任何上下文进行：取槽和提交各是一次对端点状态字的原子修改，中间的
+ * 拷贝不加锁。借出的槽只能由持有者归还；端点解绑时借出的槽作废，持有者之后提交得到
+ * `ABORTED`。启动硬件、回收完成、解绑与停止只在设备的串行化执行者（owner）中进行。
+ *
+ * Endpoint memory is supplied by the BSP and split into one or two slots at construction;
+ * the split does not follow the packet size or the bus speed. Acquiring, filling,
+ * submitting and returning a slot work in any context: acquire and submit are one atomic
+ * update of the endpoint state word each, and the copy in between takes no lock. A lent
+ * slot is only ever returned by its holder; unbinding marks it stale and a later submit
+ * returns `ABORTED`. Hardware start, completion retirement, unbinding and stopping run
+ * only in the device's serialized executor (owner).
  */
 class Endpoint
 {
  public:
-  /**
-   * @brief 端点方向
-   *        Endpoint direction
-   */
+  /// 端点方向 / Endpoint direction
   enum class Direction : uint8_t
   {
     OUT = 0,  ///< 输出方向 / OUT direction
@@ -34,36 +44,30 @@ class Endpoint
     BOTH = 2  ///< 双向（可配置为 IN/OUT） / Both (configurable as IN/OUT)
   };
 
-  /**
-   * @brief 端点号
-   *        Endpoint number
-   */
+  /// 端点号 / Endpoint number
   enum class EPNumber : uint8_t
   {
-    EP0 = 0,           ///< 端点 0 / Endpoint 0
-    EP1 = 1,           ///< 端点 1 / Endpoint 1
-    EP2 = 2,           ///< 端点 2 / Endpoint 2
-    EP3 = 3,           ///< 端点 3 / Endpoint 3
-    EP4 = 4,           ///< 端点 4 / Endpoint 4
-    EP5 = 5,           ///< 端点 5 / Endpoint 5
-    EP6 = 6,           ///< 端点 6 / Endpoint 6
-    EP7 = 7,           ///< 端点 7 / Endpoint 7
-    EP8 = 8,           ///< 端点 8 / Endpoint 8
-    EP9 = 9,           ///< 端点 9 / Endpoint 9
-    EP10 = 10,         ///< 端点 10 / Endpoint 10
-    EP11 = 11,         ///< 端点 11 / Endpoint 11
-    EP12 = 12,         ///< 端点 12 / Endpoint 12
-    EP13 = 13,         ///< 端点 13 / Endpoint 13
-    EP14 = 14,         ///< 端点 14 / Endpoint 14
-    EP15 = 15,         ///< 端点 15 / Endpoint 15
+    EP0 = 0,
+    EP1 = 1,
+    EP2 = 2,
+    EP3 = 3,
+    EP4 = 4,
+    EP5 = 5,
+    EP6 = 6,
+    EP7 = 7,
+    EP8 = 8,
+    EP9 = 9,
+    EP10 = 10,
+    EP11 = 11,
+    EP12 = 12,
+    EP13 = 13,
+    EP14 = 14,
+    EP15 = 15,
     EP_MAX_NUM = 16,   ///< 端点数量上限 / Maximum number of endpoints
     EP_INVALID = 0xFF  ///< 非法端点号 / Invalid endpoint
   };
 
-  /**
-   * @brief 端点类型
-   *        Endpoint type
-   */
+  /// 端点类型 / Endpoint type
   enum class Type : uint8_t
   {
     CONTROL = 0,      ///< 控制端点 / Control
@@ -72,483 +76,337 @@ class Endpoint
     INTERRUPT = 3     ///< 中断端点 / Interrupt
   };
 
-  /**
-   * @brief 端点状态
-   *        Endpoint state
-   */
+  /// 端点状态；ERROR 只表示 Configure 失败 / Endpoint state; ERROR only reports a failed
+  /// Configure
   enum class State : uint8_t
   {
-    DISABLED,  ///< 禁用 / Disabled
-    IDLE,      ///< 空闲 / Idle
-    BUSY,      ///< 忙 / Busy
-    STALLED,   ///< 停止/挂起 / Stalled
-    ERROR      ///< 错误 / Error
+    DISABLED,  ///< 未配置 / Not configured
+    IDLE,      ///< 已配置 / Configured
+    STALLED,   ///< 已置 STALL / Halted
+    ERROR      ///< 配置失败 / Configuration failed
   };
 
-  /**
-   * @brief 端点号转换为 uint8_t / Convert endpoint number to uint8_t
-   * @param ep 端点号 / Endpoint number
-   * @return uint8_t 端点号数值 / Endpoint number value
-   */
+  /// 后端停止结果 / Backend stop result
+  enum class StopResult : uint8_t
+  {
+    DONE,    ///< 硬件已经停止 / Hardware already stopped
+    PENDING  ///< 等硬件事件后调用 OnHardwareStopped / OnHardwareStopped follows later
+  };
+
   static constexpr uint8_t EPNumberToInt8(EPNumber ep)
   {
     return static_cast<uint8_t>(ep);
   }
 
-  /**
-   * @brief 端点号转换为端点地址 / Convert endpoint number to endpoint address
-   * @param ep 端点号 / Endpoint number
-   * @param dir 端点方向 / Endpoint direction
-   * @return uint8_t 端点地址 / Endpoint address
-   */
   static constexpr uint8_t EPNumberToAddr(EPNumber ep, Direction dir)
   {
     ASSERT(dir == Direction::IN || dir == Direction::OUT);
     return static_cast<uint8_t>(ep) | (dir == Direction::IN ? 0x80 : 0x00);
   }
 
-  /**
-   * @brief 端点地址转换为端点号 / Convert endpoint address to endpoint number
-   * @param addr 端点地址 / Endpoint address
-   * @param dir 输出方向（输出参数） / Output direction (output)
-   * @return EPNumber 端点号 / Endpoint number
-   */
   static constexpr EPNumber AddrToEPNumber(uint8_t addr, Direction& dir)
   {
     dir = addr & 0x80 ? Direction::IN : Direction::OUT;
     return static_cast<EPNumber>(addr & 0x7F);
   }
 
-  /**
-   * @brief 获取下一个端点号 / Get the next endpoint number
-   * @param ep 当前端点号 / Current endpoint number
-   * @return EPNumber 下一个端点号 / Next endpoint number
-   */
   static constexpr EPNumber NextEPNumber(EPNumber ep)
   {
     ASSERT(ep <= EPNumber::EP15);
     return static_cast<EPNumber>(EPNumberToInt8(ep) + 1);
   }
 
-  /**
-   * @struct Config
-   * @brief 端点配置参数 / Endpoint configuration parameters
-   */
+  /// 端点配置 / Endpoint configuration
   struct Config
   {
-    Direction direction = Direction::OUT;   ///< 端点方向 / Endpoint direction
-    Type type = Type::BULK;                 ///< 端点类型 / Endpoint type
-    uint16_t max_packet_size = UINT16_MAX;  ///< 最大包长 / Max packet size
-    bool double_buffer = false;             ///< 是否启用双缓冲 / Enable double buffer
-    uint8_t mult = 0;  ///< 多包倍数（高带宽端点） / Multiplier (high-bandwidth)
+    Direction direction = Direction::OUT;
+    Type type = Type::BULK;
+    /// 最大包长，必须是该类型在当前速度下的合法值；0 无效 / Max packet size; must be
+    /// legal for the type at the current speed; 0 is invalid
+    uint16_t max_packet_size = 0;
+    size_t receive_size = 0;  ///< OUT：ReturnSlot 重新挂接收的长度；0 表示槽容量
+  };
+
+  /// Configure 之后读回，到下一次 Configure/Close 有效 / Valid until the next
+  /// Configure/Close
+  struct Granted
+  {
+    size_t slot_capacity = 0;  ///< 包长整数倍 / Multiple of the packet size
+  };
+
+  /// 槽句柄，只有槽号 / Slot handle; the index is the whole identity
+  struct Slot
+  {
+    RawData data{nullptr, 0};  ///< IN：可写区域；OUT 租约：收到的字节
+    uint8_t index = 0xFF;
+    bool Valid() const { return index != 0xFF; }
+  };
+
+  /// 请求完成 / Request completion
+  struct Completion
+  {
+    ErrorCode result = ErrorCode::OK;  ///< OK/ABORTED/FAILED/OUT_OF_RANGE/SIZE_ERR
+    size_t actual = 0;                 ///< IN：主机已取走；OUT：收到
+    Slot slot;                         ///< 仅 OUT 且 result == OK：借给持有者的槽
   };
 
   /**
-   * @brief 构造函数 / Constructor
    * @param number 端点号 / Endpoint number
-   * @param dir 允许配置的方向 / Allowed direction
-   * @param buffer 端点缓冲区 / Endpoint buffer
+   * @param avail 可用方向 / Available direction
+   * @param slots 槽内存，起点与长度按 HW_CACHE_LINE_SIZE 对齐 / Slot memory, start and
+   * length aligned to HW_CACHE_LINE_SIZE
+   * @param slot_count 槽数：1 或 2；0 表示 EP0 一个、其余两个。两个槽时内存平分，每个槽的
+   * 起点与长度按 HW_CACHE_LINE_SIZE 对齐 / Slot count, 1 or 2; 0 means one for EP0 and
+   * two for the others. Two slots split the memory in halves aligned to
+   * HW_CACHE_LINE_SIZE
    */
-  explicit Endpoint(EPNumber number, Direction dir, RawData buffer)
-      : number_(number), avail_direction_(dir), buffer_(buffer), double_buffer_(buffer)
-  {
-  }
-
-  /**
-   * @brief 虚析构函数 / Virtual destructor
-   */
+  Endpoint(EPNumber number, Direction avail, RawData slots, uint8_t slot_count = 0);
   virtual ~Endpoint() = default;
-
   Endpoint(const Endpoint&) = delete;
   Endpoint& operator=(const Endpoint&) = delete;
 
-  /**
-   * @brief 获取端点号 / Get endpoint number
-   * @return EPNumber 端点号 / Endpoint number
-   */
   EPNumber GetNumber() const { return number_; }
-
-  /**
-   * @brief 获取允许配置的方向 / Get allowed endpoint direction
-   * @return Direction 允许方向 / Allowed direction
-   */
   Direction AvailableDirection() const { return avail_direction_; }
-
-  /**
-   * @brief 获取当前端点方向 / Get current endpoint direction
-   * @return Direction 当前方向 / Current direction
-   */
   Direction GetDirection() const
   {
-    if (state_ == State::DISABLED)
-    {
-      return AvailableDirection();
-    }
-    return config_.direction;
+    return GetState() == State::DISABLED ? avail_direction_ : config_.direction;
   }
-
-  /**
-   * @brief 获取端点地址（方向 + 号） / Get endpoint address (dir + num)
-   * @return uint8_t 端点地址 / Endpoint address
-   */
   uint8_t GetAddress() const
   {
-    if (state_ == State::DISABLED)
-    {
-      return EPNumberToInt8(number_) & 0x0F;
-    }
-    return EPNumberToAddr(number_, config_.direction);
+    return GetState() == State::DISABLED ? EPNumberToInt8(number_)
+                                         : EPNumberToAddr(number_, config_.direction);
   }
-
-  /**
-   * @brief 获取端点状态 / Get endpoint state
-   * @return State 当前状态 / Current state
-   */
-  State GetState() const { return state_; }
-
-  /**
-   * @brief 设置端点状态 / Set endpoint state
-   * @param state 状态 / State
-   */
-  void SetState(State state) { state_ = state; }
-
-  /**
-   * @brief 获取端点类型 / Get endpoint type
-   * @return Type 端点类型 / Endpoint type
-   */
+  [[gnu::always_inline]] State GetState() const
+  {
+    return state_.load(std::memory_order_acquire);
+  }
   Type GetType() const { return config_.type; }
-
-  /**
-   * @brief 获取最大包长 / Get max packet size
-   * @return uint16_t 最大包长 / Max packet size
-   */
   uint16_t MaxPacketSize() const { return config_.max_packet_size; }
+  /// 当前速度下槽和后端都放得下的最大合法包长；没有时为 0。只读查询，Configure 仍须显式
+  /// 指定包长 / Largest packet size legal at the current speed that the slot and the
+  /// backend hold, 0 when there is none. A query only: Configure still takes an explicit
+  /// size
+  uint16_t LargestPacketSize(Type type) const;
+  bool IsStalled() const { return GetState() == State::STALLED; }
+  const Granted& GetGranted() const { return granted_; }
 
-  /**
-   * @brief 是否处于 STALL 状态 / Whether endpoint is stalled
-   * @return true 已 STALL / Stalled
-   * @return false 非 STALL / Not stalled
-   */
-  bool IsStalled() const { return state_ == State::STALLED; }
+  // ---- 配置与生命周期：只在 owner 中调用 / Owner only ----
 
-  /**
-   * @brief 是否启用双缓冲 / Whether double buffer is enabled
-   * @return true 启用 / Enabled
-   * @return false 未启用 / Disabled
-   */
-  bool UseDoubleBuffer() const { return config_.double_buffer; }
+  /// OK / ARG_ERR（包长非法）/ NO_BUFF（槽装不下一个包）/ STATE_ERR / FAILED
+  [[nodiscard]] ErrorCode Configure(const Config& cfg, bool in_isr);
+  /// 解绑：停用端点，借出的槽作废，排队与在途请求恰好结束一次 / Unbind
+  void Close(bool in_isr);
+  /// 结束排队与在途请求，端点保持启用 / End queued and in-flight requests
+  void Flush(bool in_isr);
+  /// 先结束待决请求再置 STALL / End pending requests, then halt
+  [[nodiscard]] ErrorCode Stall(bool in_isr);
+  [[nodiscard]] ErrorCode ClearStall(bool in_isr);
+  /// 停止确认之前为 true / True until the hardware stop is confirmed
+  bool IsStopping() const { return stopping_; }
+  /// 立即回收已经记录的硬件完成 / Retire an already captured hardware completion now
+  void RetireCompletion(bool in_isr);
+  /// 完成回调在 owner 中执行；回调必须浅 / Runs in the owner; must stay shallow
+  void SetOnComplete(Callback<const Completion&> callback) { on_complete_ = callback; }
 
-  /**
-   * @brief 获取当前可用于传输的缓冲区 / Get current transfer buffer
-   * @return RawData 缓冲区视图 / Buffer view
-   */
-  RawData GetBuffer() const
-  {
-    if (config_.double_buffer)
-    {
-      return {double_buffer_.ActiveBuffer(), double_buffer_.Size()};
-    }
-    else
-    {
-      return buffer_;
-    }
-  }
+  // ---- IN 借用：任何上下文 / IN borrowing, any context ----
 
-  /**
-   * @brief 设置传输完成回调 / Set transfer complete callback
-   * @param cb 回调函数 / Callback
-   */
-  void SetOnTransferCompleteCallback(Callback<ConstRawData&> cb)
-  {
-    on_transfer_complete_ = cb;
-  }
+  /// OK / BUSY（无空闲槽）/ STATE_ERR（未启用或方向不符）
+  [[nodiscard]] ErrorCode AcquireSlot(Slot& slot, bool in_isr);
+  /// OK / ABORTED（槽在解绑前借出，已回到空闲）/ SIZE_ERR / STATE_ERR
+  [[nodiscard]] ErrorCode Submit(const Slot& slot, size_t length, bool zlp, bool in_isr);
+  /// 不占槽的零长请求 / Zero-length request without a slot
+  [[nodiscard]] ErrorCode SubmitZeroLength(bool in_isr);
+  /// 归还未提交的 IN 槽或 OUT 租约，不重新挂接收 / Return without rearming
+  void ReleaseSlot(const Slot& slot, bool in_isr);
 
-  /**
-   * @brief 设置当前活动缓冲区有效长度 / Set active buffer valid length
-   * @param len 有效长度 / Valid length
-   */
-  void SetActiveLength(uint16_t len) { double_buffer_.SetActiveLength(len); }
+  // ---- OUT 借用 / OUT borrowing ----
 
-  /**
-   * @brief 获取当前活动缓冲区有效长度 / Get active buffer valid length
-   * @return size_t 有效长度 / Valid length
-   */
-  size_t GetActiveLength() { return double_buffer_.GetActiveLength(); }
-
-  /**
-   * @brief 返回当前最大可传输字节数 / Return maximum transferable size at this time
-   * @return size_t 最大可传输字节数 / Maximum transferable bytes
-   */
-  virtual size_t MaxTransferSize() const { return MaxPacketSize(); }
-
-  /**
-   * @brief 配置端点协议参数 / Configure endpoint protocol parameters
-   * @param cfg 配置参数 / Configuration parameters
-   */
-  virtual void Configure(const Config& cfg) = 0;
-
-  /**
-   * @brief 关闭端点 / Close endpoint
-   */
-  virtual void Close() = 0;
-
-  /**
-   * @brief 置 STALL / Stall endpoint
-   * @return ErrorCode 错误码 / Error code
-   */
-  virtual ErrorCode Stall() = 0;
-
-  /**
-   * @brief 清除 STALL / Clear stall
-   * @return ErrorCode 错误码 / Error code
-   */
-  virtual ErrorCode ClearStall() = 0;
-
-  /**
-   * @brief 启动一次传输 / Start a transfer
-   * @param size 传输长度 / Transfer size
-   * @return ErrorCode 错误码 / Error code
-   */
-  virtual ErrorCode Transfer(size_t size) = 0;
-
-  /**
-   * @brief Bulk 多包传输辅助接口 / Helper for multi-packet bulk transfer
-   * @param data 应用层缓冲区（IN：待发送数据；OUT：接收缓冲区） / App buffer (IN: data to
-   * send; OUT: receive buffer)
-   * @return ErrorCode 错误码 / Error code
-   */
-  virtual ErrorCode TransferMultiBulk(RawData& data)
-  {
-    auto ep_buf = GetBuffer();
-    size_t max_chunk = MaxTransferSize();
-
-    ASSERT(max_chunk > 0);
-
-    // 单包就能搞定的情况：不进入 multi-bulk 状态机，保持原有行为
-    if (data.size_ <= max_chunk)
-    {
-      if (GetDirection() == Direction::IN)
-      {
-        multi_bulk_ = false;
-        multi_bulk_remain_ = 0;
-        multi_bulk_data_ = {nullptr, 0};
-
-        auto src = static_cast<const uint8_t*>(data.addr_);
-        auto dst = static_cast<uint8_t*>(ep_buf.addr_);
-        Memory::FastCopy(dst, src, data.size_);
-
-        return Transfer(data.size_);
-      }
-
-      // OUT：接收——为了把数据回填到 data，单包也走 multi-bulk
-      if (GetDirection() == Direction::OUT)
-      {
-        multi_bulk_ = true;
-        multi_bulk_data_ = data;
-        multi_bulk_remain_ = data.size_;  // OUT: 剩余可写容量
-        return Transfer(data.size_);
-      }
-
-      return ErrorCode::ARG_ERR;
-    }
-
-    // 需要多包处理的情况
-    multi_bulk_ = true;
-    multi_bulk_data_ = data;          // 应用层 buffer 指针 + 最大容量 / 逻辑总长
-    multi_bulk_remain_ = data.size_;  // IN: 剩余待发送；OUT: 剩余可写容量
-
-    // 第一包大小
-    size_t first = max_chunk;
-    if (first > multi_bulk_remain_)
-    {
-      first = multi_bulk_remain_;
-    }
-
-    if (GetDirection() == Direction::IN)
-    {
-      // IN：发送时，先把第一 chunk 拷到 EP buffer
-      auto src = static_cast<const uint8_t*>(multi_bulk_data_.addr_);
-      auto dst = static_cast<uint8_t*>(ep_buf.addr_);
-      Memory::FastCopy(dst, src, first);
-
-      multi_bulk_remain_ -= first;  // 已经准备好 first 字节要发
-    }
-    // OUT：接收时，先启动一次接收，稍后在回调里拷贝到 multi_bulk_data_
-
-    return Transfer(first);
-  }
-
-  /**
-   * @brief 发送/接收 ZLP（零长度包） / Transfer zero length packet (ZLP)
-   * @return ErrorCode 错误码 / Error code
-   */
-  virtual ErrorCode TransferZLP() { return Transfer(0); }
-
-  /**
-   * @brief 由底层在传输完成时调用 / Called by low-level driver when transfer completes
-   * @param in_isr 是否在中断上下文 / Whether in ISR context
-   * @param actual_transfer_size 实际传输长度 / Actual transferred size
-   */
-  void OnTransferCompleteCallback(bool in_isr, size_t actual_transfer_size)
-  {
-    if (GetState() != State::BUSY)
-    {
-      return;
-    }
-
-    bool callback_uses_app_buffer = false;
-    bool out_switched_before_cb = false;
-
-    const Direction DIR = GetDirection();
-    const size_t MAX_CHUNK = MaxTransferSize();
-    const bool DB = UseDoubleBuffer();
-
-    if (multi_bulk_)
-    {
-      if (DIR == Direction::IN)
-      {
-        if (multi_bulk_remain_ > 0)
-        {
-          auto ep_buf = GetBuffer();  // 此时应是“下一块 Active”（因为 Transfer 已切换）
-          const size_t SENT = multi_bulk_data_.size_ - multi_bulk_remain_;
-
-          size_t chunk = MAX_CHUNK;
-          if (chunk > multi_bulk_remain_) chunk = multi_bulk_remain_;
-
-          auto src = static_cast<const uint8_t*>(multi_bulk_data_.addr_) + SENT;
-          auto dst = static_cast<uint8_t*>(ep_buf.addr_);
-          Memory::FastCopy(dst, src, chunk);
-          multi_bulk_remain_ -= chunk;
-
-          SetState(State::IDLE);
-          (void)Transfer(chunk);
-          return;
-        }
-
-        // 结束：对上层报告 app buffer
-        multi_bulk_ = false;
-        callback_uses_app_buffer = true;
-        actual_transfer_size = multi_bulk_data_.size_;
-      }
-      else
-      {
-        // OUT：完成时 Active 里是数据
-        auto ep_buf = GetBuffer();
-        size_t prev_remain = multi_bulk_remain_;
-        size_t recvd = actual_transfer_size;
-        if (recvd > prev_remain)
-        {
-          recvd = prev_remain;
-        }
-
-        const size_t OFFSET = multi_bulk_data_.size_ - prev_remain;
-
-        auto dst = static_cast<uint8_t*>(multi_bulk_data_.addr_) + OFFSET;
-        auto src = static_cast<const uint8_t*>(ep_buf.addr_);
-        Memory::FastCopy(dst, src, recvd);
-
-        multi_bulk_remain_ = prev_remain - recvd;
-
-        const bool SHORT_PACKET = (recvd < MAX_CHUNK);
-        const bool BUFFER_FULL = (multi_bulk_remain_ == 0);
-
-        if (DB)
-        {
-          SwitchBuffer();  // 切换后 Pending = 刚接收的包；Active = 下次用
-          out_switched_before_cb = true;
-        }
-
-        if (!SHORT_PACKET && !BUFFER_FULL)
-        {
-          size_t chunk = MAX_CHUNK;
-          if (chunk > multi_bulk_remain_)
-          {
-            chunk = multi_bulk_remain_;
-          }
-
-          SetState(State::IDLE);
-          (void)Transfer(chunk);  // 下一包将落到新的 Active（
-          return;
-        }
-
-        multi_bulk_ = false;
-        callback_uses_app_buffer = true;
-        actual_transfer_size = multi_bulk_data_.size_ - multi_bulk_remain_;
-      }
-    }
-
-    // 非 multi-bulk：OUT 也必须“回调前切换”
-    if (!multi_bulk_ && DB && DIR == Direction::OUT && !out_switched_before_cb)
-    {
-      SwitchBuffer();
-      out_switched_before_cb = true;
-    }
-
-    SetState(State::IDLE);
-
-    ConstRawData data;
-    if (callback_uses_app_buffer)
-    {
-      data = ConstRawData(multi_bulk_data_.addr_, actual_transfer_size);
-    }
-    else
-    {
-      if (DB)
-      {
-        // 回调里永远取 Pending = 刚刚完成的那包（IN/OUT 一致）
-        data = ConstRawData(double_buffer_.PendingBuffer(), actual_transfer_size);
-      }
-      else
-      {
-        data = ConstRawData(buffer_.addr_, actual_transfer_size);
-      }
-    }
-
-    on_transfer_complete_.Run(in_isr, data);
-  }
+  /// 挂一个空闲槽接收；bytes 为包长整数倍 / Arm one free slot; bytes is a packet
+  /// multiple
+  [[nodiscard]] ErrorCode Receive(size_t bytes, bool in_isr);
+  /// 归还租约并按 receive_size 重新挂接收 / Return a lease and rearm it
+  [[nodiscard]] ErrorCode ReturnSlot(const Slot& slot, bool in_isr);
 
  protected:
-  /**
-   * @brief 获取当前配置引用 / Get endpoint config reference
-   * @return Config& 配置引用 / Configuration reference
-   */
-  Config& GetConfig() { return config_; }
-
-  /**
-   * @brief 切换双缓冲 / Switch double buffer
-   */
-  virtual void SwitchBuffer()
+  /// 一个已提交请求在硬件上的描述 / One submitted request as seen by the backend
+  struct HwRequest
   {
-    double_buffer_.EnablePending();
-    double_buffer_.Switch();
+    RawData slot{nullptr, 0};  ///< 整个槽；OUT 可收满它 / Whole slot
+    size_t length = 0;         ///< IN 发送长度；OUT 请求长度 / Request length
+    uint32_t tag = 0;          ///< 完成时原样交回 / Returned with the completion
+  };
+
+  // ---- 后端接口：只在 owner 中、硬件守卫内调用 / Backend, owner only, in the guard ----
+
+  /// 应用已校验的配置；planning 模式下不调用 / Apply a validated configuration
+  virtual ErrorCode ConfigureHardware(const Config& cfg) = 0;
+  /// 关闭端点；只在没有在途请求时调用 / Close; only without an in-flight request
+  virtual void CloseHardware(bool in_isr) = 0;
+  /// 启动一个请求；同一时刻最多一个 / Start one request; at most one at a time
+  virtual ErrorCode StartHardware(const HwRequest& request, bool in_isr) = 0;
+  /// 停止在途请求；PENDING 时之后调用 OnHardwareStopped / Stop the in-flight request
+  virtual StopResult StopHardware(bool in_isr) = 0;
+  /// 停止确认后读硬件事实 / Read the hardware facts after a confirmed stop
+  virtual size_t ReapProgress(const HwRequest& request, bool& retired) = 0;
+  virtual ErrorCode StallHardware(bool in_isr) = 0;
+  virtual ErrorCode ClearStallHardware(bool in_isr) = 0;
+  /// 后端能接受的最大包长（FIFO/PMA）/ Largest packet the backend accepts
+  virtual size_t MaxPacketSizeLimit(Type type) const
+  {
+    UNUSED(type);
+    return UINT16_MAX;
   }
 
-  /**
-   * @brief 设置当前活动缓冲块 / Set active buffer block
-   * @param active_block true 使用第二块；false 使用第一块 / true selects second block;
-   * false selects first block
-   */
-  virtual void SetActiveBlock(bool active_block)
-  {
-    double_buffer_.SetActiveBlock(active_block);
-    double_buffer_.EnablePending();
-  }
+  // ---- IRQ 侧：只记录 / IRQ side, record only ----
+
+  /// 只接受当前在途请求的标签 / Accepts only the current in-flight tag
+  void OnHardwareComplete(bool in_isr, uint32_t tag, size_t actual,
+                          ErrorCode result = ErrorCode::OK);
+  void OnHardwareStopped(bool in_isr);
+
+  bool IsPlanning() const;
+  const Config& GetConfig() const { return config_; }
+  RawData SlotMemory() const { return memory_; }
 
  private:
-  LibXR::Callback<LibXR::ConstRawData&>
-      on_transfer_complete_;  ///< 传输完成回调 / Transfer complete callback
+  friend class EndpointPool;
 
-  EPNumber number_;                    ///< 端点号 / Endpoint number
-  Direction avail_direction_;          ///< 可配置方向 / Allowed direction
-  Config config_;                      ///< 当前配置 / Current configuration
-  State state_ = State::DISABLED;      ///< 当前状态 / Current state
-  LibXR::RawData buffer_;              ///< 端点缓冲区 / Endpoint buffer
-  LibXR::DoubleBuffer double_buffer_;  ///< 双缓冲管理 / Double buffer manager
+  enum SlotState : uint32_t
+  {
+    FREE = 0,
+    LENT = 1,
+    STALE = 2,
+    QUEUED = 3,
+    INFLIGHT = 4
+  };
 
-  bool multi_bulk_ = false;  ///< 多包 bulk 状态机使能 / Multi-bulk state enabled
-  RawData multi_bulk_data_;  ///< 多包 bulk 应用层 buffer / App buffer for multi-bulk
-  size_t multi_bulk_remain_ =
-      0;  ///< 多包 bulk 剩余字节数 / Remaining bytes for multi-bulk
+  // State word: slot 0 [2:0], slot 1 [5:3], head [6] (slot 1 was queued first), enabled
+  // [7], zero-length queued [8], reserved [9], zero-length in flight [10], reserved
+  // [13:11], IN [14], reserved [15], binding generation [31:16]. Everything a
+  // non-owner caller decides on is in this word; the generation makes a CAS fail across a
+  // rebinding. A slot keeps its place across bindings, so a stale slot only ever blocks
+  // itself.
+  static constexpr uint32_t SLOT_BITS = 3U;
+  static constexpr uint32_t SLOT_MASK = 7U;
+  static constexpr uint32_t SLOT_FIELDS = (SLOT_MASK << SLOT_BITS) | SLOT_MASK;
+  static constexpr uint32_t HEAD_BIT = 1U << 6U;
+  static constexpr uint32_t ENABLED_BIT = 1U << 7U;
+  static constexpr uint32_t ZLP_QUEUED_BIT = 1U << 8U;
+  static constexpr uint32_t ZLP_INFLIGHT_BIT = 1U << 10U;
+  static constexpr uint32_t DIR_IN_BIT = 1U << 14U;
+  static constexpr uint32_t GEN_ONE = 1U << 16U;
+  static constexpr uint8_t ZLP_INDEX = 2U;
+  static constexpr uint8_t NO_REQUEST = 0xFFU;
+
+  // The small helpers on the request path are forced inline: under -Os the compiler keeps
+  // them out of line, and on flash with wait states each call costs more than its body.
+  [[gnu::always_inline]] static uint32_t SlotOf(uint32_t word, uint8_t index)
+  {
+    return (word >> (index * SLOT_BITS)) & SLOT_MASK;
+  }
+  [[gnu::always_inline]] static uint32_t WithSlot(uint32_t word, uint8_t index,
+                                                  uint32_t state)
+  {
+    return (word & ~(SLOT_MASK << (index * SLOT_BITS))) | (state << (index * SLOT_BITS));
+  }
+  [[gnu::always_inline]] static uint32_t Enqueue(uint32_t word, uint8_t index)
+  {
+    const uint8_t other = index ^ 1U;
+    const uint8_t head = SlotOf(word, other) == QUEUED ? other : index;
+    word = WithSlot(word, index, QUEUED);
+    return head == 1U ? (word | HEAD_BIT) : (word & ~HEAD_BIT);
+  }
+
+  struct SlotMeta
+  {
+    size_t length = 0;
+    bool zlp = false;
+  };
+
+  void Attach(EndpointPool& pool) { pool_ = &pool; }
+  void Service(bool in_isr);
+  // Defined in ep_pool.hpp, which ep.cpp includes.
+  [[gnu::always_inline]] inline void NotifyOwner(bool in_isr);
+  [[gnu::always_inline]] inline void NotifyQueued(bool in_isr);
+  [[gnu::always_inline]] inline bool CanStart() const;
+  [[gnu::always_inline]] bool Usable(uint32_t word, uint8_t index) const
+  {
+    return index < slot_count_ && SlotOf(word, index) == FREE;
+  }
+  [[gnu::always_inline]] RawData SlotData(uint8_t index, size_t capacity) const
+  {
+    return {static_cast<uint8_t*>(memory_.addr_) + index * slot_size_, capacity};
+  }
+  void StartNext(bool in_isr);
+  bool StartOne(bool in_isr, bool defer_failure);
+  bool StartEarly(bool in_isr);
+  void FinishFailedStart(bool in_isr);
+  void StartRequest(bool in_isr, uint8_t index, size_t length, bool defer_failure);
+  void RetireMailbox(bool in_isr);
+  void FinishInflight(bool in_isr, ErrorCode result, size_t actual);
+  void EndRequests(bool in_isr, bool disable);
+  void FinishStop(bool in_isr);
+  void ApplyAfterStop(bool in_isr);
+  void DeliverAborts(bool in_isr);
+  void Deliver(bool in_isr, ErrorCode result, size_t actual);
+  void Deliver(bool in_isr, ErrorCode result, size_t actual, const Slot& slot);
+  [[gnu::always_inline]] uint32_t NextTag(uint8_t index)
+  {
+    sequence_ = (sequence_ + 1U) & 0x3FFFFFFFU;
+    if (sequence_ == 0U) sequence_ = 1U;
+    return (sequence_ << 2U) | index;
+  }
+  void SetState(State state) { state_.store(state, std::memory_order_release); }
+  // Requests are being ended (stop pending, halted or closed); nothing continues.
+  [[gnu::always_inline]] bool Ending() const
+  {
+    return stopping_ || GetState() != State::IDLE;
+  }
+
+  EPNumber number_;
+  Direction avail_direction_;
+  RawData memory_;
+  uint8_t slot_count_ = 1;  // Fixed at construction.
+  size_t slot_size_ = 0;  // Bytes of each slot; slot 1 starts here. Cache-line multiple.
+  Config config_;
+  Granted granted_;
+  std::atomic<State> state_{State::DISABLED};
+  EndpointPool* pool_ = nullptr;
+
+  // Written only while disabled; read by other contexts between loading the state word
+  // and the CAS that validates it.
+  std::atomic<uint32_t> word_{0};
+  std::atomic<uint32_t> capacity_{0};
+  std::atomic<uint32_t> packet_{0};
+  std::atomic<uint32_t> receive_size_{0};
+  SlotMeta meta_[2];
+
+  // Owner-only request state.
+  uint8_t inflight_ = NO_REQUEST;
+  bool inflight_tail_ =
+      false;  // The ZLP tail of the in-flight slot request is on the wire.
+  HwRequest inflight_request_;
+  uint32_t sequence_ = 0;
+  uint8_t pending_aborts_ = 0;  // Queued requests ended behind the in-flight one.
+  bool stopping_ = false;
+  bool close_after_stop_ = false;
+  bool stall_after_stop_ = false;
+  bool start_before_deliver_ = false;
+  bool start_failed_ = false;  // An early start failed; its FAILED completion is pending.
+
+  // IRQ producer, owner consumer. Word-sized for Cortex-M0 atomics.
+  std::atomic<uint32_t> inflight_tag_{0};
+  std::atomic<uint32_t> completion_ready_{0};
+  uint32_t completion_tag_ = 0;
+  size_t completion_actual_ = 0;
+  ErrorCode completion_result_ = ErrorCode::OK;
+  std::atomic<uint32_t> stop_confirmed_{0};
+  uint32_t pending_bit_ = 0;  // This endpoint's bit in the pool's pending mask.
+  // Set by the owner while it retires this endpoint's completion (callback included);
+  // a request queued meanwhile is started by the StartNext that follows.
+  std::atomic<uint32_t> servicing_{0};
+
+  Callback<const Completion&> on_complete_;
 };
 
 }  // namespace LibXR::USB

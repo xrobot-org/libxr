@@ -138,6 +138,18 @@ target_sources(
   PRIVATE ${${PROJECT_NAME}_MIDDLEWARE_NESTED_SUBDIR_SOURCES}
 )
 
+# GCC 14 (including the xtensa toolchain) reports the atomics reached through the
+# endpoint core's pool reference as writes to address zero (-Wstringop-overflow);
+# the pointers are checked non-null. Same false positive as the STM32 driver files.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  set_source_files_properties(
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/driver/usb/core/ep.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/driver/esp/esp_usb.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/driver/esp/esp_usb_dev.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/driver/esp/esp_usb_ep.cpp"
+      PROPERTIES COMPILE_OPTIONS "-Wno-stringop-overflow")
+endif()
+
 file(GLOB_RECURSE _xr_force_o3_sources CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/*_o3.cpp"
 )

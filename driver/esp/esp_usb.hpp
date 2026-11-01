@@ -37,7 +37,6 @@ inline constexpr uint32_t DMA_MEMORY_CAPS =
     MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT;
 inline constexpr uint16_t ESP32_SX_FS_DMA_MIN_RX_FIFO_WORDS = 88U;
 inline constexpr uint16_t ESP32_SX_FS_MIN_TX_FIFO_WORDS = 16U;
-inline constexpr uint32_t DISABLE_OUT_WAIT_GUARD = 100000U;
 
 #if defined(CONFIG_USB_ALIGN_SIZE)
 inline constexpr size_t USB_DMA_ALIGNMENT = CONFIG_USB_ALIGN_SIZE;
@@ -69,9 +68,24 @@ volatile uint32_t* GetEndpointFifo(usb_dwc_dev_t* dev, uint8_t ep_num);
 void WriteFifoPacket(volatile uint32_t* fifo, const uint8_t* src, size_t size);
 void ReadFifoPacket(const volatile uint32_t* fifo, uint8_t* dst, size_t size);
 uint16_t PacketCount(size_t size, uint16_t max_packet_size);
-void FlushTxFifo(usb_dwc_dev_t* dev, uint8_t fifo_num);
-void DisableInEndpointAndWait(usb_dwc_dev_t* dev);
-void DisableInEndpointAndWait(usb_dwc_dev_t* dev, uint8_t ep_num);
+/// 有界自旋：条件成立返回 true，超过上限返回 false。用于硬件自清位的等待，使节拍和中断
+/// 里的等待有上界。
+/// Bounded spin: true once the condition holds, false after the limit. For waits on
+/// self-clearing hardware bits, so waits in the tick or an interrupt have an upper bound.
+template <typename Condition>
+inline bool SpinUntil(Condition condition, uint32_t limit = 200000U)
+{
+  for (uint32_t i = 0U; i < limit; ++i)
+  {
+    if (condition())
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool FlushTxFifo(usb_dwc_dev_t* dev, uint8_t fifo_num);
 
 template <typename EpCtl>
 void StartEndpointTransfer(volatile EpCtl& reg)
@@ -85,29 +99,23 @@ void StartEndpointTransfer(volatile EpCtl& reg)
   reg.val = ctl.val;
 }
 
+/**
+ * @brief 发出 OUT 端点的禁用请求（SNAK，已使能时再 EPDIS），不等待 /
+ *        Request an OUT endpoint disable (SNAK, then EPDIS when enabled) without waiting
+ * @param allow_epdis EP0 OUT 的手册不允许写 EPDIS，只发 SNAK / The manual forbids EPDIS
+ * on EP0 OUT, which only gets SNAK
+ */
 template <typename DoepCtl>
-void DisableOutEndpointAndWait(volatile DoepCtl& ctl)
+void RequestOutDisable(volatile DoepCtl& ctl, bool allow_epdis)
 {
-  DoepCtl disable = {};
-  disable.val = ctl.val;
-  disable.snak = 1;
-  const bool was_enabled = disable.epena;
-  if (was_enabled)
+  DoepCtl request = {};
+  request.val = ctl.val;
+  request.snak = 1;
+  if (allow_epdis && request.epena)
   {
-    disable.epdis = 1;
+    request.epdis = 1;
   }
-  ctl.val = disable.val;
-
-  if (!was_enabled)
-  {
-    return;
-  }
-
-  uint32_t guard = DISABLE_OUT_WAIT_GUARD;
-  while (ctl.epena && guard > 0U)
-  {
-    --guard;
-  }
+  ctl.val = request.val;
 }
 
 }  // namespace LibXR::ESPUSBDetail

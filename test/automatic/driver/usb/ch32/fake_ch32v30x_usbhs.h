@@ -1,0 +1,195 @@
+// Fake CH32V30x configuration header for host tests of the CH32 USBHS endpoint: the
+// USBHS device register block of ch32v30x.h as plain memory, and the register bits of
+// ch32v30x_usb.h the endpoint uses.
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+
+#define __IO volatile
+
+typedef struct
+{
+  __IO uint8_t CONTROL;
+  __IO uint8_t HOST_CTRL;
+  __IO uint8_t INT_EN;
+  __IO uint8_t DEV_AD;
+  __IO uint16_t FRAME_NO;
+  __IO uint8_t SUSPEND;
+  __IO uint8_t RESERVED0;
+  __IO uint8_t SPEED_TYPE;
+  __IO uint8_t MIS_ST;
+  __IO uint8_t INT_FG;
+  __IO uint8_t INT_ST;
+  __IO uint16_t RX_LEN;
+  __IO uint16_t RESERVED1;
+  __IO uint32_t ENDP_CONFIG;
+  __IO uint32_t ENDP_TYPE;
+  __IO uint32_t BUF_MODE;
+  __IO uint32_t UEP0_DMA;
+  __IO uint32_t UEP1_RX_DMA;
+  __IO uint32_t UEP2_RX_DMA;
+  __IO uint32_t UEP3_RX_DMA;
+  __IO uint32_t UEP4_RX_DMA;
+  __IO uint32_t UEP5_RX_DMA;
+  __IO uint32_t UEP6_RX_DMA;
+  __IO uint32_t UEP7_RX_DMA;
+  __IO uint32_t UEP8_RX_DMA;
+  __IO uint32_t UEP9_RX_DMA;
+  __IO uint32_t UEP10_RX_DMA;
+  __IO uint32_t UEP11_RX_DMA;
+  __IO uint32_t UEP12_RX_DMA;
+  __IO uint32_t UEP13_RX_DMA;
+  __IO uint32_t UEP14_RX_DMA;
+  __IO uint32_t UEP15_RX_DMA;
+  __IO uint32_t UEP1_TX_DMA;
+  __IO uint32_t UEP2_TX_DMA;
+  __IO uint32_t UEP3_TX_DMA;
+  __IO uint32_t UEP4_TX_DMA;
+  __IO uint32_t UEP5_TX_DMA;
+  __IO uint32_t UEP6_TX_DMA;
+  __IO uint32_t UEP7_TX_DMA;
+  __IO uint32_t UEP8_TX_DMA;
+  __IO uint32_t UEP9_TX_DMA;
+  __IO uint32_t UEP10_TX_DMA;
+  __IO uint32_t UEP11_TX_DMA;
+  __IO uint32_t UEP12_TX_DMA;
+  __IO uint32_t UEP13_TX_DMA;
+  __IO uint32_t UEP14_TX_DMA;
+  __IO uint32_t UEP15_TX_DMA;
+  __IO uint16_t UEP0_MAX_LEN;
+  __IO uint16_t RESERVED2;
+  __IO uint16_t UEP1_MAX_LEN;
+  __IO uint16_t RESERVED3;
+  __IO uint16_t UEP2_MAX_LEN;
+  __IO uint16_t RESERVED4;
+  __IO uint16_t UEP3_MAX_LEN;
+  __IO uint16_t RESERVED5;
+  __IO uint16_t UEP4_MAX_LEN;
+  __IO uint16_t RESERVED6;
+  __IO uint16_t UEP5_MAX_LEN;
+  __IO uint16_t RESERVED7;
+  __IO uint16_t UEP6_MAX_LEN;
+  __IO uint16_t RESERVED8;
+  __IO uint16_t UEP7_MAX_LEN;
+  __IO uint16_t RESERVED9;
+  __IO uint16_t UEP8_MAX_LEN;
+  __IO uint16_t RESERVED10;
+  __IO uint16_t UEP9_MAX_LEN;
+  __IO uint16_t RESERVED11;
+  __IO uint16_t UEP10_MAX_LEN;
+  __IO uint16_t RESERVED12;
+  __IO uint16_t UEP11_MAX_LEN;
+  __IO uint16_t RESERVED13;
+  __IO uint16_t UEP12_MAX_LEN;
+  __IO uint16_t RESERVED14;
+  __IO uint16_t UEP13_MAX_LEN;
+  __IO uint16_t RESERVED15;
+  __IO uint16_t UEP14_MAX_LEN;
+  __IO uint16_t RESERVED16;
+  __IO uint16_t UEP15_MAX_LEN;
+  __IO uint16_t RESERVED17;
+  __IO uint16_t UEP0_TX_LEN;
+  __IO uint8_t UEP0_TX_CTRL;
+  __IO uint8_t UEP0_RX_CTRL;
+  __IO uint16_t UEP1_TX_LEN;
+  __IO uint8_t UEP1_TX_CTRL;
+  __IO uint8_t UEP1_RX_CTRL;
+  __IO uint16_t UEP2_TX_LEN;
+  __IO uint8_t UEP2_TX_CTRL;
+  __IO uint8_t UEP2_RX_CTRL;
+  __IO uint16_t UEP3_TX_LEN;
+  __IO uint8_t UEP3_TX_CTRL;
+  __IO uint8_t UEP3_RX_CTRL;
+  __IO uint16_t UEP4_TX_LEN;
+  __IO uint8_t UEP4_TX_CTRL;
+  __IO uint8_t UEP4_RX_CTRL;
+  __IO uint16_t UEP5_TX_LEN;
+  __IO uint8_t UEP5_TX_CTRL;
+  __IO uint8_t UEP5_RX_CTRL;
+  __IO uint16_t UEP6_TX_LEN;
+  __IO uint8_t UEP6_TX_CTRL;
+  __IO uint8_t UEP6_RX_CTRL;
+  __IO uint16_t UEP7_TX_LEN;
+  __IO uint8_t UEP7_TX_CTRL;
+  __IO uint8_t UEP7_RX_CTRL;
+  __IO uint16_t UEP8_TX_LEN;
+  __IO uint8_t UEP8_TX_CTRL;
+  __IO uint8_t UEP8_RX_CTRL;
+  __IO uint16_t UEP9_TX_LEN;
+  __IO uint8_t UEP9_TX_CTRL;
+  __IO uint8_t UEP9_RX_CTRL;
+  __IO uint16_t UEP10_TX_LEN;
+  __IO uint8_t UEP10_TX_CTRL;
+  __IO uint8_t UEP10_RX_CTRL;
+  __IO uint16_t UEP11_TX_LEN;
+  __IO uint8_t UEP11_TX_CTRL;
+  __IO uint8_t UEP11_RX_CTRL;
+  __IO uint16_t UEP12_TX_LEN;
+  __IO uint8_t UEP12_TX_CTRL;
+  __IO uint8_t UEP12_RX_CTRL;
+  __IO uint16_t UEP13_TX_LEN;
+  __IO uint8_t UEP13_TX_CTRL;
+  __IO uint8_t UEP13_RX_CTRL;
+  __IO uint16_t UEP14_TX_LEN;
+  __IO uint8_t UEP14_TX_CTRL;
+  __IO uint8_t UEP14_RX_CTRL;
+  __IO uint16_t UEP15_TX_LEN;
+  __IO uint8_t UEP15_TX_CTRL;
+  __IO uint8_t UEP15_RX_CTRL;
+} USBHSD_TypeDef;
+
+inline USBHSD_TypeDef fake_usbhsd{};
+#define USBHSD (&fake_usbhsd)
+
+#define USBHS_UEP0_R_EN 0x00010000
+#define USBHS_UEP0_R_TYPE 0x00010000
+#define USBHS_UEP0_T_EN 0x00000001
+#define USBHS_UEP0_T_TYPE 0x00000001
+#define USBHS_UEP10_R_EN 0x04000000
+#define USBHS_UEP10_T_EN 0x00000400
+#define USBHS_UEP11_R_EN 0x08000000
+#define USBHS_UEP11_T_EN 0x00000800
+#define USBHS_UEP12_R_EN 0x10000000
+#define USBHS_UEP12_T_EN 0x00001000
+#define USBHS_UEP13_R_EN 0x20000000
+#define USBHS_UEP13_T_EN 0x00002000
+#define USBHS_UEP14_R_EN 0x40000000
+#define USBHS_UEP14_T_EN 0x00004000
+#define USBHS_UEP15_R_EN 0x80000000
+#define USBHS_UEP15_T_EN 0x00008000
+#define USBHS_UEP1_R_EN 0x00020000
+#define USBHS_UEP1_T_EN 0x00000002
+#define USBHS_UEP2_R_EN 0x00040000
+#define USBHS_UEP2_T_EN 0x00000004
+#define USBHS_UEP3_R_EN 0x00080000
+#define USBHS_UEP3_T_EN 0x00000008
+#define USBHS_UEP4_R_EN 0x00100000
+#define USBHS_UEP4_T_EN 0x00000010
+#define USBHS_UEP5_R_EN 0x00200000
+#define USBHS_UEP5_T_EN 0x00000020
+#define USBHS_UEP6_R_EN 0x00400000
+#define USBHS_UEP6_T_EN 0x00000040
+#define USBHS_UEP7_R_EN 0x00800000
+#define USBHS_UEP7_T_EN 0x00000080
+#define USBHS_UEP8_R_EN 0x01000000
+#define USBHS_UEP8_T_EN 0x00000100
+#define USBHS_UEP9_R_EN 0x02000000
+#define USBHS_UEP9_T_EN 0x00000200
+#define USBHS_UEP_R_RES_ACK 0x00
+#define USBHS_UEP_R_RES_MASK 0x03
+#define USBHS_UEP_R_RES_NAK 0x02
+#define USBHS_UEP_R_RES_STALL 0x03
+#define USBHS_UEP_R_TOG_AUTO 0x20
+#define USBHS_UEP_R_TOG_DATA1 0x08
+#define USBHS_UEP_R_TOG_MDATA 0x18
+#define USBHS_UEP_T_RES_ACK 0x00
+#define USBHS_UEP_T_RES_MASK 0x03
+#define USBHS_UEP_T_RES_NAK 0x02
+#define USBHS_UEP_T_RES_STALL 0x03
+#define USBHS_UEP_T_TOG_AUTO 0x20
+#define USBHS_UEP_T_TOG_DATA0 0x00
+#define USBHS_UEP_T_TOG_DATA1 0x08
+#define USBHS_UEP_T_TOG_MASK 0x18
+#define USBHS_UEP_T_TOG_MDATA 0x18
+#define USBHS_UIS_TOG_OK 0x40

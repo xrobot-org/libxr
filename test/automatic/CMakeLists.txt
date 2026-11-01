@@ -86,7 +86,6 @@ add_executable(
   core/rw/write_stream/test_write_stream.cpp
   driver/power/test_power.cpp
   driver/uart/test_uart.cpp
-  driver/usb/test_cdc_uart.cpp
   driver/timebase/test_timebase.cpp
   middleware/database/database/test_database.cpp
   middleware/database/raw/raw/test_linux_database_raw.cpp
@@ -207,3 +206,107 @@ add_test(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xrobot_freshness.cmake"
 )
 set_tests_properties(xrobot_freshness PROPERTIES TIMEOUT 60)
+# Real Endpoint/CDC/RW code; only the hardware segment is controlled by the test.
+add_executable(test_usb_endpoint driver/usb/core/test_endpoint.cpp)
+target_link_libraries(test_usb_endpoint PRIVATE xr)
+target_include_directories(test_usb_endpoint PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME usb_endpoint COMMAND test_usb_endpoint)
+set_tests_properties(usb_endpoint PROPERTIES TIMEOUT 30)
+
+# The shared FSDEV/CH32 DevFS register runtime against a fake controller.
+add_executable(test_usb_fsdev driver/usb/core/test_fsdev.cpp)
+target_link_libraries(test_usb_fsdev PRIVATE xr)
+target_include_directories(test_usb_fsdev PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME usb_fsdev COMMAND test_usb_fsdev)
+set_tests_properties(usb_fsdev PROPERTIES TIMEOUT 30)
+
+# DriverAsyncCondition driven by OnTick() calls from the test instead of a timebase.
+add_executable(
+  test_driver_async_condition driver/async_condition/test_driver_async_condition.cpp
+)
+target_link_libraries(test_driver_async_condition PRIVATE xr)
+target_include_directories(
+  test_driver_async_condition PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+add_test(NAME driver_async_condition COMMAND test_driver_async_condition)
+set_tests_properties(driver_async_condition PROPERTIES TIMEOUT 30)
+
+# HID device class on the slot model: input reports, OUT leases, LED and idle resend.
+add_executable(test_usb_hid driver/usb/device/hid/test_hid.cpp)
+target_link_libraries(test_usb_hid PRIVATE xr)
+target_include_directories(test_usb_hid PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME usb_hid COMMAND test_usb_hid)
+set_tests_properties(usb_hid PROPERTIES TIMEOUT 30)
+
+# DAP v1 device class: the command state machine is driven by ProcessPending().
+add_executable(test_usb_daplink_v1 driver/usb/device/dap/test_daplink_v1.cpp)
+target_link_libraries(test_usb_daplink_v1 PRIVATE xr)
+target_include_directories(test_usb_daplink_v1 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME usb_daplink_v1 COMMAND test_usb_daplink_v1)
+set_tests_properties(usb_daplink_v1 PROPERTIES TIMEOUT 30)
+# DAP v2 device class: copy-mode Read/Write, response depth and the deferred delay path.
+add_executable(test_usb_daplink_v2 driver/usb/device/dap/test_daplink_v2.cpp)
+target_link_libraries(test_usb_daplink_v2 PRIVATE xr)
+target_include_directories(test_usb_daplink_v2 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME usb_daplink_v2 COMMAND test_usb_daplink_v2)
+set_tests_properties(usb_daplink_v2 PROPERTIES TIMEOUT 30)
+
+# SwdGeneralGPIO: the SWDIO level during idle cycles.
+add_executable(test_swd_general_gpio driver/debug/test_swd_general_gpio.cpp)
+target_link_libraries(test_swd_general_gpio PRIVATE xr)
+target_include_directories(test_swd_general_gpio PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME swd_general_gpio COMMAND test_swd_general_gpio)
+set_tests_properties(swd_general_gpio PROPERTIES TIMEOUT 30)
+
+# DapSerialTransport: Topic framing, CRC errors, resynchronization, the max-packet
+# boundary, TX backpressure and lifecycle on a mock UART and a mock DAP; no ESP-IDF or
+# vendor code is involved.
+add_executable(test_dap_serial_transport driver/debug/test_dap_serial_transport.cpp)
+target_link_libraries(test_dap_serial_transport PRIVATE xr pthread)
+target_include_directories(test_dap_serial_transport PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME dap_serial_transport COMMAND test_dap_serial_transport)
+set_tests_properties(dap_serial_transport PROPERTIES TIMEOUT 60)
+
+# DFU device classes: core-owned status stage, DNLOAD data stage and receive capacity.
+add_executable(test_usb_dfu driver/usb/device/dfu/test_dfu.cpp)
+target_link_libraries(test_usb_dfu PRIVATE xr)
+target_include_directories(test_usb_dfu PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME usb_dfu COMMAND test_usb_dfu)
+set_tests_properties(usb_dfu PROPERTIES TIMEOUT 30)
+
+# CH32 USBHS IN endpoint against a fake register block: ACKed packets that INT_ST
+# reports as busy NAKs are found by their toggle.
+add_executable(
+  test_ch32_usbhs_in driver/usb/ch32/test_ch32_usbhs_in.cpp
+                     "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/ch/ch32_usb_endpoint_otghs.cpp"
+)
+target_link_libraries(test_ch32_usbhs_in PRIVATE xr)
+target_include_directories(
+  test_ch32_usbhs_in PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.."
+                             "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/ch32"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/ch"
+)
+target_compile_definitions(
+  test_ch32_usbhs_in PRIVATE LIBXR_CH32_CONFIG_FILE=fake_ch32v30x_usbhs.h
+)
+add_test(NAME ch32_usbhs_in COMMAND test_ch32_usbhs_in)
+set_tests_properties(ch32_usbhs_in PROPERTIES TIMEOUT 30)
+
+# cdc_test classes: lease return, DTR-triggered packet and the read re-arm.
+add_executable(test_usb_cdc_test driver/usb/device/cdc/test_cdc_test.cpp)
+target_link_libraries(test_usb_cdc_test PRIVATE xr)
+target_include_directories(test_usb_cdc_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME usb_cdc_test COMMAND test_usb_cdc_test)
+set_tests_properties(usb_cdc_test PROPERTIES TIMEOUT 30)
+# gs_usb device class: per-channel queues, echo share, backpressure and USER_ID.
+add_executable(test_usb_gsusb driver/usb/device/gsusb/test_gsusb.cpp)
+target_link_libraries(test_usb_gsusb PRIVATE xr)
+target_include_directories(test_usb_gsusb PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME usb_gsusb COMMAND test_usb_gsusb)
+set_tests_properties(usb_gsusb PROPERTIES TIMEOUT 30)
+# UAC1 microphone on the slot model: alt switching, SOF pacing, FAILED recovery.
+add_executable(test_uac_mic driver/usb/device/uac/test_uac_mic.cpp)
+target_link_libraries(test_uac_mic PRIVATE xr)
+target_include_directories(test_uac_mic PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME usb_uac_mic COMMAND test_uac_mic)
+set_tests_properties(usb_uac_mic PROPERTIES TIMEOUT 30)
