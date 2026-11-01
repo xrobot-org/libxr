@@ -9,6 +9,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <vector>
 
 #include "crc.hpp"
 #include "libxr.hpp"
@@ -261,6 +263,123 @@ void TestPacketValidationFailures()
   TEST_ASSERT(rx_value == 77.77);
 }
 
+void AppendPacket(std::vector<uint8_t>& stream, const void* packet, size_t size)
+{
+  const auto* bytes = static_cast<const uint8_t*>(packet);
+  stream.insert(stream.end(), bytes, bytes + size);
+}
+
+void TestPacketResync()
+{
+  // 检查假前缀、未注册 topic、超长声明与超过队列的输入都不会连带丢掉后面的真包。
+  // Check that false prefixes, unregistered topics, oversized declarations and input
+  // longer than the queue never take a following real packet with them.
+  constexpr size_t PACKET_SIZE = LibXR::Topic::PACK_BASE_SIZE + sizeof(double);
+
+  auto domain = LibXR::Topic::Domain("message_packet_resync_domain");
+  auto topic = LibXR::Topic::CreateTopic<double>("message_packet_resync_tp", &domain);
+  auto unknown =
+      LibXR::Topic::CreateTopic<double>("message_packet_resync_other", &domain);
+
+  static size_t rx_count = 0;
+  static double rx_value = 0.0;
+  auto msg_cb = LibXR::Topic::Callback::Create(
+      [](bool, void*, double& data)
+      {
+        rx_count++;
+        rx_value = data;
+      },
+      reinterpret_cast<void*>(0));
+  topic.RegisterCallback(msg_cb);
+
+  LibXR::Topic::Server server(512);
+  server.Register(topic);
+
+  LibXR::Topic::PackedData<double> real;
+  TEST_ASSERT(topic.PackData(1.5, real, LibXR::MicrosecondTimestamp(1000)) ==
+              LibXR::ErrorCode::OK);
+
+  // 未注册 topic 的包，payload 最后一个字节是前缀
+  // 0x5A：不能把它当成包头，吞掉后面的真包。 A packet of an unregistered topic whose last
+  // payload byte is the 0x5A prefix: it must not be taken as a header that swallows the
+  // following real packet.
+  const uint8_t prefix_tail[sizeof(double)] = {1, 2, 3, 4,
+                                               5, 6, 7, LibXR::Topic::PACKET_PREFIX};
+  double unknown_value = 0.0;
+  std::memcpy(&unknown_value, prefix_tail, sizeof(double));
+  LibXR::Topic::PackedData<double> other;
+  TEST_ASSERT(unknown.PackData(unknown_value, other, LibXR::MicrosecondTimestamp(1001)) ==
+              LibXR::ErrorCode::OK);
+  std::vector<uint8_t> stream;
+  AppendPacket(stream, &other, PACKET_SIZE);
+  AppendPacket(stream, &real, PACKET_SIZE);
+  rx_count = 0;
+  TEST_ASSERT(server.ParseData(LibXR::ConstRawData(stream.data(), stream.size())) == 1);
+  TEST_ASSERT(rx_count == 1 && rx_value == 1.5);
+
+  // 噪声里的 0x5A 紧挨着真包 / A 0x5A in noise right before a real packet.
+  stream = {LibXR::Topic::PACKET_PREFIX, 0x01, 0x02};
+  AppendPacket(stream, &real, PACKET_SIZE);
+  rx_count = 0;
+  TEST_ASSERT(server.ParseData(LibXR::ConstRawData(stream.data(), stream.size())) == 1);
+  TEST_ASSERT(rx_count == 1);
+
+  // 头部 CRC 正确但声明的长度超过队列：按假前缀处理，后面的真包照收。
+  // A valid header CRC declaring more than the queue holds: handled as a false prefix,
+  // and the following real packet is still received.
+  auto oversized = real;
+  oversized.raw.header_.SetDataLen(100000);
+  oversized.raw.header_.pack_header_crc8 = LibXR::CRC8::Calculate(
+      &oversized.raw, sizeof(LibXR::Topic::PackedDataHeader) - sizeof(uint8_t));
+  stream.clear();
+  AppendPacket(stream, &oversized, sizeof(LibXR::Topic::PackedDataHeader));
+  AppendPacket(stream, &real, PACKET_SIZE);
+  rx_count = 0;
+  TEST_ASSERT(server.ParseData(LibXR::ConstRawData(stream.data(), stream.size())) == 1);
+  TEST_ASSERT(rx_count == 1);
+
+  // payload CRC 坏的包后面紧跟真包 / A packet with a bad payload CRC right before a real
+  // packet.
+  auto bad_payload = real;
+  bad_payload.crc8_ ^= 0xA5;
+  stream.clear();
+  AppendPacket(stream, &bad_payload, PACKET_SIZE);
+  AppendPacket(stream, &real, PACKET_SIZE);
+  rx_count = 0;
+  TEST_ASSERT(server.ParseData(LibXR::ConstRawData(stream.data(), stream.size())) == 1);
+  TEST_ASSERT(rx_count == 1);
+
+  // 混合流逐字节喂入，结果相同 / The mixed stream fed one byte at a time gives the same
+  // result.
+  stream.clear();
+  AppendPacket(stream, &other, PACKET_SIZE);
+  stream.push_back(LibXR::Topic::PACKET_PREFIX);
+  AppendPacket(stream, &real, PACKET_SIZE);
+  AppendPacket(stream, &bad_payload, PACKET_SIZE);
+  AppendPacket(stream, &real, PACKET_SIZE);
+  rx_count = 0;
+  size_t delivered = 0;
+  for (uint8_t byte : stream)
+  {
+    delivered += server.ParseData(LibXR::ConstRawData(&byte, 1));
+  }
+  TEST_ASSERT(delivered == 2 && rx_count == 2);
+
+  // 一次喂入的字节比队列长：分段处理，一个包都不丢。
+  // One input longer than the queue is handled in pieces and loses no packet.
+  LibXR::Topic::Server small_server(PACKET_SIZE * 2);
+  small_server.Register(topic);
+  stream.clear();
+  for (int i = 0; i < 9; ++i)
+  {
+    AppendPacket(stream, &real, PACKET_SIZE);
+  }
+  rx_count = 0;
+  TEST_ASSERT(small_server.ParseData(LibXR::ConstRawData(stream.data(), stream.size())) ==
+              9);
+  TEST_ASSERT(rx_count == 9);
+}
+
 }  // namespace
 
 void test_message_packet()
@@ -268,4 +387,5 @@ void test_message_packet()
   TestPacketHeaderAndServerParse();
   TestPacketValidationFailures();
   TestPacketAlignmentAndLengthCompatibility();
+  TestPacketResync();
 }
