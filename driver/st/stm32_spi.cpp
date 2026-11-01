@@ -81,6 +81,18 @@ STM32SPI::STM32SPI(SPI_HandleTypeDef* spi_handle, RawData rx, RawData tx,
   map[id_] = this;
 }
 
+void STM32SPI::RecoverFailedDmaStart(HAL_StatusTypeDef st)
+{
+  // HAL_BUSY 表示别处的传输占着句柄，不能中止；
+  // HAL_ERROR 且状态非 READY 只可能来自本次启动。
+  // HAL_BUSY means another transfer owns the handle and must not be aborted;
+  // HAL_ERROR with a non-READY state can only come from this start.
+  if (st == HAL_ERROR && spi_handle_->State != HAL_SPI_STATE_READY)
+  {
+    (void)HAL_SPI_Abort(spi_handle_);
+  }
+}
+
 ErrorCode STM32SPI::ReadAndWrite(RawData read_data, ConstRawData write_data,
                                  OperationRW& op, bool in_isr)
 {
@@ -160,6 +172,7 @@ ErrorCode STM32SPI::ReadAndWrite(RawData read_data, ConstRawData write_data,
 
     if (st != HAL_OK)
     {
+      RecoverFailedDmaStart(st);
       if (op.type == OperationRW::OperationType::BLOCK)
       {
         block_wait_.Cancel();
@@ -373,6 +386,7 @@ ErrorCode STM32SPI::MemRead(uint16_t reg, RawData read_data, OperationRW& op, bo
 
     if (st != HAL_OK)
     {
+      RecoverFailedDmaStart(st);
       if (op.type == OperationRW::OperationType::BLOCK)
       {
         block_wait_.Cancel();
@@ -447,6 +461,7 @@ ErrorCode STM32SPI::MemWrite(uint16_t reg, ConstRawData write_data, OperationRW&
 
     if (st != HAL_OK)
     {
+      RecoverFailedDmaStart(st);
       if (op.type == OperationRW::OperationType::BLOCK)
       {
         block_wait_.Cancel();
@@ -692,6 +707,7 @@ ErrorCode STM32SPI::Transfer(size_t size, OperationRW& op, bool in_isr)
 
     if (st != HAL_OK)
     {
+      RecoverFailedDmaStart(st);
       if (op.type == OperationRW::OperationType::BLOCK)
       {
         block_wait_.Cancel();
