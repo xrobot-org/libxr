@@ -344,6 +344,7 @@ class ESP32UART : public UART
 
   /// 串行处理收发、错误和配置进展 / Serialize I/O, errors, and configuration.
   void ServiceEvents(uint32_t events, bool in_isr);
+  void InvokeService(uint32_t events, bool in_isr);
   /// 使用已验证参数配置硬件 / Apply validated settings to hardware.
   ErrorCode ApplyConfig(const UART::Configuration& config);
   /// 在当前模式的边界应用配置 / Apply configuration at the mode-specific boundary.
@@ -375,6 +376,10 @@ class ESP32UART : public UART
 
   /// 收发与配置的串行处理器 / Serialized I/O and configuration service.
   SerializedService service_{};
+  /// 任务持有执行权时 FIFO 模式要发送：释放执行权后再打开 TXFIFO_EMPTY /
+  /// FIFO mode has bytes to send while a task held the service: enable TXFIFO_EMPTY
+  /// once the service is released.
+  std::atomic<bool> tx_kick_{false};
   /// 待应用配置 / Pending configuration.
   UART::Configuration requested_config_{};
   /// 配置槽发布状态 / Configuration slot publication state.

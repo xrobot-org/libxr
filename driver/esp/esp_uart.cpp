@@ -97,9 +97,7 @@ namespace LibXR
 
 void ESP32UARTReadPort::OnReadQueueSpaceAvailable(bool in_isr)
 {
-  owner_.service_.Invoke(ESP32UART::EVENT_RX_WORK, in_isr,
-                         [this](uint32_t events, bool owner_isr)
-                         { owner_.ServiceEvents(events, owner_isr); });
+  owner_.InvokeService(ESP32UART::EVENT_RX_WORK, in_isr);
 }
 
 // 优先使用对齐的 DMA 可访问分配；若失败，再退回到更宽松的 DMA heap。
@@ -258,8 +256,7 @@ ErrorCode ESP32UART::SetConfig(UART::Configuration config, bool in_isr)
   requested_config_ = config;
   config_state_.store(static_cast<uint8_t>(ConfigState::PUBLISHED),
                       std::memory_order_release);
-  service_.Invoke(EVENT_CONFIG, in_isr, [this](uint32_t events, bool owner_isr)
-                  { ServiceEvents(events, owner_isr); });
+  InvokeService(EVENT_CONFIG, in_isr);
   return ErrorCode::OK;
 }
 
@@ -473,9 +470,28 @@ ErrorCode ESP32UART::SetLoopback(bool enable)
 void IRAM_ATTR ESP32UART::WriteFun(WritePort& port, bool in_isr)
 {
   auto* uart = LibXR::ContainerOf(&port, &ESP32UART::_write_port);
-  uart->service_.Invoke(ESP32UART::EVENT_WRITE, in_isr,
-                        [uart](uint32_t events, bool owner_isr)
-                        { uart->ServiceEvents(events, owner_isr); });
+  uart->InvokeService(ESP32UART::EVENT_WRITE, in_isr);
+}
+
+// 发布事件并在取得执行权时处理。FIFO 模式下只有中断写 TX FIFO；任务持有执行权时
+// FillTxFifo 只记下要发送（tx_kick_），这里在执行权释放之后才打开 TXFIFO_EMPTY。
+// 若在任务持有执行权时打开，中断立即触发却取不到执行权，只能把工作交回同一任务，
+// 任务再打开中断，一直这样循环，FIFO 没有人写（经典 ESP32 上实测串口不再应答）。
+// Publish events and run them if this call claims the service. In FIFO mode only the
+// interrupt writes the TX FIFO; while a task holds the service, FillTxFifo only notes
+// that bytes wait (tx_kick_), and TXFIFO_EMPTY is enabled here once the service is
+// released. Enabled while the task still held it, the interrupt fired at once, could
+// not claim the service and handed the work back to the same task, which enabled it
+// again: a loop in which nobody wrote the FIFO (the serial link of a classic ESP32
+// stopped answering).
+void IRAM_ATTR ESP32UART::InvokeService(uint32_t events, bool in_isr)
+{
+  service_.Invoke(events, in_isr, [this](uint32_t owner_events, bool owner_isr)
+                  { ServiceEvents(owner_events, owner_isr); });
+  if (!in_isr && tx_kick_.exchange(false, std::memory_order_acq_rel))
+  {
+    EnableUartInterrupt(UART_INTR_TXFIFO_EMPTY);
+  }
 }
 
 // 将 libxr 数据位语义转换为 ESP HAL 取值。

@@ -54,22 +54,24 @@ ErrorCode ESP32UART::InstallUartIsr()
 }
 
 // FIFO TX 路径会直接把字节从队列流式写入硬件 FIFO；与 DMA 模式不同，它不
-// 会暂存第二块 payload。只有 UART 中断写 FIFO：任务（写入方取得服务时）只打开
-// TXFIFO_EMPTY 中断。否则任务和中断可能在两个核上轮流写 FIFO，后写的一方读到的
-// txfifo_cnt 可能还没反映另一核刚写入的字节，多写的字节会让 FIFO 溢出。
+// 会暂存第二块 payload。只有 UART 中断写 FIFO：任务（写入方取得服务时）只记下要
+// 发送，释放执行权后由 InvokeService 打开 TXFIFO_EMPTY 中断。否则任务和中断可能在
+// 两个核上轮流写 FIFO，后写的一方读到的 txfifo_cnt 可能还没反映另一核刚写入的
+// 字节，多写的字节会让 FIFO 溢出。
 // FIFO TX path streams bytes directly from the queue into the hardware FIFO.
 // Unlike DMA mode, it does not stage a second payload block. Only the UART interrupt
-// writes the FIFO: a task (the writer that won the service) only enables
-// TXFIFO_EMPTY. Otherwise the task and the interrupt could take turns on two cores,
-// and the later one could read a txfifo_cnt that does not yet count the bytes the
-// other core just wrote, overfilling the FIFO.
+// writes the FIFO: a task (the writer that won the service) only notes that bytes
+// wait, and InvokeService enables TXFIFO_EMPTY once the service is released.
+// Otherwise the task and the interrupt could take turns on two cores, and the later
+// one could read a txfifo_cnt that does not yet count the bytes the other core just
+// wrote, overfilling the FIFO.
 void IRAM_ATTR ESP32UART::FillTxFifo(bool in_isr)
 {
   if (!in_isr)
   {
     if (_write_port.Size() != 0U)
     {
-      EnableUartInterrupt(UART_INTR_TXFIFO_EMPTY);
+      tx_kick_.store(true, std::memory_order_release);
     }
     return;
   }
