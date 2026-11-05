@@ -27,7 +27,8 @@ CH32Watchdog::CH32Watchdog(uint32_t timeout_ms, uint32_t feed_ms, uint32_t lsi_h
 
 ErrorCode CH32Watchdog::SetConfig(const Configuration& config)
 {
-  if (config.feed_ms == 0 || config.timeout_ms == 0 || config.feed_ms >= config.timeout_ms)
+  if (config.feed_ms == 0 || config.timeout_ms == 0 ||
+      config.feed_ms >= config.timeout_ms)
   {
     return ErrorCode::ARG_ERR;
   }
