@@ -2,6 +2,7 @@
 // ch32_usb_otgfs.cpp  (OTG FS)
 #include "ch32_usb_dev.hpp"
 #include "ch32_usb_endpoint.hpp"
+#include "ch32_usb_guard.hpp"
 #include "ch32_usb_rcc.hpp"
 #include "ep.hpp"
 
@@ -51,6 +52,8 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
     return;
   }
 
+  USB::EndpointPool::InterruptScope interrupt_scope(*usb);
+
   auto& map = LibXR::CH32EndpointOtgFs::map_otg_fs_;
 
   constexpr uint8_t OUT_IDX = static_cast<uint8_t>(LibXR::USB::Endpoint::Direction::OUT);
@@ -88,11 +91,9 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
     {
       USBFSD->DEV_ADDR = 0;
 
-      usb->Deinit(true);
-      usb->Init(true);
+      usb->OnBusReset(true);
 
-      out0->SetState(LibXR::USB::Endpoint::State::IDLE);
-      in0->SetState(LibXR::USB::Endpoint::State::IDLE);
+      // 复位后首个 IN/OUT 均从 DATA1 开始（HS 已上板方案）。
       out0->tog_ = true;
       in0->tog_ = true;
 
@@ -106,17 +107,10 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
     // Suspend follows the same EP0 recovery path; resume is observed later by the host.
     if (PENDING & USBFS_UIF_SUSPEND)
     {
-      usb->Deinit(true);
-      usb->Init(true);
-
-      out0->SetState(LibXR::USB::Endpoint::State::IDLE);
-      in0->SetState(LibXR::USB::Endpoint::State::IDLE);
-      out0->tog_ = true;
-      in0->tog_ = true;
-
-      USBFSD->UEP0_TX_CTRL = USBFS_UEP_T_RES_NAK;
-      USBFSD->UEP0_RX_CTRL = USBFS_UEP_R_RES_NAK;
-
+      if (USBFSD->MIS_ST & USBFS_UMS_SUSPEND)
+        usb->OnSuspend(true);
+      else
+        usb->OnResume(true);
       clear_mask |= USBFS_UIF_SUSPEND;
     }
 
@@ -132,26 +126,22 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
         case USBFS_UIS_TOKEN_SETUP:
         {
           // 新的 setup 会中断前一笔 EP0 事务，因此这里在把 setup 包交给 DeviceCore
-          // 之前，先把 EP0 的双向状态恢复到 IDLE/TOG0。
-          // A fresh setup cancels the previous EP0 transaction, so both directions are
-          // reset to IDLE/TOG0 before handing the setup packet to DeviceCore.
+          // 之前，先把 EP0 的双向状态恢复到 NAK/DATA1（后续数据阶段与状态阶段的
+          // 首包都是 DATA1）。
           USBFSD->UEP0_TX_CTRL = USBFS_UEP_T_RES_NAK;
           USBFSD->UEP0_RX_CTRL = USBFS_UEP_R_RES_NAK;
 
-          out0->SetState(LibXR::USB::Endpoint::State::IDLE);
-          in0->SetState(LibXR::USB::Endpoint::State::IDLE);
           out0->tog_ = true;
           in0->tog_ = true;
 
           usb->OnSetupPacket(
-              true, reinterpret_cast<const SetupPacket*>(out0->GetBuffer().addr_));
+              true, reinterpret_cast<const SetupPacket*>(out0->SlotMemory().addr_));
           break;
         }
 
         case USBFS_UIS_TOKEN_OUT:
         {
           // OTGFS 硬件已经给出了本次 token 的完成 RX 长度。
-          // OTGFS hardware already reports the completed RX length for this token.
           const uint16_t LEN = USBFSD->RX_LEN;
           if (ep[OUT_IDX])
           {
@@ -163,7 +153,6 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
         case USBFS_UIS_TOKEN_IN:
         {
           // IN token 完成不需要额外 payload 长度，事件本身就足够了。
-          // IN token completion has no payload length; completion itself is enough.
           if (ep[IN_IDX])
           {
             ep[IN_IDX]->TransferComplete(0);
@@ -171,6 +160,11 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
           break;
         }
 
+#if defined(USBFS_UIS_TOKEN_SOF) && defined(USBFS_UIE_DEV_SOF)
+        case USBFS_UIS_TOKEN_SOF:
+          usb->OnSof(true, 0xffffU);  // No readable device frame counter in this IP.
+          break;
+#endif
         default:
           break;
       }
@@ -184,66 +178,99 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
 }
 
 CH32USBOtgFS::CH32USBOtgFS(
-    const std::initializer_list<EPConfig> EP_CFGS,
+    const std::initializer_list<RawData> RX_EP_CFGS,
+    const std::initializer_list<RawData> TX_EP_CFGS,
     USB::DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid,
     uint16_t bcd,
     const std::initializer_list<const USB::DescriptorStrings::LanguagePack*> LANG_LIST,
     const std::initializer_list<const std::initializer_list<USB::ConfigDescriptorItem*>>
         CONFIGS,
     ConstRawData uid)
-    : USB::EndpointPool(EP_CFGS.size() * 2),
-      USB::DeviceCore(*this, USB::USBSpec::USB_2_1, USB::Speed::FULL, packet_size, vid,
-                      pid, bcd, LANG_LIST, CONFIGS, uid)
+    : USB::EndpointPool((RX_EP_CFGS.size() > TX_EP_CFGS.size() ? RX_EP_CFGS.size()
+                                                               : TX_EP_CFGS.size()) *
+                        2),
+      USB::DeviceCore<USB::FullSpeedCapabilities>(*this, USB::USBSpec::USB_2_1,
+                                                  USB::Speed::FULL, packet_size, vid, pid,
+                                                  bcd, LANG_LIST, CONFIGS, uid)
 {
-  ASSERT(EP_CFGS.size() > 0 && EP_CFGS.size() <= CH32EndpointOtgFs::EP_OTG_FS_MAX_SIZE);
+  ConfigureCH32USBGuard(*this);
 
-  auto cfgs_itr = EP_CFGS.begin();
+  const size_t ep_count =
+      RX_EP_CFGS.size() > TX_EP_CFGS.size() ? RX_EP_CFGS.size() : TX_EP_CFGS.size();
+  ASSERT(ep_count > 0 && ep_count <= CH32EndpointOtgFs::EP_OTG_FS_MAX_SIZE);
 
-  auto ep0_out =
-      new CH32EndpointOtgFs(USB::Endpoint::EPNumber::EP0, USB::Endpoint::Direction::OUT,
-                            cfgs_itr->buffer, false);
-  auto ep0_in =
-      new CH32EndpointOtgFs(USB::Endpoint::EPNumber::EP0, USB::Endpoint::Direction::IN,
-                            cfgs_itr->buffer, false);
+  RawData rx[CH32EndpointOtgFs::EP_OTG_FS_MAX_SIZE] = {};
+  RawData tx[CH32EndpointOtgFs::EP_OTG_FS_MAX_SIZE] = {};
+  size_t idx = 0;
+  for (const auto& cfg : RX_EP_CFGS)
+  {
+    ASSERT(idx < CH32EndpointOtgFs::EP_OTG_FS_MAX_SIZE);
+    rx[idx++] = cfg;
+  }
+  idx = 0;
+  for (const auto& cfg : TX_EP_CFGS)
+  {
+    ASSERT(idx < CH32EndpointOtgFs::EP_OTG_FS_MAX_SIZE);
+    tx[idx++] = cfg;
+  }
+
+  // EP0：收发共用同一块（≥64 B，手册 p.355）。
+  REQUIRE(rx[0].addr_ != nullptr && rx[0].addr_ == tx[0].addr_ && rx[0].size_ >= 64U);
+
+  auto* ep0_out = new CH32EndpointOtgFs(USB::Endpoint::EPNumber::EP0,
+                                        USB::Endpoint::Direction::OUT, rx[0], false);
+  auto* ep0_in = new CH32EndpointOtgFs(USB::Endpoint::EPNumber::EP0,
+                                       USB::Endpoint::Direction::IN, rx[0], false);
 
   USB::EndpointPool::SetEndpoint0(ep0_in, ep0_out);
 
   USB::Endpoint::EPNumber ep_index = USB::Endpoint::EPNumber::EP1;
-
-  for (++cfgs_itr, ep_index = USB::Endpoint::EPNumber::EP1; cfgs_itr != EP_CFGS.end();
-       ++cfgs_itr, ep_index = USB::Endpoint::NextEPNumber(ep_index))
+  for (size_t i = 1; i < ep_count; ++i, ep_index = USB::Endpoint::NextEPNumber(ep_index))
   {
-    if (cfgs_itr->is_in == -1)
+    if (rx[i].addr_ != nullptr && tx[i].addr_ != nullptr)
     {
-      auto ep_out = new CH32EndpointOtgFs(ep_index, USB::Endpoint::Direction::OUT,
-                                          cfgs_itr->buffer, false);
-      USB::EndpointPool::Put(ep_out);
-
-      auto ep_in = new CH32EndpointOtgFs(ep_index, USB::Endpoint::Direction::IN,
-                                         cfgs_itr->buffer, false);
-      USB::EndpointPool::Put(ep_in);
+      // 双向共享（单 bank）：IN 必须落在 OUT +64 且两块各 ≥64 B（手册表 23-4
+      // p.359）；两个端点对象都传块基址，由端点构造按方向二分。
+      REQUIRE(tx[i].addr_ == reinterpret_cast<uint8_t*>(rx[i].addr_) + 64U);
+      REQUIRE(rx[i].size_ >= 64U && tx[i].size_ >= 64U);
+      USB::EndpointPool::Put(
+          new CH32EndpointOtgFs(ep_index, USB::Endpoint::Direction::OUT, rx[i], false));
+      USB::EndpointPool::Put(
+          new CH32EndpointOtgFs(ep_index, USB::Endpoint::Direction::IN, rx[i], false));
     }
-    else
+    else if (rx[i].addr_ != nullptr)
     {
-      auto ep = new CH32EndpointOtgFs(
-          ep_index,
-          cfgs_itr->is_in ? USB::Endpoint::Direction::IN : USB::Endpoint::Direction::OUT,
-          cfgs_itr->buffer, true);
-      USB::EndpointPool::Put(ep);
+      // 单向 OUT：两槽各占块的一半（≥2×MPS，默认 MPS=64 → ≥128 B）。
+      REQUIRE(rx[i].size_ >= 128U);
+      USB::EndpointPool::Put(
+          new CH32EndpointOtgFs(ep_index, USB::Endpoint::Direction::OUT, rx[i], true));
+    }
+    else if (tx[i].addr_ != nullptr)
+    {
+      REQUIRE(tx[i].size_ >= 128U);
+      USB::EndpointPool::Put(
+          new CH32EndpointOtgFs(ep_index, USB::Endpoint::Direction::IN, tx[i], true));
     }
   }
 }
 
-LibXR::ErrorCode CH32USBOtgFS::SetAddress(uint8_t address,
-                                          USB::DeviceCore::Context context)
+LibXR::ErrorCode CH32USBOtgFS::SetAddress(uint8_t address, USB::ControlContext context)
 {
-  if (context == USB::DeviceCore::Context::STATUS_IN_COMPLETE)
+  if (context == USB::ControlContext::STATUS_IN_COMPLETE)
   {
     USBFSD->DEV_ADDR = (USBFSD->DEV_ADDR & USBFS_UDA_GP_BIT) | address;
     USBFSD->UEP0_TX_CTRL = USBFS_UEP_T_RES_NAK;
     USBFSD->UEP0_RX_CTRL = USBFS_UEP_R_RES_ACK;
   }
   return LibXR::ErrorCode::OK;
+}
+
+void CH32USBOtgFS::OnControlReady()
+{
+  USBFSD->UEP0_RX_CTRL = USBFS_UEP_R_RES_ACK;
+#if defined(USBFS_UIE_DEV_SOF)
+  if (WantsBusTime()) USBFSD->INT_EN |= USBFS_UIE_DEV_SOF;
+#endif
 }
 
 void CH32USBOtgFS::Start(bool)

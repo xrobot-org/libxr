@@ -249,93 +249,6 @@ static bool is_composite_device(
   return false;
 }
 
-// 统计所有 configuration 中 BOS capability 数量的最大值，
-// 这样 BosManager 的暂存空间只需分配一次。
-// Count the worst-case BOS capability count among all configurations so the
-// BosManager scratch storage can be allocated once.
-static size_t calc_bos_capability_num_max(
-    const std::initializer_list<const std::initializer_list<ConfigDescriptorItem*>>&
-        configs)
-{
-  size_t max_num = 0;
-  for (const auto& group : configs)
-  {
-    size_t num = 0;
-    for (auto* item : group)
-    {
-      if (item == nullptr)
-      {
-        continue;
-      }
-      num += item->GetBosCapabilityCount();
-    }
-    if (num > max_num)
-    {
-      max_num = num;
-    }
-  }
-  return max_num;
-}
-
-// 统计所有 configuration 中 BOS 描述符尺寸的最大值；
-// 若没有类提供 USB 2.0 Extension capability，则为自动补上的那项预留空间。
-// Count the worst-case BOS descriptor size among all configurations.
-// If no class provides a USB 2.0 Extension capability, reserve space for the
-// auto-added one.
-static size_t calc_bos_descriptor_size_max(
-    const std::initializer_list<const std::initializer_list<ConfigDescriptorItem*>>&
-        configs)
-{
-  static constexpr size_t usb2_ext_size = 7;
-
-  size_t max_total = BOS_HEADER_SIZE;
-  for (const auto& group : configs)
-  {
-    size_t cap_bytes = 0;
-    bool has_usb2_ext = false;
-
-    for (auto* item : group)
-    {
-      if (item == nullptr)
-      {
-        continue;
-      }
-
-      const size_t capability_num = item->GetBosCapabilityCount();
-      for (size_t i = 0; i < capability_num; ++i)
-      {
-        BosCapability* cap = item->GetBosCapability(i);
-        if (cap == nullptr)
-        {
-          continue;
-        }
-
-        auto blk = cap->GetCapabilityDescriptor();
-        ASSERT(blk.addr_ != nullptr);
-        ASSERT(blk.size_ >= 3);
-
-        cap_bytes += blk.size_;
-
-        const uint8_t* p = reinterpret_cast<const uint8_t*>(blk.addr_);
-        if (p[1] == DESCRIPTOR_TYPE_DEVICE_CAPABILITY &&
-            p[2] == DEV_CAPABILITY_TYPE_USB20EXT)
-        {
-          has_usb2_ext = true;
-        }
-      }
-    }
-
-    const size_t total = BOS_HEADER_SIZE + cap_bytes + (has_usb2_ext ? 0 : usb2_ext_size);
-    if (total > max_total)
-    {
-      max_total = total;
-    }
-  }
-
-  ASSERT(max_total <= 0xFFFF);
-  return max_total;
-}
-
 }  // namespace
 
 using namespace LibXR::USB;
@@ -355,7 +268,6 @@ DeviceComposition::DeviceComposition(
       items_(new ConfigItems[config_num_]),
       classes_(new DeviceClass*[calc_total_item_num(configs)]),
       strings_(lang_list, reinterpret_cast<const uint8_t*>(uid.addr_), uid.size_),
-      bos_(calc_bos_descriptor_size_max(configs), calc_bos_capability_num_max(configs)),
       config_desc_(ConfigDescriptor::CalcMaxConfigSize(configs), bmAttributes, bMaxPower)
 {
   ASSERT(config_num_ > 0);
@@ -380,6 +292,7 @@ DeviceComposition::DeviceComposition(
       if (device_class != nullptr &&
           !contains_class(classes_, class_count_, device_class))
       {
+        device_class->service_pool_ = &endpoint_pool_;
         classes_[class_count_++] = device_class;
       }
     }
@@ -400,6 +313,54 @@ DeviceComposition::DeviceComposition(
   }
 
   RegisterInterfaceStrings();
+  BuildWinUsbDescriptorSet();
+}
+
+void DeviceComposition::BuildWinUsbDescriptorSet()
+{
+  size_t count = 0;
+  for (size_t config = 0; config < config_num_; ++config)
+  {
+    for (size_t i = 0; i < items_[config].item_num; ++i)
+    {
+      auto* device_class = static_cast<DeviceClass*>(items_[config].items[i]);
+      if (device_class != nullptr && device_class->GetWinUsbInterfaceGuid() != nullptr)
+      {
+        ++count;
+      }
+    }
+  }
+  if (count == 0)
+  {
+    return;
+  }
+
+  // 接口号按配置内的累加得到，和 BindEndpoints 分配的一致。
+  // Interface numbers accumulate within a configuration, as BindEndpoints assigns them.
+  auto* functions = new WinUsbMsOs20::WinUsbFunctionInfo[count];
+  size_t n = 0;
+  for (size_t config = 0; config < config_num_; ++config)
+  {
+    size_t start_itf = 0;
+    for (size_t i = 0; i < items_[config].item_num; ++i)
+    {
+      auto* item = items_[config].items[i];
+      if (item == nullptr)
+      {
+        continue;
+      }
+      auto* device_class = static_cast<DeviceClass*>(item);
+      if (const char* guid = device_class->GetWinUsbInterfaceGuid())
+      {
+        functions[n++] = {static_cast<uint8_t>(config), static_cast<uint8_t>(start_itf),
+                          guid};
+      }
+      start_itf += item->GetInterfaceCount();
+    }
+  }
+  winusb_set_.Build(functions, count, !composite_ && count == 1);
+  delete[] functions;
+  winusb_cap_ = new WinUsbMsOs20::MsOs20BosCapability(winusb_set_.Data());
 }
 
 const DeviceComposition::ConfigItems& DeviceComposition::CurrentConfigItems() const
@@ -411,44 +372,47 @@ const DeviceComposition::ConfigItems& DeviceComposition::CurrentConfigItems() co
 
 void DeviceComposition::Init(bool in_isr)
 {
-  // Init 先绑定端点，再按当前激活配置重建 BOS 视图。
-  // Init binds endpoints first, then rebuilds the BOS view for the active configuration.
+  endpoint_pool_.SetDataEnabled(false, in_isr);
   configured_ = false;
-  BindEndpoints(in_isr);
-  RebuildBosCache();
+  current_cfg_ = 0;
 }
 
 void DeviceComposition::Deinit(bool in_isr)
 {
+  endpoint_pool_.SetDataEnabled(false, in_isr);
   UnbindEndpoints(in_isr);
   configured_ = false;
   current_cfg_ = 0;
 }
 
-LibXR::ErrorCode DeviceComposition::SwitchConfig(size_t index, bool in_isr)
+LibXR::ErrorCode DeviceComposition::BeginSwitchConfig(size_t index, bool in_isr)
 {
-  if (index > config_num_)
-  {
-    return LibXR::ErrorCode::NOT_FOUND;
-  }
+  if (index > config_num_) return ErrorCode::NOT_FOUND;
+  if (index != 0 &&
+      (!descriptors_prepared_ ||
+       GetConfigDescriptor(index - 1U, endpoint_pool_.GetSpeed()).size_ == 0U))
+    return ErrorCode::NOT_SUPPORT;
+  endpoint_pool_.SetDataEnabled(false, in_isr);
+  UnbindEndpoints(in_isr);
+  configured_ = false;
+  current_cfg_ = 0;
+  return ErrorCode::OK;
+}
 
-  if (index == 0)
+LibXR::ErrorCode DeviceComposition::FinishSwitchConfig(size_t index, bool in_isr)
+{
+  if (index == 0) return ErrorCode::OK;
+  current_cfg_ = static_cast<uint8_t>(index - 1U);
+  BindEndpoints(in_isr);
+  if (!endpoint_pool_.ConfigurationValid())
   {
     UnbindEndpoints(in_isr);
-    configured_ = false;
     current_cfg_ = 0;
-    RebuildBosCache();
-    return LibXR::ErrorCode::OK;
+    return ErrorCode::INIT_ERR;
   }
-
-  // USB configuration value 从 1 开始，而 current_cfg_ 内部保存的是从 0 开始的槽位。
-  // USB configuration values are 1-based, while current_cfg_ stores a 0-based slot index.
-  UnbindEndpoints(in_isr);
-  current_cfg_ = static_cast<uint8_t>(index - 1);
   configured_ = true;
-  BindEndpoints(in_isr);
-  RebuildBosCache();
-  return LibXR::ErrorCode::OK;
+  endpoint_pool_.SetDataEnabled(true, in_isr);
+  return ErrorCode::OK;
 }
 
 LibXR::ErrorCode DeviceComposition::BuildConfigDescriptor()
@@ -465,15 +429,6 @@ LibXR::ErrorCode DeviceComposition::BuildConfigDescriptor()
 }
 
 RawData DeviceComposition::GetConfigDescriptor() const { return config_desc_.GetData(); }
-
-ConstRawData DeviceComposition::GetBosDescriptor() { return bos_.GetBosDescriptor(); }
-
-LibXR::ErrorCode DeviceComposition::ProcessBosVendorRequest(bool in_isr,
-                                                            const SetupPacket* setup,
-                                                            BosVendorResult& result)
-{
-  return bos_.ProcessVendorRequest(in_isr, setup, result);
-}
 
 LibXR::ErrorCode DeviceComposition::GetStringDescriptor(uint8_t string_index,
                                                         uint16_t lang, ConstRawData& data)
@@ -645,34 +600,6 @@ void DeviceComposition::UnbindEndpoints(bool in_isr)
   }
 }
 
-void DeviceComposition::RebuildBosCache()
-{
-  // BOS capability 只从当前激活的 configuration 收集。
-  // BOS capabilities are collected from the active configuration only.
-  bos_.ClearCapabilities();
-  const auto& config = CurrentConfigItems();
-  for (size_t i = 0; i < config.item_num; ++i)
-  {
-    auto* item = config.items[i];
-    if (item == nullptr)
-    {
-      continue;
-    }
-
-    const size_t capability_num = item->GetBosCapabilityCount();
-    for (size_t j = 0; j < capability_num; ++j)
-    {
-      auto* cap = item->GetBosCapability(j);
-      if (cap != nullptr)
-      {
-        bos_.AddCapability(cap);
-      }
-    }
-  }
-
-  (void)bos_.GetBosDescriptor();
-}
-
 LibXR::ErrorCode DeviceComposition::GenerateInterfaceString(uint8_t string_index,
                                                             ConstRawData& data)
 {
@@ -756,4 +683,96 @@ void DeviceComposition::RegisterInterfaceStrings()
   }
 
   DEV_ASSERT(registered_count == interface_string_count_);
+}
+
+LibXR::ErrorCode DeviceComposition::PrepareDescriptors(uint32_t speeds, bool in_isr)
+{
+  if (descriptors_prepared_) return ErrorCode::OK;
+  if (descriptors_ == nullptr) descriptors_ = new DescriptorCache[config_num_ * 3U];
+  const Speed current_speed = endpoint_pool_.GetSpeed();
+  endpoint_pool_.SetPlanning(true);
+  ErrorCode result = ErrorCode::OK;
+  // Prepare the largest supported speed first. Memory grows only in this
+  // initialization-time phase, never during a host-selected configuration.
+  for (int speed = static_cast<int>(Speed::HIGH); speed >= 0; --speed)
+  {
+    if ((speeds & (1U << speed)) == 0U) continue;
+    endpoint_pool_.SetSpeed(static_cast<Speed>(speed));
+    for (size_t cfg = 0; cfg < config_num_; ++cfg)
+    {
+      current_cfg_ = static_cast<uint8_t>(cfg);
+      BindEndpoints(in_isr);
+      result = endpoint_pool_.ConfigurationValid() ? BuildConfigDescriptor()
+                                                   : ErrorCode::INIT_ERR;
+      if (result == ErrorCode::OK)
+      {
+        const RawData data = config_desc_.GetData();
+        auto& cache = descriptors_[cfg * 3U + static_cast<size_t>(speed)];
+        cache.data = {new uint8_t[data.size_], data.size_};
+        Memory::FastCopy(cache.data.addr_, data.addr_, data.size_);
+      }
+      UnbindEndpoints(in_isr);
+      if (result != ErrorCode::OK) break;
+    }
+    if (result != ErrorCode::OK) break;
+  }
+  current_cfg_ = 0;
+  configured_ = false;
+  endpoint_pool_.SetSpeed(current_speed);
+  endpoint_pool_.SetPlanning(false);
+  descriptors_prepared_ = result == ErrorCode::OK;
+  return result;
+}
+
+LibXR::ConstRawData DeviceComposition::GetConfigDescriptor(size_t index,
+                                                           Speed speed) const
+{
+  const auto raw_speed = static_cast<size_t>(speed);
+  if (descriptors_ == nullptr || index >= config_num_ || raw_speed >= 3U)
+    return {nullptr, 0};
+  const auto& cache = descriptors_[index * 3U + raw_speed];
+  return {cache.data.addr_, cache.data.size_};
+}
+
+size_t DeviceComposition::ControlReceiveCapacity() const
+{
+  size_t capacity = 64;
+  for (size_t i = 0; i < class_count_; ++i)
+    capacity = LibXR::max(capacity, classes_[i]->GetControlReceiveCapacity());
+  return capacity;
+}
+
+bool DeviceComposition::ContainsActiveClass(const DeviceClass* item) const
+{
+  if (!configured_) return false;
+  const auto& config = CurrentConfigItems();
+  for (size_t i = 0; i < config.item_num; ++i)
+    if (config.items[i] == item) return true;
+  return false;
+}
+
+void DeviceComposition::Notify(bool in_isr, DeviceEvent event, uint8_t endpoint)
+{
+  for (size_t i = 0; i < class_count_; ++i)
+  {
+    if (event == DeviceEvent::RESET || ContainsActiveClass(classes_[i]))
+    {
+      if (endpoint == 0U || classes_[i]->OwnsEndpoint(endpoint))
+        classes_[i]->OnDeviceEvent(in_isr, event, endpoint);
+    }
+  }
+}
+
+bool DeviceComposition::WantsBusTime() const
+{
+  for (size_t i = 0; i < class_count_; ++i)
+    if (classes_[i]->WantsBusTime()) return true;
+  return false;
+}
+
+void DeviceComposition::NotifyBusTime(bool in_isr, const BusTime& time)
+{
+  for (size_t i = 0; i < class_count_; ++i)
+    if (ContainsActiveClass(classes_[i]) && classes_[i]->WantsBusTime())
+      classes_[i]->OnBusTime(in_isr, time);
 }

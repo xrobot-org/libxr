@@ -213,71 +213,11 @@ uint16_t PacketCount(size_t size, uint16_t max_packet_size)
   return static_cast<uint16_t>((size + max_packet_size - 1U) / max_packet_size);
 }
 
-void FlushTxFifo(usb_dwc_dev_t* dev, uint8_t fifo_num)
+bool FlushTxFifo(usb_dwc_dev_t* dev, uint8_t fifo_num)
 {
   dev->grstctl_reg.txfnum = fifo_num;
   dev->grstctl_reg.txfflsh = 1;
-  while (dev->grstctl_reg.txfflsh)
-  {
-  }
-}
-
-void DisableInEndpointAndWait(usb_dwc_dev_t* dev)
-{
-  auto& ctl = dev->diepctl0_reg;
-  auto& intr = dev->diepint0_reg;
-  if (!ctl.epena)
-  {
-    return;
-  }
-
-  ctl.snak = 1;
-  while (!intr.inepnakeff)
-  {
-  }
-
-  usb_dwc_diepint0_reg_t clear_nak = {};
-  clear_nak.inepnakeff = 1;
-  intr.val = clear_nak.val;
-
-  ctl.epdis = 1;
-  while (!intr.epdisbld)
-  {
-  }
-
-  usb_dwc_diepint0_reg_t clear_dis = {};
-  clear_dis.epdisbld = 1;
-  intr.val = clear_dis.val;
-  FlushTxFifo(dev, 0U);
-}
-
-void DisableInEndpointAndWait(usb_dwc_dev_t* dev, uint8_t ep_num)
-{
-  auto& ctl = dev->in_eps[ep_num - 1U].diepctl_reg;
-  auto& intr = dev->in_eps[ep_num - 1U].diepint_reg;
-  if (!ctl.epena)
-  {
-    return;
-  }
-
-  ctl.snak = 1;
-  while (!intr.inepnakeff)
-  {
-  }
-
-  usb_dwc_diepint_reg_t clear_nak = {};
-  clear_nak.inepnakeff = 1;
-  intr.val = clear_nak.val;
-
-  ctl.epdis = 1;
-  while (!intr.epdisbld)
-  {
-  }
-
-  usb_dwc_diepint_reg_t clear_dis = {};
-  clear_dis.epdisbld = 1;
-  intr.val = clear_dis.val;
-  FlushTxFifo(dev, ep_num);
+  return SpinUntil([dev]() { return !dev->grstctl_reg.txfflsh; });
 }
 
 }  // namespace LibXR::ESPUSBDetail

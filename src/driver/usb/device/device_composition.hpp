@@ -10,6 +10,7 @@
 #include "usb/core/desc_cfg.hpp"
 #include "usb/core/desc_str.hpp"
 #include "usb/core/ep_pool.hpp"
+#include "winusb_msos20.hpp"
 
 namespace LibXR::USB
 {
@@ -65,31 +66,41 @@ class DeviceComposition
   /**
    * @brief 切换到指定 configuration value
    *        Switch to the given configuration value.
+   *
+   * 第一步校验并解绑当前配置；端点停止确认之后第二步绑定新配置。
+   * The first step validates and unbinds the current configuration; after the endpoint
+   * stops are confirmed, the second step binds the new one.
    */
-  ErrorCode SwitchConfig(size_t index, bool in_isr);
+  ErrorCode BeginSwitchConfig(size_t index, bool in_isr);
+  ErrorCode FinishSwitchConfig(size_t index, bool in_isr);
 
   /**
    * @brief 生成当前 configuration 描述符缓存
    *        Build the current configuration descriptor cache.
    */
   ErrorCode BuildConfigDescriptor();
+  ErrorCode PrepareDescriptors(uint32_t speeds, bool in_isr);
+  ConstRawData GetConfigDescriptor(size_t index, Speed speed) const;
+  size_t ControlReceiveCapacity() const;
+  ConfigDescriptorItem* ConfigItem(size_t config, size_t item) const
+  {
+    return items_[config].items[item];
+  }
+  size_t ConfigItemCount(size_t config) const { return items_[config].item_num; }
+  size_t ClassCount() const { return class_count_; }
+  /// 对应的 BOS 平台能力；没有类需要 WinUSB 时为 nullptr / The matching BOS platform
+  /// capability; nullptr when no class wants WinUSB
+  BosCapability* WinUsbBosCapability() const { return winusb_cap_; }
+  DeviceClass* ClassAt(size_t index) const { return classes_[index]; }
+  void Notify(bool in_isr, DeviceEvent event, uint8_t endpoint = 0);
+  void NotifyBusTime(bool in_isr, const BusTime& time);
+  bool WantsBusTime() const;
 
   /**
    * @brief 获取当前 configuration 描述符缓存
    *        Get the current configuration descriptor cache.
    */
   [[nodiscard]] RawData GetConfigDescriptor() const;
-
-  /**
-   * @brief 获取当前 BOS 描述符缓存 / Get the current BOS descriptor cache
-   */
-  [[nodiscard]] ConstRawData GetBosDescriptor();
-
-  /**
-   * @brief 分发 BOS vendor request / Dispatch BOS vendor requests
-   */
-  ErrorCode ProcessBosVendorRequest(bool in_isr, const SetupPacket* setup,
-                                    BosVendorResult& result);
 
   /**
    * @brief 获取字符串描述符（含 interface string）
@@ -152,11 +163,7 @@ class DeviceComposition
    */
   void UnbindEndpoints(bool in_isr);
 
-  /**
-   * @brief 按当前配置重建 BOS capability 缓存
-   *        Rebuild the BOS capability cache from the active configuration.
-   */
-  void RebuildBosCache();
+  bool ContainsActiveClass(const DeviceClass* item) const;
 
   /**
    * @brief 为所有 class 分配并登记 interface string 索引
@@ -179,7 +186,11 @@ class DeviceComposition
   uint8_t i_configuration_ = 0;  ///< 配置字符串索引 / Configuration string index
   uint8_t bm_attributes_ = CFG_BUS_POWERED;  ///< 配置属性 / bmAttributes
 
-  const bool composite_ = false;     ///< 是否为复合设备 / Whether composite device
+  const bool composite_ = false;  ///< 是否为复合设备 / Whether composite device
+  WinUsbMsOs20::WinUsbDescriptorSet winusb_set_;  ///< MS OS 2.0 描述符集 / descriptor set
+  WinUsbMsOs20::MsOs20BosCapability* winusb_cap_ = nullptr;  ///< 对应的 BOS 能力 / its
+                                                             ///< BOS capability
+  void BuildWinUsbDescriptorSet();
   const size_t config_num_ = 0;      ///< 配置数量 / Configuration count
   ConfigItems* items_ = nullptr;     ///< 配置项集合 / Configuration item set
   DeviceClass** classes_ = nullptr;  ///< 唯一 class 表 / Unique class table
@@ -192,7 +203,12 @@ class DeviceComposition
       0;  ///< 接口字符串总数量 / Total interface string count
   RawData interface_string_buffer_{
       nullptr, 0};  ///< 临时字符串描述符缓冲区 / Temp interface string descriptor buffer
-  BosManager bos_;  ///< BOS 聚合管理 / BOS aggregation manager
+  struct DescriptorCache
+  {
+    RawData data{nullptr, 0};
+  };
+  DescriptorCache* descriptors_ = nullptr;
+  bool descriptors_prepared_ = false;
   ConfigDescriptor config_desc_;  ///< 配置描述符构造器 / Configuration descriptor builder
 };
 

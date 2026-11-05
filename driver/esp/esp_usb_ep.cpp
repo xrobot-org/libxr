@@ -1,78 +1,101 @@
 #include "esp_usb_ep.hpp"
 
+#include "esp_memory_utils.h"
+
 #if SOC_USB_OTG_SUPPORTED && defined(CONFIG_IDF_TARGET_ESP32S3) && \
     CONFIG_IDF_TARGET_ESP32S3
 
 #include <algorithm>
 #include <cstring>
 
-#include "esp_heap_caps.h"
 #include "esp_usb.hpp"
 #include "esp_usb_dev.hpp"
 
 namespace LibXR
 {
 
+namespace
+{
+// DWC2 端点中断位：INEPNE（bit 6）与 EPDISD（bit 1）/ DWC2 endpoint interrupt
+// bits: INEPNE (bit 6) and EPDISD (bit 1)
+constexpr uint32_t USB_DWC_EPDISD_MSK = 1UL << 1;
+constexpr uint32_t USB_DWC_INEPNE_MSK = 1UL << 6;
+}  // namespace
+
 ESP32USBEndpoint::ESP32USBEndpoint(ESP32USBDevice& device, EPNumber number,
                                    Direction direction, RawData buffer)
     : USB::Endpoint(number, direction, buffer), device_(device)
 {
+  // 槽内存就是 DMA 目标（本后端不做中间拷贝）：构造期就要求它存在、DMA 可用且
+  // 对齐，否则运行期会静默丢数据或写坏内存。
+  // The slot memory is the DMA target itself (this backend does not copy through an
+  // intermediate buffer): require at construction that it exists, is DMA-capable
+  // and aligned, or the run time would silently drop or corrupt data.
+  REQUIRE(buffer.addr_ != nullptr);
+  REQUIRE(esp_ptr_dma_capable(buffer.addr_));
+  REQUIRE(reinterpret_cast<uintptr_t>(buffer.addr_) % ESPUSBDetail::USB_DMA_ALIGNMENT ==
+          0U);
 }
 
-void ESP32USBEndpoint::Configure(const Config& cfg)
+ErrorCode ESP32USBEndpoint::ConfigureHardware(const Config& cfg)
 {
+  // 包长已由核心按 MaxPacketSizeLimit 收敛，这里不再改 Config（基类返回 const）；
+  // 状态由基类管理，后端只返回结果码。
+  // The packet size is already clamped by the core against MaxPacketSizeLimit, so
+  // the Config is not touched here (the base hands it over const); the base owns
+  // the state and the backend only reports a result code.
+  const uint16_t packet = cfg.max_packet_size;
   ASSERT(cfg.direction == Direction::IN || cfg.direction == Direction::OUT);
+  ASSERT(packet > 0U);
 
-  auto& ep_cfg = GetConfig();
-  ep_cfg = cfg;
-  ep_cfg.max_packet_size = ESPUSBDetail::ClampPacketSize(cfg.type, cfg.max_packet_size);
-  if (ep_cfg.max_packet_size == 0U)
+  auto buffer = SlotMemory();
+  // 槽内存就是 DMA 目标，没有备用缓冲：槽不满足 DMA 对齐/可达性时拒绝配置。
+  // The slot memory is the DMA target and there is no fallback buffer: refuse the
+  // configuration when a slot does not satisfy DMA alignment and reachability.
+  if (device_.DmaEnabled() && (buffer.size_ > 0U) &&
+      !(cfg.direction == Direction::IN
+            ? ESPUSBDetail::CanUseDirectInDmaBuffer(buffer.addr_, buffer.size_)
+            : ESPUSBDetail::CanUseDirectOutDmaBuffer(buffer.addr_, buffer.size_)))
   {
-    ep_cfg.max_packet_size = (cfg.type == Type::ISOCHRONOUS) ? 1023U : 64U;
+    return ErrorCode::NO_BUFF;
   }
 
-  auto buffer = GetBuffer();
-  if (buffer.size_ < ep_cfg.max_packet_size)
+  if (IsPlanning())
   {
-    ep_cfg.max_packet_size = static_cast<uint16_t>(buffer.size_);
-  }
-
-  ASSERT(ep_cfg.max_packet_size > 0U);
-
-  if (device_.DmaEnabled() && (buffer.size_ > 0U) && !EnsureDmaShadow(buffer.size_))
-  {
-    SetState(State::ERROR);
-    return;
+    return ErrorCode::OK;
   }
 
   if (cfg.direction == Direction::IN)
   {
     const bool is_bulk = (cfg.type == Type::BULK);
-    if (!fifo_allocated_ &&
-        !device_.AllocateTxFifo(EPNumberToInt8(GetNumber()), ep_cfg.max_packet_size,
-                                is_bulk, fifo_words_))
+    if (!fifo_allocated_ && !device_.AllocateTxFifo(EPNumberToInt8(GetNumber()), packet,
+                                                    is_bulk, fifo_words_))
     {
-      SetState(State::ERROR);
-      return;
+      return ErrorCode::NO_BUFF;
     }
     fifo_allocated_ = true;
   }
   else
   {
-    if (!device_.EnsureRxFifo(ep_cfg.max_packet_size))
+    if (!device_.EnsureRxFifo(packet))
     {
-      SetState(State::ERROR);
-      return;
+      return ErrorCode::NO_BUFF;
     }
   }
 
   ActivateHardwareEndpoint();
   ResetTransferState();
-  SetState(State::IDLE);
+  return ErrorCode::OK;
 }
 
-void ESP32USBEndpoint::Close()
+void ESP32USBEndpoint::CloseHardware(bool /*in_isr*/)
 {
+  // 核心保证先停止、确认后才关闭，所以到这里端点已经是禁用的；这里只收掉中断掩码，
+  // 万一硬件仍是使能，发出禁用请求但不等待（等待由停止状态机和 SOF 超时负责）。
+  // The core stops an endpoint and waits for the confirmation before closing it, so the
+  // endpoint is already disabled here; only the interrupt masks are dropped. If the
+  // hardware is still enabled, a disable request goes out without waiting (waiting
+  // belongs to the stop state machine and the SOF timeout).
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
 
@@ -82,7 +105,8 @@ void ESP32USBEndpoint::Close()
     {
       if (dev->diepctl0_reg.epena)
       {
-        ESPUSBDetail::DisableInEndpointAndWait(dev);
+        dev->diepctl0_reg.snak = 1;
+        dev->diepctl0_reg.epdis = 1;
       }
     }
     else
@@ -90,7 +114,8 @@ void ESP32USBEndpoint::Close()
       dev->diepempmsk_reg.val &= ~(1UL << ep_num);
       if (dev->in_eps[ep_num - 1U].diepctl_reg.epena)
       {
-        ESPUSBDetail::DisableInEndpointAndWait(dev, ep_num);
+        dev->in_eps[ep_num - 1U].diepctl_reg.snak = 1;
+        dev->in_eps[ep_num - 1U].diepctl_reg.epdis = 1;
       }
     }
     dev->daintmsk_reg.val &= ~(1UL << ep_num);
@@ -99,27 +124,21 @@ void ESP32USBEndpoint::Close()
   {
     if (ep_num == 0U)
     {
-      ESPUSBDetail::DisableOutEndpointAndWait(dev->doepctl0_reg);
+      ESPUSBDetail::RequestOutDisable(dev->doepctl0_reg, false);
     }
     else
     {
-      ESPUSBDetail::DisableOutEndpointAndWait(dev->out_eps[ep_num - 1U].doepctl_reg);
+      ESPUSBDetail::RequestOutDisable(dev->out_eps[ep_num - 1U].doepctl_reg, true);
     }
     dev->daintmsk_reg.val &= ~(1UL << (16U + ep_num));
   }
 
   ResetTransferState();
-  SetState(State::DISABLED);
 }
 
-ErrorCode ESP32USBEndpoint::Stall()
+ErrorCode ESP32USBEndpoint::StallHardware(bool /*in_isr*/)
 {
   const bool is_in = (GetDirection() == Direction::IN);
-  if ((GetState() == State::BUSY) && is_in)
-  {
-    return ErrorCode::BUSY;
-  }
-
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
 
@@ -146,11 +165,10 @@ ErrorCode ESP32USBEndpoint::Stall()
     }
   }
 
-  SetState(State::STALLED);
   return ErrorCode::OK;
 }
 
-ErrorCode ESP32USBEndpoint::ClearStall()
+ErrorCode ESP32USBEndpoint::ClearStallHardware(bool /*in_isr*/)
 {
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
@@ -182,24 +200,245 @@ ErrorCode ESP32USBEndpoint::ClearStall()
     }
   }
 
-  SetState(State::IDLE);
   return ErrorCode::OK;
 }
 
-ErrorCode ESP32USBEndpoint::Transfer(size_t size)
+USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
 {
-  if (GetState() == State::BUSY)
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  const uint8_t ep_num = EPNumberToInt8(GetNumber());
+  const bool is_in = (GetDirection() == Direction::IN);
+
+  if (!transfer_active_)
   {
-    return ErrorCode::BUSY;
+    // 没有在途请求：硬件侧无需停止，直接确认。
+    // Nothing in flight: nothing to stop on the hardware side, confirm at once.
+    stop_phase_ = StopPhase::NONE;
+    return StopResult::DONE;
   }
 
-  auto buffer = GetBuffer();
-  if (buffer.size_ < size)
+  // MODEL_USB §5.1/§5.3：停止是 SNAK -> 中断确认 INEPNE -> EPDIS -> 中断确认
+  // EPDISD -> 刷 FIFO，期间不能忙等（核心在临界区里调用本函数，主机不轮询时
+  // 忙等会卡到看门狗）。这里只发起第一步，其余由中断推进，完成后调
+  // OnHardwareStopped。
+  // MODEL_USB §5.1/§5.3: stopping is SNAK -> INEPNE interrupt -> EPDIS ->
+  // EPDISD interrupt -> flush FIFO, and it must not busy-wait (the core calls
+  // this inside a critical section, and a host that stops polling would hang the
+  // device until the watchdog fires). Start the first step here, let the
+  // interrupt advance the rest and call OnHardwareStopped when it is done.
+  if (is_in)
+  {
+    bool enabled = false;
+    if (ep_num == 0U)
+    {
+      enabled = dev->diepctl0_reg.epena != 0U;
+    }
+    else
+    {
+      enabled = dev->in_eps[ep_num - 1U].diepctl_reg.epena != 0U;
+    }
+    if (!enabled)
+    {
+      ESPUSBDetail::FlushTxFifo(dev, ep_num);
+      stop_phase_ = StopPhase::NONE;
+      transfer_active_ = false;
+      return StopResult::DONE;
+    }
+    // 打开 EPDISD 与 INEPNE 的中断，才能在中断里推进。
+    // Unmask EPDISD and INEPNE so the interrupt can drive the sequence.
+    dev->diepmsk_reg.epdisbldmsk = 1;
+    dev->diepmsk_reg.inepnakeffmsk = 1;
+    if (ep_num == 0U)
+    {
+      dev->diepctl0_reg.snak = 1;
+    }
+    else
+    {
+      dev->in_eps[ep_num - 1U].diepctl_reg.snak = 1;
+    }
+    stop_phase_ = StopPhase::SNAK_WAIT;
+    device_.UpdateTick();
+    return StopResult::PENDING;
+  }
+
+  if (ep_num == 0U)
+  {
+    // EP0 OUT：手册不允许写 EPDIS。SNAK 在事务边界立即生效（INT_BUSY 自动 NAK），
+    // 契约要求此时就报 DONE；把 DOEPDMA0 指向驱动自己的暂存，任何迟到的一包只
+    // 会落进暂存，被借出的槽可以安全回收。
+    // EP0 OUT: the manual forbids EPDIS. SNAK takes effect at the transaction
+    // boundary (INT_BUSY auto-NAKs), and the contract wants DONE right here; point
+    // DOEPDMA0 at the driver's own scratch so a late packet lands in the scratch
+    // and the lent slot can be reclaimed safely.
+    dev->doepctl0_reg.snak = 1;
+    dev->doepdma0_reg.val = reinterpret_cast<uint32_t>(ep0_scratch_);
+    stop_phase_ = StopPhase::NONE;
+    transfer_active_ = false;
+    return StopResult::DONE;
+  }
+
+  if (dev->out_eps[ep_num - 1U].doepctl_reg.epena == 0U)
+  {
+    stop_phase_ = StopPhase::NONE;
+    transfer_active_ = false;
+    return StopResult::DONE;
+  }
+  // 非 EP0 OUT：先按端点 SNAK（本核的 DCTL 没有 SGONAK/CGONAK，无法做全局 OUT
+  // NAK；单个端点用 SNAK 挡住新事务、EPDIS 结束在途事务，效果等价），再 EPDIS，
+  // 中断确认 EPDISD 后完成。
+  // Non-EP0 OUT: per-endpoint SNAK first (this core's DCTL has no SGONAK/CGONAK, so
+  // there is no global OUT NAK; for a single endpoint SNAK blocks new transactions
+  // and EPDIS ends the in-flight one, which is equivalent), then EPDIS; the
+  // EPDISD interrupt confirms the stop.
+  dev->out_eps[ep_num - 1U].doepctl_reg.snak = 1;
+  dev->doepmsk_reg.epdisbldmsk = 1;
+  dev->out_eps[ep_num - 1U].doepctl_reg.epdis = 1;
+  stop_phase_ = StopPhase::DIS_WAIT;
+  device_.UpdateTick();
+  return StopResult::PENDING;
+  UNUSED(in_isr);
+}
+
+void ESP32USBEndpoint::AdvanceStop(bool in_isr)
+{
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  const uint8_t ep_num = EPNumberToInt8(GetNumber());
+  const bool is_in = (GetDirection() == Direction::IN);
+
+  if (stop_phase_ == StopPhase::NONE)
+  {
+    return;
+  }
+
+  // 超时不在这里判断：本函数只在端点自己的中断里跑，没有中断就永远不会超时。
+  // 核心按 1 ms 帧计数，超时后调设备层的 OnStopTimeout（控制器复位升级），由它
+  // 调 ForceStop 收尾（与 STM32 OTG 同思路）。
+  // The timeout is not decided here: this runs only in the endpoint's own
+  // interrupt, so without an interrupt it would never fire. The core counts 1 ms
+  // frames and calls the device-level OnStopTimeout (the controller-reset
+  // escalation), which finishes the stop through ForceStop (same approach as the
+  // STM32 OTG backend).
+  if (is_in)
+  {
+    if (stop_phase_ == StopPhase::SNAK_WAIT)
+    {
+      const bool nak_effective =
+          (ep_num == 0U) ? (dev->diepint0_reg.inepnakeff != 0U)
+                         : (dev->in_eps[ep_num - 1U].diepint_reg.inepnakeff != 0U);
+      if (!nak_effective) return;
+      if (ep_num == 0U)
+      {
+        dev->diepint0_reg.val = USB_DWC_INEPNE_MSK;
+        dev->diepctl0_reg.epdis = 1;
+      }
+      else
+      {
+        dev->in_eps[ep_num - 1U].diepint_reg.val = USB_DWC_INEPNE_MSK;
+        dev->in_eps[ep_num - 1U].diepctl_reg.epdis = 1;
+      }
+      stop_phase_ = StopPhase::DIS_WAIT;
+      return;
+    }
+    if (stop_phase_ == StopPhase::DIS_WAIT)
+    {
+      const bool disabled = (ep_num == 0U)
+                                ? (dev->diepint0_reg.epdisbld != 0U)
+                                : (dev->in_eps[ep_num - 1U].diepint_reg.epdisbld != 0U);
+      if (!disabled) return;
+      if (ep_num == 0U)
+      {
+        dev->diepint0_reg.val = USB_DWC_EPDISD_MSK;
+      }
+      else
+      {
+        dev->in_eps[ep_num - 1U].diepint_reg.val = USB_DWC_EPDISD_MSK;
+      }
+      ESPUSBDetail::FlushTxFifo(dev, ep_num);
+      stop_phase_ = StopPhase::NONE;
+      transfer_active_ = false;
+      OnHardwareStopped(in_isr);
+    }
+    return;
+  }
+
+  if (stop_phase_ == StopPhase::DIS_WAIT &&
+      dev->out_eps[ep_num - 1U].doepint_reg.epdisbld != 0U)
+  {
+    dev->out_eps[ep_num - 1U].doepint_reg.val = USB_DWC_EPDISD_MSK;
+    stop_phase_ = StopPhase::NONE;
+    transfer_active_ = false;
+    OnHardwareStopped(in_isr);
+  }
+}
+
+void ESP32USBEndpoint::ConfirmStopAfterReset(bool in_isr)
+{
+  // 复位清掉了端点中断掩码，等待中的停止不会再有 EPDISD 中断来推进；复位已经确认
+  // 端点被禁用，这里直接完成它。
+  // The reset wipes the endpoint interrupt masks, so a waiting stop would never get its
+  // EPDISD interrupt; the reset has confirmed the endpoint disabled, so finish it here.
+  if (stop_phase_ == StopPhase::NONE)
+  {
+    return;
+  }
+  stop_phase_ = StopPhase::NONE;
+  transfer_active_ = false;
+  OnHardwareStopped(in_isr);
+}
+
+void ESP32USBEndpoint::ForceStop(bool in_isr)
+{
+  // 控制器复位升级路径：停止没等到硬件确认，寄存器已经不可信（DMA 仍可能写槽，
+  // 但复位会中止一切）。这里只收掉软件状态、不再碰寄存器；核心复位后由设备层
+  // 重建寄存器并让主机重新枚举。
+  // Controller-reset escalation path: the stop never confirmed and the registers
+  // can no longer be trusted (the DMA may still be writing the slot, but the reset
+  // aborts everything). Only the software state is dropped here; the device layer
+  // rebuilds the registers after the reset and the host enumerates again.
+  stop_phase_ = StopPhase::NONE;
+  // 复位后 FIFO 记账和传输状态都要重建（端点会在下一次 Configure 重新分配）。
+  // The FIFO bookkeeping and transfer state are rebuilt after the reset (endpoints
+  // re-allocate on the next Configure).
+  ResetHardwareState();
+  OnHardwareStopped(in_isr);
+}
+
+size_t ESP32USBEndpoint::ReapProgress(const HwRequest& request, bool& retired)
+{
+  // 只有硬件报过传输完成（XFRC 未处理）才能认为主机真的取走了数据；DMA 模式下
+  // xfersize 在数据进 FIFO 时就清零，不能拿它当成功凭据（与 STM32 OTG 同口径）。
+  // Only a transfer-complete interrupt (XFRC pending) proves the host really took
+  // the data: in DMA mode xfersize drops as soon as a packet enters the FIFO, so
+  // it is no evidence of success (same criterion as the STM32 OTG backend).
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  const uint8_t ep_num = EPNumberToInt8(GetNumber());
+  retired = false;
+  if (GetDirection() == Direction::IN && ep_num != 0U)
+  {
+    if (dev->in_eps[ep_num - 1U].diepint_reg.xfercompl != 0U)
+    {
+      retired = true;
+      return request.length;
+    }
+    return GetCompletedTransferSize();
+  }
+  // OUT 侧：已经落进槽的字节数是确定的。
+  // OUT side: the bytes already in the slot are known for certain.
+  return GetCompletedTransferSize();
+}
+
+ErrorCode ESP32USBEndpoint::StartHardware(const HwRequest& request, bool /*in_isr*/)
+{
+  const size_t size = request.length;
+
+  if (request.slot.size_ < size)
   {
     return ErrorCode::NO_BUFF;
   }
 
-  transfer_buffer_ = static_cast<uint8_t*>(buffer.addr_);
+  transfer_buffer_ = static_cast<uint8_t*>(request.slot.addr_);
+  transfer_tag_ = request.tag;
+  transfer_active_ = true;
   transfer_request_size_ = size;
   transfer_actual_size_ = 0U;
   transfer_queued_size_ = 0U;
@@ -210,29 +449,26 @@ ErrorCode ESP32USBEndpoint::Transfer(size_t size)
     ep0_out_phase_ = (size == 0U) ? Ep0OutPhase::STATUS : Ep0OutPhase::DATA;
   }
 
-  if (UseDoubleBuffer() && GetDirection() == Direction::IN && size > 0U)
-  {
-    SwitchBuffer();
-  }
-
   if (!PrepareTransferBuffer(size))
   {
     ResetTransferState();
     return ErrorCode::NO_MEM;
   }
 
-  SetState(State::BUSY);
   ProgramTransfer(size);
   return ErrorCode::OK;
 }
 
-size_t ESP32USBEndpoint::MaxTransferSize() const
+size_t ESP32USBEndpoint::MaxPacketSizeLimit(Type type) const
 {
-  if (GetNumber() == EPNumber::EP0)
+  // 与 STM32 OTG 同口径：CONTROL 固定 64，其余受端点存储上限约束。
+  // Same convention as STM32 OTG: CONTROL is fixed at 64, the rest is bounded by
+  // the endpoint storage.
+  if (type == Type::CONTROL)
   {
-    return MaxPacketSize();
+    return 64U;
   }
-  return GetBuffer().size_;
+  return SlotMemory().size_;
 }
 
 void ESP32USBEndpoint::ResetHardwareState()
@@ -240,11 +476,21 @@ void ESP32USBEndpoint::ResetHardwareState()
   fifo_allocated_ = false;
   fifo_words_ = 0U;
   ResetTransferState();
-  SetState(State::DISABLED);
 }
 
 void ESP32USBEndpoint::HandleInInterrupt(bool in_isr)
 {
+  // 停止时序未完成时先推进它（PENDING 由中断确认后调 OnHardwareStopped）。
+  // Advance the stop sequence first while it is still pending (PENDING becomes a
+  // confirmed stop through OnHardwareStopped).
+  AdvanceStop(in_isr);
+
+  // 在入口捕获标签：ISR 里现读 transfer_tag_ 会被同一条路径上的 StartHardware
+  // 改写，报出去的完成可能挂到下一个请求上。
+  // Capture the tag on entry: reading transfer_tag_ live in the ISR can be
+  // overwritten by a StartHardware on the same path, attaching the completion to
+  // the next request.
+  const uint32_t tag = transfer_tag_;
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
   usb_dwc_diepint_reg_t intr = {};
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
@@ -277,12 +523,12 @@ void ESP32USBEndpoint::HandleInInterrupt(bool in_isr)
     dev->diepempmsk_reg.val &= ~(1UL << ep_num);
     const size_t actual =
         device_.DmaEnabled() ? GetCompletedTransferSize() : transfer_request_size_;
-    OnTransferCompleteCallback(in_isr, actual);
+    OnHardwareComplete(in_isr, tag, actual);
     if (rearm_ep0_setup)
     {
       device_.ReloadSetupPacketCount();
     }
-    if (GetState() != State::BUSY)
+    if (!transfer_active_)
     {
       ResetTransferState();
     }
@@ -291,26 +537,20 @@ void ESP32USBEndpoint::HandleInInterrupt(bool in_isr)
 
 void ESP32USBEndpoint::FinishPendingEp0InStatus(bool in_isr)
 {
-  if (!device_.DmaEnabled() || (device_.endpoint_map_.in[0] == nullptr))
+  if (device_.endpoint_map_.in[0] == nullptr) return;
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  if (dev->diepint0_reg.xfercompl)
   {
-    return;
-  }
-
-  auto* ep0_in = static_cast<ESP32USBEndpoint*>(device_.endpoint_map_.in[0]);
-  if ((ep0_in->GetState() != State::BUSY) || (ep0_in->transfer_request_size_ != 0U))
-  {
-    return;
-  }
-
-  ep0_in->OnTransferCompleteCallback(in_isr, 0U);
-  if (ep0_in->GetState() != State::BUSY)
-  {
-    ep0_in->ResetTransferState();
+    auto* input = static_cast<ESP32USBEndpoint*>(device_.endpoint_map_.in[0]);
+    input->HandleInInterrupt(in_isr);
   }
 }
 
 void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
 {
+  AdvanceStop(in_isr);
+  const uint32_t tag = transfer_tag_;
+
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
   usb_dwc_doepint_reg_t intr = {};
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
@@ -329,7 +569,7 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
   const bool ep0_setup_related =
       (ep_num == 0U) && (intr.setup || intr.stuppktrcvd || intr.back2backsetup);
   const bool has_active_ep0_transfer =
-      (ep_num == 0U) && (GetState() == State::BUSY) &&
+      (ep_num == 0U) && transfer_active_ &&
       ((transfer_buffer_ != nullptr) || (transfer_request_size_ > 0U));
 
   if (intr.xfercompl &&
@@ -344,12 +584,12 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
     {
       FinishPendingEp0InStatus(in_isr);
     }
-    OnTransferCompleteCallback(in_isr, actual);
+    OnHardwareComplete(in_isr, tag, actual);
     if ((ep_num == 0U) && device_.DmaEnabled() && (transfer_request_size_ == 0U))
     {
       device_.ReloadSetupPacketCount();
     }
-    if (GetState() != State::BUSY)
+    if (!transfer_active_)
     {
       ResetTransferState();
     }
@@ -371,15 +611,13 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
     FinishPendingEp0InStatus(in_isr);
     ep0_out_phase_ = Ep0OutPhase::SETUP;
     ResetTransferState();
-    SetState(State::IDLE);
 
     if (device_.endpoint_map_.in[0] != nullptr)
     {
       auto* ep0_in = static_cast<ESP32USBEndpoint*>(device_.endpoint_map_.in[0]);
-      if (ep0_in->GetState() == State::BUSY)
+      if (ep0_in->transfer_active_)
       {
         ep0_in->ResetTransferState();
-        ep0_in->SetState(State::IDLE);
       }
     }
 
@@ -446,95 +684,34 @@ void ESP32USBEndpoint::ObserveDmaRxStatus(uint8_t pktsts, size_t size)
 
 void ESP32USBEndpoint::ResetTransferState()
 {
+  transfer_tag_ = 0U;
+  transfer_active_ = false;
   transfer_buffer_ = nullptr;
   transfer_hw_buffer_ = nullptr;
   transfer_request_size_ = 0U;
   transfer_actual_size_ = 0U;
   transfer_queued_size_ = 0U;
-  transfer_uses_shadow_ = false;
-  transfer_direct_sync_size_ = 0U;
   dma_rx_status_bytes_ = 0U;
   dma_rx_status_seen_ = false;
-}
-
-bool ESP32USBEndpoint::EnsureDmaShadow(size_t size)
-{
-  const size_t need = ESPUSBDetail::AlignUp(size, ESPUSBDetail::USB_DMA_ALIGNMENT);
-  if (need == 0U)
-  {
-    return true;
-  }
-
-  if ((dma_shadow_buffer_ != nullptr) && (dma_shadow_size_ >= need))
-  {
-    return true;
-  }
-
-  void* new_buffer = heap_caps_aligned_alloc(ESPUSBDetail::USB_DMA_ALIGNMENT, need,
-                                             ESPUSBDetail::DMA_MEMORY_CAPS);
-  if (new_buffer == nullptr)
-  {
-    return false;
-  }
-
-  if (dma_shadow_buffer_ != nullptr)
-  {
-    heap_caps_free(dma_shadow_buffer_);
-  }
-
-  dma_shadow_buffer_ = static_cast<uint8_t*>(new_buffer);
-  dma_shadow_size_ = need;
-  return true;
 }
 
 bool ESP32USBEndpoint::PrepareTransferBuffer(size_t size)
 {
   transfer_hw_buffer_ = transfer_buffer_;
-  transfer_uses_shadow_ = false;
-  transfer_direct_sync_size_ = 0U;
 
   if (!device_.DmaEnabled() || (size == 0U))
   {
     return true;
   }
 
+  // 槽在 ConfigureHardware 里已验证满足 DMA 要求，这里只做 IN 方向的 cache 回写。
+  // The slot was verified for DMA in ConfigureHardware; only the IN-direction cache
+  // write-back is left to do here.
   if (GetDirection() == Direction::IN)
   {
-    if (ESPUSBDetail::CanUseDirectInDmaBuffer(transfer_buffer_, size))
-    {
-      return ESPUSBDetail::CacheSyncDmaBuffer(transfer_hw_buffer_, size, true, true);
-    }
+    return ESPUSBDetail::CacheSyncDmaBuffer(transfer_hw_buffer_, size, true, true);
   }
-  else
-  {
-    auto buffer = GetBuffer();
-    if (ESPUSBDetail::CanUseDirectOutDmaBuffer(buffer.addr_, buffer.size_))
-    {
-      transfer_direct_sync_size_ = buffer.size_;
-      return true;
-    }
-  }
-
-  if (!EnsureDmaShadow(size))
-  {
-    return false;
-  }
-
-  transfer_hw_buffer_ = dma_shadow_buffer_;
-  transfer_uses_shadow_ = true;
-
-  if (GetDirection() == Direction::IN)
-  {
-    DEV_ASSERT(transfer_buffer_ != nullptr);
-    std::memcpy(transfer_hw_buffer_, transfer_buffer_, size);
-    return ESPUSBDetail::CacheSyncDmaBuffer(
-        transfer_hw_buffer_, ESPUSBDetail::AlignUp(size, ESPUSBDetail::USB_DMA_ALIGNMENT),
-        true);
-  }
-
-  return ESPUSBDetail::CacheSyncDmaBuffer(
-      transfer_hw_buffer_, ESPUSBDetail::AlignUp(size, ESPUSBDetail::USB_DMA_ALIGNMENT),
-      false);
+  return true;
 }
 
 bool ESP32USBEndpoint::FinishOutTransfer(size_t actual_size)
@@ -548,27 +725,11 @@ bool ESP32USBEndpoint::FinishOutTransfer(size_t actual_size)
 
   DEV_ASSERT(transfer_hw_buffer_ != nullptr);
 
-  if (!transfer_uses_shadow_)
-  {
-    if (transfer_direct_sync_size_ == 0U)
-    {
-      return true;
-    }
-    return ESPUSBDetail::CacheSyncDmaBuffer(transfer_hw_buffer_,
-                                            transfer_direct_sync_size_, false);
-  }
-
-  DEV_ASSERT(transfer_buffer_ != nullptr);
-
-  if (!ESPUSBDetail::CacheSyncDmaBuffer(
-          transfer_hw_buffer_,
-          ESPUSBDetail::AlignUp(actual_size, ESPUSBDetail::USB_DMA_ALIGNMENT), false))
-  {
-    return false;
-  }
-
-  std::memcpy(transfer_buffer_, transfer_hw_buffer_, actual_size);
-  return true;
+  // 只同步 DMA 实际写入的范围：同步整块槽内存会越过最后一个槽的末尾。
+  // Sync only the range the DMA actually wrote: syncing the whole slot memory runs past
+  // the end of the last slot.
+  const size_t sync = ESPUSBDetail::AlignUp(actual_size, ESPUSBDetail::USB_DMA_ALIGNMENT);
+  return ESPUSBDetail::CacheSyncDmaBuffer(transfer_hw_buffer_, sync, false);
 }
 
 size_t ESP32USBEndpoint::GetRemainingTransferSize() const
