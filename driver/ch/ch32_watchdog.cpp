@@ -33,22 +33,20 @@ ErrorCode CH32Watchdog::SetConfig(const Configuration& config)
     return ErrorCode::ARG_ERR;
   }
 
-  // 取能放下超时时间的最小分频（12 位重装载值），分辨率最高。
+  // 取能放下超时时间的最小分频（12 位重装载值），分辨率最高。超时时间向上取整：
+  // 实际超时不短于要求的，喂狗周期也就不会超过它。
   // Take the smallest prescaler whose 12-bit reload holds the timeout, for the finest
-  // resolution.
+  // resolution. The timeout rounds up: the real one is not shorter than requested, so
+  // the feed interval cannot exceed it.
   bool found = false;
   for (uint8_t code = 0; code <= 6; ++code)
   {
-    const uint32_t divider = 4U << code;
-    uint64_t reload = (static_cast<uint64_t>(config.timeout_ms) * lsi_hz_) /
-                      (1000U * static_cast<uint64_t>(divider));
+    const uint64_t divisor = 1000U * static_cast<uint64_t>(4U << code);
+    uint64_t reload =
+        (static_cast<uint64_t>(config.timeout_ms) * lsi_hz_ + divisor - 1U) / divisor;
     if (reload > 1)
     {
       reload--;
-    }
-    if (reload == 0)
-    {
-      reload = 1;
     }
     if (reload <= 0xFFF)
     {
