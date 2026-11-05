@@ -91,6 +91,21 @@ class STM32SPI : public SPI
   AsyncBlockWait block_wait_{};
 
   static STM32SPI* map[STM32_SPI_NUMBER];  // NOLINT
+
+ private:
+  /**
+   * @brief DMA 启动失败后恢复 HAL 句柄
+   *        Recover the HAL handle after a failed DMA start
+   * @param st DMA 启动函数的返回值 / Return value of the DMA start call
+   * @note 多个 STM32 HAL 系列（其中有 F1、F3、F4、F7、G0）在 DMA
+   *       通道启动失败时返回 HAL_ERROR，但不把句柄状态改回 READY，
+   *       之后每次传输都会返回 BUSY。这里中止该次传输，让下一次传输可以启动。
+   *       Several STM32 HAL families (F1, F3, F4, F7 and G0 among them) return
+   *       HAL_ERROR when a DMA channel fails to start but leave the handle state
+   *       busy, so every later transfer returns BUSY. This aborts that transfer so
+   *       the next one can start.
+   */
+  void RecoverFailedDmaStart(HAL_StatusTypeDef st);
 };
 
 }  // namespace LibXR

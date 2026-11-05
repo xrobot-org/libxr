@@ -129,8 +129,17 @@ static inline void flash_clear_flags_once()
 // Encapsulate one flash program/erase session:
 // - exit enhanced read mode
 // - slow flash access clock
-// - disable IRQ + unlock fast mode + clear status
-// - restore lock/IRQ/clock in destructor
+// - disable IRQ, halve HCLK above 120 MHz, unlock fast mode, clear status
+// - restore lock/HCLK/IRQ/clock in destructor
+//
+// 主频超过 120 MHz 时，访问时钟取系统时钟一半仍超过 60 MHz；RM 32.1 注 2 要求 Flash
+// 操作期间把 HCLK 二分频，完成后恢复。这里只处理擦写，读取不分频。分频在关中断之后、
+// 恢复在开中断之前，期间挂在 HCLK 上的外设（SysTick、APB 外设）也以一半频率运行。
+// Above 120 MHz, half the system clock still exceeds the 60 MHz flash access limit; RM
+// 32.1 note 2 asks for HCLK to be halved during flash operations and restored after them.
+// Only program and erase do that here; reads are not divided. It is halved after
+// interrupts are disabled and restored before they are enabled again; meanwhile the
+// peripherals clocked from HCLK (SysTick, the APB peripherals) run at half speed too.
 class FlashAccessSession
 {
  public:
@@ -139,6 +148,11 @@ class FlashAccessSession
     flash_exit_enhanced_read_if_enabled();
     flash_set_access_clock_half_sysclk();
     __disable_irq();
+    hpre_ = RCC->CFGR0 & RCC_HPRE;
+    if (SystemCoreClock > 120000000U)
+    {
+      RCC->CFGR0 = (RCC->CFGR0 & ~RCC_HPRE) | RCC_HPRE_DIV2;
+    }
     flash_fast_unlock();
     flash_clear_flags_once();
   }
@@ -146,12 +160,16 @@ class FlashAccessSession
   ~FlashAccessSession()
   {
     flash_fast_lock();
+    RCC->CFGR0 = (RCC->CFGR0 & ~RCC_HPRE) | hpre_;
     __enable_irq();
     flash_set_access_clock_sysclk();
   }
 
   FlashAccessSession(const FlashAccessSession&) = delete;
   FlashAccessSession& operator=(const FlashAccessSession&) = delete;
+
+ private:
+  uint32_t hpre_;  ///< 进入时的 AHB 分频 / AHB prescaler on entry
 };
 
 inline void CH32Flash::ClearFlashFlagsOnce() { flash_clear_flags_once(); }
@@ -185,8 +203,6 @@ ErrorCode CH32Flash::Erase(size_t offset, size_t size)
     return ErrorCode::ARG_ERR;
   }
 
-  ASSERT(SystemCoreClock <= 120000000);
-
   const uint32_t START_ADDR = base_address_ + static_cast<uint32_t>(offset);
   if (!IsInRange(START_ADDR, size))
   {
@@ -215,8 +231,6 @@ ErrorCode CH32Flash::Erase(size_t offset, size_t size)
 
 ErrorCode CH32Flash::Write(size_t offset, ConstRawData data)
 {
-  ASSERT(SystemCoreClock <= 120000000);
-
   if (!data.addr_ || data.size_ == 0)
   {
     return ErrorCode::ARG_ERR;

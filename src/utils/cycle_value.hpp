@@ -49,10 +49,10 @@ class CycleValue
    */
   static constexpr Scalar Calculate(Scalar value)
   {
-    value = std::fmod(value, LibXR::TWO_PI);
+    value = std::fmod(value, SCALAR_TWO_PI);
     if (value < 0)
     {
-      value += LibXR::TWO_PI;
+      value += SCALAR_TWO_PI;
     }
     return value;
   }
@@ -75,14 +75,14 @@ class CycleValue
    */
   CycleValue(const CycleValue& value) : value_(value.value_)
   {
-    while (value_ >= LibXR::TWO_PI)
+    while (value_ >= SCALAR_TWO_PI)
     {
-      value_ -= LibXR::TWO_PI;
+      value_ -= SCALAR_TWO_PI;
     }
 
     while (value_ < 0)
     {
-      value_ += LibXR::TWO_PI;
+      value_ += SCALAR_TWO_PI;
     }
   }
 
@@ -126,14 +126,14 @@ class CycleValue
   CycleValue& operator+=(const CycleValue& value)
   {
     Scalar ans = value.value_ + value_;
-    while (ans >= LibXR::TWO_PI)
+    while (ans >= SCALAR_TWO_PI)
     {
-      ans -= LibXR::TWO_PI;
+      ans -= SCALAR_TWO_PI;
     }
 
     while (ans < 0)
     {
-      ans += LibXR::TWO_PI;
+      ans += SCALAR_TWO_PI;
     }
 
     value_ = ans;
@@ -154,14 +154,14 @@ class CycleValue
   {
     Scalar value = Calculate(raw_value);
     Scalar ans = value_ - value;
-    while (ans >= LibXR::PI)
+    while (ans >= SCALAR_PI)
     {
-      ans -= LibXR::TWO_PI;
+      ans -= SCALAR_TWO_PI;
     }
 
-    while (ans < -LibXR::PI)
+    while (ans < -SCALAR_PI)
     {
-      ans += LibXR::TWO_PI;
+      ans += SCALAR_TWO_PI;
     }
 
     return ans;
@@ -170,14 +170,14 @@ class CycleValue
   Scalar operator-(const CycleValue& value) const
   {
     Scalar ans = value_ - value.value_;
-    while (ans >= LibXR::PI)
+    while (ans >= SCALAR_PI)
     {
-      ans -= LibXR::TWO_PI;
+      ans -= SCALAR_TWO_PI;
     }
 
-    while (ans < -LibXR::PI)
+    while (ans < -SCALAR_PI)
     {
-      ans += LibXR::TWO_PI;
+      ans += SCALAR_TWO_PI;
     }
 
     return ans;
@@ -201,14 +201,14 @@ class CycleValue
   CycleValue& operator-=(const CycleValue& value)
   {
     Scalar ans = value_ - value.value_;
-    while (ans >= LibXR::TWO_PI)
+    while (ans >= SCALAR_TWO_PI)
     {
-      ans -= LibXR::TWO_PI;
+      ans -= SCALAR_TWO_PI;
     }
 
     while (ans < 0)
     {
-      ans += LibXR::TWO_PI;
+      ans += SCALAR_TWO_PI;
     }
 
     value_ = ans;
@@ -222,7 +222,7 @@ class CycleValue
    * @return 返回取反后的 `CycleValue`。
    *         Returns the negated `CycleValue`.
    */
-  CycleValue operator-() const { return CycleValue(LibXR::TWO_PI - value_); }
+  CycleValue operator-() const { return CycleValue(SCALAR_TWO_PI - value_); }
 
   /**
    * @brief 类型转换操作符，将 `CycleValue` 转换为 `Scalar`。
@@ -258,6 +258,11 @@ class CycleValue
   Scalar Value() const { return value_; }
 
  private:
+  // 常量按 Scalar 取值，float 实例不会被提升为 double 运算。
+  // Constants in Scalar, so a float instance is not promoted to double arithmetic.
+  static constexpr Scalar SCALAR_PI = static_cast<Scalar>(LibXR::PI);
+  static constexpr Scalar SCALAR_TWO_PI = static_cast<Scalar>(LibXR::TWO_PI);
+
   Scalar value_;  ///< 存储的角度值 / The stored angle value.
 };
 

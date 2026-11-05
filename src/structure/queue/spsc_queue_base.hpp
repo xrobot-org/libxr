@@ -204,12 +204,7 @@ class alignas(LibXR::CONCURRENCY_ALIGNMENT) SPSCQueueBase
       return ErrorCode::FULL;
     }
 
-    const auto* src = static_cast<const std::byte*>(data);
-    for (size_t index = 0; index < count; ++index)
-    {
-      LibXR::Memory::FastCopy(PayloadPtr((current_tail + index) % capacity),
-                              src + index * element_size_, element_size_);
-    }
+    CopyIntoRing(current_tail, static_cast<const std::byte*>(data), count);
 
     tail_.store((current_tail + count) % capacity, std::memory_order_release);
     return ErrorCode::OK;
@@ -347,15 +342,9 @@ class alignas(LibXR::CONCURRENCY_ALIGNMENT) SPSCQueueBase
       return ErrorCode::EMPTY;
     }
 
-    auto* dst = static_cast<std::byte*>(data);
-    if (dst != nullptr)
+    if (data != nullptr)
     {
-      for (size_t index = 0; index < count; ++index)
-      {
-        LibXR::Memory::FastCopy(dst + index * element_size_,
-                                PayloadPtr((current_head + index) % capacity),
-                                element_size_);
-      }
+      CopyFromRing(current_head, static_cast<std::byte*>(data), count);
     }
 
     head_.store((current_head + count) % capacity, std::memory_order_release);
@@ -501,13 +490,7 @@ class alignas(LibXR::CONCURRENCY_ALIGNMENT) SPSCQueueBase
       return ErrorCode::EMPTY;
     }
 
-    auto* dst = static_cast<std::byte*>(data);
-    for (size_t index = 0; index < count; ++index)
-    {
-      LibXR::Memory::FastCopy(dst + index * element_size_,
-                              PayloadPtr((current_head + index) % capacity),
-                              element_size_);
-    }
+    CopyFromRing(current_head, static_cast<std::byte*>(data), count);
     return ErrorCode::OK;
   }
 
@@ -573,6 +556,84 @@ class alignas(LibXR::CONCURRENCY_ALIGNMENT) SPSCQueueBase
   const std::byte* PayloadPtr(IndexType index) const
   {
     return payloads_ + index * payload_stride_;
+  }
+
+  /**
+   * @brief 把连续存放的 payload 拷入从 `start` 起的槽位
+   *        / Copy contiguously stored payloads into the slots starting at `start`
+   * @param start 首个目标槽位 / First destination slot
+   * @param src 源字节缓冲区 / Source byte buffer
+   * @param count payload 个数，调用者已确认空间足够 / Number of payloads; the caller has
+   *              checked that they fit
+   *
+   * 槽位间距等于 payload 大小时，环形区域是连续字节，最多两段整块拷贝；payload 大小
+   * 不是对齐的整数倍时槽位带填充，逐个 payload 拷贝。
+   * When the slot stride equals the payload size the ring is contiguous bytes and at
+   * most two block copies are needed; when the payload size is not a multiple of its
+   * alignment the slots are padded and payloads are copied one by one.
+   */
+  void CopyIntoRing(IndexType start, const std::byte* src, size_t count)
+  {
+    const size_t capacity = RingCapacity();
+    DEV_ASSERT(start < capacity);
+    if (payload_stride_ == element_size_)
+    {
+      const size_t first = std::min(count, capacity - start);
+      LibXR::Memory::FastCopy(PayloadPtr(start), src, first * element_size_);
+      if (count > first)
+      {
+        LibXR::Memory::FastCopy(PayloadPtr(0U), src + first * element_size_,
+                                (count - first) * element_size_);
+      }
+      return;
+    }
+
+    IndexType index = start;
+    for (size_t offset = 0; offset < count; ++offset)
+    {
+      LibXR::Memory::FastCopy(PayloadPtr(index), src + offset * element_size_,
+                              element_size_);
+      if (++index == capacity)
+      {
+        index = 0U;
+      }
+    }
+  }
+
+  /**
+   * @brief 把从 `start` 起的槽位拷到连续缓冲区
+   *        / Copy the slots starting at `start` into a contiguous buffer
+   * @param start 首个源槽位 / First source slot
+   * @param dst 目标字节缓冲区 / Destination byte buffer
+   * @param count payload 个数，调用者已确认数据足够 / Number of payloads; the caller has
+   *              checked that they are available
+   */
+  void CopyFromRing(IndexType start, std::byte* dst, size_t count) const
+  {
+    const size_t capacity = RingCapacity();
+    DEV_ASSERT(start < capacity);
+    if (payload_stride_ == element_size_)
+    {
+      const size_t first = std::min(count, capacity - start);
+      LibXR::Memory::FastCopy(dst, PayloadPtr(start), first * element_size_);
+      if (count > first)
+      {
+        LibXR::Memory::FastCopy(dst + first * element_size_, PayloadPtr(0U),
+                                (count - first) * element_size_);
+      }
+      return;
+    }
+
+    IndexType index = start;
+    for (size_t offset = 0; offset < count; ++offset)
+    {
+      LibXR::Memory::FastCopy(dst + offset * element_size_, PayloadPtr(index),
+                              element_size_);
+      if (++index == capacity)
+      {
+        index = 0U;
+      }
+    }
   }
 
   /**
