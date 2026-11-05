@@ -27,7 +27,7 @@ CH32Watchdog::CH32Watchdog(uint32_t timeout_ms, uint32_t feed_ms, uint32_t lsi_h
 
 ErrorCode CH32Watchdog::SetConfig(const Configuration& config)
 {
-  if (config.feed_ms == 0 || config.timeout_ms == 0 || config.feed_ms > config.timeout_ms)
+  if (config.feed_ms == 0 || config.timeout_ms == 0 || config.feed_ms >= config.timeout_ms)
   {
     return ErrorCode::ARG_ERR;
   }
@@ -66,9 +66,9 @@ ErrorCode CH32Watchdog::SetConfig(const Configuration& config)
   auto_feed_interval_ms = config.feed_ms;
 
   StartLsi();
-  // 已在运行时立即换成新的超时；PSCR/RLDR 只能在上一次更新完成（PVU/RVU 为 0）后写。
-  // While running, the new timeout applies at once; PSCR/RLDR may be written only after
-  // the previous update has completed (PVU/RVU clear).
+  // PSCR/RLDR 只能在上一次更新完成（PVU/RVU 为 0）后写。
+  // PSCR/RLDR may be written only after the previous update has completed (PVU/RVU
+  // clear).
   while (IWDG_GetFlagStatus(IWDG_FLAG_PVU | IWDG_FLAG_RVU) != RESET)
   {
   }
@@ -76,6 +76,15 @@ ErrorCode CH32Watchdog::SetConfig(const Configuration& config)
   IWDG_SetPrescaler(prescaler_);
   IWDG_SetReload(reload_);
   IWDG_WriteAccessCmd(IWDG_WriteAccess_Disable);
+  // 计数器还是旧配置留下的值，新超时要到下一次喂狗才生效；等更新完成后喂一次，让它
+  // 立即生效，否则旧的剩余时间可能比新的喂狗周期短。
+  // The counter still holds what the old configuration left, and the new timeout applies
+  // from the next feed; feed once the update has completed so that it applies at once.
+  // Otherwise the time left could be shorter than the new feed interval.
+  while (IWDG_GetFlagStatus(IWDG_FLAG_PVU | IWDG_FLAG_RVU) != RESET)
+  {
+  }
+  IWDG_ReloadCounter();
   return ErrorCode::OK;
 }
 
