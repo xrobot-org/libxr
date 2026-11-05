@@ -278,17 +278,22 @@ ErrorCode CH32SPI::SetConfig(SPI::Configuration config)
 
 ErrorCode CH32SPI::PollingTransfer(uint8_t* rx, const uint8_t* tx, uint32_t len)
 {
+  // 逐字节直接读写 STATR / DATAR：短传输的耗时主要在每字节的开销上。
+  // STATR / DATAR are accessed directly per byte: short transfers are dominated by the
+  // per-byte overhead.
+  auto& statr = instance_->STATR;
+  auto& datar = instance_->DATAR;
   for (uint32_t i = 0; i < len; ++i)
   {
-    while (SPI_I2S_GetFlagStatus(instance_, SPI_I2S_FLAG_TXE) == RESET)
+    while ((statr & SPI_I2S_FLAG_TXE) == 0U)
     {
     }
-    SPI_I2S_SendData(instance_, tx ? tx[i] : 0x00);
+    datar = tx ? tx[i] : 0x00;
 
-    while (SPI_I2S_GetFlagStatus(instance_, SPI_I2S_FLAG_RXNE) == RESET)
+    while ((statr & SPI_I2S_FLAG_RXNE) == 0U)
     {
     }
-    uint16_t d = SPI_I2S_ReceiveData(instance_);
+    const uint16_t d = datar;
     if (rx)
     {
       rx[i] = static_cast<uint8_t>(d & 0xff);
