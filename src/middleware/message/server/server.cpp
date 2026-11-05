@@ -45,158 +45,143 @@ size_t Topic::Server::ParseDataFromCallback(ConstRawData data, bool in_isr)
 size_t Topic::Server::ParseDataRaw(ConstRawData data, bool from_callback, bool in_isr)
 {
   size_t count = 0;
+  const auto* bytes = static_cast<const uint8_t*>(data.addr_);
+  size_t remaining = data.size_;
 
-  (void)queue_.PushBatchBytes(data.addr_, data.size_);
-
-  while (true)
+  // 输入可能比队列剩余空间大：按剩余空间分段压入，每段之后先解析腾出空间。解析完队里最多
+  // 剩一个没收全的包，它比队列短，所以下一段总有空位。
+  // Input may exceed the free queue space: push it in pieces that fit and parse after
+  // each piece to make room. After parsing at most one incomplete packet stays queued,
+  // and it is shorter than the queue, so the next piece always has room.
+  while (remaining > 0)
   {
-    if (status_ == Status::WAIT_START && !SyncToPacketStart())
-    {
-      return count;
-    }
+    const size_t piece = LibXR::min(remaining, queue_.EmptySize());
+    ASSERT(piece > 0);
+    (void)queue_.PushBatchBytes(bytes, piece);
+    bytes += piece;
+    remaining -= piece;
+    count += ParseQueued(from_callback, in_isr);
+  }
+  return count;
+}
 
-    if (status_ == Status::WAIT_TOPIC && !ReadHeader())
+size_t Topic::Server::ParseQueued(bool from_callback, bool in_isr)
+{
+  size_t count = 0;
+  while (SyncToPacketStart())
+  {
+    const Step step = HandleFrontPacket(from_callback, in_isr);
+    if (step == Step::NEED_MORE)
     {
-      return count;
+      break;
     }
-
-    if (status_ == Status::WAIT_DATA_CRC)
+    if (step == Step::DELIVERED)
     {
-      switch (ReadPayload(from_callback, in_isr))
-      {
-        case ParseResult::NEED_MORE:
-          return count;
-        case ParseResult::DROPPED:
-          continue;
-        case ParseResult::DELIVERED:
-          count++;
-          continue;
-      }
+      count++;
     }
   }
+  return count;
 }
 
 bool Topic::Server::SyncToPacketStart()
 {
-  auto queue_size = queue_.Size();
-  for (uint32_t i = 0; i < queue_size; i++)
+  while (queue_.Size() > 0)
   {
     uint8_t prefix = 0;
     queue_.PeekBytes(&prefix);
     if (prefix == PACKET_PREFIX)
     {
-      status_ = Status::WAIT_TOPIC;
       return true;
     }
     queue_.PopBytes();
   }
-
   return false;
 }
 
-bool Topic::Server::ReadHeader()
+Topic::Server::Step Topic::Server::HandleFrontPacket(bool from_callback, bool in_isr)
 {
-  if (queue_.Size() < sizeof(PackedDataHeader))
-  {
-    return false;
-  }
-
-  queue_.PopBatchBytes(parse_buff_.addr_, sizeof(PackedDataHeader));
-  if (!CRC8::Verify(parse_buff_.addr_, sizeof(PackedDataHeader)))
-  {
-    ResetParser();
-    return true;
-  }
-
+  constexpr size_t HEADER_SIZE = sizeof(PackedDataHeader);
   auto* header = reinterpret_cast<PackedDataHeader*>(parse_buff_.addr_);
+
+  // 1. 头部收全后先只看不取。头部 CRC 不对，说明队首的前缀字节只是数据里碰巧出现的
+  //    0x5A：只丢这一个字节，从下一个字节接着找，后面的真包一个字节都不少。
+  //    Peek the header once it is complete. A bad header CRC means the prefix at the
+  //    front is a 0x5A that merely occurs in the data: drop that one byte and search
+  //    on from the next, so no byte of a following real packet is lost.
+  if (queue_.Size() < HEADER_SIZE)
+  {
+    return Step::NEED_MORE;
+  }
+  queue_.PeekBatchBytes(parse_buff_.addr_, HEADER_SIZE);
+  if (!CRC8::Verify(parse_buff_.addr_, HEADER_SIZE))
+  {
+    queue_.PopBytes();
+    return Step::DISCARDED;
+  }
+
+  // 2. 按头部声明的长度等整包到齐，再校验整包 CRC。比队列还长的包收不下，按假前缀处理；
+  //    整包 CRC 不对同样只丢一个字节。
+  //    Wait for the whole packet by the declared length, then check the packet CRC. A
+  //    packet longer than the queue cannot be held and is treated as a false prefix; a
+  //    bad packet CRC likewise drops only one byte.
+  const uint32_t data_len = header->GetDataLen();
+  const size_t packet_size = data_len + PACK_BASE_SIZE;
+  if (packet_size > queue_.MaxSize())
+  {
+    queue_.PopBytes();
+    return Step::DISCARDED;
+  }
+  if (queue_.Size() < packet_size)
+  {
+    return Step::NEED_MORE;
+  }
+  queue_.PeekBatchBytes(parse_buff_.addr_, packet_size);
+  if (!CRC8::Verify(parse_buff_.addr_, packet_size))
+  {
+    queue_.PopBytes();
+    return Step::DISCARDED;
+  }
+
+  // 3. 整包校验通过，是一个真包，从队列取走；后面的字节从下一个包开始。版本不对或 topic
+  //    没注册的真包整包跳过，不在它的 payload 里重新找前缀。
+  //    Both CRCs pass, so this is a real packet: remove it from the queue, and the
+  //    following bytes start at the next packet. A real packet with another version or
+  //    an unregistered topic is skipped whole, without searching its payload for a
+  //    prefix.
+  queue_.PopBatchBytes(nullptr, packet_size);
   if (header->version != PACKET_VERSION)
   {
-    ResetParser();
-    return true;
+    return Step::DISCARDED;
   }
-
   auto* node = topic_map_.Search<TopicHandle>(header->topic_name_crc32);
   if (node == nullptr)
   {
-    ResetParser();
-    return true;
+    return Step::DISCARDED;
   }
 
-  data_len_ = header->GetDataLen();
-  current_timestamp_ = header->GetTimestamp();
-  current_topic_ = *node;
-  const auto target_size = current_topic_->data_.payload_size;
-
-  if (target_size + PACK_BASE_SIZE > parse_buff_.size_)
-  {
-    ResetParser();
-    return true;
-  }
-
-  if (data_len_ + PACK_BASE_SIZE > queue_.length_)
-  {
-    ResetParser();
-    return true;
-  }
-
-  status_ = Status::WAIT_DATA_CRC;
-  return true;
-}
-
-Topic::Server::ParseResult Topic::Server::ReadPayload(bool from_callback, bool in_isr)
-{
-  if (queue_.Size() < data_len_ + sizeof(uint8_t))
-  {
-    return ParseResult::NEED_MORE;
-  }
-
-  auto* payload_addr =
-      reinterpret_cast<uint8_t*>(parse_buff_.addr_) + sizeof(PackedDataHeader);
-  queue_.PopBatchBytes(payload_addr, data_len_ + sizeof(uint8_t));
-
-  if (!CRC8::Verify(parse_buff_.addr_,
-                    data_len_ + sizeof(PackedDataHeader) + sizeof(uint8_t)))
-  {
-    ResetParser();
-    return ParseResult::DROPPED;
-  }
-
-  const auto target_size = current_topic_->data_.payload_size;
+  TopicHandle topic_handle = *node;
+  const MicrosecondTimestamp timestamp = header->GetTimestamp();
+  const auto target_size = topic_handle->data_.payload_size;
+  auto* payload_addr = reinterpret_cast<uint8_t*>(parse_buff_.addr_) + HEADER_SIZE;
   void* publish_addr = payload_addr;
-  if (reinterpret_cast<uintptr_t>(payload_addr) %
-          current_topic_->data_.payload_alignment !=
+  if (reinterpret_cast<uintptr_t>(payload_addr) % topic_handle->data_.payload_alignment !=
       0)
   {
+    // 暂存缓冲区按缓存行对齐，挪到开头即满足对齐 / The staging buffer is cache-line
+    // aligned, so moving to its start satisfies the alignment.
     publish_addr = parse_buff_.addr_;
-    if (data_len_ >= target_size)
-    {
-      LibXR::Memory::FastMove(publish_addr, payload_addr, target_size);
-    }
-    else
-    {
-      LibXR::Memory::FastMove(publish_addr, payload_addr, data_len_);
-    }
+    LibXR::Memory::FastMove(publish_addr, payload_addr,
+                            data_len >= target_size ? target_size : data_len);
   }
 
-  auto topic = Topic(current_topic_);
+  auto topic = Topic(topic_handle);
   if (from_callback)
   {
-    topic.PublishBytesFromServerCallback(publish_addr, target_size, current_timestamp_,
-                                         in_isr);
+    topic.PublishBytesFromServerCallback(publish_addr, target_size, timestamp, in_isr);
   }
   else
   {
-    topic.PublishBytesFromServer(publish_addr, target_size, current_timestamp_);
+    topic.PublishBytesFromServer(publish_addr, target_size, timestamp);
   }
-
-  ResetParser();
-  return ParseResult::DELIVERED;
-}
-
-void Topic::Server::ResetParser()
-{
-  status_ = Status::WAIT_START;
-  data_len_ = 0;
-  current_topic_ = nullptr;
-  current_timestamp_ = MicrosecondTimestamp();
+  return Step::DELIVERED;
 }
