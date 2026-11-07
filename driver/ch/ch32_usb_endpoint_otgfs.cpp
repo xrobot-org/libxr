@@ -571,13 +571,15 @@ void CH32EndpointOtgFs::TransferComplete(size_t size)
     return;
   }
 
-  // 共享模式（含 EP0 与 ISO）：每包完成，actual = RX_LEN，不推进 DMA；包间由
-  // INT_BUSY 自动 NAK 挡住，类消费槽后重新挂接收。
-  if (!IS_EP0)
-  {
-    *get_rx_ctrl_addr(GetNumber()) =
-        (*get_rx_ctrl_addr(GetNumber()) & ~USBFS_UEP_R_RES_MASK) | USBFS_UEP_R_RES_NAK;
-  }
+  // 共享模式（含 EP0 与 ISO）：每包完成，actual = RX_LEN，不推进 DMA。这里改回 NAK：
+  // 中断标志清掉后 INT_BUSY 不再挡事务，而下一次挂接收要等核心的服务；其间到达的包会被
+  // 硬件应答，却没有人收。
+  // Shared mode (EP0 and ISO included): one completion per packet, actual = RX_LEN, the
+  // DMA does not advance. Back to NAK here: once the interrupt flag is cleared, INT_BUSY
+  // holds no transaction off, and the next receive is armed only when the core runs; a
+  // packet arriving in between would be acknowledged by the hardware and taken by nobody.
+  *get_rx_ctrl_addr(GetNumber()) =
+      (*get_rx_ctrl_addr(GetNumber()) & ~USBFS_UEP_R_RES_MASK) | USBFS_UEP_R_RES_NAK;
   transfer_accumulated_ = size;
   transfer_active_ = false;
   hw_completed_ = true;

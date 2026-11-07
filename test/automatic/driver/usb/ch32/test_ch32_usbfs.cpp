@@ -1,7 +1,8 @@
 // CH32 USBFS bulk endpoints (driver/ch/ch32_usb_endpoint_otgfs.cpp) against a fake register
 // block: the real endpoint and endpoint core, with the test playing the controller. The
 // cases cover a shared bidirectional endpoint (one 128 byte block: OUT in the first 64
-// bytes, IN fixed at +64) and the receive of a multi-packet request.
+// bytes, IN fixed at +64), the receive of a multi-packet request and a control write on
+// EP0.
 
 #include <cstdint>
 #include <cstdio>
@@ -153,6 +154,38 @@ void TestResendKeepsAcceptedPackets()
   ep.TransferComplete(64);  // second packet taken
   TEST_ASSERT(rec.list.size() == 1 && rec.list[0].actual == 128);
 }
+
+// A control write of two packets on EP0. After the first packet the receive stays at NAK
+// until the core arms the next one: once the interrupt flag is cleared INT_BUSY holds
+// nothing off, and at ACK the hardware would acknowledge the next packet with nobody to
+// take it. The second packet is armed as DATA0.
+void TestEp0OutNakBetweenPackets()
+{
+  MapReset reset;
+  Block<64> storage;
+  EndpointPool pool{2};
+  CH32EndpointOtgFs ep{Endpoint::EPNumber::EP0, Direction::OUT, storage.Raw(), false};
+  Recorder rec;
+  pool.SetSpeed(Speed::FULL);
+  TEST_ASSERT(pool.Put(&ep) == ErrorCode::OK);
+  ep.SetOnComplete(rec.Bind());
+  TEST_ASSERT(ep.Configure({Direction::OUT, Endpoint::Type::CONTROL, 64}, false) ==
+              ErrorCode::OK);
+  ep.tog_ = true;  // the first packet after SETUP is DATA1
+  TEST_ASSERT(ep.Receive(64, false) == ErrorCode::OK);
+  TEST_ASSERT((fake_usbfsd.UEP0_RX_CTRL & USBFS_UEP_R_RES_MASK) == USBFS_UEP_R_RES_ACK);
+  TEST_ASSERT((fake_usbfsd.UEP0_RX_CTRL & USBFS_UEP_R_TOG) != 0u);
+
+  fake_usbfsd.INT_ST = USBFS_U_TOG_OK;
+  ep.TransferComplete(64);
+  TEST_ASSERT(rec.list.size() == 1 && rec.list[0].actual == 64);
+  TEST_ASSERT((fake_usbfsd.UEP0_RX_CTRL & USBFS_UEP_R_RES_MASK) == USBFS_UEP_R_RES_NAK);
+
+  TEST_ASSERT(ep.ReleaseSlot(rec.list[0].slot, false) == ErrorCode::OK);
+  TEST_ASSERT(ep.Receive(64, false) == ErrorCode::OK);
+  TEST_ASSERT((fake_usbfsd.UEP0_RX_CTRL & USBFS_UEP_R_RES_MASK) == USBFS_UEP_R_RES_ACK);
+  TEST_ASSERT((fake_usbfsd.UEP0_RX_CTRL & USBFS_UEP_R_TOG) == 0u);
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -163,5 +196,6 @@ int main(int argc, char** argv)
   if (wanted("shared_dma_base")) TestSharedDmaBase();
   if (wanted("shared_in_small_packets")) TestSharedInSmallPackets();
   if (wanted("resend_keeps_packets")) TestResendKeepsAcceptedPackets();
-  std::puts("CH32 USBFS shared block, small IN packets and OUT resend passed");
+  if (wanted("ep0_out_nak")) TestEp0OutNakBetweenPackets();
+  std::puts("CH32 USBFS shared block, small IN packets, OUT resend and EP0 OUT passed");
 }
