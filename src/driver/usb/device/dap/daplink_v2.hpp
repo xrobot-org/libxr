@@ -1833,6 +1833,12 @@ class DapLinkV2Class : public DeviceClass
   ErrorCode HandleInfo(const uint8_t* req, uint16_t req_len, uint8_t* resp,
                        uint16_t resp_cap, uint16_t& out_len)
   {
+    if (resp_cap < 2u)
+    {
+      out_len = 0;
+      return ErrorCode::NOT_FOUND;
+    }
+
     if (req_len < 2u)
     {
       resp[0] = ToU8(LibXR::USB::DapLinkV2Def::CommandId::INFO);
