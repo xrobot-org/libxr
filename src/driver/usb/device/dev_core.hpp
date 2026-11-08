@@ -151,6 +151,7 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   void Stall(bool in_isr);
   void DeliverBusTime(bool in_isr);
   bool TakeCapturedSetup(SetupPacket& setup);
+  bool Superseded();
 
   EndpointPool& pool_;
   DeviceComposition composition_;

@@ -1253,14 +1253,25 @@ class TestDevice : public DeviceCore<BasicCapabilities>
   void Stop(bool) override {}
   std::vector<ControlContext> address_phases;
   unsigned stop_timeouts = 0;
+  unsigned control_ready = 0;
+  // Runs once when a SET_ADDRESS status stage completes, as an interrupt that arrives
+  // while the owner is still handling that completion.
+  std::function<void()> on_status_in;
 
  protected:
   ErrorCode SetAddress(uint8_t, ControlContext context) override
   {
     address_phases.push_back(context);
+    if (context == ControlContext::STATUS_IN_COMPLETE && on_status_in)
+    {
+      auto hook = std::move(on_status_in);
+      on_status_in = nullptr;
+      hook();
+    }
     return ErrorCode::OK;
   }
   void OnStopTimeout(bool) override { ++stop_timeouts; }
+  void OnControlReady() override { ++control_ready; }
 };
 
 struct ControlFixture
@@ -1355,6 +1366,7 @@ void TestControlTransactions()
   f.in0.Complete();
   f.Setup(device, 0, 5, 7, 0);
   TEST_ASSERT(f.in0.active && f.in0.Last().length == 0);
+  const unsigned ready_before = device.control_ready;
   {
     EndpointPool::InterruptScope batch(f.pool);
     f.in0.Complete(true);
@@ -1364,6 +1376,54 @@ void TestControlTransactions()
   TEST_ASSERT(device.address_phases.size() == 3 &&
               device.address_phases.back() == ControlContext::STATUS_IN_COMPLETE);
   TEST_ASSERT(f.in0.active && f.in0.Last().data == std::vector<uint8_t>{0});
+  // SET_ADDRESS finished while the next SETUP replaced it: EP0 is not reopened, the new
+  // SETUP has set it up. Its own finish reopens EP0.
+  TEST_ASSERT(device.control_ready == ready_before);
+  f.in0.Complete();
+  f.out0.HostSends({});
+  TEST_ASSERT(device.control_ready == ready_before + 1);
+
+  // The next SETUP is captured while the owner is still handling the SET_ADDRESS status
+  // completion: that finish does not reopen EP0 either, and the new SETUP is served.
+  f.Setup(device, 0, 5, 9, 0);
+  TEST_ASSERT(f.in0.active && f.in0.Last().length == 0);
+  const unsigned ready_late = device.control_ready;
+  SetupPacket late{0x80, 8, 0, 0, 1};
+  device.on_status_in = [&]
+  {
+    f.in0.active = false;
+    f.out0.active = false;
+    device.OnSetupPacket(true, &late);
+  };
+  f.in0.Complete();
+  TEST_ASSERT(device.address_phases.back() == ControlContext::STATUS_IN_COMPLETE);
+  TEST_ASSERT(device.control_ready == ready_late);
+  TEST_ASSERT(f.in0.active && f.in0.Last().data == std::vector<uint8_t>{0});
+  f.in0.Complete();
+  f.out0.HostSends({});
+  TEST_ASSERT(device.control_ready == ready_late + 1);
+
+  // A class IN transfer the host completed (data and status) before the next SETUP, all
+  // handled in one batch: it still completes, not aborts, and EP0 is not reopened.
+  f.Setup(device, 0, 9, 1, 0);  // SET_CONFIGURATION 1: class requests need it.
+  f.in0.Complete();
+  klass.response_size = 6;
+  f.Setup(device, 0xA1, 0x70, 0, 6);
+  TEST_ASSERT(f.in0.active && f.in0.Last().length == 6 && f.out0.active);
+  const size_t completes = klass.complete_count, aborts = klass.abort_count;
+  const unsigned ready_batch = device.control_ready;
+  {
+    EndpointPool::InterruptScope batch(f.pool);
+    f.in0.Complete(true);
+    f.out0.HostSends({});
+    SetupPacket next{0x80, 8, 0, 0, 1};
+    device.OnSetupPacket(true, &next);
+  }
+  TEST_ASSERT(klass.complete_count == completes + 1 && klass.abort_count == aborts);
+  TEST_ASSERT(device.control_ready == ready_batch);
+  TEST_ASSERT(f.in0.active && f.in0.Last().data == std::vector<uint8_t>{1});
+  f.in0.Complete();
+  f.out0.HostSends({});
 
   device.OnSuspend(true);
   TEST_ASSERT(device.IsInited());

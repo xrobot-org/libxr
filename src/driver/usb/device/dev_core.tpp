@@ -220,6 +220,20 @@ bool DeviceCore<C>::TakeCapturedSetup(SetupPacket& setup)
   return true;
 }
 
+// A newer SETUP replaces the transfer now (HandleSetup retires its completions) or has
+// been captured and waits for the owner. Either way it ends the current transfer, and
+// its completions must not arm, stall or reopen EP0: the IRQ that captured the SETUP set
+// EP0 up for it, and a late arm lets the controller exchange the new transfer's packets
+// with the old request (CH32 USBHS takes the data stage into nothing and hangs; an IN
+// would answer with old data). Read under the guard the capture is published under.
+template <typename C>
+bool DeviceCore<C>::Superseded()
+{
+  if (replacing_setup_) return true;
+  EndpointPool::HardwareScope hardware(&pool_);
+  return captured_setup_pending_;
+}
+
 template <typename C>
 void DeviceCore<C>::HandleSetup(bool in_isr, const SetupPacket& setup)
 {
@@ -283,9 +297,15 @@ void DeviceCore<C>::Finish(bool in_isr)
   phase_ = Phase::IDLE;
   status_out_armed_ = false;
   status_out_seen_ = false;
+  // A transfer that finishes after a newer SETUP arrived (the owner handles the old
+  // completion late, or the new SETUP retires it) must not reopen EP0: that SETUP has
+  // already set EP0 up for itself, and its own data stage arms OUT when it starts. A late
+  // reopen lets the controller take the new data stage with nothing armed to receive it
+  // (CH32 USBHS: RX goes to ACK, the packets are dropped and the transfer hangs). The
+  // capture happens under the same guard, so the check and the reopen are atomic to it.
   {
     EndpointPool::HardwareScope hardware(&pool_);
-    OnControlReady();
+    if (!replacing_setup_ && !captured_setup_pending_) OnControlReady();
   }
   if (previous) previous->OnControlComplete(in_isr, completed);
 }
@@ -377,7 +397,7 @@ void DeviceCore<C>::InComplete(bool in_isr, const Endpoint::Completion& completi
   if (!IsInited() || completion.result == ErrorCode::ABORTED) return;
   if (completion.result != ErrorCode::OK)
   {
-    if (!replacing_setup_) Stall(in_isr);
+    if (!Superseded()) Stall(in_isr);
     return;
   }
   if (phase_ == Phase::STATUS_IN)
@@ -390,15 +410,18 @@ void DeviceCore<C>::InComplete(bool in_isr, const Endpoint::Completion& completi
     Finish(in_isr);
     return;
   }
+  // A newer SETUP waits or replaces this transfer: its bookkeeping goes on (a transfer
+  // the host completed still completes), but nothing of it may stall EP0 or send on it.
+  const bool superseded = Superseded();
   if (phase_ != Phase::DATA_IN || completion.actual != in_segment_size_)
   {
-    if (!replacing_setup_) Stall(in_isr);
+    if (!superseded) Stall(in_isr);
     return;
   }
   transferred_ += completion.actual;
   if (transferred_ < control_in_.size_)
   {
-    if (!replacing_setup_ && !status_out_seen_) SendNextIn(in_isr);
+    if (!superseded && !status_out_seen_) SendNextIn(in_isr);
     return;
   }
   if (control_class_)
@@ -406,7 +429,7 @@ void DeviceCore<C>::InComplete(bool in_isr, const Endpoint::Completion& completi
     ConstRawData complete = control_in_;
     if (control_class_->OnControlData(in_isr, setup_, complete) != ErrorCode::OK)
     {
-      Stall(in_isr);
+      if (!superseded) Stall(in_isr);
       return;
     }
   }
@@ -435,14 +458,14 @@ void DeviceCore<C>::OutComplete(bool in_isr, const Endpoint::Completion& complet
   {
     if (completion.result != ErrorCode::OK || completion.actual != 0U)
     {
-      Stall(in_isr);
+      if (!Superseded()) Stall(in_isr);
       return;
     }
     status_out_seen_ = true;
     if (phase_ == Phase::STATUS_OUT) Finish(in_isr);
     return;
   }
-  if (phase_ != Phase::DATA_OUT || replacing_setup_) return;
+  if (phase_ != Phase::DATA_OUT || Superseded()) return;
   if (!data_stage || !fits)
   {
     Stall(in_isr);
