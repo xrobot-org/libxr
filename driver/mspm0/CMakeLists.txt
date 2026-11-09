@@ -1,5 +1,6 @@
 set(_xr_mspm0_driver_sources
     ${CMAKE_CURRENT_LIST_DIR}/mspm0_group1_shared.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/mspm0_flash.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mspm0_gpio.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mspm0_pwm.cpp
     ${CMAKE_CURRENT_LIST_DIR}/mspm0_timebase.cpp
