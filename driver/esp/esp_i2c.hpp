@@ -8,10 +8,18 @@
 #include "esp_def.hpp"
 #include "esp_intr_alloc.h"
 #include "flag.hpp"
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
+#endif
 #include "hal/i2c_hal.h"
+#include "hal/i2c_periph.h"
 #include "hal/i2c_types.h"
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 #include "i2c.hpp"
-#include "soc/i2c_periph.h"
 #include "soc/soc_caps.h"
 
 namespace LibXR
@@ -47,7 +55,13 @@ class ESP32I2C : public I2C
   i2c_port_t Port() const { return port_num_; }
 
  private:
+#if defined(SOC_I2C_FIFO_LEN)
   static constexpr size_t FIFO_LEN = SOC_I2C_FIFO_LEN;
+#elif defined(I2C_LL_FIFO_LEN)
+  static constexpr size_t FIFO_LEN = I2C_LL_FIFO_LEN;
+#else
+  static constexpr size_t FIFO_LEN = 32U;
+#endif
   static constexpr size_t MAX_WRITE_PAYLOAD = (FIFO_LEN > 4U) ? (FIFO_LEN - 4U) : 0U;
   static constexpr size_t MAX_WRITE_READ_PREFIX = (FIFO_LEN > 5U) ? (FIFO_LEN - 5U) : 0U;
   static constexpr size_t MAX_READ_PAYLOAD = (FIFO_LEN > 4U) ? (FIFO_LEN - 4U) : FIFO_LEN;

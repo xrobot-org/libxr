@@ -51,6 +51,30 @@ uint64_t CalcPollingTimeoutUs(size_t size, uint32_t bus_hz)
   return std::max<uint64_t>(100ULL, wire_time_us * 8ULL + 50ULL);
 }
 
+inline void SpiEnableClockAtomic(spi_host_device_t host_id, bool enable)
+{
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
+  PERIPH_RCC_ATOMIC() { spi_ll_enable_clock(host_id, enable); }
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+}
+
+inline void SpiSetClockSourceAtomic(spi_dev_t* hw, spi_clock_source_t clk_source)
+{
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
+  PERIPH_RCC_ATOMIC() { spi_ll_set_clk_source(hw, clk_source); }
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+}
+
 #if SOC_GDMA_SUPPORTED
 esp_err_t DmaReset(gdma_channel_handle_t chan) { return gdma_reset(chan); }
 
@@ -193,7 +217,7 @@ ErrorCode ESP32SPI::InitializeHardware()
     spi_ll_enable_bus_clock(host_, true);
     spi_ll_reset_register(host_);
   }
-  spi_ll_enable_clock(host_, true);
+  SpiEnableClockAtomic(host_, true);
   spi_ll_master_init(hw_);
 
   const spi_line_mode_t line_mode = {
@@ -216,7 +240,7 @@ ErrorCode ESP32SPI::InitializeHardware()
   hw_->user.usr_command = 0;
   hw_->user.usr_addr = 0;
 
-  spi_ll_set_clk_source(hw_, SPI_CLK_SRC_DEFAULT);
+  SpiSetClockSourceAtomic(hw_, SPI_CLK_SRC_DEFAULT);
   if (ResolveClockSource(source_clock_hz_) != ErrorCode::OK)
   {
     return ErrorCode::INIT_ERR;
@@ -313,22 +337,21 @@ ErrorCode ESP32SPI::InitDmaBackend()
     return ErrorCode::OK;
   }
 
-  spi_dma_ctx_t* ctx = nullptr;
-  if (spicommon_dma_chan_alloc(host_, SPI_DMA_CH_AUTO, &ctx) != ESP_OK)
-  {
-    return ErrorCode::INIT_ERR;
-  }
-
   const size_t cfg_max_size = std::max(dma_rx_raw_.size_, dma_tx_raw_.size_);
   int actual_max_size = 0;
-  if (spicommon_dma_desc_alloc(ctx, static_cast<int>(cfg_max_size), &actual_max_size) !=
-      ESP_OK)
+  if (spicommon_dma_chan_alloc(host_, SPI_DMA_CH_AUTO, 0) != ESP_OK)
   {
-    (void)spicommon_dma_chan_free(ctx);
     return ErrorCode::INIT_ERR;
   }
 
-  dma_ctx_ = ctx;
+  if (spicommon_dma_desc_alloc(host_, static_cast<int>(cfg_max_size), &actual_max_size) !=
+      ESP_OK)
+  {
+    (void)spicommon_dma_chan_free(host_);
+    return ErrorCode::INIT_ERR;
+  }
+
+  dma_ctx_ = spi_bus_get_dma_ctx(host_);
   dma_enabled_ = true;
   dma_max_transfer_bytes_ =
       std::min<size_t>({static_cast<size_t>(actual_max_size), dma_rx_raw_.size_,

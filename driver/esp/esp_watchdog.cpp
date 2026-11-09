@@ -1,10 +1,13 @@
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wattributes"
+#endif
 #include "esp_watchdog.hpp"
 
 #include <cstdint>
 
 #include "esp_private/periph_ctrl.h"
 #include "hal/mwdt_ll.h"
-#include "hal/timer_ll.h"
+#include "hal/timg_ll.h"
 #include "soc/rtc.h"
 
 namespace LibXR
@@ -15,7 +18,7 @@ namespace
 constexpr uint32_t MWDT_TICK_US = 500;
 constexpr uint32_t MWDT_TICKS_PER_MS = 1000 / MWDT_TICK_US;
 
-bool GetMwdtGroupInfo(wdt_inst_t instance, int* group_id, periph_module_t* periph)
+bool GetMwdtGroupInfo(wdt_inst_t instance, int* group_id, shared_periph_module_t* periph)
 {
   if (instance == WDT_MWDT0)
   {
@@ -76,20 +79,27 @@ ErrorCode ESP32Watchdog::InitializeHardware()
   if (instance_ != WDT_RWDT)
   {
     int group_id = 0;
-    periph_module_t periph = PERIPH_TIMG0_MODULE;
+    shared_periph_module_t periph = PERIPH_TIMG0_MODULE;
     if (!GetMwdtGroupInfo(instance_, &group_id, &periph))
     {
       return ErrorCode::NOT_SUPPORT;
     }
 
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
     PERIPH_RCC_ACQUIRE_ATOMIC(periph, ref_count)
     {
       if (ref_count == 0)
       {
-        timer_ll_enable_bus_clock(group_id, true);
-        timer_ll_reset_register(group_id);
+        timg_ll_enable_bus_clock(group_id, true);
+        timg_ll_reset_register(group_id);
       }
     }
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
   }
 
   const uint32_t prescaler = instance_ == WDT_RWDT ? 0U : MWDT_LL_DEFAULT_CLK_PRESCALER;
