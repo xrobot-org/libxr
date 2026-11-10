@@ -104,19 +104,16 @@ struct Mode
   bool setup_event_early = false;  ///< 见 Controller::setup_packet_event_early
   unsigned flush_reads = 1;        ///< 见 Controller::self_clear_reads
   unsigned disable_latency = 6;    ///< 见 Controller::disable_latency
+  unsigned gonak_latency = 0;      ///< 见 Controller::gonak_latency
 };
 
 constexpr Mode NORMAL{"SETUP event at the end of the SETUP stage"};
 constexpr Mode EARLY{"SETUP event with the packet", true};
-constexpr Mode SLOW{"slow flush and disable", false, 3, 12};
+constexpr Mode SLOW{"slow flush, disable and global OUT NAK", false, 3, 12, 9};
 constexpr Mode IMMEDIATE{"endpoint disable takes effect at once", false, 1, 0};
 constexpr Mode MODES[] = {NORMAL, EARLY, SLOW, IMMEDIATE};
 
 RawData Mem(size_t bytes) { return {Arena().Alloc(bytes, 64U), bytes}; }
-
-/// 这个后端禁用 OUT 端点时不先进入全局 OUT NAK；作为"发现"单独列出
-/// This backend disables an OUT endpoint without the global OUT NAK; listed as a finding
-constexpr const char* OUT_DISABLE_RULE = "without global OUT NAK";
 
 /// 控制器模型、主机脚本和中断入口 / Controller model, host script and interrupt entry
 struct Rig
@@ -136,7 +133,7 @@ struct Rig
     hw.self_clear_reads = selected.flush_reads;
     hw.ahbidl_follows_flush = selected.flush_reads > 1U;
     hw.disable_latency = selected.disable_latency;
-    hw.tolerated.emplace_back(OUT_DISABLE_RULE);
+    hw.gonak_latency = selected.gonak_latency;
   }
   ~Rig()
   {
@@ -469,20 +466,6 @@ void RunAll()
 
 void FindingStopInProgress() { TestStopIn<ExactProbe>(NORMAL); }
 
-/// 手册要求先进入全局 OUT NAK 再禁用 OUT 端点；这个后端直接写 EPDIS。
-/// The manual requires the global OUT NAK before an OUT endpoint is disabled; this
-/// backend writes EPDIS directly.
-void FindingOutDisableWithoutGlobalNak()
-{
-  Probe f(NORMAL);
-  f.hw.tolerated.clear();
-  f.Up();
-  TEST_ASSERT(f.probe.bulk_out->Receive(64, false) == ErrorCode::OK);
-  f.probe.bulk_out->Flush(false);
-  f.host.Sof(3);
-  TEST_ASSERT(f.probe.bulk_out_log.Count(ErrorCode::ABORTED) == 1U);
-}
-
 }  // namespace
 
 int main(int argc, char** argv)
@@ -490,9 +473,8 @@ int main(int argc, char** argv)
   const int handled = TestFindings::Run(
       argc, argv,
       {{"stop_in_progress", "a stopped IN request reports bytes the host did not take",
-        FindingStopInProgress, "log.items[0].actual == 0U && log.items[1].actual == 0U"},
-       {"out_disable_without_global_nak", "OUT endpoint disabled without global OUT NAK",
-        FindingOutDisableWithoutGlobalNak, "disabled without global OUT NAK"}});
+        FindingStopInProgress,
+        "log.items[0].actual == 0U && log.items[1].actual == 0U"}});
   if (handled >= 0) return handled;
   RunAll();
   std::printf("esp usb: all tests passed\n");

@@ -316,6 +316,10 @@ class ESP32USBDevice : public USB::EndpointPool,
   /// 确认所有等待中的停止（控制器复位路径）/ Confirm every waiting stop (the
   /// controller-reset path)
   void ForceStopAll(bool in_isr);
+  /// 全局 OUT NAK，由所有正在停止的 OUT 端点共用 / Global OUT NAK, shared by every OUT
+  /// endpoint that is stopping
+  void AcquireGlobalOutNak();
+  void ReleaseGlobalOutNak();
   /// 复位链的条件：单段，节拍上直接执行 / Reset-chain condition: one stage, runs on the
   /// tick directly
   static bool ResetCheck(void* arg);
@@ -336,6 +340,8 @@ class ESP32USBDevice : public USB::EndpointPool,
       {};  ///< 运行时资源与全局状态 / Runtime resource ownership and global flags
   alignas(SETUP_DMA_BUFFER_BYTES) uint8_t setup_packet_[SETUP_DMA_BUFFER_BYTES] =
       {};  ///< DMA 可见的共享 setup 包缓冲区 / Shared DMA-visible setup-packet buffer
+  /// 正在用全局 OUT NAK 的端点数 / Endpoints holding the global OUT NAK
+  uint8_t global_out_nak_users_ = 0U;
   ControlState control_ = {};  ///< 需跨 status completion 保留的 EP0 setup 状态 / EP0
                                ///< setup state that must survive until status completion
 };

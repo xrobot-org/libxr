@@ -43,8 +43,9 @@ class ESP32USBEndpoint : public USB::Endpoint
   enum class StopPhase : uint8_t
   {
     NONE = 0,
-    SNAK_WAIT,
-    DIS_WAIT,
+    SNAK_WAIT,  ///< IN：等 NAK 生效；OUT：等全局 OUT NAK 生效 / IN: NAK effective; OUT:
+                ///< global OUT NAK effective
+    DIS_WAIT,   ///< 等端点禁用 / Endpoint disabled
   };
 
   /// 由 IN/OUT 中断调用，推进停止时序 / Called from the IN/OUT interrupts to

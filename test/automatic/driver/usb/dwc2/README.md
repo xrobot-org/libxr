@@ -35,7 +35,8 @@ CMake prints a STATUS line at configure time saying they are skipped.
 发送 FIFO 溢出、接收 FIFO 为空时弹出、DMA 访问可达内存之外的地址、总线复位后第一个令牌到来时
 还没做完"USB 复位时的端点初始化"的 5 步）被记下来，每个用例结束时
 检查没有这样的记录。手册没有给出时间的地方是模型的参数：FIFO 冲刷位读回几次才清零、EPDIS 写入
-后过多久端点才禁用、DMA 模式下 SETUP 的事件何时出现；默认运行把这些取值都跑一遍。
+后过多久端点才禁用、DMA 模式下全局 OUT NAK 过多久生效、DMA 模式下 SETUP 的事件何时出现；
+默认运行把这些取值都跑一遍。
 
 The model follows the device programming model of the reference manual, not what a driver expects;
 where the manual is silent the model makes an assumption, listed below.
@@ -47,8 +48,9 @@ while the endpoint is enabled, a transmit FIFO overflow, a pop of the empty rece
 access outside the reachable memory, and the five steps of "Endpoint initialization on USB reset" not
 done when the first token after a bus reset arrives) are recorded, and every case checks at its end that nothing
 was recorded. Where the manual gives no timing the model has a parameter: how many reads still see a
-FIFO flush bit set, how long EPDIS takes to disable the endpoint, when the SETUP event appears in DMA
-mode; the default run goes through these values.
+FIFO flush bit set, how long EPDIS takes to disable the endpoint, how long the global OUT NAK takes
+to be in effect in DMA mode, when the SETUP event appears in DMA mode; the default run goes through
+these values.
 
 ### 模型的假设 / Model assumptions
 
@@ -104,7 +106,7 @@ behaviour yet and the case is not in the default run (see the next section).
 | 端点 STALL 与清除，数据翻转回到 DATA0，ENDPOINT_RESUMED / endpoint halt and clear, data toggle back at DATA0, ENDPOINT_RESUMED | CDC、gs_usb、HID、DAP v1、DAP v2 | `TestEndpointHalt` | 默认 / default | 默认 / default |
 | 停止在途的 IN 请求（Flush、Close）/ stopping an IN request in flight (Flush, Close) | CDC、gs_usb、HID、DAP v1、DAP v2、UAC | `TestStopIn` | 默认 / default | 默认，报告的已发送长度是发现 / default; the reported sent length is a finding |
 | 停止时主机取走最后一个包 / the host takes the last packet during the stop | 同上 / the same | `TestStopInRace` | 默认 / default | 默认 / default |
-| 停止在途的 OUT 请求 / stopping an OUT request in flight | CDC、gs_usb、HID、DAP v1、DAP v2 | `TestStopOut` | 默认 / default | 默认，不经全局 OUT NAK 是发现 / default; the missing global OUT NAK is a finding |
+| 停止在途的 OUT 请求 / stopping an OUT request in flight | CDC、gs_usb、HID、DAP v1、DAP v2 | `TestStopOut` | 默认 / default | 默认 / default |
 | 重新配置 1 → 0 → 1 / reconfiguration 1 → 0 → 1 | 全部 / all | `TestReconfigure` | 默认 / default | 默认 / default |
 | 传输进行中总线复位；复位后端点不再 STALL、OUT 端点 NAK / bus reset in the middle of transfers; no STALL and NAKed OUT endpoints after a reset | 全部 / all | `TestBusResetMidTransfer`, `TestBusResetClearsHalt` | 默认 / default | 默认 / default |
 | 处理别的中断时到来的总线复位 / a bus reset that arrives while another interrupt is handled | 全部 / all | `TestInterruptClearKeepsOthers`（ESP） | 未运行 / not run | 默认 / default |
@@ -136,7 +138,6 @@ returns 0 and the case belongs among the regular ones.
 | `test_stm32_usb_otg` | `dma_data_with_status_phase` | XFRC 表示编程的传输完成；STSPHSRX 表示主机进入了控制写的状态阶段 / XFRC reports the programmed transfer complete; STSPHSRX reports that the host entered the status stage of a control write | 两者在同一次中断里读到时，数据阶段的完成被当成"不是数据"丢掉 / read by the same interrupt, the completion of the data stage is dropped as "not data" |
 | `test_stm32_usb_otg` | `stop_leaves_out_endpoint_enabled` | 禁用 OUT 端点要等全局 OUT NAK 生效后写 EPDIS；传输长度寄存器只在端点禁用时改写 / an OUT endpoint is disabled with EPDIS once the global OUT NAK is in effect; the transfer size register is written only while the endpoint is disabled | 非 DMA 模式下、停止序列还在等全局 OUT NAK 时调用 Stop()：停止被直接确认，端点在硬件里仍使能，下一次会话在使能状态下改写该寄存器 / without DMA, Stop() while a stop sequence waits for the global OUT NAK: the stop is confirmed at once, the endpoint stays enabled in the hardware and the next session rewrites the register while it is enabled |
 | `test_esp_usb` | `stop_in_progress` | 完成里的长度是主机已取走的字节数 / the length in a completion is what the host took | 被停止的 IN 请求报告取进 FIFO 的字节数 / a stopped IN request reports the bytes fetched into the FIFO |
-| `test_esp_usb` | `out_disable_without_global_nak` | 禁用 OUT 端点之前先进入全局 OUT NAK / the global OUT NAK comes before an OUT endpoint is disabled | 直接写 SNAK 和 EPDIS / writes SNAK and EPDIS directly |
 
 运行 / Run: `build/test/test_esp_usb --finding stop_in_progress`
 

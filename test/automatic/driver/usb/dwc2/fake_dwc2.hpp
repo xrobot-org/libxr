@@ -229,6 +229,15 @@ class Controller : public MmioTrap::Device
   /// manual only asks to wait for the EPDISD interrupt and gives no time.
   unsigned disable_latency = 0;
 
+  /// DMA 模式下 SGONAK 写入之后，再过多少次寄存器访问全局 OUT NAK 才生效（0 表示立即）；
+  /// 总线上再发生任何事时也已经生效。非 DMA 模式下它在应用弹出接收 FIFO 里的状态字时
+  /// 生效。手册只要求等待 GONAKEFF，没有给出时间。
+  /// In DMA mode, how many further register accesses pass before a written SGONAK takes
+  /// effect (0 = at once); any later bus event finds it done. Without DMA it takes effect
+  /// when the application pops its status word from the receive FIFO. The manual only
+  /// asks to wait for GONAKEFF and gives no time.
+  unsigned gonak_latency = 0;
+
   /// ASSUMPTION：手册只写了缓冲 DMA 模式下 STPKTRX 在 SETUP 阶段结束（第一个 IN/OUT 令牌
   /// 之后的 SETUP_COMPLETE 状态）时置位；3.00a 之后的核心在收到 SETUP 包时就置
   /// XFRC|STPKTRX 手册里没有。选它是因为后端按核心版本分了这条分支（stm32_usb_otg.cpp 的
@@ -920,6 +929,11 @@ class Controller : public MmioTrap::Device
   /// EPDIS takes effect
   void Elapse(bool all)
   {
+    if (gonak_due_ != 0U && (all || --gonak_due_ == 0U))
+    {
+      gonak_due_ = 0;
+      gonak_effective_ = gonak_;
+    }
     for (uint8_t i = 0; i < config_.endpoints; ++i)
     {
       InEp& in = in_[i];
@@ -1371,8 +1385,10 @@ class Controller : public MmioTrap::Device
           if (!gonak_)
           {
             gonak_ = true;
-            if (DmaEnabled())
+            if (DmaEnabled() && gonak_latency == 0U)
               gonak_effective_ = true;
+            else if (DmaEnabled())
+              gonak_due_ = gonak_latency;
             else
               rx_.push_back({Status(PKT_GONAK, 0, 0, 0), true});
           }
@@ -1381,6 +1397,7 @@ class Controller : public MmioTrap::Device
         {
           gonak_ = false;
           gonak_effective_ = false;
+          gonak_due_ = 0;
         }
         return;
       case DIEPMSK:
@@ -1495,6 +1512,7 @@ class Controller : public MmioTrap::Device
     diepmsk_ = doepmsk_ = daintmsk_ = diepempmsk_ = 0;
     enumspd_ = 1;
     gonak_ = gonak_effective_ = ginak_ = false;
+    gonak_due_ = 0;
     for (auto& in : in_) in = InEp{};
     for (auto& out : out_) out = OutEp{};
     out_[0].ctl = CTL_USBAEP;
@@ -1522,6 +1540,7 @@ class Controller : public MmioTrap::Device
   uint32_t dcfg_ = 0, dctl_ = 0, diepmsk_ = 0, doepmsk_ = 0, daintmsk_ = 0;
   uint32_t diepempmsk_ = 0, enumspd_ = 1;
   bool gonak_ = false, gonak_effective_ = false, ginak_ = false;
+  unsigned gonak_due_ = 0;  // Register accesses left until a written SGONAK acts (DMA).
   InEp in_[16];
   OutEp out_[16];
   std::deque<RxWord> rx_;
