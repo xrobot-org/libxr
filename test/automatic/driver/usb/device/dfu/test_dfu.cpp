@@ -392,77 +392,165 @@ void TestTruncatedDownloadKeepsError()
   boot.UnbindEndpoints(f.pool, false);
 }
 
-/// While a block is written the host must wait bwPollTimeout before the next GETSTATUS.
-/// That wait counts from the GETSTATUS answer, not from its status stage: on hardware the
-/// status-stage interrupt can come late while flash work runs with interrupts off, and a
-/// host that waited exactly bwPollTimeout was stalled. A GETSTATUS that really comes
-/// early is still stalled (DFU 1.1, dfuDNBUSY). The reported timeout follows the measured
-/// duration of the last write step of the same kind.
-void TestPollWaitCountsFromTheAnswer()
+/// A GETSTATUS received in dfuDNBUSY / dfuMANIFEST is never stalled for timing reasons.
+/// bwPollTimeout is the minimum host wait and NAK is the flow control while memory is
+/// updated, so the class does not judge when the host asks: a finished step moves on, a
+/// step that is still pending is answered with the state it is in and the time left. On
+/// hardware whose flash erase stalls the CPU the millisecond clock stops meanwhile, so no
+/// clock based verdict is reliable. The reported timeout follows the measured duration of
+/// the last write step of the same kind.
+struct BusyFixture
 {
   BootFixture f;
   TestBoot& boot = f.boot;
-  boot.BindEndpoints(f.pool, 0, false);
-
   TestBoot::ControlTransferResult result;
-  auto ask = [&](uint8_t req, uint16_t val, uint16_t len)
+  std::array<uint8_t, 256> payload{};
+
+  BusyFixture()
+  {
+    boot.BindEndpoints(f.pool, 0, false);
+    payload.fill(0xA5);
+  }
+  ~BusyFixture() { boot.UnbindEndpoints(f.pool, false); }
+
+  ErrorCode Ask(uint8_t req, uint16_t val, uint16_t len)
   {
     result.write_data = {};
     return boot.OnClassRequest(false, req, val, len, 0, result);
-  };
-  // GETSTATUS through the class's control entry, which applies the poll deadline.
-  auto get_status = [&]()
+  }
+  // Through the class's control entry, the way the core delivers a request.
+  ErrorCode Control(uint8_t req, uint16_t len)
   {
     result.write_data = {};
-    const SetupPacket setup{0xA1, DFU_GETSTATUS, 0, 0, 6};
+    const bool in = req == DFU_GETSTATUS || req == DFU_GETSTATE;
+    const SetupPacket setup{static_cast<uint8_t>(in ? 0xA1 : 0x21), req, 0, 0, len};
     return boot.OnControlRequest(false, setup, result);
-  };
-  auto poll_ms = [&]()
+  }
+  ErrorCode GetStatus() { return Control(DFU_GETSTATUS, 6); }
+  uint8_t Status() const { return Bytes(result.write_data)[0]; }
+  uint8_t State() const { return Bytes(result.write_data)[4]; }
+  uint32_t PollMs() const
   {
     const uint8_t* s = Bytes(result.write_data);
     return static_cast<uint32_t>(s[1]) | static_cast<uint32_t>(s[2]) << 8 |
            static_cast<uint32_t>(s[3]) << 16;
-  };
-  std::array<uint8_t, 256> payload{};
-  payload.fill(0xA5);
-  auto download_block0 = [&]()
+  }
+  // DNLOAD of block 0, then the GETSTATUS that reports dfuDNBUSY. Returns bwPollTimeout.
+  uint32_t DownloadBlock0()
   {
-    TEST_ASSERT(ask(DFU_DNLOAD, 0, 256) == ErrorCode::OK);
+    TEST_ASSERT(Ask(DFU_DNLOAD, 0, 256) == ErrorCode::OK);
     ConstRawData data{payload.data(), payload.size()};
     TEST_ASSERT(boot.OnClassData(false, DFU_DNLOAD, data) == ErrorCode::OK);
-    TEST_ASSERT(get_status() == ErrorCode::OK);
-    TEST_ASSERT(Bytes(result.write_data)[4] ==
-                static_cast<uint8_t>(DFUState::DFU_DNBUSY));
-    return poll_ms();
-  };
-  // The status stage completes late (as when flash work blocks the interrupt), then the
-  // host comes back exactly bwPollTimeout after the answer: not stalled, and done.
-  auto late_status_stage = [&](uint32_t reported)
-  {
-    std::this_thread::sleep_for(std::chrono::milliseconds(reported / 2));
-    boot.OnClassInDataStatusComplete(false, DFU_GETSTATUS);
-    boot.Process();  // the write step runs
-    std::this_thread::sleep_for(std::chrono::milliseconds(reported - reported / 2));
-    TEST_ASSERT(get_status() == ErrorCode::OK);
-    TEST_ASSERT(Bytes(result.write_data)[4] ==
-                static_cast<uint8_t>(DFUState::DFU_DNLOAD_IDLE));
-  };
+    TEST_ASSERT(GetStatus() == ErrorCode::OK);
+    TEST_ASSERT(State() == static_cast<uint8_t>(DFUState::DFU_DNBUSY));
+    return PollMs();
+  }
+};
 
+/// (a) The step has completed: the GETSTATUS moves on although no time passed.
+void TestBusyGetStatusAfterStepDone()
+{
+  BusyFixture b;
   // Before any measurement a step that erases reports 25 ms.
-  TEST_ASSERT(download_block0() == 25u);
-  // Coming back at once is too early: stalled, the device is in dfuERROR.
-  TEST_ASSERT(get_status() != ErrorCode::OK);
-  TEST_ASSERT(ask(DFU_CLRSTATUS, 0, 0) == ErrorCode::OK);
-
-  TEST_ASSERT(download_block0() == 25u);
-  late_status_stage(25u);
+  TEST_ASSERT(b.DownloadBlock0() == 25u);
+  b.boot.OnClassInDataStatusComplete(false, DFU_GETSTATUS);
+  b.boot.Process();  // the write step runs and is committed
+  // The host comes back at once, at the same clock reading: not stalled, step done.
+  TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+  TEST_ASSERT(b.Status() == static_cast<uint8_t>(DFUStatusCode::OK));
+  TEST_ASSERT(b.State() == static_cast<uint8_t>(DFUState::DFU_DNLOAD_IDLE));
+  TEST_ASSERT(b.PollMs() == 0u);
 
   // After an abort the block needs its erase again, now reported with the measured
   // duration (instant on the RAM flash, so the 10 ms floor).
-  TEST_ASSERT(ask(0x06 /* ABORT */, 0, 0) == ErrorCode::OK);
-  TEST_ASSERT(download_block0() == 10u);
-  late_status_stage(10u);
-  boot.UnbindEndpoints(f.pool, false);
+  TEST_ASSERT(b.Ask(0x06 /* ABORT */, 0, 0) == ErrorCode::OK);
+  TEST_ASSERT(b.DownloadBlock0() == 10u);
+  b.boot.OnClassInDataStatusComplete(false, DFU_GETSTATUS);
+  b.boot.Process();
+  TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+  TEST_ASSERT(b.State() == static_cast<uint8_t>(DFUState::DFU_DNLOAD_IDLE));
+}
+
+/// (b) The step has not completed: the GETSTATUS is answered with dfuDNBUSY and the time
+/// left, the device stays busy, and a later GETSTATUS proceeds.
+void TestBusyGetStatusWhileStepPending()
+{
+  BusyFixture b;
+  TEST_ASSERT(b.DownloadBlock0() == 25u);
+  // Not even started (the status stage has not completed yet): asked again at once.
+  TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+  TEST_ASSERT(b.Status() == static_cast<uint8_t>(DFUStatusCode::OK));
+  TEST_ASSERT(b.State() == static_cast<uint8_t>(DFUState::DFU_DNBUSY));
+  TEST_ASSERT(b.PollMs() > 0u && b.PollMs() <= 25u);
+  // Released but still pending (Process() has not run): the same answer, repeatedly.
+  b.boot.OnClassInDataStatusComplete(false, DFU_GETSTATUS);
+  for (int i = 0; i < 3; ++i)
+  {
+    TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+    TEST_ASSERT(b.State() == static_cast<uint8_t>(DFUState::DFU_DNBUSY));
+    TEST_ASSERT(b.PollMs() > 0u && b.PollMs() <= 25u);
+  }
+  b.boot.Process();
+  TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+  TEST_ASSERT(b.State() == static_cast<uint8_t>(DFUState::DFU_DNLOAD_IDLE));
+  // The data really landed.
+  TEST_ASSERT(std::equal(b.payload.begin(), b.payload.end(), b.f.flash_mem.begin()));
+}
+
+/// Other requests in dfuDNBUSY are still stalled (DFU 1.1 A.2.5), and the stall latches
+/// the error as before.
+void TestBusyOtherRequestsStillStall()
+{
+  BusyFixture b;
+  TEST_ASSERT(b.DownloadBlock0() == 25u);
+  TEST_ASSERT(b.Control(DFU_DNLOAD, 16) != ErrorCode::OK);
+  TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+  TEST_ASSERT(b.Status() == static_cast<uint8_t>(DFUStatusCode::ERR_STALLEDPKT));
+  TEST_ASSERT(b.State() == static_cast<uint8_t>(DFUState::DFU_ERROR));
+  TEST_ASSERT(b.Control(DFU_CLRSTATUS, 0) == ErrorCode::OK);
+}
+
+/// (c) The same for dfuMANIFEST.
+void TestBusyGetStatusInManifest()
+{
+  BusyFixture b;
+  b.DownloadBlock0();
+  b.boot.OnClassInDataStatusComplete(false, DFU_GETSTATUS);
+  b.boot.Process();
+  TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+  TEST_ASSERT(b.State() == static_cast<uint8_t>(DFUState::DFU_DNLOAD_IDLE));
+  TEST_ASSERT(b.Ask(DFU_DNLOAD, 1, 0) == ErrorCode::OK);  // end of data
+  TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+  TEST_ASSERT(b.State() == static_cast<uint8_t>(DFUState::DFU_MANIFEST));
+  TEST_ASSERT(b.PollMs() > 0u);
+  // Pending (released or not): answered dfuMANIFEST, never stalled.
+  TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+  TEST_ASSERT(b.State() == static_cast<uint8_t>(DFUState::DFU_MANIFEST));
+  TEST_ASSERT(b.PollMs() > 0u);
+  b.boot.OnClassInDataStatusComplete(false, DFU_GETSTATUS);
+  TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+  TEST_ASSERT(b.State() == static_cast<uint8_t>(DFUState::DFU_MANIFEST));
+  TEST_ASSERT(b.Control(DFU_GETSTATE, 1) != ErrorCode::OK);  // other requests stall
+  TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+  TEST_ASSERT(b.State() == static_cast<uint8_t>(DFUState::DFU_ERROR));
+}
+
+/// (c) continued: a finished manifest moves on at once.
+void TestBusyGetStatusAfterManifestDone()
+{
+  BusyFixture b;
+  b.DownloadBlock0();
+  b.boot.OnClassInDataStatusComplete(false, DFU_GETSTATUS);
+  b.boot.Process();
+  TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+  TEST_ASSERT(b.Ask(DFU_DNLOAD, 1, 0) == ErrorCode::OK);
+  TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+  TEST_ASSERT(b.State() == static_cast<uint8_t>(DFUState::DFU_MANIFEST));
+  b.boot.OnClassInDataStatusComplete(false, DFU_GETSTATUS);
+  b.boot.Process();
+  TEST_ASSERT(b.GetStatus() == ErrorCode::OK);
+  TEST_ASSERT(b.Status() == static_cast<uint8_t>(DFUStatusCode::OK));
+  TEST_ASSERT(b.State() == static_cast<uint8_t>(DFUState::DFU_MANIFEST_WAIT_RESET));
 }
 
 uint16_t LoadU16(const uint8_t* p)
@@ -534,7 +622,11 @@ int main()
   TestBootloaderDownload();
   TestTruncatedDownloadKeepsError();
   TestSealPlacement();
-  TestPollWaitCountsFromTheAnswer();
+  TestBusyGetStatusAfterStepDone();
+  TestBusyGetStatusWhileStepPending();
+  TestBusyOtherRequestsStillStall();
+  TestBusyGetStatusInManifest();
+  TestBusyGetStatusAfterManifestDone();
   TestWinUsbSetComesFromComposition();
   std::puts(
       "DFU classes: status stage in the core, DNLOAD data stage, Process-driven work, "

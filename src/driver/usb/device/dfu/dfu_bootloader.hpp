@@ -1088,14 +1088,18 @@ class DFUClass : public DfuInterfaceClassBase
         (request == DFURequest::GETSTATUS && setup.wLength != sizeof(StatusResponse)) ||
         (request == DFURequest::GETSTATE && setup.wLength != 1U))
       return ErrorCode::ARG_ERR;
-    const uint32_t now = static_cast<uint32_t>(Timebase::GetMilliseconds());
-    if (state_ == DFUState::DFU_DNBUSY || state_ == DFUState::DFU_MANIFEST)
+    if ((state_ == DFUState::DFU_DNBUSY || state_ == DFUState::DFU_MANIFEST) &&
+        request != DFURequest::GETSTATUS)
     {
-      if (!poll_waiting_ || static_cast<int32_t>(now - poll_deadline_) < 0)
-        return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
-      state_ = state_ == DFUState::DFU_DNBUSY ? DFUState::DFU_DNLOAD_SYNC
-                                              : DFUState::DFU_MANIFEST_SYNC;
-      poll_waiting_ = false;
+      // DFU 1.1 A.2.5：设备忙时只有 GETSTATUS 有意义，其余请求 STALL。GETSTATUS 从不
+      // 因时间原因被 STALL：bwPollTimeout 只是主机至少要等多久，设备忙时靠 NAK 控制
+      // 流量；步骤是否完成由后端的忙状态决定（见 HandleGetStatus）。
+      // DFU 1.1 A.2.5: while the device is busy only GETSTATUS makes sense, other
+      // requests are stalled. GETSTATUS is never stalled for timing: bwPollTimeout is
+      // only the minimum host wait, and NAK is the flow control while memory is being
+      // updated. Whether the step is done is decided by the backend's busy state (see
+      // HandleGetStatus).
+      return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
     }
     return OnClassRequest(in_isr, setup.bRequest, setup.wValue, setup.wLength,
                           setup.wIndex, result);
@@ -1111,14 +1115,6 @@ class DFUClass : public DfuInterfaceClassBase
       // A stalled DNLOAD has already latched its error: keep it for the next GETSTATUS;
       // only CLRSTATUS/ABORT clears it explicitly.
       if (state_ != DFUState::DFU_ERROR) ClearErrorState();
-    }
-    else if (setup.bRequest == static_cast<uint8_t>(DFURequest::GETSTATUS) &&
-             !poll_waiting_)
-    {
-      if (state_ == DFUState::DFU_DNBUSY)
-        state_ = DFUState::DFU_DNLOAD_SYNC;
-      else if (state_ == DFUState::DFU_MANIFEST)
-        state_ = DFUState::DFU_MANIFEST_SYNC;
     }
   }
 
@@ -1218,9 +1214,9 @@ class DFUClass : public DfuInterfaceClassBase
     }
     if (state_ == DFUState::DFU_DNBUSY || state_ == DFUState::DFU_MANIFEST)
     {
-      // 期限已在应答时设好；主机确认了应答，后端才开始这一步的工作。
-      // The deadline was set with the answer; the backend starts the step's work once
-      // the host has acknowledged it.
+      // 主机确认了忙应答，后端才开始这一步的工作。
+      // The backend starts the step's work once the host has acknowledged the busy
+      // answer.
       backend_.AllowPendingWork();
     }
     if (state_ == DFUState::DFU_MANIFEST_WAIT_RESET)
@@ -1345,19 +1341,10 @@ class DFUClass : public DfuInterfaceClassBase
 
   ErrorCode HandleGetStatus(ControlTransferResult& result)
   {
+    // 在 DNBUSY / MANIFEST 中：步骤已完成则前进，否则仍答 busy 并给出剩余时间。
+    // In DNBUSY / MANIFEST: advance if the step is done, otherwise answer busy again with
+    // the time left.
     AdvanceStateForStatusRead();
-    if (state_ == DFUState::DFU_DNBUSY || state_ == DFUState::DFU_MANIFEST)
-    {
-      // 等待从应答交出时算起，并少算 1 ms 抵消毫秒取整：按 bwPollTimeout 等待的主机
-      // 不会早于期限。状态阶段的完成中断可能因 flash 擦写关中断而推迟，不能从那里算。
-      // The wait counts from handing over this answer, 1 ms short to absorb the
-      // millisecond rounding, so a host that waits bwPollTimeout never comes early.
-      // The status stage can complete late while flash work runs with interrupts off,
-      // so the wait must not count from there.
-      const uint32_t wait = poll_timeout_ms_ > 0u ? poll_timeout_ms_ - 1u : 0u;
-      poll_deadline_ = static_cast<uint32_t>(Timebase::GetMilliseconds()) + wait;
-      poll_waiting_ = true;
-    }
     status_response_.bStatus = static_cast<uint8_t>(status_);
     status_response_.SetPollTimeout(poll_timeout_ms_);
     status_response_.bState = static_cast<uint8_t>(state_);
@@ -1521,7 +1508,6 @@ class DFUClass : public DfuInterfaceClassBase
     // 镜像级 bookkeeping 保留在 backend_ 里。
     // Reset only frontend-owned protocol state;
     // image-level bookkeeping stays in backend_.
-    poll_waiting_ = false;
     manifest_started_ = false;
     pending_block_num_ = 0u;
     pending_dnload_length_ = 0u;
@@ -1533,7 +1519,6 @@ class DFUClass : public DfuInterfaceClassBase
 
   void ClearErrorState()
   {
-    poll_waiting_ = false;
     manifest_started_ = false;
     status_ = DFUStatusCode::OK;
     state_ = DFUState::DFU_IDLE;
@@ -1568,8 +1553,6 @@ class DFUClass : public DfuInterfaceClassBase
   bool download_started_ = false;  ///< 是否已有有效下载数据 / Whether payload has started
   uint16_t pending_block_num_ = 0u;      ///< 待提交 block 编号 / Pending block number
   uint16_t pending_dnload_length_ = 0u;  ///< 待提交 DNLOAD 长度 / Pending DNLOAD length
-  uint32_t poll_deadline_ = 0;
-  bool poll_waiting_ = false;
   bool manifest_started_ = false;
   uint32_t poll_timeout_ms_ = 0u;             ///< 当前轮询超时 / Current poll timeout
   DFUState state_ = DFUState::DFU_IDLE;       ///< DFU 状态 / DFU state
