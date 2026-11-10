@@ -333,3 +333,11 @@ target_link_libraries(test_uac_mic PRIVATE xr)
 target_include_directories(test_uac_mic PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 add_test(NAME usb_uac_mic COMMAND test_uac_mic)
 set_tests_properties(usb_uac_mic PROPERTIES TIMEOUT 30)
+
+# Simulation USB backend: backend contract tests on the real endpoint core and DeviceCore,
+# driven packet by packet by a simulated host.
+add_executable(test_usb_sim_contract driver/usb/sim/test_usb_sim_contract.cpp)
+target_link_libraries(test_usb_sim_contract PRIVATE xr)
+target_include_directories(test_usb_sim_contract PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME usb_sim_contract COMMAND test_usb_sim_contract)
+set_tests_properties(usb_sim_contract PROPERTIES TIMEOUT 60)
