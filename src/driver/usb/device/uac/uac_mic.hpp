@@ -675,14 +675,19 @@ class UAC1MicrophoneQ : public DeviceClass
   }
 
   /**
-   * @brief 处理类请求数据阶段（应用 SET_CUR：采样率 / 静音 / 音量）
-   *        Handle the class request data stage (apply SET_CUR: rate / mute / volume)
+   * @brief 处理类请求数据阶段（应用 SET_CUR：采样率 / 静音 / 音量；SET_RES 接受并忽略）
+   *        Handle the class request data stage (apply SET_CUR: rate / mute / volume;
+   *        SET_RES is accepted and ignored)
    */
   ErrorCode OnClassData(bool, uint8_t bRequest, ConstRawData& data) override
   {
-    if (bRequest != SET_CUR) return ErrorCode::NOT_SUPPORT;
     const PendingControl pending = pending_control_;
     pending_control_ = PendingControl::NONE;
+    // 数据阶段属于登记它的那个请求：SET_RES 只配 SET_RES，其余配 SET_CUR。
+    // A data stage belongs to the request that registered it: SET_RES pairs with
+    // SET_RES, everything else with SET_CUR.
+    const uint8_t expected = pending == PendingControl::SET_RES ? SET_RES : SET_CUR;
+    if (bRequest != expected) return ErrorCode::NOT_SUPPORT;
     switch (pending)
     {
       case PendingControl::SET_SF:

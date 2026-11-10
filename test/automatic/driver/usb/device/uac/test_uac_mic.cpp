@@ -611,11 +611,16 @@ void TestUacClassRequests()
                                    result) == ErrorCode::OK);
   TEST_ASSERT(IsBytes(result.write_data, {1}));
   // SET_RES 音量：接受并忽略（分辨率固定）。
-  // SET_RES of the volume: accepted and ignored (the resolution is fixed).
+  // SET_RES of the volume: accepted and ignored (the resolution is fixed). The data
+  // stage carries the actual request, SET_RES; a SET_CUR data stage does not belong to
+  // it.
   TEST_ASSERT(f.uac.OnClassRequest(false, Uac::SET_RES, Uac::FU_VOLUME << 8U, 2, fu,
                                    result) == ErrorCode::OK);
   stage = ConstRawData{volume, sizeof(volume)};
-  TEST_ASSERT(f.uac.OnClassData(false, Uac::SET_CUR, stage) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.OnClassData(false, Uac::SET_RES, stage) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.OnClassRequest(false, Uac::SET_RES, Uac::FU_VOLUME << 8U, 2, fu,
+                                   result) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.OnClassData(false, Uac::SET_CUR, stage) == ErrorCode::NOT_SUPPORT);
 
   // 错误的实体与通道。
   // A wrong entity and channel.
