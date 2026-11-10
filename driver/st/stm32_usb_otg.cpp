@@ -496,7 +496,7 @@ void STM32USBOtgDevice::HandleOutEndpoints()
         DeliverSetup(setup_);
       }
     }
-    if ((events & USB_OTG_DOEPINT_EPDISD) != 0U && ep != nullptr) ep->OnDisabled();
+    if ((events & USB_OTG_DOEPINT_EPDISD) != 0U && ep != nullptr) ep->PollStop();
   }
 }
 
@@ -525,12 +525,12 @@ void STM32USBOtgDevice::HandleInEndpoints()
     if ((events & USB_OTG_DIEPINT_INEPNE) != 0U)
     {
       regs->DIEPINT = USB_OTG_DIEPINT_INEPNE;
-      if (ep != nullptr) ep->OnNakEffective();
+      if (ep != nullptr) ep->PollStop();
     }
     if ((events & USB_OTG_DIEPINT_EPDISD) != 0U)
     {
       regs->DIEPINT = USB_OTG_DIEPINT_EPDISD;
-      if (ep != nullptr) ep->OnDisabled();
+      if (ep != nullptr) ep->PollStop();
     }
     if ((events & USB_OTG_DIEPINT_TXFE) != 0U)
     {
@@ -1058,10 +1058,6 @@ void STM32OtgEndpoint::OnIsoIncomplete()
   regs->DIEPCTL |= USB_OTG_DIEPCTL_SNAK;
   device_.UpdateTick();
 }
-
-void STM32OtgEndpoint::OnNakEffective() { PollStop(); }
-
-void STM32OtgEndpoint::OnDisabled() { PollStop(); }
 
 void STM32OtgEndpoint::OnGlobalOutNak()
 {

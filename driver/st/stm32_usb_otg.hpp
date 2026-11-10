@@ -217,8 +217,6 @@ class STM32OtgEndpoint : public USB::Endpoint
   void FillFifo();
   void ReadFifo(size_t bytes);
   void OnTransferComplete();
-  void OnNakEffective();
-  void OnDisabled();
   void OnGlobalOutNak();
   void OnFlushDone();
   void OnIsoIncomplete();
