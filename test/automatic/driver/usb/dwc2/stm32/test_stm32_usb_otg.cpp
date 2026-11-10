@@ -431,7 +431,7 @@ void RunAll()
     TestControlSetupDuringInData<Probe>(mode);
     TestControlSetupDuringOutData<Probe>(mode);
     TestControlSetupSkipsStatus<Probe>(mode);
-    if (!mode.dma) TestControlSetupAfterWriteData<Probe>(mode);
+    TestControlSetupAfterWriteData<Probe>(mode);
     TestBulkIn<Probe>(mode);
     TestBulkOut<Probe>(mode);
     TestInterrupt<Probe>(mode);
@@ -462,13 +462,6 @@ void RunAll()
 // ---------------------------------------------------------------------------
 // Findings: behaviour the backend does not have yet (not in the default run)
 // ---------------------------------------------------------------------------
-
-/// DMA 模式：控制写的数据阶段收完后 EP0 OUT 处于禁用状态，直到状态阶段完成才重新使能。
-/// 主机放弃状态阶段、直接发下一个 SETUP 时，这个 SETUP 写不进内存，新请求得不到应答。
-/// DMA mode: after the data stage of a control write EP0 OUT stays disabled until the
-/// status stage completes. When the host gives up the status stage and sends the next
-/// SETUP, that SETUP cannot be stored and the new request is never answered.
-void FindingDmaSetupAfterWriteData() { TestControlSetupAfterWriteData<Probe>(DMA); }
 
 /// DMA 模式、3.00a 之后的核心：控制写的最后一个数据包的传输完成，和主机进入状态阶段的
 /// 通知（STSPHSRX）在同一次中断里被读到时，后端把这次完成当成"不是数据"丢掉，数据阶段
@@ -536,9 +529,7 @@ int main(int argc, char** argv)
   }
   const int handled = TestFindings::Run(
       argc, argv,
-      {{"dma_setup_after_write_data", "SETUP not received before a control write status",
-        FindingDmaSetupAfterWriteData},
-       {"dma_data_with_status_phase", "XFRC read together with STSPHSRX is dropped",
+      {{"dma_data_with_status_phase", "XFRC read together with STSPHSRX is dropped",
         FindingDmaDataWithStatusPhase},
        {"stop_leaves_endpoint_enabled", "Stop() during an endpoint stop sequence",
         FindingStopLeavesEndpointEnabled}});

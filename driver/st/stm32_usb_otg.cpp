@@ -476,6 +476,9 @@ void STM32USBOtgDevice::HandleOutEndpoints()
         data = data && !(core_id == USB_OTG_CORE_ID_310A &&
                          (events & USB_OTG_DOEPINT_STPKTRX) != 0U);
       if (data) ep->OnTransferComplete();
+      // With DMA a SETUP is stored only while EP0 OUT is enabled, and a transfer complete
+      // leaves it disabled; the next data or status stage programs it again.
+      if (num == 0U && hw_.dma && !setup) ArmSetup();
     }
     if (setup && num == 0U)
     {

@@ -64,7 +64,7 @@ behaviour yet and the case is not in the default run (see the next section).
 | 背靠背的 SETUP / back-to-back SETUPs | 全部（主机重试）/ all (host retries) | `TestControlBackToBackSetups` | 默认 / default | 发现 / finding |
 | SETUP 打断 IN 数据阶段 / SETUP during an IN data stage | 全部 / all | `TestControlSetupDuringInData` | 默认 / default | 发现 / finding |
 | SETUP 打断 OUT 数据阶段、代替控制读的状态阶段 / SETUP during an OUT data stage, in place of a control read status | 全部 / all | `TestControlSetupDuringOutData`, `TestControlSetupSkipsStatus` | 默认 / default | 默认 / default |
-| SETUP 代替控制写的状态阶段 / SETUP in place of a control write status | 全部 / all | `TestControlSetupAfterWriteData` | 默认；DMA 是发现 / default; finding with DMA | 发现 / finding |
+| SETUP 代替控制写的状态阶段 / SETUP in place of a control write status | 全部 / all | `TestControlSetupAfterWriteData` | 默认 / default | 发现 / finding |
 | 批量 IN：单包、多包、短包结束、要求的零长包、单独的零长包、主机不轮询 / bulk IN: one packet, several, short end, requested zero-length packet, zero-length alone, host not polling | CDC（含零长包）、gs_usb、DAP v2（含零长包）/ CDC (with the zero-length packet), gs_usb, DAP v2 (with the zero-length packet) | `TestBulkIn` | 默认 / default | 默认 / default |
 | 批量 OUT：短包、收满、多包、零长包、数据比挂的接收长、未挂接收时 NAK / bulk OUT: short packet, exact fill, several packets, zero-length, more data than armed, NAK with nothing armed | CDC、gs_usb、DAP v2 | `TestBulkOut` | 默认 / default | 默认 / default |
 | 中断 IN/OUT / interrupt IN and OUT | CDC（通知）、HID、DAP v1 / CDC (notifications), HID, DAP v1 | `TestInterrupt` | 默认 / default | 默认 / default |
@@ -98,7 +98,7 @@ returns 0 and the case belongs among the regular ones.
 
 | 程序 / Program | 用例 / Case | 手册或契约的要求 / What the manual or the contract requires | 后端的做法 / What the backend does |
 | --- | --- | --- | --- |
-| `test_stm32_usb_otg`, `test_esp_usb` | `dma_setup_after_write_data`, `setup_after_write_data` | DMA 模式下要使能 EP0 OUT 才能接收 SETUP / in DMA mode EP0 OUT must be enabled to receive a SETUP | 控制写的数据收完后 EP0 OUT 处于禁用，直到状态阶段完成；主机放弃状态阶段时新的 SETUP 收不到 / EP0 OUT stays disabled from the end of a control write data stage to the end of its status stage; a SETUP sent instead of the status is not received |
+| `test_esp_usb` | `setup_after_write_data` | DMA 模式下要使能 EP0 OUT 才能接收 SETUP / in DMA mode EP0 OUT must be enabled to receive a SETUP | 控制写的数据收完后 EP0 OUT 处于禁用，直到状态阶段完成；主机放弃状态阶段时新的 SETUP 收不到 / EP0 OUT stays disabled from the end of a control write data stage to the end of its status stage; a SETUP sent instead of the status is not received |
 | `test_stm32_usb_otg` | `dma_data_with_status_phase` | XFRC 表示编程的传输完成；STSPHSRX 表示主机进入了控制写的状态阶段 / XFRC reports the programmed transfer complete; STSPHSRX reports that the host entered the status stage of a control write | 两者在同一次中断里读到时，数据阶段的完成被当成"不是数据"丢掉 / read by the same interrupt, the completion of the data stage is dropped as "not data" |
 | `test_stm32_usb_otg` | `stop_leaves_endpoint_enabled` | 停止传输要写 EPDIS 并等到 EPDISD；传输长度寄存器只在端点禁用时改写 / stopping a transfer takes EPDIS and EPDISD; the transfer size register is written only while the endpoint is disabled | 停止序列进行中调用 Stop()：停止被直接确认，端点在硬件里仍使能，下一次会话在使能状态下改写该寄存器 / Stop() during a stop sequence: the stop is confirmed at once, the endpoint stays enabled in the hardware and the next session rewrites the register while it is enabled |
 | `test_esp_usb` | `control_stall_out_data` | DMA 模式下要使能 EP0 OUT 才能接收 SETUP / in DMA mode EP0 OUT must be enabled to receive a SETUP | 带 OUT 数据阶段的请求被 STALL 之后没有重新使能，下一个 SETUP 收不到 / not enabled again after a stalled request with an OUT data stage, the next SETUP is not received |
