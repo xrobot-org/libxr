@@ -414,6 +414,31 @@ class SwdGeneralGPIO final : public Swd
     DelayHalf<kDelay>();
   }
 
+  /// 连续 cycles 个时钟周期；只在非默认的转向周期数和数据阶段里用，不强制内联
+  /// / cycles clock periods in a row; used only for a non-default turnaround and for the
+  /// data phase, so it is not forced inline
+  template <bool kDelay>
+  [[gnu::noinline]] void GenClks(uint32_t cycles)
+  {
+    for (uint32_t i = 0; i < cycles; ++i)
+    {
+      GenOneClk<kDelay>();
+    }
+  }
+
+  /// 转向周期：turn 个时钟，默认的 1 个不进循环（小于 1 按 1 处理）
+  /// / Turnaround: turn clock periods; the default of one takes no loop (below 1 counts
+  /// as 1)
+  template <bool kDelay>
+  [[gnu::always_inline]] inline void Turnaround(uint32_t turn)
+  {
+    GenOneClk<kDelay>();
+    if (turn > 1u)
+    {
+      GenClks<kDelay>(turn - 1u);
+    }
+  }
+
   template <bool kDelay>
   [[gnu::always_inline]] inline void WriteBit(bool bit)
   {
@@ -602,12 +627,13 @@ class SwdGeneralGPIO final : public Swd
     resp.parity_ok = true;
 
     const uint8_t REQUEST_BYTE = SwdProtocol::MakeRequest(req);
+    const uint32_t TURN = GetTransferPolicy().turnaround;
 
     (void)SetSwdioDriveMode();
     WriteByteLSB<kDelay>(REQUEST_BYTE);
 
     (void)SetSwdioSampleMode();
-    GenOneClk<kDelay>();  // turnaround Host -> Target
+    Turnaround<kDelay>(TURN);  // turnaround Host -> Target
 
     // ACK: CMSIS SW_READ_BIT phase (sample in low phase)
     uint8_t ack_raw = 0u;
@@ -622,8 +648,25 @@ class SwdGeneralGPIO final : public Swd
 
     if (resp.ack != SwdProtocol::Ack::OK)
     {
-      GenOneClk<kDelay>();  // turnaround Target -> Host (skip data)
+      // 数据阶段（DAP_SWD_Configure 的 data phase，目标开启 ORUNDETECT 时需要）：读先
+      // 33 个空读周期再转向，写先转向再 33 个低电平空写周期，同 CMSIS-DAP 参考实现。
+      // Data phase (data phase of DAP_SWD_Configure, needed when the target has
+      // ORUNDETECT set): a read clocks 33 dummy cycles and then turns around, a write
+      // turns around and clocks 33 low dummy cycles, as in the CMSIS-DAP reference.
+      const bool DATA_PHASE =
+          GetTransferPolicy().data_phase &&
+          (resp.ack == SwdProtocol::Ack::WAIT || resp.ack == SwdProtocol::Ack::FAULT);
+      if (DATA_PHASE && req.rnw)
+      {
+        GenClks<kDelay>(DATA_BITS + 1u);
+      }
+      Turnaround<kDelay>(TURN);  // turnaround Target -> Host
       (void)SetSwdioDriveMode();
+      if (DATA_PHASE && !req.rnw)
+      {
+        swdio_.Write(false);
+        GenClks<kDelay>(DATA_BITS + 1u);
+      }
       swdio_.Write(true);
       swclk_.Write(false);
       return ErrorCode::OK;
@@ -644,14 +687,14 @@ class SwdGeneralGPIO final : public Swd
 
       (void)SetSwdioDriveMode();
       swdio_.Write(true);
-      GenOneClk<kDelay>();
+      Turnaround<kDelay>(TURN);
 
       swclk_.Write(false);
     }
     else
     {
       (void)SetSwdioDriveMode();
-      GenOneClk<kDelay>();
+      Turnaround<kDelay>(TURN);
 
       const uint32_t DATA = req.wdata;
       for (uint32_t byte = 0; byte < 4u; ++byte)
@@ -688,6 +731,7 @@ class SwdGeneralGPIO final : public Swd
       64u;  ///< 线复位时钟周期数 / Line reset clock cycles.
   static constexpr uint32_t BYTE_BITS = 8u;  ///< 每字节比特数 / Bits per byte.
   static constexpr uint32_t ACK_BITS = 3u;   ///< ACK 比特数 / ACK bits.
+  static constexpr uint32_t DATA_BITS = 32u;  ///< 数据比特数 / Data bits.
   static constexpr uint32_t WRITE_TRAILING_IDLE_CLOCKS =
       3u;  ///< 写数据相后的空闲时钟数 / Idle clocks after a write data phase.
 

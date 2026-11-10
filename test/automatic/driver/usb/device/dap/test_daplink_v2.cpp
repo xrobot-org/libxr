@@ -1148,6 +1148,47 @@ void TestHeldCommandDroppedAfterRebind()
   f.in.Complete();
 }
 
+/// DAP_SWD_Configure reaches the SWD driver's transfer policy: turnaround (cfg & 3) + 1
+/// cycles and the data phase flag (cfg & 4). A request without the configuration byte is
+/// an error and changes nothing; a new session starts from the defaults again.
+void TestSwdConfigureReachesThePolicy()
+{
+  DapFixture f;
+  f.dap.BindEndpoints(f.pool, 0, false);
+  const uint8_t CONFIGURE = static_cast<uint8_t>(CommandId::SWD_CONFIGURE);
+  TEST_ASSERT(f.swd.GetTransferPolicy().turnaround == 1);
+  TEST_ASSERT(!f.swd.GetTransferPolicy().data_phase);
+
+  Send(f, {CONFIGURE, 0x06});
+  TEST_ASSERT(f.in.active);
+  TEST_ASSERT(f.in.Last().data == std::vector<uint8_t>({CONFIGURE, 0x00}));
+  f.in.Complete();
+  TEST_ASSERT(f.swd.GetTransferPolicy().turnaround == 3);
+  TEST_ASSERT(f.swd.GetTransferPolicy().data_phase);
+
+  Send(f, {CONFIGURE, 0x03});
+  f.in.Complete();
+  TEST_ASSERT(f.swd.GetTransferPolicy().turnaround == 4);
+  TEST_ASSERT(!f.swd.GetTransferPolicy().data_phase);
+
+  Send(f, {CONFIGURE});
+  TEST_ASSERT(f.in.active);
+  TEST_ASSERT(f.in.Last().data == std::vector<uint8_t>({CONFIGURE, 0xFF}));
+  f.in.Complete();
+  TEST_ASSERT(f.swd.GetTransferPolicy().turnaround == 4);
+
+  Send(f, {CONFIGURE, 0x04});
+  f.in.Complete();
+  TEST_ASSERT(f.swd.GetTransferPolicy().turnaround == 1);
+  TEST_ASSERT(f.swd.GetTransferPolicy().data_phase);
+
+  f.dap.UnbindEndpoints(f.pool, false);
+  f.dap.BindEndpoints(f.pool, 0, false);
+  Run(f);
+  TEST_ASSERT(f.swd.GetTransferPolicy().turnaround == 1);
+  TEST_ASSERT(!f.swd.GetTransferPolicy().data_phase);
+}
+
 /// SWD belongs to the thread that runs Step: bind and unbind (the USB owner context, here
 /// the test's main thread) make no SWD call at all. The session end and start are applied
 /// by the Step thread: it closes SWD and sets the default clock before the first command
@@ -1377,6 +1418,7 @@ int main()
   TestRebindDuringBatchThenDelay();
   TestHeldCommandDroppedAfterRebind();
   TestBindAndUnbindLeaveSwdToStep();
+  TestSwdConfigureReachesThePolicy();
   TestPaddedRequestsAndAFifthCommandDrain();
   TestStandaloneDeviceUsesDeviceLevelWinUsbSet();
   TestCompositeDeviceUsesFunctionSubsets();

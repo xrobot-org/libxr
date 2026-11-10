@@ -1229,6 +1229,14 @@ class DapLinkV2Class : public DeviceClass
     dap_state_.debug_port = LibXR::USB::DapLinkV2Def::DebugPort::DISABLED;
     transfer_abort_.store(false, std::memory_order_release);
 
+    // 转向周期和数据阶段回到默认值，下一个主机不继承上一个主机的 DAP_SWD_Configure。
+    // Turnaround and data phase go back to their defaults, so the next host does not
+    // inherit the DAP_SWD_Configure of the previous one.
+    Debug::Swd::TransferPolicy pol = swd_.GetTransferPolicy();
+    pol.turnaround = dap_state_.swd_cfg.turnaround;
+    pol.data_phase = dap_state_.swd_cfg.data_phase;
+    swd_.SetTransferPolicy(pol);
+
     swj_clock_hz_ = 1'000'000u;
     (void)swd_.SetClockHz(swj_clock_hz_);
     if constexpr (JTAG_ENABLED)
@@ -2470,6 +2478,11 @@ class DapLinkV2Class : public DeviceClass
     const uint8_t cfg = req[1];
     dap_state_.swd_cfg.turnaround = static_cast<uint8_t>((cfg & 0x03u) + 1u);
     dap_state_.swd_cfg.data_phase = ((cfg & 0x04u) != 0u);
+
+    Debug::Swd::TransferPolicy pol = swd_.GetTransferPolicy();
+    pol.turnaround = dap_state_.swd_cfg.turnaround;
+    pol.data_phase = dap_state_.swd_cfg.data_phase;
+    swd_.SetTransferPolicy(pol);
 
     resp[1] = ToU8(LibXR::USB::DapLinkV2Def::Status::OK);
     out_len = 2u;

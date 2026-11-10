@@ -15,17 +15,12 @@
  * parity errors, the DPIDR read required after a line reset, a vanished target, the
  * ROM table, halting and core registers, and system reset.
  *
- * 候选线的 `SwdGeneralGPIO` 不应用 DAP_SWD_Configure 的转向周期和数据阶段
- * （C-missing-fixes 第 6 项，`Swd::TransferPolicy` 没有这两项）。这两项只在 `SimSwd`
- * 上跑常规用例；同样的检查放在已知缺陷用例 `swd_gpio_turnaround` 和
- * `swd_gpio_data_phase` 里，对着真实的位操作引擎，断言没有放宽，不在默认运行里：
- * `test_swd_target --list-findings` 列出，`--finding <名字>` 单独运行。
- * The candidate's `SwdGeneralGPIO` does not apply the turnaround cycles and the data
- * phase of DAP_SWD_Configure (C-missing-fixes item 6; `Swd::TransferPolicy` lacks both).
- * The two run as regular cases on `SimSwd` only; the same checks against the real
- * bit-banging engine are the known-defect cases `swd_gpio_turnaround` and
- * `swd_gpio_data_phase`, with unweakened assertions and out of the default run:
- * `test_swd_target --list-findings` lists them, `--finding <name>` runs one.
+ * `Swd::TransferPolicy` 的转向周期数和数据阶段（DAP_SWD_Configure 设置）两条路径都要
+ * 生效：`SimSwd` 读策略生成波形，`SwdGeneralGPIO` 的无延时和带延时路径按策略出时钟。
+ * The turnaround cycles and the data phase of `Swd::TransferPolicy` (set by
+ * DAP_SWD_Configure) must take effect on both connections: `SimSwd` reads the policy to
+ * generate the waveform, and the no-delay and delayed paths of `SwdGeneralGPIO` clock
+ * according to it.
  */
 
 #include <cstdio>
@@ -351,16 +346,10 @@ void OverrunDetectCase(bool data_phase, Target& t, Swd& swd);
 
 void TestOverrunDetectDataPhase()
 {
-  // 没有数据阶段（引擎的默认行为）：所有接法；有数据阶段：SimSwd，引擎见已知缺陷用例
-  // Without the data phase (the engine default): every connection; with it: SimSwd, the
-  // engine is the known-defect case
+  // 没有数据阶段（默认）和有数据阶段，每种接法各一遍
+  // Without the data phase (the default) and with it, once per connection
   ForEachConnection([](Target& t, Swd& swd) { OverrunDetectCase(false, t, swd); });
-  ForSimSwd([](Target& t, Swd& swd) { OverrunDetectCase(true, t, swd); });
-}
-
-void FindingSwdGpioDataPhase()
-{
-  ForEngine([](Target& t, Swd& swd) { OverrunDetectCase(true, t, swd); });
+  ForEachConnection([](Target& t, Swd& swd) { OverrunDetectCase(true, t, swd); });
 }
 
 void OverrunDetectCase(bool data_phase, Target& t, Swd& swd)
@@ -369,7 +358,7 @@ void OverrunDetectCase(bool data_phase, Target& t, Swd& swd)
   adi.Connect();
   adi.Write32(0x20000040u, 0x5A5A5A5Au);
   adi.DpWrite(1, 0x50000001u);  // ORUNDETECT
-  if (data_phase) TEST_ASSERT(SetWireConfig(swd, 1, true));
+  if (data_phase) SetWireConfig(swd, 1, true);
   adi.ApWrite(0x04, 0x20000040u);
   t.dp.inject_wait = 1;
   uint32_t v = 0;
@@ -410,13 +399,7 @@ void TurnaroundCase(uint8_t turn, Target& t, Swd& swd);
 void TestTurnaround()
 {
   for (const uint8_t turn : {2, 3, 4})
-    ForSimSwd([&](Target& t, Swd& swd) { TurnaroundCase(turn, t, swd); });
-}
-
-void FindingSwdGpioTurnaround()
-{
-  for (const uint8_t turn : {2, 3, 4})
-    ForEngine([&](Target& t, Swd& swd) { TurnaroundCase(turn, t, swd); });
+    ForEachConnection([&](Target& t, Swd& swd) { TurnaroundCase(turn, t, swd); });
 }
 
 void TurnaroundCase(uint8_t turn, Target& t, Swd& swd)
@@ -425,7 +408,7 @@ void TurnaroundCase(uint8_t turn, Target& t, Swd& swd)
   adi.Connect();
   adi.DpWrite(2, 1u);  // SELECT.DPBANKSEL = 1：WCR
   adi.DpWrite(1, static_cast<uint32_t>(turn - 1u) << 8);
-  TEST_ASSERT(SetWireConfig(swd, turn, true));
+  SetWireConfig(swd, turn, true);
   TEST_ASSERT(adi.DpRead(1) == ((static_cast<uint32_t>(turn - 1u) << 8) | 0x40u));
   adi.DpWrite(2, 0u);
   adi.Write32(0x20000050u, 0xA5A5C3C3u);
@@ -564,8 +547,5 @@ void RegularCases()
 
 int main(int argc, char** argv)
 {
-  return USB::Sim::RunTestProgram(
-      argc, argv, RegularCases,
-      {{"swd_gpio_turnaround", "C-missing-fixes item 6", FindingSwdGpioTurnaround},
-       {"swd_gpio_data_phase", "C-missing-fixes item 6", FindingSwdGpioDataPhase}});
+  return USB::Sim::RunTestProgram(argc, argv, RegularCases, {});
 }

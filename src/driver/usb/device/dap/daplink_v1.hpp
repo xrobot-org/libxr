@@ -605,6 +605,14 @@ void DapLinkV1Class<SwdPort>::SyncSession(uint32_t epoch)
   dap_state_.debug_port = LibXR::USB::DapLinkV1Def::DebugPort::DISABLED;
   dap_state_.transfer_abort = false;
 
+  // 转向周期和数据阶段回到默认值，下一个主机不继承上一个主机的 DAP_SWD_Configure。
+  // Turnaround and data phase go back to their defaults, so the next host does not
+  // inherit the DAP_SWD_Configure of the previous one.
+  LibXR::Debug::Swd::TransferPolicy pol = swd_.GetTransferPolicy();
+  pol.turnaround = 1u;
+  pol.data_phase = false;
+  swd_.SetTransferPolicy(pol);
+
   swj_clock_hz_ = 1000000u;
   (void)swd_.SetClockHz(swj_clock_hz_);
   if constexpr (JTAG_ENABLED)
@@ -1324,9 +1332,8 @@ ErrorCode DapLinkV1Class<SwdPort>::HandleSWJSequence(bool /*in_isr*/, const uint
 }
 
 template <typename SwdPort>
-ErrorCode DapLinkV1Class<SwdPort>::HandleSWDConfigure(bool /*in_isr*/,
-                                                      const uint8_t* /*req*/,
-                                                      uint16_t /*req_len*/, uint8_t* resp,
+ErrorCode DapLinkV1Class<SwdPort>::HandleSWDConfigure(bool /*in_isr*/, const uint8_t* req,
+                                                      uint16_t req_len, uint8_t* resp,
                                                       uint16_t resp_cap,
                                                       uint16_t& out_len)
 {
@@ -1337,6 +1344,20 @@ ErrorCode DapLinkV1Class<SwdPort>::HandleSWDConfigure(bool /*in_isr*/,
   }
 
   resp[0] = to_u8(LibXR::USB::DapLinkV1Def::CommandId::SWD_CONFIGURE);
+
+  if (req == nullptr || req_len < 2u)
+  {
+    resp[1] = to_u8(LibXR::USB::DapLinkV1Def::Status::ERROR);
+    out_len = 2u;
+    return ErrorCode::ARG_ERR;
+  }
+
+  const uint8_t CFG = req[1];
+  LibXR::Debug::Swd::TransferPolicy pol = swd_.GetTransferPolicy();
+  pol.turnaround = static_cast<uint8_t>((CFG & 0x03u) + 1u);
+  pol.data_phase = ((CFG & 0x04u) != 0u);
+  swd_.SetTransferPolicy(pol);
+
   resp[1] = to_u8(LibXR::USB::DapLinkV1Def::Status::OK);
   out_len = 2u;
   return ErrorCode::OK;

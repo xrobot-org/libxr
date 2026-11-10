@@ -26,7 +26,7 @@ the model). On top of it sit the real DAP v2 class and the USB simulation backen
 | `swd_target_bitbang.cpp`, `openocd_calibrate.sh`, `pyocd_calibrate.sh`, `openocd_sim.cfg` | 用真实 OpenOCD / pyOCD 校准目标模型 / calibrating the model with real OpenOCD / pyOCD |
 | `keil_sim.ini` | Keil uVision 的调试初始化脚本，只在 Windows 上用，Linux 上没有跑过 / Keil uVision debug init script, Windows only, not run on Linux |
 
-## 与候选线库的两处差别 / Two differences from the candidate library
+## 与候选线库的一处差别 / One difference from the candidate library
 
 1. 每个 `DAP_QueueCommands` / `DAP_ExecuteCommands` 包就地执行并立即应答，应答是
    `DAP_ExecuteCommands` 的格式 `[0x7F, n, ...]`，能力字节不带原子命令位（0x10）。候选线的
@@ -34,7 +34,6 @@ the model). On top of it sit the real DAP v2 class and the USB simulation backen
    随机测试不再有"排队包的应答随触发包"，回放测试只在 `DAP_Info(CAPABILITIES)` 的应答里不比较
    0x10 这一位（`00 01 11` 对 `00 01 01`），其余字节逐字节比较。Line A 的做法见
    `C-missing-fixes.md` 第 12a 项。
-2. `SimSwd` 自己保存转向周期数和数据阶段，因为候选线的 `Swd::TransferPolicy` 没有这两项。
 
 1. Every `DAP_QueueCommands` / `DAP_ExecuteCommands` packet runs in place and is answered at once, in the
    `DAP_ExecuteCommands` format `[0x7F, n, ...]`, and the capabilities byte carries no atomic-commands
@@ -43,24 +42,6 @@ the model). On top of it sit the real DAP v2 class and the USB simulation backen
    the trigger", and the replay test leaves out only that bit of the `DAP_Info(CAPABILITIES)` response
    (`00 01 11` against `00 01 01`) and compares every other byte exactly. Line A's behaviour is item 12a
    of `C-missing-fixes.md`.
-2. `SimSwd` keeps the turnaround cycles and the data phase itself, because the candidate's
-   `Swd::TransferPolicy` has neither.
-
-## 发现：不在默认运行里的用例 / Findings: cases kept out of the default run
-
-约定同 `../../usb/sim/README.md`：断言没有放宽，没有 `add_test`，测试程序不带参数只跑常规用例；
-`--list-findings` 列出，`--finding <名字>` 单独运行，失败时 SIGABRT 并输出位置，库修好后返回 0。
-
-Same convention as `../../usb/sim/README.md`: assertions not weakened, no `add_test`, a program without
-arguments runs the regular cases; `--list-findings` lists them, `--finding <name>` runs one, aborting with
-its location on failure, and returning 0 once the library is fixed.
-
-| 程序 / Program | 用例 / Case | 条目 / Item | 现象 / Symptom |
-| --- | --- | --- | --- |
-| `test_swd_target` | `swd_gpio_turnaround` | 6（`DAP_SWD_Configure` 的转向周期 / turnaround）| `Swd::TransferPolicy` 没有 `turnaround`，`SwdGeneralGPIO` 永远只发一个转向周期；断言 `SetWireConfig(swd, turn, true)` 失败（turn 2、3、4）/ `Swd::TransferPolicy` has no `turnaround` and `SwdGeneralGPIO` always clocks one turnaround; the assertion `SetWireConfig(swd, turn, true)` fails (turn 2, 3, 4) |
-| `test_swd_target` | `swd_gpio_data_phase` | 6（数据阶段 / data phase）| 没有 `data_phase`，WAIT/FAULT 之后不发 33 个周期的数据阶段（ORUNDETECT 打开时目标期望它）/ no `data_phase`; the 33-cycle data phase after WAIT/FAULT is never clocked, which the target expects with ORUNDETECT on |
-
-运行 / Run: `build/test/test_swd_target --finding swd_gpio_turnaround`
 
 ## 在 Linux 主机上用真实调试器 / Real debuggers on a Linux host
 

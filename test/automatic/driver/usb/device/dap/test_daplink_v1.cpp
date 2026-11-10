@@ -385,6 +385,54 @@ void TestBindAndUnbindLeaveSwdToStep()
   }
 }
 
+/// DAP_SWD_Configure reaches the SWD driver's transfer policy: turnaround (cfg & 3) + 1
+/// cycles and the data phase flag (cfg & 4); a new session starts from the defaults
+/// again.
+void TestSwdConfigureReachesThePolicy()
+{
+  FakeSwd swd;
+  Fixture f;
+  TestDap dap(Number::EP1, Number::EP2, swd);
+  dap.BindEndpoints(f.pool, 0, false);
+  const uint8_t CONFIGURE = static_cast<uint8_t>(CommandId::SWD_CONFIGURE);
+  TEST_ASSERT(swd.GetTransferPolicy().turnaround == 1);
+  TEST_ASSERT(!swd.GetTransferPolicy().data_phase);
+
+  f.out.HostSends(Report({CONFIGURE, 0x06}));
+  Run(dap);
+  TEST_ASSERT(f.in.active);
+  TEST_ASSERT(f.in.Last().data[0] == CONFIGURE && f.in.Last().data[1] == 0x00);
+  f.in.Complete();
+  TEST_ASSERT(swd.GetTransferPolicy().turnaround == 3);
+  TEST_ASSERT(swd.GetTransferPolicy().data_phase);
+
+  f.out.HostSends(Report({CONFIGURE, 0x03}));
+  Run(dap);
+  f.in.Complete();
+  TEST_ASSERT(swd.GetTransferPolicy().turnaround == 4);
+  TEST_ASSERT(!swd.GetTransferPolicy().data_phase);
+
+  // A report is always a whole 64 bytes: the zero padding after the command byte is the
+  // configuration byte 0, turnaround 1 and no data phase.
+  f.out.HostSends(Report({CONFIGURE}));
+  Run(dap);
+  f.in.Complete();
+  TEST_ASSERT(swd.GetTransferPolicy().turnaround == 1);
+  TEST_ASSERT(!swd.GetTransferPolicy().data_phase);
+
+  f.out.HostSends(Report({CONFIGURE, 0x05}));
+  Run(dap);
+  f.in.Complete();
+  TEST_ASSERT(swd.GetTransferPolicy().turnaround == 2);
+  TEST_ASSERT(swd.GetTransferPolicy().data_phase);
+
+  dap.UnbindEndpoints(f.pool, false);
+  dap.BindEndpoints(f.pool, 0, false);
+  Run(dap);
+  TEST_ASSERT(swd.GetTransferPolicy().turnaround == 1);
+  TEST_ASSERT(!swd.GetTransferPolicy().data_phase);
+}
+
 void TestResponseNeverSentWithoutABinding()
 {
   // The class answers FAILED while unbound instead of touching the endpoints.
@@ -407,6 +455,7 @@ int main()
   TestUnbindWhilePending();
   TestNoStaleResponseAfterRebind();
   TestBindAndUnbindLeaveSwdToStep();
+  TestSwdConfigureReachesThePolicy();
   TestResponseNeverSentWithoutABinding();
   std::puts("DAP v1 class: Step model, lease backpressure and rebind passed");
 }

@@ -919,49 +919,6 @@ struct Target
 // Connections
 // ---------------------------------------------------------------------------
 
-/// 库的传输策略是否带转向周期与数据阶段 / Whether the library's transfer policy carries
-/// the turnaround cycles and the data phase
-template <typename Policy>
-concept HasWireConfig = requires(Policy policy) {
-  policy.turnaround = 1;
-  policy.data_phase = true;
-};
-
-template <typename Policy>
-uint8_t PolicyTurnaround(const Policy& policy, uint8_t fallback)
-{
-  if constexpr (HasWireConfig<Policy>)
-    return policy.turnaround;
-  else
-    return fallback;
-}
-
-template <typename Policy>
-bool PolicyDataPhase(const Policy& policy, bool fallback)
-{
-  if constexpr (HasWireConfig<Policy>)
-    return policy.data_phase;
-  else
-    return fallback;
-}
-
-/// 写进策略，库的策略没有这两项时返回 false / Store into the policy; false when the
-/// library's policy has neither field
-template <typename Policy>
-bool StoreWireConfig(Policy& policy, uint8_t turnaround, bool data_phase)
-{
-  if constexpr (HasWireConfig<Policy>)
-  {
-    policy.turnaround = turnaround;
-    policy.data_phase = data_phase;
-    return true;
-  }
-  else
-  {
-    return false;
-  }
-}
-
 /// `Debug::Swd` 接口：按 SwdGeneralGPIO 的位时序生成波形 / `Debug::Swd` interface that
 /// generates the waveform with the bit timing of SwdGeneralGPIO
 class SimSwd : public Swd
@@ -1068,17 +1025,11 @@ class SimSwd : public Swd
   uint32_t clock_hz = 0;
   bool corrupt_write_parity = false;  ///< 写数据校验位取反（测试用）/ flip write parity
 
-  /// 主机侧的转向周期数与数据阶段（DAP_SWD_Configure 的效果）。候选线的
-  /// `Swd::TransferPolicy` 没有这两项（C-missing-fixes 第 6 项），所以 SimSwd 自己保存；
-  /// 库有了这两项之后改读 `TransferPolicy`。
-  /// The host-side turnaround cycles and data phase (what DAP_SWD_Configure sets). The
-  /// candidate's `Swd::TransferPolicy` has neither (C-missing-fixes item 6), so SimSwd
-  /// keeps its own; once the library has them it reads `TransferPolicy` instead.
-  uint8_t turnaround = 1;
-  bool data_phase = false;
-
-  uint8_t Turnaround() const { return PolicyTurnaround(GetTransferPolicy(), turnaround); }
-  bool DataPhase() const { return PolicyDataPhase(GetTransferPolicy(), data_phase); }
+  /// 主机侧的转向周期数与数据阶段（DAP_SWD_Configure 的效果），读 `TransferPolicy`。
+  /// The host-side turnaround cycles and data phase (what DAP_SWD_Configure sets), read
+  /// from `TransferPolicy`.
+  uint8_t Turnaround() const { return GetTransferPolicy().turnaround; }
+  bool DataPhase() const { return GetTransferPolicy().data_phase; }
 
  private:
   static bool Parity(uint32_t v)
@@ -1121,29 +1072,15 @@ class SimSwd : public Swd
   WireTarget& wire_;
 };
 
-/// 设置主机侧的转向周期与数据阶段，返回是否生效：库的 `TransferPolicy` 有这两项时写进
-/// 策略（所有 `Swd` 都生效）；没有时只有 `SimSwd`
-/// 能接受，其他驱动（`SwdGeneralGPIO`）返回 false，调用者据此判断库不支持。 Set the
-/// host-side turnaround cycles and data phase and return whether it took effect: written
-/// to the policy when the library's `TransferPolicy` has the two fields (every `Swd`
-/// honours it); otherwise only `SimSwd` can take it and any other driver
-/// (`SwdGeneralGPIO`) gets false, so the caller learns that the library lacks the
-/// setting.
-inline bool SetWireConfig(Swd& swd, uint8_t turnaround, bool data_phase)
+/// 设置主机侧的转向周期与数据阶段（写进 `TransferPolicy`，DAP_SWD_Configure 的效果）
+/// Set the host-side turnaround cycles and data phase (written to `TransferPolicy`, what
+/// DAP_SWD_Configure does)
+inline void SetWireConfig(Swd& swd, uint8_t turnaround, bool data_phase)
 {
   Swd::TransferPolicy policy = swd.GetTransferPolicy();
-  if (StoreWireConfig(policy, turnaround, data_phase))
-  {
-    swd.SetTransferPolicy(policy);
-    return true;
-  }
-  if (auto* sim = dynamic_cast<SimSwd*>(&swd))
-  {
-    sim->turnaround = turnaround;
-    sim->data_phase = data_phase;
-    return true;
-  }
-  return false;
+  policy.turnaround = turnaround;
+  policy.data_phase = data_phase;
+  swd.SetTransferPolicy(policy);
 }
 
 /// SWCLK 引脚：上升沿推进目标 / SWCLK pin: a rising edge advances the target

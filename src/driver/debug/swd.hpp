@@ -26,6 +26,13 @@ class Swd
    * - wait_retry：最大 WAIT 重试次数 / wait_retry: maximum WAIT retries.
    * - clear_sticky_on_fault：当 ACK==FAULT 时清除 sticky 错误 / clear_sticky_on_fault:
    * clear sticky errors when ACK==FAULT.
+   * - turnaround：转向周期数（1..4，与目标 DLCR.TURNROUND 一致），驱动不支持时忽略
+   * / turnaround: turnaround cycles (1..4, matching the target's DLCR.TURNROUND); a
+   * driver that cannot honour it ignores it.
+   * - data_phase：WAIT/FAULT 后仍走 33 个周期的数据阶段（目标开启 ORUNDETECT 时需要），
+   * 驱动不支持时忽略 / data_phase: clock the 33-cycle data phase after WAIT/FAULT as
+   * well (needed when the target has ORUNDETECT set); a driver that cannot honour it
+   * ignores it.
    */
   struct TransferPolicy
   {
@@ -33,6 +40,8 @@ class Swd
     uint16_t wait_retry = 100;  ///< WAIT 最大重试次数 / Maximum WAIT retries.
     bool clear_sticky_on_fault =
         true;  ///< FAULT 时清除 sticky 错误 / Clear sticky errors on FAULT.
+    uint8_t turnaround = 1;   ///< 转向周期数 / Turnaround cycles.
+    bool data_phase = false;  ///< WAIT/FAULT 后的数据阶段 / Data phase after WAIT/FAULT.
   };
 
   /**
