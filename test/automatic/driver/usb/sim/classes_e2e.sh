@@ -64,17 +64,6 @@ result() {  # result <label> <status>: 0 pass, 3 could not run, else fail
 }
 note() { echo "  $*"; summary+=("  $*"); }
 
-# The sysfs directory of the simulated device (under vhci) with this VID:PID, if any.
-sim_usb_device() {
-  local d
-  for d in /sys/bus/usb/devices/*; do
-    [ -f "$d/idVendor" ] || continue
-    [ "$(cat "$d/idVendor")" = "$1" ] && [ "$(cat "$d/idProduct")" = "$2" ] || continue
-    sim_is_vhci "$d" && { echo "$d"; return 0; }
-  done
-  return 1
-}
-
 # HID ---------------------------------------------------------------------------------
 if want hid && start hid; then
   $PRIV python3 class_checks.py hid 1000

@@ -50,3 +50,31 @@ sim_detach() {
 sim_is_vhci() {
   readlink -f "$1" | grep -q "/vhci_hcd\."
 }
+
+# The sysfs directory of the simulated device (under vhci) with this VID:PID, if any.
+# 仿真设备（在 vhci 之下）中 VID:PID 相符者的 sysfs 目录。
+sim_usb_device() {
+  local d
+  for d in /sys/bus/usb/devices/*; do
+    [ -f "$d/idVendor" ] || continue
+    [ "$(cat "$d/idVendor")" = "$1" ] && [ "$(cat "$d/idProduct")" = "$2" ] || continue
+    sim_is_vhci "$d" && { echo "$d"; return 0; }
+  done
+  return 1
+}
+
+# Like sim_usb_device, but fails unless the host has exactly one device with this
+# VID:PID and it is the one under vhci. Tools that can only pick by VID:PID and serial
+# (OpenOCD, pyOCD, probe-rs) are started only after this holds.
+# 同 sim_usb_device，但主机上该 VID:PID 的设备必须恰有一个且在 vhci 之下才成功。只能按
+# VID:PID 和序列号选设备的工具（OpenOCD、pyOCD、probe-rs）在这一条成立之后才启动。
+sim_usb_device_unique() {
+  local d count=0 found=""
+  for d in /sys/bus/usb/devices/*; do
+    [ -f "$d/idVendor" ] || continue
+    [ "$(cat "$d/idVendor")" = "$1" ] && [ "$(cat "$d/idProduct")" = "$2" ] || continue
+    count=$((count + 1))
+    sim_is_vhci "$d" && found=$d
+  done
+  [ "$count" -eq 1 ] && [ -n "$found" ] && echo "$found"
+}
