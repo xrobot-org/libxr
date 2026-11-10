@@ -515,6 +515,37 @@ void FindingDmaDataWithStatusPhase()
   TEST_ASSERT(f.host.StatusIn() == Result::OK);
 }
 
+/// 非 DMA 模式：OUT 端点的停止序列还在等全局 OUT NAK 生效（SGONAK 已写、EPDIS 未写）时
+/// 调用
+/// Stop()，中间没有进过中断：停止被直接确认，端点在硬件里仍是使能的。下一次会话里对它
+/// 写传输长度寄存器时端点仍处于使能状态，而手册要求先在全局 OUT NAK 生效后禁用端点、且只
+/// 在端点禁用时改写这个寄存器。DMA 模式下全局 OUT NAK 立即生效，EPDIS
+/// 在停止开始时就写了。 Without DMA: Stop() while the stop sequence of an OUT endpoint
+/// still waits for the global OUT NAK (SGONAK written, EPDIS not yet) and no interrupt
+/// was taken in between: the stop is confirmed at once and the endpoint stays enabled in
+/// the hardware. In the next session its transfer size register is written while it is
+/// still enabled; the manual requires the endpoint to be disabled once the global OUT NAK
+/// is in effect and the register to be written only while it is disabled. With DMA the
+/// global OUT NAK is in effect at once and EPDIS is written when the stop begins.
+void FindingStopLeavesOutEndpointEnabled()
+{
+  Probe f(SLAVE);
+  f.Up();
+  TEST_ASSERT(f.probe.bulk_out->Receive(64, false) == ErrorCode::OK);
+  f.device.Deinit(false);
+  f.device.Stop(false);  // 中间没有进过中断 / No interrupt was taken in between
+  TEST_ASSERT(f.probe.bulk_out_log.Count(ErrorCode::ABORTED) == 1U);
+  f.device.Init(false);
+  f.device.Start(false);
+  TEST_ASSERT(f.host.Enumerate(5, 1) == Result::OK);
+  TEST_ASSERT((f.hw.OutCtl(1) & Dwc2::CTL_EPENA) == 0U);
+  const auto bytes = Bytes(9, 2);
+  TEST_ASSERT(f.probe.bulk_out->Receive(64, false) == ErrorCode::OK);
+  TEST_ASSERT(f.host.Write(1, bytes, 64) == Result::OK);
+  TEST_ASSERT(f.probe.bulk_out_log.items.back().result == ErrorCode::OK &&
+              f.probe.bulk_out_log.items.back().data == bytes);
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -530,7 +561,10 @@ int main(int argc, char** argv)
   const int handled = TestFindings::Run(
       argc, argv,
       {{"dma_data_with_status_phase", "XFRC read together with STSPHSRX is dropped",
-        FindingDmaDataWithStatusPhase}});
+        FindingDmaDataWithStatusPhase},
+       {"stop_leaves_out_endpoint_enabled",
+        "Stop() while an OUT endpoint stop waits for the global OUT NAK",
+        FindingStopLeavesOutEndpointEnabled}});
   if (handled >= 0) return handled;
   RunAll();
   std::printf("stm32 otg: all tests passed\n");
