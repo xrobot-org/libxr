@@ -1636,6 +1636,34 @@ class GsUsbClass : public DeviceClass
   }
 
   /**
+   * @brief 通道启动：丢弃上一次会话留下、还没发给主机的接收帧、错误帧和这个通道的回显。
+   *        CAN 帧有时效性，回显 ID 属于上一个主机会话；其他通道的回显保留，顺序不变。
+   *        在 owner 里执行：owner 是接收队列和错误队列的消费者，也是回显队列唯一的生产者
+   *        和消费者。已经交给 IN 端点的帧不在这里处理。
+   *        Channel start: drop the receive frames, the error frames and this channel's
+   *        echoes that the previous session left unsent. CAN frames are time-bound and
+   *        echo IDs belong to the previous host session; the echoes of other channels
+   *        stay, in order. Runs in the owner, which consumes the receive and error
+   *        queues and is the only producer and consumer of the echo queue. Frames
+   *        already handed to the IN endpoint are not touched here.
+   */
+  void DropStaleFrames(uint8_t ch)
+  {
+    QueueItem item;
+    while (rx_queues_[ch].Pop(item) == ErrorCode::OK)
+    {
+    }
+    while (err_queues_[ch].Pop(item) == ErrorCode::OK)
+    {
+    }
+    for (size_t n = echo_queue_.Size(); n != 0U; --n)
+    {
+      if (echo_queue_.Pop(item) != ErrorCode::OK) break;
+      if (item.hdr.channel != ch) (void)echo_queue_.Push(item);
+    }
+  }
+
+  /**
    * @brief 处理 MODE（启动/复位 + 标志位） / Handle MODE (start/reset + flags)
    */
   ErrorCode HandleMode(uint8_t ch, const GsUsb::DeviceMode& mode)
@@ -1653,6 +1681,7 @@ class GsUsbClass : public DeviceClass
         break;
 
       case GsUsb::CanMode::START:
+        DropStaleFrames(ch);
         can_enabled_[ch] = true;
         if (fd_supported_ && fdcans_[ch] && (mode.flags & GsUsb::GSCAN_MODE_FD))
         {

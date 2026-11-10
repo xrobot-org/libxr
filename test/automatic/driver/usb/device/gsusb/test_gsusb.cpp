@@ -206,6 +206,18 @@ void Configure(GsFixture& f, bool enable_ch0 = true, bool enable_ch1 = true)
   }
 }
 
+/// One MODE request (vendor request that selects the channel, then its data stage).
+void SetMode(GsFixture& f, uint16_t ch, uint32_t mode_value, uint32_t flags = 0U)
+{
+  TestGs::ControlTransferResult result;
+  TEST_ASSERT(f.gs.OnVendorRequest(false, static_cast<uint8_t>(GsUsb::BReq::MODE), ch,
+                                   2u * sizeof(uint32_t), 0, result) == ErrorCode::OK);
+  const uint32_t mode[2] = {mode_value, flags};
+  ConstRawData data{mode, sizeof(mode)};
+  TEST_ASSERT(f.gs.OnClassData(false, static_cast<uint8_t>(GsUsb::BReq::MODE), data) ==
+              ErrorCode::OK);
+}
+
 void TestBindAndConfiguration()
 {
   FreshTimerList();
@@ -297,6 +309,95 @@ void TestCanRxToHost()
   TEST_ASSERT(frame[10] == 0);
   TEST_ASSERT(std::equal(payload.begin(), payload.end(), frame.begin() + WIRE_HEADER));
   f.in.Complete();
+}
+
+/// 通道启动时丢弃上一次会话留下的接收帧、错误帧和这个通道的回显；其他通道的帧和回显
+/// 保留且顺序不变。已经交给 IN 端点的两帧照常发出。
+/// A channel start drops the receive frames, error frames and this channel's echoes that
+/// the previous session left; the frames and echoes of the other channel stay, in order.
+/// The two frames already handed to the IN endpoint still go out.
+void TestChannelStartDropsStaleFrames()
+{
+  FreshTimerList();
+  GsFixture f;
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f);
+  SetMode(f, 0, 1u, GsUsb::GSCAN_MODE_BERR_REPORTING);
+
+  // Channel 0: six frames (two reach the IN slots, four wait) and a bus error.
+  for (uint32_t i = 0; i < 6; ++i) f.can0.Inject(0x100u + i, {static_cast<uint8_t>(i)});
+  f.can0.Inject(LibXR::CAN::FromErrorID(LibXR::CAN::ErrorID::CAN_ERROR_ID_BUS_OFF), {},
+                LibXR::CAN::Type::ERROR);
+  // Channel 1: two received frames.
+  f.can1.Inject(0x200u, {0x20});
+  f.can1.Inject(0x201u, {0x21});
+  // Echoes of both channels wait behind the busy slots: ids 0x3000.. and 0x4000...
+  for (uint32_t i = 0; i < 2; ++i)
+  {
+    f.out.HostSends(ClassicFrame(0x3000u + i, 0x300u + i, 1, 0, 0, {0x5A}));
+    f.out.HostSends(ClassicFrame(0x4000u + i, 0x400u + i, 1, 1, 0, {0x5B}));
+  }
+
+  // The host restarts channel 0 (RESET, then START), as `ip link set down/up` does.
+  SetMode(f, 0, 0u);
+  SetMode(f, 0, 1u);
+
+  // A frame received after the start goes out.
+  f.can0.Inject(0x500u, {0x50});
+
+  std::vector<uint32_t> rx0, rx1, echo0, echo1;
+  unsigned errors = 0;
+  for (unsigned i = 0; i < 32 && f.in.active; ++i) f.in.Complete();
+  for (const auto& frame : f.in.sent)
+  {
+    const uint32_t echo_id = ReadU32(frame, 0);
+    const uint32_t can_id = ReadU32(frame, 4);
+    if ((can_id & GsUsb::CAN_ERR_FLAG) != 0U) ++errors;
+    if (echo_id == 0xFFFFFFFFu)
+      (frame[9] == 0 ? rx0 : rx1).push_back(can_id);
+    else
+      (frame[9] == 0 ? echo0 : echo1).push_back(echo_id);
+  }
+  // Channel 0: the two frames that were already in the slots, then the new one. The
+  // error frame, the four queued frames and both channel 0 echoes are gone.
+  TEST_ASSERT(rx0 == std::vector<uint32_t>({0x100u, 0x101u, 0x500u}));
+  TEST_ASSERT(echo0.empty());
+  TEST_ASSERT(errors == 0);
+  // Channel 1 is untouched.
+  TEST_ASSERT(rx1 == std::vector<uint32_t>({0x200u, 0x201u}));
+  TEST_ASSERT(echo1 == std::vector<uint32_t>({0x4000u, 0x4001u}));
+}
+
+/// 总线复位或拔插之后，上一次绑定留下的队列内容在主机启动通道时丢弃，不会在新会话里
+/// 先到达主机。
+/// After a bus reset or replug the queue contents of the previous binding are dropped
+/// when the host starts the channel, so they do not reach the host first in the new
+/// session.
+void TestRebindThenStartDropsStaleFrames()
+{
+  FreshTimerList();
+  GsFixture f;
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f);
+
+  for (uint32_t i = 0; i < 6; ++i) f.can0.Inject(0x100u + i, {static_cast<uint8_t>(i)});
+  for (uint32_t i = 0; i < 2; ++i)
+  {
+    f.out.HostSends(ClassicFrame(0x3000u + i, 0x300u + i, 1, 0, 0, {0x5A}));
+  }
+
+  // Bus reset: the binding ends and a new one begins; the queues live in the class.
+  f.gs.UnbindEndpoints(f.pool, false);
+  f.gs.BindEndpoints(f.pool, 0, false);
+  f.in.sent.clear();
+
+  Configure(f);
+  f.can0.Inject(0x500u, {0x50});
+  for (unsigned i = 0; i < 32 && f.in.active; ++i) f.in.Complete();
+
+  TEST_ASSERT(f.in.sent.size() == 1);
+  TEST_ASSERT(ReadU32(f.in.sent[0], 0) == 0xFFFFFFFFu);
+  TEST_ASSERT(ReadU32(f.in.sent[0], 4) == 0x500u);
 }
 
 void TestRxQueueOverflowFlag()
@@ -642,6 +743,8 @@ int main()
   TestBindAndConfiguration();
   TestHostFrameToCanAndEcho();
   TestCanRxToHost();
+  TestChannelStartDropsStaleFrames();
+  TestRebindThenStartDropsStaleFrames();
   TestRxQueueOverflowFlag();
   TestOverflowFlagRidesOnTheChannelsNextFrame();
   TestEchoAndReceivedFramesAlternate();
