@@ -1101,7 +1101,11 @@ class DFUClass : public DfuInterfaceClassBase
     if (setup.bRequest == static_cast<uint8_t>(DFURequest::DNLOAD))
     {
       backend_.DfuAbort(current_alt_setting_);
-      ClearErrorState();
+      // 被 STALL 的 DNLOAD 已经锁存了错误：保留它给下一次 GETSTATUS，清除只能由
+      // CLRSTATUS/ABORT 显式完成。
+      // A stalled DNLOAD has already latched its error: keep it for the next GETSTATUS;
+      // only CLRSTATUS/ABORT clears it explicitly.
+      if (state_ != DFUState::DFU_ERROR) ClearErrorState();
     }
     else if (setup.bRequest == static_cast<uint8_t>(DFURequest::GETSTATUS) &&
              !poll_waiting_)
@@ -1179,8 +1183,7 @@ class DFUClass : public DfuInterfaceClassBase
     if (data.size_ != pending_dnload_length_)
     {
       pending_dnload_length_ = 0u;
-      state_ = DFUState::DFU_ERROR;
-      return ErrorCode::ARG_ERR;
+      return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
     }
 
     uint32_t poll_timeout_ms = 0u;

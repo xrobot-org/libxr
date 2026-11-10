@@ -94,6 +94,7 @@ class TestBoot : public BootClass
   using DFUClass<DfuBootloaderBackend, 256>::OnClassData;
   using DFUClass<DfuBootloaderBackend, 256>::OnClassInDataStatusComplete;
   using DFUClass<DfuBootloaderBackend, 256>::OnClassRequest;
+  using DFUClass<DfuBootloaderBackend, 256>::OnControlAbort;
   using DFUClass<DfuBootloaderBackend, 256>::OnControlRequest;
   using DFUClass<DfuBootloaderBackend, 256>::UnbindEndpoints;
   using ControlTransferResult = DeviceClass::ControlTransferResult;
@@ -296,6 +297,41 @@ void TestBootloaderDownload()
   boot.UnbindEndpoints(f.pool, false);
 }
 
+/// 截短的 DNLOAD 数据阶段锁存错误，核心随后的 STALL（OnControlAbort）不能把它清掉；
+/// 下一次 GETSTATUS 报出错误，CLRSTATUS 才回到空闲。
+/// A truncated DNLOAD data stage latches an error that the core's following STALL
+/// (OnControlAbort) must not clear: the next GETSTATUS reports it, and only CLRSTATUS
+/// returns to idle.
+void TestTruncatedDownloadKeepsError()
+{
+  BootFixture f;
+  TestBoot& boot = f.boot;
+  boot.BindEndpoints(f.pool, 0, false);
+  TestBoot::ControlTransferResult result;
+  auto ask = [&](uint8_t req, uint16_t len)
+  {
+    result.write_data = {};
+    return boot.OnClassRequest(false, req, 0, len, 0, result);
+  };
+  TEST_ASSERT(ask(DFU_DNLOAD, 16) == ErrorCode::OK);
+  std::array<uint8_t, 8> half{};
+  ConstRawData data{half.data(), half.size()};
+  TEST_ASSERT(boot.OnClassData(false, DFU_DNLOAD, data) != ErrorCode::OK);
+  SetupPacket setup{};
+  setup.bmRequestType = 0x21;
+  setup.bRequest = DFU_DNLOAD;
+  setup.wLength = 16;
+  boot.OnControlAbort(false, setup);
+  TEST_ASSERT(ask(DFU_GETSTATUS, 6) == ErrorCode::OK);
+  TEST_ASSERT(Bytes(result.write_data)[0] ==
+              static_cast<uint8_t>(DFUStatusCode::ERR_STALLEDPKT));
+  TEST_ASSERT(Bytes(result.write_data)[4] == static_cast<uint8_t>(DFUState::DFU_ERROR));
+  TEST_ASSERT(ask(DFU_CLRSTATUS, 0) == ErrorCode::OK);
+  TEST_ASSERT(ask(DFU_GETSTATE, 1) == ErrorCode::OK);
+  TEST_ASSERT(Bytes(result.write_data)[0] == static_cast<uint8_t>(DFUState::DFU_IDLE));
+  boot.UnbindEndpoints(f.pool, false);
+}
+
 /// While a block is written the host must wait bwPollTimeout before the next GETSTATUS.
 /// That wait counts from the GETSTATUS answer, not from its status stage: on hardware the
 /// status-stage interrupt can come late while flash work runs with interrupts off, and a
@@ -436,6 +472,7 @@ int main()
   TestRuntimeDetach();
   TestRuntimeJumpsFromProcess();
   TestBootloaderDownload();
+  TestTruncatedDownloadKeepsError();
   TestPollWaitCountsFromTheAnswer();
   TestWinUsbSetComesFromComposition();
   std::puts(
