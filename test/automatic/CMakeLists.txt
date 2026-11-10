@@ -390,3 +390,13 @@ target_link_libraries(test_dap_fuzz PRIVATE xr)
 target_include_directories(test_dap_fuzz PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 add_test(NAME dap_fuzz COMMAND test_dap_fuzz)
 set_tests_properties(dap_fuzz PROPERTIES TIMEOUT 300)
+
+# Replay of DAP sessions recorded from OpenOCD, pyOCD and probe-rs (dap_record.sh).
+add_executable(test_dap_replay driver/debug/sim/test_dap_replay.cpp)
+target_link_libraries(test_dap_replay PRIVATE xr)
+target_include_directories(test_dap_replay PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_definitions(
+  test_dap_replay
+  PRIVATE DAP_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/driver/debug/sim/replay")
+add_test(NAME dap_replay COMMAND test_dap_replay)
+set_tests_properties(dap_replay PROPERTIES TIMEOUT 120)
