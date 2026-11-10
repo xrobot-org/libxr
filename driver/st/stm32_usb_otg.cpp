@@ -417,7 +417,7 @@ void STM32USBOtgDevice::DrainRxFifo()
     const uint32_t kind = (entry & USB_OTG_GRXSTSP_PKTSTS) >> USB_OTG_GRXSTSP_PKTSTS_Pos;
     if (kind == STS_DATA_UPDT)
     {
-      STM32OtgEndpoint* ep = num < MAX_ENDPOINTS ? out_[num] : nullptr;
+      STM32OtgEndpoint* ep = out_[num];
       if (ep != nullptr && (!discard_ || num == 0U))
       {
         ep->ReadFifo(bytes);
@@ -464,7 +464,7 @@ void STM32USBOtgDevice::HandleOutEndpoints()
                   USB_OTG_DOEPINT_OTEPDIS | USB_OTG_DOEPINT_OTEPSPR |
                   USB_OTG_DOEPINT_STPKTRX | USB_OTG_DOEPINT_NAK);
     regs->DOEPINT = handled;
-    STM32OtgEndpoint* ep = num < MAX_ENDPOINTS ? out_[num] : nullptr;
+    STM32OtgEndpoint* ep = out_[num];
     const bool setup = (events & USB_OTG_DOEPINT_STUP) != 0U;
     if ((events & USB_OTG_DOEPINT_XFRC) != 0U && ep != nullptr)
     {
@@ -514,7 +514,7 @@ void STM32USBOtgDevice::HandleInEndpoints()
     const uint32_t raw = regs->DIEPINT;
     const uint32_t events =
         raw & (mask | (((empty_mask >> num) & 1U) != 0U ? USB_OTG_DIEPINT_TXFE : 0U));
-    STM32OtgEndpoint* ep = num < MAX_ENDPOINTS ? in_[num] : nullptr;
+    STM32OtgEndpoint* ep = in_[num];
     if ((events & USB_OTG_DIEPINT_XFRC) != 0U)
     {
       Device()->DIEPEMPMSK &= ~(1UL << num);
