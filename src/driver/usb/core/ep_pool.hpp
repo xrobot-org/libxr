@@ -132,6 +132,13 @@ class EndpointPool
   class HardwareScope
   {
    public:
+    /// 进入 pool 的硬件临界区；pool 不会为空，编译器不必再沿空指针路径分析
+    /// Enter the hardware critical region of pool; pool is never null, so the compiler
+    /// does not follow a null-pointer path
+    [[gnu::always_inline]] explicit HardwareScope(EndpointPool& pool) : pool_(&pool)
+    {
+      if (pool.hardware_enter_) token_ = pool.hardware_enter_(pool.hardware_context_);
+    }
     [[gnu::always_inline]] explicit HardwareScope(EndpointPool* pool) : pool_(pool)
     {
       if (pool_ && pool_->hardware_enter_)

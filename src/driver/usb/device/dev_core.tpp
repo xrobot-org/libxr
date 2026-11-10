@@ -62,7 +62,7 @@ void DeviceCore<C>::Initialize(bool in_isr)
     return;
   }
   {
-    EndpointPool::HardwareScope hardware(&pool_);
+    EndpointPool::HardwareScope hardware(pool_);
     OnControlReady();
     // An IRQ can run as soon as the hardware guard releases. Publish readiness
     // before then, or a valid first SETUP can be discarded as uninitialized.
@@ -135,7 +135,7 @@ void DeviceCore<C>::DispatchEvents(bool in_isr, uint32_t events)
       bool speed_ok = true;
       if (events & RESET_EVENT)
       {
-        EndpointPool::HardwareScope hardware(&pool_);
+        EndpointPool::HardwareScope hardware(pool_);
         OnControllerReset();
         const Speed observed_speed = ReadBusSpeed();
         speed_ok = (profile_speeds_ & SpeedBit(observed_speed)) != 0U;
@@ -221,7 +221,7 @@ void DeviceCore<C>::OnSetupPacket(bool in_isr, const SetupPacket* setup)
 {
   if (setup == nullptr) return;
   {
-    EndpointPool::HardwareScope hardware(&pool_);
+    EndpointPool::HardwareScope hardware(pool_);
     captured_setup_ = *setup;
     captured_setup_pending_ = true;
     pool_.PublishControl(SETUP_EVENT);
@@ -232,7 +232,7 @@ void DeviceCore<C>::OnSetupPacket(bool in_isr, const SetupPacket* setup)
 template <typename C>
 bool DeviceCore<C>::TakeCapturedSetup(SetupPacket& setup)
 {
-  EndpointPool::HardwareScope hardware(&pool_);
+  EndpointPool::HardwareScope hardware(pool_);
   // A newer lifecycle request must be applied before a post-boundary SETUP.
   // Its publication is inside the same guard as mailbox invalidation.
   if (!captured_setup_pending_ || pool_.HasPendingControl(LIFECYCLE_EVENTS)) return false;
@@ -251,7 +251,7 @@ template <typename C>
 bool DeviceCore<C>::Superseded()
 {
   if (replacing_setup_) return true;
-  EndpointPool::HardwareScope hardware(&pool_);
+  EndpointPool::HardwareScope hardware(pool_);
   return captured_setup_pending_;
 }
 
@@ -325,7 +325,7 @@ void DeviceCore<C>::Finish(bool in_isr)
   // (CH32 USBHS: RX goes to ACK, the packets are dropped and the transfer hangs). The
   // capture happens under the same guard, so the check and the reopen are atomic to it.
   {
-    EndpointPool::HardwareScope hardware(&pool_);
+    EndpointPool::HardwareScope hardware(pool_);
     if (!replacing_setup_ && !captured_setup_pending_) OnControlReady();
   }
   if (previous) previous->OnControlComplete(in_isr, completed);
