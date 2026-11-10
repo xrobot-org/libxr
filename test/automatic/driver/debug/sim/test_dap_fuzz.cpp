@@ -161,6 +161,8 @@ class Session
   bool pad_groups = false;
   /// -1 随机分包；0..2 固定分包方式 / -1 random packetisation; 0..2 a fixed mode
   int force_mode = -1;
+  /// 没有任何进展多久算失败 / How long without progress counts as a failure
+  std::chrono::seconds idle_limit{30};
 
   void Drain()
   {
@@ -213,8 +215,7 @@ class Session
     else
     {
       std::this_thread::yield();
-      FUZZ_ASSERT(std::chrono::steady_clock::now() - idle_since_ <
-                  std::chrono::seconds(30));
+      FUZZ_ASSERT(std::chrono::steady_clock::now() - idle_since_ < idle_limit);
     }
   }
 
@@ -649,6 +650,114 @@ void RunUnplugSeed(unsigned seed, unsigned commands)
   s.Drain();
 }
 
+/// 命令池占满、后到的包被留住（held）时拔插：留住的 OUT 槽要还给端点，否则重新枚举后
+/// 端点少了接收槽，主机再也发不出包。一条长延时命令占住 Step 线程，三条 DAP_Info 填满
+/// 命令池，再到的包留在 held 里。
+/// Unplug while the command pool is full and later packets are held: the held OUT slots
+/// must go back to the endpoint, otherwise after re-enumeration the endpoint is short of
+/// receive slots and the host can no longer send. A long delay keeps the Step thread
+/// busy, three DAP_Info commands fill the command pool, and packets arriving later stay
+/// in the held list.
+void TestUnplugWithHeldPackets()
+{
+  g_seed = 7;
+  std::mt19937 rng(7);
+  Rig r(0, 1);
+  Session s(r, rng);
+  Generator g(s, rng);
+  Setup(r, s, g);
+  g.Connect();
+  s.Drain();
+  // 上一条命令的接收槽可能还没重新挂上，NAK 就重试 / The receive slot of the previous
+  // command may not be re-armed yet: retry on NAK
+  bool delay_sent = false;
+  for (unsigned attempts = 0; attempts < 20000 && !delay_sent; ++attempts)
+  {
+    delay_sent = r.device.OutPacket(OUT_EP, {0x09, 0xFF, 0xFF}) == Sim::Handshake::ACK;
+    if (!delay_sent) std::this_thread::yield();
+  }
+  FUZZ_ASSERT(delay_sent);
+  unsigned accepted = 0;
+  for (unsigned attempts = 0; attempts < 20000 && accepted < 8; ++attempts)
+  {
+    if (r.device.OutPacket(OUT_EP, {0x00, 0xFE}) == Sim::Handshake::ACK)
+      ++accepted;
+    else
+      std::this_thread::yield();
+  }
+  // 命令池的槽数是通告的包数，一个槽被延时命令占着，再加 2 个留住的包
+  // The command pool has as many slots as the advertised packet count, one is taken by
+  // the delay, plus two held packets
+  FUZZ_ASSERT(accepted == g.packet_count + 1u);
+  r.device.Disconnect();
+  s.Forget();
+  s.idle_limit = std::chrono::seconds(5);
+  r.device.Attach();
+  r.device.BusReset();
+  FUZZ_ASSERT(r.host.Enumerate());
+  g.Connect();
+  for (int i = 0; i < 16; ++i) g.Random();
+  s.Drain();
+}
+
+/// WAIT 要如实报告：DAP_TransferConfigure 的 WAIT 重试为 0，目标连回两个 WAIT，
+/// DAP_Transfer 的应答是已完成 0 个、ack 为 WAIT（2）；重试够多时同样的 WAIT 被吸收。
+/// （重试为 0 时一个 WAIT 应该就报告出来：见已知缺陷用例 wait_retry_zero。）
+/// A WAIT is reported as such: with the WAIT retry of DAP_TransferConfigure at 0 and two
+/// WAITs from the target, DAP_Transfer answers zero transfers done and ack WAIT (2); with
+/// enough retries the same WAITs are absorbed. (With a retry of 0 a single WAIT should
+/// already be reported: see the known-defect case wait_retry_zero.)
+void TestWaitIsReportedWithoutRetries()
+{
+  g_seed = 8;
+  std::mt19937 rng(8);
+  Rig r(0, 1);
+  Session s(r, rng);
+  Generator g(s, rng);
+  Setup(r, s, g);
+  g.Connect();
+  s.Drain();
+  s.Send({0x04, 0x00, 0x00, 0x00, 0x00, 0x00}, {0x04, 0x00});
+  s.Drain();
+  r.target.dp.inject_wait = 2;
+  s.Send({0x05, 0x00, 0x01, 0x0F}, {0x05, 0x00, 0x02});
+  s.Drain();
+  FUZZ_ASSERT(r.target.dp.inject_wait == 0);
+  s.Send({0x04, 0x00, 0x40, 0x00, 0x00, 0x00}, {0x04, 0x00});
+  s.Drain();
+  r.target.dp.inject_wait = 2;
+  Bytes absorbed{0x05, 0x01, 0x01};
+  Put32(absorbed, 0);
+  s.Send({0x05, 0x00, 0x01, 0x0F}, absorbed);
+  s.Drain();
+  FUZZ_ASSERT(r.target.dp.inject_wait == 0);
+}
+
+/// 已知缺陷（新，不在 C-missing-fixes 里）：WAIT 重试次数为 0 表示不重试，一个 WAIT 就
+/// 该报告出来。候选线的 TransferTxnFast 先传一次，遇 WAIT 再调 TransferWithRetry，后者
+/// 自己先传一次才判断重试次数，所以重试为 N 时实际重试 N+1 次，重试为 0 的 WAIT 被吸收。
+/// Known defect (new, not in C-missing-fixes): a WAIT retry count of 0 means no retry, so
+/// one WAIT must be reported. The candidate's TransferTxnFast transfers once and on WAIT
+/// calls TransferWithRetry, which transfers once more before it looks at the retry count:
+/// with a count of N the transfer is retried N+1 times and a single WAIT at count 0 is
+/// absorbed.
+void FindingWaitRetryZero()
+{
+  g_seed = 9;
+  std::mt19937 rng(9);
+  Rig r(0, 1);
+  Session s(r, rng);
+  Generator g(s, rng);
+  Setup(r, s, g);
+  g.Connect();
+  s.Drain();
+  s.Send({0x04, 0x00, 0x00, 0x00, 0x00, 0x00}, {0x04, 0x00});
+  s.Drain();
+  r.target.dp.inject_wait = 1;
+  s.Send({0x05, 0x00, 0x01, 0x0F}, {0x05, 0x00, 0x02});
+  s.Drain();
+}
+
 /// 常规运行：随机序列 + 拔插序列 / The regular run: random sequences and unplug sequences
 void Regular()
 {
@@ -658,6 +767,8 @@ void Regular()
   for (unsigned seed = base; seed < base + seeds; ++seed) RunSeed(seed, commands);
   for (unsigned seed = base; seed < base + (seeds + 1) / 2; ++seed)
     RunUnplugSeed(1000 + seed, commands);
+  TestUnplugWithHeldPackets();
+  TestWaitIsReportedWithoutRetries();
   std::printf("dap fuzz: %u seeds x %u commands, %u unplug seeds\n", seeds, commands,
               (seeds + 1) / 2);
 }
@@ -701,5 +812,6 @@ int main(int argc, char** argv)
       argc, argv, Regular,
       {{"padded_atomic_group", "C-missing-fixes item 12b", FindingPaddedAtomicGroup},
        {"fuzz_padded_atomic_groups", "C-missing-fixes item 12b",
-        FindingFuzzPaddedAtomicGroups}});
+        FindingFuzzPaddedAtomicGroups},
+       {"wait_retry_zero", "new (not in C-missing-fixes)", FindingWaitRetryZero}});
 }

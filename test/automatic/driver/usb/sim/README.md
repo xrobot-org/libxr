@@ -55,6 +55,7 @@ the same command returns 0 and the case belongs among the regular ones. Item num
 | `test_usb_sim_profiles` | `uac_frame_ticks_otg_fs` | 2（帧中断跟随 `WantsBusTime()`，Line A 65cd2abf）/ 2 (frame interrupt follows `WantsBusTime()`, Line A 65cd2abf) | STM32 OTG 风格的后端：UAC 在 SET_INTERFACE 之后 12 帧只出 1 个包，帧中断没有打开 / UAC sends 1 packet in 12 frames after SET_INTERFACE, the frame interrupt is never turned on |
 | `test_usb_sim_profiles` | `uac_frame_ticks_esp32s3` | 2 | 同上，ESP32-S3 风格 / same, ESP32-S3 style |
 | `usb_sim_classes gsusb2` + `gs_burst.py`（手动 / manual） | gs_usb 突发 / gs_usb burst | 无编号（新）/ none (new) | 通道 0 突发时通道 1 的接收帧丢失，内核 `rx_over_errors` 增加；回显和接收轮流发送后不再丢 / channel 1 loses received frames during a burst on channel 0 and the kernel counts `rx_over_errors`; with echo and receive served alternately nothing is lost |
+| `classes_e2e.sh`（`CLASSES=uac USBIP_SOF=stops`，手动 / manual） | UAC 经 `snd-usb-audio` 采集 / UAC capture through `snd-usb-audio` | 2 | 默认策略下 `arecord` 在约 0.6 s 后报 `read error: Input/output error`：561 个等时 IN URB 只有第一个带数据（一个 96 字节包）；`USBIP_SOF=control` 和 `always` 下 3 s 采集 144000 个样本连续无断点 / with the default policy `arecord` fails after about 0.6 s with `read error: Input/output error`: of 561 isochronous IN URBs only the first carries data (one 96-byte packet); with `USBIP_SOF=control` and `always` a 3 s capture gives 144000 continuous samples |
 
 运行 / Run: `build/test/test_usb_sim_profiles --finding uac_frame_ticks_otg_fs`
 
@@ -94,6 +95,17 @@ descriptors it read), never a pass. `plug_cycle.sh` attaches the CDC device over
 it in the middle of a transfer. CDCUart keeps the bytes of its transmit queue that were not yet handed
 to the endpoint across a replug, so a reopened port may first receive data left over from the previous
 connection (`DRAIN` in `acm_echo.py` is for that).
+
+`CLASS_PRIV="sudo -n"` 给 `classes_e2e.sh` 里恰好三个程序加前缀，并且每个都只指向仿真设备：
+`class_checks.py hid`（只打开 vhci 之下的 hidraw 节点）、`dfu-util`（`-d 1209:0005 -S <序列号> -p <vhci
+设备的总线端口>`，序列号和端口从 vhci 下的设备读出）和 `arecord`（USB id 为 1209:0006 且 sysfs 路径在
+vhci 之下的声卡）。`CLASSES="hid gsusb dfu uac"` 选择要跑的类。`<build-dir>` 要用绝对路径。
+
+`CLASS_PRIV="sudo -n"` prefixes exactly three programs in `classes_e2e.sh`, each already limited to the
+simulated device: `class_checks.py hid` (opens only a hidraw node under vhci), `dfu-util` (`-d 1209:0005
+-S <serial> -p <bus-port of the vhci device>`, serial and port read from the device under vhci) and
+`arecord` (the sound card with USB id 1209:0006 whose sysfs path lies under vhci). `CLASSES="hid gsusb dfu
+uac"` selects the classes. `<build-dir>` must be an absolute path.
 
 ## gs_usb 突发实验 / gs_usb burst experiment
 

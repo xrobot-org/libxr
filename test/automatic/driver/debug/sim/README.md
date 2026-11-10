@@ -1,0 +1,83 @@
+# 调试探针仿真 / Debug probe simulation
+
+`swd_target.hpp` 是一个在引脚级工作的 SWD 目标：ADIv5 SW-DP、AHB-AP 和最小的 Cortex-M 调试寄存器。
+每个 SWCLK 上升沿它采样 SWDIO，并在轮到它时驱动下一位，所以主机侧的时序错误（空闲周期把 SWDIO
+驱动成高电平、转向周期少一个）会直接表现为错位或总线冲突。它有三种接法：`SimSwd`（实现 `Debug::Swd`，
+按位生成波形）、`SimSwclkPin` / `SimSwdioPin`（给 `SwdGeneralGPIO` 这类位操作引擎）和
+`swd_target_bitbang`（remote_bitbang 服务端，给真实 OpenOCD 校准模型）。上面是真实的 DAP v2 类和
+USB 仿真后端（`../../usb/sim/`）。
+
+`swd_target.hpp` is an SWD target that works at the pin level: ADIv5 SW-DP, an AHB-AP and minimal
+Cortex-M debug registers. On every SWCLK rising edge it samples SWDIO and drives the next bit where its
+turn comes, so a timing mistake on the host side (an idle cycle driving SWDIO high, a missing turnaround
+cycle) shows up as misalignment or bus contention. It connects three ways: `SimSwd` (implements
+`Debug::Swd`, generates the waveform bit by bit), `SimSwclkPin` / `SimSwdioPin` (for bit-banging engines
+such as `SwdGeneralGPIO`) and `swd_target_bitbang` (a remote_bitbang server for real OpenOCD to calibrate
+the model). On top of it sit the real DAP v2 class and the USB simulation backend (`../../usb/sim/`).
+
+| 文件 / File | 内容 / Content |
+| --- | --- |
+| `swd_target.hpp` | 目标模型和三种接法 / target model and its connections |
+| `test_swd_target.cpp` | 目标模型和 `SwdGeneralGPIO` 的单元测试（ctest `swd_target`）/ unit tests of the model and of `SwdGeneralGPIO` |
+| `test_dap_fuzz.cpp` | DAP v2 随机测试，经 USB 仿真后端到 SWD 目标（ctest `dap_fuzz`）/ randomised DAP v2 test through the USB simulation to the SWD target |
+| `test_dap_replay.cpp`, `replay/*.txt` | 回放 OpenOCD、pyOCD、probe-rs 录下的会话（ctest `dap_replay`）/ replay of sessions recorded from OpenOCD, pyOCD and probe-rs |
+| `dap_sim_usbip.cpp` | 仿真探针经 USB/IP 交给内核，真实调试器可以连 / the simulated probe over USB/IP, for a real debugger |
+| `dap_e2e.sh`, `dap_record.sh`, `openocd_dap_sim.cfg` | 端到端会话与录制 / end-to-end sessions and recording |
+| `swd_target_bitbang.cpp`, `openocd_calibrate.sh`, `pyocd_calibrate.sh`, `openocd_sim.cfg` | 用真实 OpenOCD / pyOCD 校准目标模型 / calibrating the model with real OpenOCD / pyOCD |
+| `keil_sim.ini` | Keil uVision 的调试初始化脚本，只在 Windows 上用，Linux 上没有跑过 / Keil uVision debug init script, Windows only, not run on Linux |
+
+## 与候选线库的两处差别 / Two differences from the candidate library
+
+1. 每个 `DAP_QueueCommands` / `DAP_ExecuteCommands` 包就地执行并立即应答，应答是
+   `DAP_ExecuteCommands` 的格式 `[0x7F, n, ...]`，能力字节不带原子命令位（0x10）。候选线的
+   README 迁移说明和 `test_daplink_v2.cpp` 的 `TestQueueAndExecuteAnswerPerPacket` 都这样规定，所以
+   随机测试不再有"排队包的应答随触发包"，回放测试只在 `DAP_Info(CAPABILITIES)` 的应答里不比较
+   0x10 这一位（`00 01 11` 对 `00 01 01`），其余字节逐字节比较。Line A 的做法见
+   `C-missing-fixes.md` 第 12a 项。
+2. `SimSwd` 自己保存转向周期数和数据阶段，因为候选线的 `Swd::TransferPolicy` 没有这两项。
+
+1. Every `DAP_QueueCommands` / `DAP_ExecuteCommands` packet runs in place and is answered at once, in the
+   `DAP_ExecuteCommands` format `[0x7F, n, ...]`, and the capabilities byte carries no atomic-commands
+   bit (0x10). The candidate's README migration note and `TestQueueAndExecuteAnswerPerPacket` in
+   `test_daplink_v2.cpp` say so; the random test therefore has no "responses of queued packets come with
+   the trigger", and the replay test leaves out only that bit of the `DAP_Info(CAPABILITIES)` response
+   (`00 01 11` against `00 01 01`) and compares every other byte exactly. Line A's behaviour is item 12a
+   of `C-missing-fixes.md`.
+2. `SimSwd` keeps the turnaround cycles and the data phase itself, because the candidate's
+   `Swd::TransferPolicy` has neither.
+
+## 发现：不在默认运行里的用例 / Findings: cases kept out of the default run
+
+约定同 `../../usb/sim/README.md`：断言没有放宽，没有 `add_test`，测试程序不带参数只跑常规用例；
+`--list-findings` 列出，`--finding <名字>` 单独运行，失败时 SIGABRT 并输出位置，库修好后返回 0。
+
+Same convention as `../../usb/sim/README.md`: assertions not weakened, no `add_test`, a program without
+arguments runs the regular cases; `--list-findings` lists them, `--finding <name>` runs one, aborting with
+its location on failure, and returning 0 once the library is fixed.
+
+| 程序 / Program | 用例 / Case | 条目 / Item | 现象 / Symptom |
+| --- | --- | --- | --- |
+| `test_swd_target` | `swd_gpio_turnaround` | 6（`DAP_SWD_Configure` 的转向周期 / turnaround）| `Swd::TransferPolicy` 没有 `turnaround`，`SwdGeneralGPIO` 永远只发一个转向周期；断言 `SetWireConfig(swd, turn, true)` 失败（turn 2、3、4）/ `Swd::TransferPolicy` has no `turnaround` and `SwdGeneralGPIO` always clocks one turnaround; the assertion `SetWireConfig(swd, turn, true)` fails (turn 2, 3, 4) |
+| `test_swd_target` | `swd_gpio_data_phase` | 6（数据阶段 / data phase）| 没有 `data_phase`，WAIT/FAULT 之后不发 33 个周期的数据阶段（ORUNDETECT 打开时目标期望它）/ no `data_phase`; the 33-cycle data phase after WAIT/FAULT is never clocked, which the target expects with ORUNDETECT on |
+| `test_dap_fuzz` | `padded_atomic_group` | 12b（补零的原子命令组 / padded atomic group）| 补零到 DAP 包长的 `DAP_ExecuteCommands` / `DAP_QueueCommands`（WinUSB 客户端的做法）得到 `[0x7F, 0xFF]` 而不是该组的应答 / a `DAP_ExecuteCommands` / `DAP_QueueCommands` zero-padded to the DAP packet size (what WinUSB clients do) gets `[0x7F, 0xFF]` instead of the group's response |
+| `test_dap_fuzz` | `fuzz_padded_atomic_groups` | 12b | 同一缺陷，在随机序列里 / the same defect inside the random sequences |
+| `test_dap_fuzz` | `wait_retry_zero` | 无编号（新）/ none (new) | `DAP_TransferConfigure` 的 WAIT 重试为 0 时，目标回一个 WAIT 被吸收，应答是 OK 加数据而不是已完成 0 个、ack WAIT：`TransferTxnFast` 先传一次，遇 WAIT 再调 `TransferWithRetry`，后者自己先传一次才判断重试次数，所以重试为 N 时实际重试 N+1 次 / with the WAIT retry of `DAP_TransferConfigure` at 0 a single WAIT from the target is absorbed and the answer is OK plus data instead of zero done and ack WAIT: `TransferTxnFast` transfers once and on WAIT calls `TransferWithRetry`, which transfers once more before it looks at the retry count, so a count of N retries N+1 times |
+
+运行 / Run: `build/test/test_dap_fuzz --finding padded_atomic_group`
+
+## 在 Linux 主机上用真实调试器 / Real debuggers on a Linux host
+
+`dap_e2e.sh <build-dir>` 启动 `dap_sim_usbip`，经 vhci 挂接，用 OpenOCD 跑两个会话（寄存器、64 KiB 下载、
+复位、单步；带和不带注入的 WAIT），目标侧的协议错误和总线冲突计数必须为 0。`dap_record.sh` 录下会话供
+回放。`openocd_calibrate.sh` 用 remote_bitbang 把目标模型对着真实 OpenOCD 校准，不经过 USB。主机上有真实的
+CMSIS-DAP 探针时设备的选择规则见 `dap_e2e.sh` 开头：VID:PID 1209:0002 在主机上必须只属于一个设备且在
+vhci 之下，`DAP_PRIV="sudo -n"` 只给调试器加前缀；pyOCD 和 probe-rs 会打开找到的每个探针，所以只有
+`DAP_TOOLS_SCAN_OK=1` 时才运行。
+
+`dap_e2e.sh <build-dir>` starts `dap_sim_usbip`, attaches it through vhci and runs two OpenOCD sessions
+(registers, 64 KiB download, reset, step; with and without injected WAITs); the target's protocol-error
+and contention counters must be 0. `dap_record.sh` records sessions for the replay. `openocd_calibrate.sh`
+calibrates the target model against real OpenOCD over remote_bitbang, without USB. When the host has real
+CMSIS-DAP probes, the selection rule is at the top of `dap_e2e.sh`: VID:PID 1209:0002 must belong to
+exactly one device on the host and it must lie under vhci, and `DAP_PRIV="sudo -n"` prefixes the debugger
+only; pyOCD and probe-rs open every probe they find, so they run only with `DAP_TOOLS_SCAN_OK=1`.
