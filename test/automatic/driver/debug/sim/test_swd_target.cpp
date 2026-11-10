@@ -290,6 +290,60 @@ void TestWaitRetry()
       });
 }
 
+/// WAIT 重试次数：wait_retry 为 N 时第一次尝试之后最多再重试 N 次（CMSIS-DAP 参考实现的
+/// do { 传输 } while (WAIT && retry--)），N 为 0 时第一个 WAIT 就报告。
+/// TransferWithRetry 和 TransferRetryAfterWait（调用方自己做第一次尝试）都按此计数。
+/// WAIT retries: with wait_retry N at most N retries follow the first attempt (the
+/// CMSIS-DAP reference does { transfer } while (WAIT && retry--)), and with 0 the first
+/// WAIT is reported. TransferWithRetry and TransferRetryAfterWait (the caller makes the
+/// first attempt itself) both count that way.
+void TestWaitRetryCount()
+{
+  ForEachConnection(
+      [](Target& t, Swd& swd)
+      {
+        Adi adi{swd};
+        adi.Connect();
+        adi.ApWrite(0x04, 0x20000020u);
+        const auto read_drw = SwdProtocol::make_ap_read_req(3);
+        struct Case
+        {
+          uint16_t retry;
+          unsigned waits;
+        };
+        // Retries N and WAITs injected: the transfer succeeds when the WAITs run out
+        // within the N + 1 attempts; otherwise the target keeps the unused WAITs.
+        for (const Case c : {Case{0, 1}, Case{0, 2}, Case{2, 2}, Case{2, 3}, Case{2, 4}})
+        {
+          const bool absorbed = c.waits <= c.retry;
+          const unsigned left = absorbed ? 0u : c.waits - (c.retry + 1u);
+          for (const bool caller_first : {false, true})
+          {
+            Swd::TransferPolicy policy;
+            policy.wait_retry = c.retry;
+            swd.SetTransferPolicy(policy);
+            t.dp.inject_wait = c.waits;
+            SwdProtocol::Response r;
+            if (caller_first)
+            {
+              TEST_ASSERT(swd.Transfer(read_drw, r) == ErrorCode::OK);
+              if (r.ack == Ack::WAIT)
+              {
+                TEST_ASSERT(swd.TransferRetryAfterWait(read_drw, r) == ErrorCode::OK);
+              }
+            }
+            else
+            {
+              TEST_ASSERT(swd.TransferWithRetry(read_drw, r) == ErrorCode::OK);
+            }
+            TEST_ASSERT(r.ack == (absorbed ? Ack::OK : Ack::WAIT));
+            TEST_ASSERT(t.dp.inject_wait == left);
+            t.dp.inject_wait = 0;
+          }
+        }
+      });
+}
+
 /// 溢出检测：打开 ORUNDETECT 后 WAIT 之后有数据阶段，主机走完它就能继续；不走则错位。
 /// Overrun detection: with ORUNDETECT a data phase follows a WAIT; a host that clocks it
 /// carries on, one that skips it is misaligned.
@@ -496,6 +550,7 @@ void RegularCases()
   TestByteLanes();
   TestStickyErrorAndAbort();
   TestWaitRetry();
+  TestWaitRetryCount();
   TestWriteParityError();
   TestOverrunDetectDataPhase();
   TestTurnaround();

@@ -24,12 +24,9 @@
  *
  * 对候选线的调整：每个 DAP_QueueCommands 包就地应答（README 的迁移说明和
  * TestQueueAndExecuteAnswerPerPacket 规定如此），所以不再有"排队包的应答随触发包"。
- * 已知缺陷用例用 `--list-findings` 列出，`--finding <名字>` 单独运行，不在默认运行里。
  * One adjustment for the candidate: every DAP_QueueCommands packet is answered in place
  * (the README migration note and TestQueueAndExecuteAnswerPerPacket say so), so queued
- * packets no longer wait for the trigger. Known-defect cases are listed with
- * `--list-findings` and run one by one with `--finding <name>`; they are not in the
- * default run.
+ * packets no longer wait for the trigger.
  */
 
 #include <atomic>
@@ -686,12 +683,12 @@ void TestUnplugWithHeldPackets()
 }
 
 /// WAIT 要如实报告：DAP_TransferConfigure 的 WAIT 重试为 0，目标连回两个 WAIT，
-/// DAP_Transfer 的应答是已完成 0 个、ack 为 WAIT（2）；重试够多时同样的 WAIT 被吸收。
-/// （重试为 0 时一个 WAIT 应该就报告出来：见已知缺陷用例 wait_retry_zero。）
+/// DAP_Transfer 的应答是已完成 0 个、ack 为 WAIT（2），第二个 WAIT 还留在目标里（没有
+/// 重试）；重试够多时同样的 WAIT 被吸收。
 /// A WAIT is reported as such: with the WAIT retry of DAP_TransferConfigure at 0 and two
-/// WAITs from the target, DAP_Transfer answers zero transfers done and ack WAIT (2); with
-/// enough retries the same WAITs are absorbed. (With a retry of 0 a single WAIT should
-/// already be reported: see the known-defect case wait_retry_zero.)
+/// WAITs from the target, DAP_Transfer answers zero transfers done and ack WAIT (2), and
+/// the second WAIT is still in the target (no retry); with enough retries the same WAITs
+/// are absorbed.
 void TestWaitIsReportedWithoutRetries()
 {
   g_seed = 8;
@@ -707,7 +704,7 @@ void TestWaitIsReportedWithoutRetries()
   r.target.dp.inject_wait = 2;
   s.Send({0x05, 0x00, 0x01, 0x0F}, {0x05, 0x00, 0x02});
   s.Drain();
-  FUZZ_ASSERT(r.target.dp.inject_wait == 0);
+  FUZZ_ASSERT(r.target.dp.inject_wait == 1);
   s.Send({0x04, 0x00, 0x40, 0x00, 0x00, 0x00}, {0x04, 0x00});
   s.Drain();
   r.target.dp.inject_wait = 2;
@@ -718,15 +715,13 @@ void TestWaitIsReportedWithoutRetries()
   FUZZ_ASSERT(r.target.dp.inject_wait == 0);
 }
 
-/// 已知缺陷（新，不在 C-missing-fixes 里）：WAIT 重试次数为 0 表示不重试，一个 WAIT 就
-/// 该报告出来。候选线的 TransferTxnFast 先传一次，遇 WAIT 再调 TransferWithRetry，后者
-/// 自己先传一次才判断重试次数，所以重试为 N 时实际重试 N+1 次，重试为 0 的 WAIT 被吸收。
-/// Known defect (new, not in C-missing-fixes): a WAIT retry count of 0 means no retry, so
-/// one WAIT must be reported. The candidate's TransferTxnFast transfers once and on WAIT
-/// calls TransferWithRetry, which transfers once more before it looks at the retry count:
-/// with a count of N the transfer is retried N+1 times and a single WAIT at count 0 is
-/// absorbed.
-void FindingWaitRetryZero()
+/// WAIT 重试次数为 N 表示第一次尝试之后最多再重试 N 次：N 为 0 时一个 WAIT 就报告出来；
+/// N 为 2 时 2 个 WAIT 被吸收，3 个 WAIT 报告（目标刚好用掉 3 个），4 个 WAIT 报告且目标
+/// 还剩 1 个。
+/// A WAIT retry count of N means at most N retries after the first attempt: with 0 a
+/// single WAIT is reported; with 2, two WAITs are absorbed, three are reported (the
+/// target used exactly three), and four are reported with one left in the target.
+void TestWaitRetryCount()
 {
   g_seed = 9;
   std::mt19937 rng(9);
@@ -736,11 +731,26 @@ void FindingWaitRetryZero()
   Setup(r, s, g);
   g.Connect();
   s.Drain();
-  s.Send({0x04, 0x00, 0x00, 0x00, 0x00, 0x00}, {0x04, 0x00});
-  s.Drain();
-  r.target.dp.inject_wait = 1;
-  s.Send({0x05, 0x00, 0x01, 0x0F}, {0x05, 0x00, 0x02});
-  s.Drain();
+  Bytes absorbed{0x05, 0x01, 0x01};
+  Put32(absorbed, 0);
+  struct Case
+  {
+    uint8_t retry;
+    unsigned waits;
+    bool absorbed;
+    unsigned left;
+  };
+  for (const Case c : {Case{0, 1, false, 0}, Case{2, 2, true, 0}, Case{2, 3, false, 0},
+                       Case{2, 4, false, 1}})
+  {
+    s.Send({0x04, 0x00, c.retry, 0x00, 0x00, 0x00}, {0x04, 0x00});
+    s.Drain();
+    r.target.dp.inject_wait = c.waits;
+    s.Send({0x05, 0x00, 0x01, 0x0F}, c.absorbed ? absorbed : Bytes{0x05, 0x00, 0x02});
+    s.Drain();
+    FUZZ_ASSERT(r.target.dp.inject_wait == c.left);
+    r.target.dp.inject_wait = 0;
+  }
 }
 
 /// 主机把 DAP_ExecuteCommands / DAP_QueueCommands 补零到 DAP 包长（WinUSB
@@ -773,6 +783,7 @@ void Regular()
     RunUnplugSeed(1000 + seed, commands);
   TestUnplugWithHeldPackets();
   TestWaitIsReportedWithoutRetries();
+  TestWaitRetryCount();
   TestPaddedAtomicGroup();
   std::printf("dap fuzz: %u seeds x %u commands, %u unplug seeds\n", seeds, commands,
               (seeds + 1) / 2);
@@ -782,7 +793,5 @@ void Regular()
 
 int main(int argc, char** argv)
 {
-  return USB::Sim::RunTestProgram(
-      argc, argv, Regular,
-      {{"wait_retry_zero", "new (not in C-missing-fixes)", FindingWaitRetryZero}});
+  return USB::Sim::RunTestProgram(argc, argv, Regular, {});
 }

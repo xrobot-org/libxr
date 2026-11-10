@@ -2906,7 +2906,7 @@ class DapLinkV2Class : public DeviceClass
 
     if (resp.ack == LibXR::Debug::SwdProtocol::Ack::WAIT)
     {
-      return swd_.TransferWithRetry(req, resp);
+      return swd_.TransferRetryAfterWait(req, resp);
     }
 
     if (resp.ack == LibXR::Debug::SwdProtocol::Ack::FAULT)

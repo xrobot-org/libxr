@@ -155,6 +155,59 @@ class Swd
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief 调用方已做完第一次尝试并得到 WAIT 后，按策略继续重试（不再先传一次）。
+   *        Keep retrying according to the policy after the caller has made the first
+   *        attempt itself and got WAIT (it does not transfer once more first).
+   *
+   * wait_retry 为 N 时最多再传 N 次，N 为 0 时不再传，resp 保持调用方得到的 WAIT。
+   * 每次重试后插入 idle_cycles，结束时的处理与 TransferWithRetry 相同。
+   * With wait_retry N at most N more transfers follow; with 0 none does and resp keeps
+   * the WAIT the caller got. idle_cycles follow each retry and the final handling is that
+   * of TransferWithRetry.
+   *
+   * @param req 与第一次尝试相同的请求包 / The request of the first attempt.
+   * @param resp 第一次尝试的响应（ack 为 WAIT），返回最终响应 / Response of the first
+   *        attempt (ack is WAIT); the final response on return.
+   * @return ErrorCode 操作结果（传输流程级） / Error code (flow-level).
+   */
+  ErrorCode TransferRetryAfterWait(const SwdProtocol::Request& req,
+                                   SwdProtocol::Response& resp)
+  {
+    for (uint32_t retries = 0; retries < policy_.wait_retry; ++retries)
+    {
+      auto ec = Transfer(req, resp);
+      if (ec != ErrorCode::OK)
+      {
+        resp.ack = SwdProtocol::Ack::PROTOCOL;
+        InvalidateSelectCache();
+        return ec;
+      }
+
+      if (policy_.idle_cycles != 0u)
+      {
+        IdleClocks(policy_.idle_cycles);
+      }
+
+      if (resp.ack != SwdProtocol::Ack::WAIT)
+      {
+        break;
+      }
+    }
+
+    if (resp.ack != SwdProtocol::Ack::OK)
+    {
+      InvalidateSelectCache();
+    }
+
+    if (resp.ack == SwdProtocol::Ack::FAULT && policy_.clear_sticky_on_fault)
+    {
+      (void)ClearStickyErrors();
+    }
+
+    return ErrorCode::OK;
+  }
+
   // --------------------------------------------------------------------------
   // DP/AP helpers
   // --------------------------------------------------------------------------

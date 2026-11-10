@@ -59,9 +59,8 @@ its location on failure, and returning 0 once the library is fixed.
 | --- | --- | --- | --- |
 | `test_swd_target` | `swd_gpio_turnaround` | 6（`DAP_SWD_Configure` 的转向周期 / turnaround）| `Swd::TransferPolicy` 没有 `turnaround`，`SwdGeneralGPIO` 永远只发一个转向周期；断言 `SetWireConfig(swd, turn, true)` 失败（turn 2、3、4）/ `Swd::TransferPolicy` has no `turnaround` and `SwdGeneralGPIO` always clocks one turnaround; the assertion `SetWireConfig(swd, turn, true)` fails (turn 2, 3, 4) |
 | `test_swd_target` | `swd_gpio_data_phase` | 6（数据阶段 / data phase）| 没有 `data_phase`，WAIT/FAULT 之后不发 33 个周期的数据阶段（ORUNDETECT 打开时目标期望它）/ no `data_phase`; the 33-cycle data phase after WAIT/FAULT is never clocked, which the target expects with ORUNDETECT on |
-| `test_dap_fuzz` | `wait_retry_zero` | 无编号（新）/ none (new) | `DAP_TransferConfigure` 的 WAIT 重试为 0 时，目标回一个 WAIT 被吸收，应答是 OK 加数据而不是已完成 0 个、ack WAIT：`TransferTxnFast` 先传一次，遇 WAIT 再调 `TransferWithRetry`，后者自己先传一次才判断重试次数，所以重试为 N 时实际重试 N+1 次 / with the WAIT retry of `DAP_TransferConfigure` at 0 a single WAIT from the target is absorbed and the answer is OK plus data instead of zero done and ack WAIT: `TransferTxnFast` transfers once and on WAIT calls `TransferWithRetry`, which transfers once more before it looks at the retry count, so a count of N retries N+1 times |
 
-运行 / Run: `build/test/test_dap_fuzz --finding wait_retry_zero`
+运行 / Run: `build/test/test_swd_target --finding swd_gpio_turnaround`
 
 ## 在 Linux 主机上用真实调试器 / Real debuggers on a Linux host
 
