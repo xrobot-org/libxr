@@ -552,6 +552,33 @@ void TestQueueAndExecuteAnswerPerPacket()
   f.in.Complete();
 }
 
+/// A WinUSB client pads requests with zeros to the DAP packet size: the padding after the
+/// sub-commands of an atomic group is not a format error, and a group whose count is 0
+/// answers with no responses.
+void TestPaddedAtomicGroups()
+{
+  DapFixture f;
+  f.dap.BindEndpoints(f.pool, 0, false);
+  const uint8_t EXECUTE = static_cast<uint8_t>(CommandId::EXECUTE_COMMANDS);
+
+  for (const uint8_t id : {static_cast<uint8_t>(CommandId::QUEUE_COMMANDS), EXECUTE})
+  {
+    std::vector<uint8_t> group{id, 1, INFO, PACKET_COUNT_ID};
+    group.resize(64, 0);
+    Host(f, group);
+    TEST_ASSERT(f.in.active);
+    TEST_ASSERT(f.in.Last().data == std::vector<uint8_t>({EXECUTE, 1, INFO, 1, 0x04}));
+    f.in.Complete();
+  }
+
+  std::vector<uint8_t> empty{EXECUTE, 0};
+  empty.resize(64, 0);
+  Host(f, empty);
+  TEST_ASSERT(f.in.active);
+  TEST_ASSERT(f.in.Last().data == std::vector<uint8_t>({EXECUTE, 0}));
+  f.in.Complete();
+}
+
 /// Test vendor command 0x81 [0x81, x] answers [0x81, x + 1]; its length is 2.
 constexpr uint8_t VENDOR_ID = 0x81;
 
@@ -1337,6 +1364,7 @@ int main()
   TestZeroPaddedTransferIsDropped();
   TestTransferAbortHasNoResponse();
   TestQueueAndExecuteAnswerPerPacket();
+  TestPaddedAtomicGroups();
   TestVendorCommandsInBatch();
   TestWaitForWork();
   TestWakeStep();

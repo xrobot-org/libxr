@@ -2781,10 +2781,13 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  /// 校验 [ID, 命令数, 命令...]：每条命令都能按自己的内容确定长度，且恰好占满请求。
-  /// Validate [ID, count, commands...]: every command's length follows from its content
-  /// and together they fill the request exactly.
-  bool ValidateInlineCommands(const uint8_t* req, uint16_t req_len) const
+  /// 校验 [ID, 命令数, 命令...]：每条命令都能按自己的内容确定长度；used 是 ID、命令数和
+  /// 所有子命令占的字节数，其后的字节是主机的补零（WinUSB 客户端把请求补到 DAP 包长）。
+  /// Validate [ID, count, commands...]: every command's length follows from its content;
+  /// used is the number of bytes taken by the ID, the count and all sub-commands, and the
+  /// bytes after it are the host's zero padding (WinUSB clients pad a request to the DAP
+  /// packet size).
+  bool ValidateInlineCommands(const uint8_t* req, uint16_t req_len, uint16_t& used) const
   {
     if (!req || req_len < 2u)
     {
@@ -2810,7 +2813,8 @@ class DapLinkV2Class : public DeviceClass
       req_off = static_cast<uint16_t>(req_off + cmd_len);
     }
 
-    return req_off == req_len;
+    used = req_off;
+    return true;
   }
 
   /**
@@ -2823,9 +2827,10 @@ class DapLinkV2Class : public DeviceClass
   ErrorCode HandleExecuteCommands(const uint8_t* req, uint16_t req_len, uint8_t* resp,
                                   uint16_t resp_cap, uint16_t& out_len)
   {
-    if (!ValidateInlineCommands(req, req_len) ||
-        !TryExecuteQueuedCommandStream(&req[2], static_cast<uint16_t>(req_len - 2u),
-                                       req[1], resp, resp_cap, out_len))
+    uint16_t used = 0u;
+    if (!ValidateInlineCommands(req, req_len, used) ||
+        !TryExecuteQueuedCommandStream(&req[2], static_cast<uint16_t>(used - 2u), req[1],
+                                       resp, resp_cap, out_len))
     {
       return BuildCmdStatusResponse(
           ToU8(LibXR::USB::DapLinkV2Def::CommandId::EXECUTE_COMMANDS), DAP_ERROR, resp,

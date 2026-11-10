@@ -22,18 +22,14 @@
  * Seeds: DAP_FUZZ_SEEDS (default 6), DAP_FUZZ_CMDS (default 120); a failure prints the
  * seed.
  *
- * 对候选线的两处调整：每个 DAP_QueueCommands 包就地应答（README 的迁移说明和
- * TestQueueAndExecuteAnswerPerPacket 规定如此），所以不再有"排队包的应答随触发包"；
- * 补零到包长的做法常规运行不用在原子命令组上，因为候选线会把补零的组拒绝（第 12b
- * 项）。后者是已知缺陷用例 `padded_atomic_group` 和 `fuzz_padded_atomic_groups`
- * （`--list-findings`、`--finding <名字>`），断言完整，不在默认运行里。
- * Two adjustments for the candidate: every DAP_QueueCommands packet is answered in place
+ * 对候选线的调整：每个 DAP_QueueCommands 包就地应答（README 的迁移说明和
+ * TestQueueAndExecuteAnswerPerPacket 规定如此），所以不再有"排队包的应答随触发包"。
+ * 已知缺陷用例用 `--list-findings` 列出，`--finding <名字>` 单独运行，不在默认运行里。
+ * One adjustment for the candidate: every DAP_QueueCommands packet is answered in place
  * (the README migration note and TestQueueAndExecuteAnswerPerPacket say so), so queued
- * packets no longer wait for the trigger; zero-padding to the packet size is not applied
- * to atomic groups in the regular run, because the candidate rejects a padded group (item
- * 12b). That is the known-defect cases `padded_atomic_group` and
- * `fuzz_padded_atomic_groups` (`--list-findings`, `--finding <name>`), with full
- * assertions and outside the default run.
+ * packets no longer wait for the trigger. Known-defect cases are listed with
+ * `--list-findings` and run one by one with `--finding <name>`; they are not in the
+ * default run.
  */
 
 #include <atomic>
@@ -151,14 +147,6 @@ class Session
     for (int i = Rand(0, 3); i > 0; --i) Pump(Rand(0, 1) == 1);
   }
 
-  /// 补零到 DAP 包长的方式是否也用于原子命令组（DAP_QueueCommands/DAP_ExecuteCommands）。
-  /// 候选线会把补零的组当成格式错误回 [0x7F, 0xFF]（C-missing-fixes 第 12b 项），所以常规
-  /// 运行不对组补零；已知缺陷用例打开它。
-  /// Whether zero-padding to the DAP packet size also applies to atomic groups
-  /// (DAP_QueueCommands/DAP_ExecuteCommands). The candidate takes a padded group for
-  /// malformed and answers [0x7F, 0xFF] (C-missing-fixes item 12b), so the regular run
-  /// does not pad groups; the known-defect cases turn it on.
-  bool pad_groups = false;
   /// -1 随机分包；0..2 固定分包方式 / -1 random packetisation; 0..2 a fixed mode
   int force_mode = -1;
   /// 没有任何进展多久算失败 / How long without progress counts as a failure
@@ -248,8 +236,6 @@ class Session
   {
     int mode = Rand(0, 2);
     if (force_mode >= 0) mode = force_mode;
-    const bool group = !req.empty() && (req[0] == 0x7E || req[0] == 0x7F);
-    if (mode == 2 && group && !pad_groups && force_mode < 0) mode = Rand(0, 1);
     if (mode == 2) req.resize(dap_packet, 0);
     for (size_t off = 0; off < req.size(); off += USB_PACKET)
     {
@@ -594,7 +580,7 @@ unsigned EnvOr(const char* name, unsigned fallback)
   return v ? static_cast<unsigned>(std::atoi(v)) : fallback;
 }
 
-void RunSeed(unsigned seed, unsigned commands, bool pad_groups = false)
+void RunSeed(unsigned seed, unsigned commands)
 {
   g_seed = seed;
   std::mt19937 rng(seed);
@@ -604,7 +590,6 @@ void RunSeed(unsigned seed, unsigned commands, bool pad_groups = false)
   Generator g(s, rng);
   Setup(r, s, g);
   s.depth = 1 + seed % 4;
-  s.pad_groups = pad_groups;
   g.Connect();
   g.FillRam();
   for (unsigned i = 0; i < commands; ++i) g.Random();
@@ -758,6 +743,25 @@ void FindingWaitRetryZero()
   s.Drain();
 }
 
+/// 主机把 DAP_ExecuteCommands / DAP_QueueCommands 补零到 DAP 包长（WinUSB
+/// 客户端的做法）： 子命令之后多出的零字节不影响这一组的应答。 The host zero-pads
+/// DAP_ExecuteCommands / DAP_QueueCommands to the DAP packet size (what WinUSB clients
+/// do): the zero bytes after the sub-commands do not change the answer of the group.
+void TestPaddedAtomicGroup()
+{
+  g_seed = 1;
+  std::mt19937 rng(1);
+  Rig r(0, 1);
+  Session s(r, rng);
+  Generator g(s, rng);
+  Setup(r, s, g);
+  g.Connect();
+  s.force_mode = 2;
+  s.Send({0x7F, 1, 0x00, 0xFE}, {0x7F, 1, 0x00, 0x01, g.packet_count});
+  s.Send({0x7E, 1, 0x00, 0xFE}, {0x7F, 1, 0x00, 0x01, g.packet_count});
+  s.Drain();
+}
+
 /// 常规运行：随机序列 + 拔插序列 / The regular run: random sequences and unplug sequences
 void Regular()
 {
@@ -769,39 +773,9 @@ void Regular()
     RunUnplugSeed(1000 + seed, commands);
   TestUnplugWithHeldPackets();
   TestWaitIsReportedWithoutRetries();
+  TestPaddedAtomicGroup();
   std::printf("dap fuzz: %u seeds x %u commands, %u unplug seeds\n", seeds, commands,
               (seeds + 1) / 2);
-}
-
-/// 已知缺陷（第 12b 项）：主机把 DAP_ExecuteCommands 补零到 DAP 包长（WinUSB 客户端的
-/// 做法），子命令之后多出的零字节不影响这一组的应答。候选线把补零的组当成格式错误，
-/// 回 [0x7F, 0xFF]。
-/// Known defect (item 12b): the host zero-pads DAP_ExecuteCommands to the DAP packet size
-/// (what WinUSB clients do); the zero bytes after the sub-commands must not change the
-/// answer of the group. The candidate takes a padded group for malformed and answers
-/// [0x7F, 0xFF].
-void FindingPaddedAtomicGroup()
-{
-  g_seed = 1;
-  std::mt19937 rng(1);
-  Rig r(0, 1);
-  Session s(r, rng);
-  Generator g(s, rng);
-  Setup(r, s, g);
-  g.Connect();
-  s.pad_groups = true;
-  s.force_mode = 2;
-  s.Send({0x7F, 1, 0x00, 0xFE}, {0x7F, 1, 0x00, 0x01, g.packet_count});
-  s.Send({0x7E, 1, 0x00, 0xFE}, {0x7F, 1, 0x00, 0x01, g.packet_count});
-  s.Drain();
-}
-
-/// 同一缺陷，在随机序列里：组也补零到包长 / The same defect inside the random sequences:
-/// groups are zero-padded as well
-void FindingFuzzPaddedAtomicGroups()
-{
-  const unsigned commands = EnvOr("DAP_FUZZ_CMDS", 120);
-  for (unsigned seed = 1; seed <= 6; ++seed) RunSeed(seed, commands, true);
 }
 
 }  // namespace
@@ -810,8 +784,5 @@ int main(int argc, char** argv)
 {
   return USB::Sim::RunTestProgram(
       argc, argv, Regular,
-      {{"padded_atomic_group", "C-missing-fixes item 12b", FindingPaddedAtomicGroup},
-       {"fuzz_padded_atomic_groups", "C-missing-fixes item 12b",
-        FindingFuzzPaddedAtomicGroups},
-       {"wait_retry_zero", "new (not in C-missing-fixes)", FindingWaitRetryZero}});
+      {{"wait_retry_zero", "new (not in C-missing-fixes)", FindingWaitRetryZero}});
 }
