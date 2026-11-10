@@ -535,7 +535,7 @@ class Device : public EndpointPool, public DeviceCore<Caps>
 
   /// 设备在线时主机能看见它 / The host sees the device while it is attached and pulled up
   bool Visible() const { return pulled_up_ && attached_; }
-  uint8_t Address() const { return address_; }
+  uint8_t Address() const { return address_.load(); }
   uint32_t Frame() const { return frame_; }
   unsigned StopTimeouts() const { return stop_timeouts_; }
   Ep* In(uint8_t number) { return ep_in_[number]; }
@@ -824,7 +824,7 @@ class Device : public EndpointPool, public DeviceCore<Caps>
   bool attached_ = true;
   bool suspended_ = false;
   bool discard_ = false;
-  uint8_t address_ = 0;
+  std::atomic<uint8_t> address_{0};
   uint32_t frame_ = 0;
   unsigned stop_timeouts_ = 0;
   uint32_t tx_fifos_ =
@@ -905,7 +905,17 @@ class Host
     auto device_desc = ControlIn(MakeSetup(0x80, 6, 0x0100, 0, 18), ok);
     if (!ok || device_desc.size() != 18) return Fail("GET_DESCRIPTOR(device)");
     if (!ControlOut(MakeSetup(0x00, 5, address, 0, 0))) return Fail("SET_ADDRESS");
-    if (device_.Address() != address) return Fail("address not applied");
+    // 地址在状态阶段的完成回调里生效，回调由谁抢到 owner 谁执行（可能是另一个线程，例如
+    // DAP 的 Step 线程）；真实主机在 SET_ADDRESS 之后也要等恢复时间。所以这里等它生效。
+    // The address takes effect in the status-stage completion, which runs in whichever
+    // caller wins the owner (possibly another thread, such as the DAP Step thread); a
+    // real host also waits a recovery time after SET_ADDRESS. So wait for it here.
+    for (const auto start = std::chrono::steady_clock::now();
+         device_.Address() != address; std::this_thread::yield())
+    {
+      if (std::chrono::steady_clock::now() - start >= RETRY_TIME)
+        return Fail("address not applied");
+    }
     auto head = ControlIn(MakeSetup(0x80, 6, 0x0200, 0, 9), ok);
     if (!ok || head.size() != 9) return Fail("GET_DESCRIPTOR(configuration, 9)");
     const uint16_t total = static_cast<uint16_t>(head[2] | (head[3] << 8));

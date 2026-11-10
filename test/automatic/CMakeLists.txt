@@ -382,3 +382,11 @@ target_include_directories(swd_target_bitbang PRIVATE "${CMAKE_CURRENT_SOURCE_DI
 add_executable(dap_sim_usbip driver/debug/sim/dap_sim_usbip.cpp)
 target_link_libraries(dap_sim_usbip PRIVATE xr pthread)
 target_include_directories(dap_sim_usbip PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# DAP v2 randomised test: random commands, packetisation, depth, read timing, injected
+# WAITs and unplugs, through the USB simulation backend to the simulated SWD target.
+add_executable(test_dap_fuzz driver/debug/sim/test_dap_fuzz.cpp)
+target_link_libraries(test_dap_fuzz PRIVATE xr)
+target_include_directories(test_dap_fuzz PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME dap_fuzz COMMAND test_dap_fuzz)
+set_tests_properties(dap_fuzz PROPERTIES TIMEOUT 300)
