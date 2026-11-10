@@ -26,6 +26,7 @@
  */
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <map>
 #include <string>
@@ -130,6 +131,12 @@ void CdcRoundTrip(SimHost& host, CDCUart& cdc, uint8_t in_number, uint8_t out_nu
   const auto down = Bytes(length, 3);
   TEST_ASSERT(host.BulkOut(out_number, out_packet, down));
   std::vector<uint8_t> got(length);
+  // 主机拿到 ACK 时数据未必已经进了读端口：设备的 owner 可能正被别的线程（DAP 的 Step
+  // 线程）占着，处理要等它让出。
+  // The data need not be in the read port when the host gets the ACK: the device's owner
+  // may be held by another thread (the DAP Step thread) and the work waits for it.
+  for (int i = 0; i < 2000 && cdc.read_port_->Size() != length; ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   TEST_ASSERT(cdc.read_port_->Size() == length);
   ReadOperation read;
   TEST_ASSERT(cdc.Read({got.data(), got.size()}, read) == ErrorCode::OK);

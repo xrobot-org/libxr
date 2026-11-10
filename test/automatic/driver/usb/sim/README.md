@@ -52,7 +52,7 @@ the same command returns 0 and the case belongs among the regular ones. Item num
 
 | 程序 / Program | 用例 / Case | 条目 / Item | 现象 / Symptom |
 | --- | --- | --- | --- |
-| `test_usb_sim_profiles` | `uac_frame_ticks_otg_fs` | 2 | STM32 OTG 风格的后端：UAC 在 SET_INTERFACE 之后 12 帧只出 1 个包，帧中断没有打开 / UAC sends 1 packet in 12 frames after SET_INTERFACE, the frame interrupt is never turned on |
+| `test_usb_sim_profiles` | `uac_frame_ticks_otg_fs` | 2（帧中断跟随 `WantsBusTime()`，Line A 65cd2abf）/ 2 (frame interrupt follows `WantsBusTime()`, Line A 65cd2abf) | STM32 OTG 风格的后端：UAC 在 SET_INTERFACE 之后 12 帧只出 1 个包，帧中断没有打开 / UAC sends 1 packet in 12 frames after SET_INTERFACE, the frame interrupt is never turned on |
 | `test_usb_sim_profiles` | `uac_frame_ticks_esp32s3` | 2 | 同上，ESP32-S3 风格 / same, ESP32-S3 style |
 | `usb_sim_classes gsusb2` + `gs_burst.py`（手动 / manual） | gs_usb 突发 / gs_usb burst | 无编号（新）/ none (new) | 通道 0 突发时通道 1 的接收帧丢失，内核 `rx_over_errors` 增加；回显和接收轮流发送后不再丢 / channel 1 loses received frames during a burst on channel 0 and the kernel counts `rx_over_errors`; with echo and receive served alternately nothing is lost |
 
