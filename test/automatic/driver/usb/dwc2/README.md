@@ -105,7 +105,7 @@ behaviour yet and the case is not in the default run (see the next section).
 | 停止在途的 IN 请求（Flush、Close）/ stopping an IN request in flight (Flush, Close) | CDC、gs_usb、HID、DAP v1、DAP v2、UAC | `TestStopIn` | 默认 / default | 默认，报告的已发送长度是发现 / default; the reported sent length is a finding |
 | 停止时主机取走最后一个包 / the host takes the last packet during the stop | 同上 / the same | `TestStopInRace` | 默认 / default | 默认 / default |
 | 停止在途的 OUT 请求 / stopping an OUT request in flight | CDC、gs_usb、HID、DAP v1、DAP v2 | `TestStopOut` | 默认 / default | 默认，不经全局 OUT NAK 是发现 / default; the missing global OUT NAK is a finding |
-| 重新配置 1 → 0 → 1 / reconfiguration 1 → 0 → 1 | 全部 / all | `TestReconfigure` | 默认 / default | 默认，关闭的端点仍应答 NAK 是发现 / default; a closed endpoint that still answers NAK is a finding |
+| 重新配置 1 → 0 → 1 / reconfiguration 1 → 0 → 1 | 全部 / all | `TestReconfigure` | 默认 / default | 默认 / default |
 | 传输进行中总线复位；复位后端点不再 STALL、OUT 端点 NAK / bus reset in the middle of transfers; no STALL and NAKed OUT endpoints after a reset | 全部 / all | `TestBusResetMidTransfer`, `TestBusResetClearsHalt` | 默认 / default | 默认 / default |
 | 处理别的中断时到来的总线复位 / a bus reset that arrives while another interrupt is handled | 全部 / all | `TestInterruptClearKeepsOthers`（ESP） | 未运行 / not run | 默认 / default |
 | 挂起与恢复 / suspend and resume | 全部 / all | `TestSuspendResume` | 默认 / default | 默认 / default |
@@ -137,7 +137,6 @@ returns 0 and the case belongs among the regular ones.
 | `test_stm32_usb_otg` | `stop_leaves_out_endpoint_enabled` | 禁用 OUT 端点要等全局 OUT NAK 生效后写 EPDIS；传输长度寄存器只在端点禁用时改写 / an OUT endpoint is disabled with EPDIS once the global OUT NAK is in effect; the transfer size register is written only while the endpoint is disabled | 非 DMA 模式下、停止序列还在等全局 OUT NAK 时调用 Stop()：停止被直接确认，端点在硬件里仍使能，下一次会话在使能状态下改写该寄存器 / without DMA, Stop() while a stop sequence waits for the global OUT NAK: the stop is confirmed at once, the endpoint stays enabled in the hardware and the next session rewrites the register while it is enabled |
 | `test_esp_usb` | `stop_in_progress` | 完成里的长度是主机已取走的字节数 / the length in a completion is what the host took | 被停止的 IN 请求报告取进 FIFO 的字节数 / a stopped IN request reports the bytes fetched into the FIFO |
 | `test_esp_usb` | `out_disable_without_global_nak` | 禁用 OUT 端点之前先进入全局 OUT NAK / the global OUT NAK comes before an OUT endpoint is disabled | 直接写 SNAK 和 EPDIS / writes SNAK and EPDIS directly |
-| `test_esp_usb` | `close_keeps_endpoint_active` | 停用端点要清 USBAEP，之后核心不应答发给它的令牌 / deactivating an endpoint clears USBAEP, after which the core ignores its tokens | 关闭端点只关中断屏蔽位，端点继续应答 NAK / closing an endpoint only drops the interrupt mask and the endpoint keeps answering NAK |
 | `test_esp_usb` | `isochronous_frames`, `uac_streams` | 等时 IN 只在 EONUM 与帧号奇偶相同的帧里发数据，每次传输都要设置 / isochronous IN sends only in the frame whose parity equals EONUM, which is programmed for each transfer | 只在激活端点时设成偶数帧：UAC1 麦克风 3000 帧里发出 1500 个包 / set to even once when the endpoint is activated: the UAC1 microphone sends 1500 packets in 3000 frames |
 | `test_esp_usb` | `isochronous_missed_frame` | 错过帧的等时 IN 由"未完成的等时 IN 传输"中断报告，应用禁用端点 / an isochronous IN that missed its frame is reported by the incomplete isochronous IN interrupt and the application disables the endpoint | 没有打开也没有处理这个中断，请求一直挂着 / the interrupt is neither unmasked nor handled and the request stays armed |
 

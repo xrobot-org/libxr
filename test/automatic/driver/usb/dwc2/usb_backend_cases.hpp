@@ -6,8 +6,7 @@
  * probe、被测设备 device、Service()（运行中断处理）、Up()（枚举到配置 1）、
  * VendorRead/VendorWrite 和批量包长 bulk；用例只通过端点 API、DeviceCore 和总线事件
  * 驱动后端。每个夹具在析构时检查控制器模型没有记下违反手册的操作。夹具的常量
- * EXACT_IN_PROGRESS 为假时，被停止的 IN 请求报告的已发送长度不作检查；
- * CLOSE_DEACTIVATES 为假时，只检查关闭的端点不再传数据，不检查它不应答。
+ * EXACT_IN_PROGRESS 为假时，被停止的 IN 请求报告的已发送长度不作检查。
  * Each case is a template over the fixture type. A fixture provides the controller model
  * hw, the host script host, the probe class probe, the device under test device,
  * Service() (runs the interrupt handler), Up() (enumerates to configuration 1),
@@ -15,8 +14,7 @@
  * through the endpoint API, DeviceCore and bus events. Every fixture checks on
  * destruction that the controller model recorded no operation the manual forbids. With
  * the fixture constant EXACT_IN_PROGRESS false, the sent length a stopped IN request
- * reports is not checked; with CLOSE_DEACTIVATES false, a closed endpoint is only
- * checked to move no data, not to stay silent.
+ * reports is not checked.
  */
 
 #pragma once
@@ -824,17 +822,9 @@ void TestReconfigure(const typename Fixture::ModeType& mode)
   TEST_ASSERT(f.probe.int_in_log.Count(ErrorCode::ABORTED) == 1U);
   TEST_ASSERT(f.probe.int_out_log.Count(ErrorCode::ABORTED) == 1U);
   // 取消配置后的端点不再应答 / A deconfigured endpoint no longer answers
-  if (Fixture::CLOSE_DEACTIVATES)
-  {
-    TEST_ASSERT(f.hw.HostIn(7, 1).resp == Resp::TIMEOUT);
-    TEST_ASSERT(f.hw.HostOut(7, 1, 0, nullptr, 0) == Resp::TIMEOUT);
-    TEST_ASSERT(f.hw.HostIn(7, 2).resp == Resp::TIMEOUT);
-  }
-  else
-  {
-    TEST_ASSERT(f.hw.HostIn(7, 1).resp != Resp::DATA);
-    TEST_ASSERT(f.hw.HostOut(7, 1, 0, nullptr, 0) != Resp::ACK);
-  }
+  TEST_ASSERT(f.hw.HostIn(7, 1).resp == Resp::TIMEOUT);
+  TEST_ASSERT(f.hw.HostOut(7, 1, 0, nullptr, 0) == Resp::TIMEOUT);
+  TEST_ASSERT(f.hw.HostIn(7, 2).resp == Resp::TIMEOUT);
   TEST_ASSERT(!f.hw.SofMasked());
   TEST_ASSERT(f.host.ControlRead(Dwc2::Host::Setup(0x80, 8, 0, 0, 1), data) ==
               Result::OK);

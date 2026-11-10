@@ -191,7 +191,6 @@ struct Probe : Rig
 {
   using ModeType = Mode;
   static constexpr bool EXACT_IN_PROGRESS = true;
-  static constexpr bool CLOSE_DEACTIVATES = true;
   static bool HighSpeed(const Mode& mode) { return mode.high_speed; }
 
   ProbeClass probe;

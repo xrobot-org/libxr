@@ -204,9 +204,6 @@ struct Probe : Rig
   /// 列出 / A stopped IN request reports the bytes fetched into the FIFO, not the bytes
   /// the host took; listed as a finding
   static constexpr bool EXACT_IN_PROGRESS = false;
-  /// 关闭端点时没有清掉 USBAEP，端点仍然应答 NAK；作为"发现"单独列出 / Closing an
-  /// endpoint leaves USBAEP set and the endpoint keeps answering NAK; listed as a finding
-  static constexpr bool CLOSE_DEACTIVATES = false;
   static bool HighSpeed(const Mode&) { return false; }
 
   ProbeClass probe;
@@ -252,12 +249,12 @@ struct Probe : Rig
   }
 };
 
-/// 同一个设备，上面两项也检查 / The same device with both of the above checked
+/// 同一个设备，被停止的 IN 请求报告的长度也检查 / The same device with the length a
+/// stopped IN request reports checked too
 struct ExactProbe : Probe
 {
   using Probe::Probe;
   static constexpr bool EXACT_IN_PROGRESS = true;
-  static constexpr bool CLOSE_DEACTIVATES = true;
 };
 
 /// UAC1 麦克风设备 / Device with the UAC1 microphone
@@ -471,7 +468,6 @@ void FindingIsochronousMissedFrame() { TestIsochronousMissedFrame<Probe>(NORMAL)
 void FindingUacStreams() { TestUacStreams<Uac>(NORMAL); }
 
 void FindingStopInProgress() { TestStopIn<ExactProbe>(NORMAL); }
-void FindingCloseKeepsEndpointActive() { TestReconfigure<ExactProbe>(NORMAL); }
 
 /// 手册要求先进入全局 OUT NAK 再禁用 OUT 端点；这个后端直接写 EPDIS。
 /// The manual requires the global OUT NAK before an OUT endpoint is disabled; this
@@ -495,8 +491,6 @@ int main(int argc, char** argv)
       argc, argv,
       {{"stop_in_progress", "a stopped IN request reports bytes the host did not take",
         FindingStopInProgress, "log.items[0].actual == 0U && log.items[1].actual == 0U"},
-       {"close_keeps_endpoint_active", "a closed endpoint keeps USBAEP and answers NAK",
-        FindingCloseKeepsEndpointActive, "f.hw.HostIn(7, 1).resp == Resp::TIMEOUT"},
        {"isochronous_frames", "isochronous IN is not scheduled for the next frame",
         FindingIsochronousFrames, "in.resp == Resp::DATA && in.data.empty()"},
        {"isochronous_missed_frame", "a missed isochronous IN frame is never ended",
