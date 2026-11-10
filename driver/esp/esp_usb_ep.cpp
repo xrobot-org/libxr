@@ -331,6 +331,24 @@ void ESP32USBEndpoint::AdvanceStop(bool in_isr)
   {
     if (stop_phase_ == StopPhase::SNAK_WAIT)
     {
+      // NAK 生效之前核心仍可能把最后一个包发出去：传输已经完成、端点已经禁用时不能再写
+      // EPDIS（只能对使能的端点写，也不会再有 EPDISD）。FIFO 已空，停止到此结束；完成由
+      // 传输完成中断照常报告。
+      // The core may still send the last packet before the NAK is in effect: once the
+      // transfer has completed and the endpoint is disabled, EPDIS must not be written
+      // (it is only for an enabled endpoint, and no EPDISD would follow). The FIFO is
+      // empty and the stop ends here; the transfer-complete interrupt reports the
+      // completion as usual.
+      const bool enabled = (ep_num == 0U)
+                               ? (dev->diepctl0_reg.epena != 0U)
+                               : (dev->in_eps[ep_num - 1U].diepctl_reg.epena != 0U);
+      if (!enabled)
+      {
+        stop_phase_ = StopPhase::NONE;
+        transfer_active_ = false;
+        OnHardwareStopped(in_isr);
+        return;
+      }
       const bool nak_effective =
           (ep_num == 0U) ? (dev->diepint0_reg.inepnakeff != 0U)
                          : (dev->in_eps[ep_num - 1U].diepint_reg.inepnakeff != 0U);

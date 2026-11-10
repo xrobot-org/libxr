@@ -447,6 +447,7 @@ void RunAll()
     TestCallbackRearm<Probe>(mode);
     TestEndpointHalt<Probe>(mode);
     TestStopIn<Probe>(mode);
+    TestStopInRace<Probe>(mode);
     TestStopOut<Probe>(mode);
     TestReconfigure<Probe>(mode);
     TestBusResetMidTransfer<Probe>(mode);
@@ -470,7 +471,6 @@ void FindingIsochronousMissedFrame() { TestIsochronousMissedFrame<Probe>(NORMAL)
 void FindingUacStreams() { TestUacStreams<Uac>(NORMAL); }
 
 void FindingStopInProgress() { TestStopIn<ExactProbe>(NORMAL); }
-void FindingStopInRace() { TestStopInRace<Probe>(NORMAL); }
 void FindingCloseKeepsEndpointActive() { TestReconfigure<ExactProbe>(NORMAL); }
 
 /// 手册要求先进入全局 OUT NAK 再禁用 OUT 端点；这个后端直接写 EPDIS。
@@ -495,8 +495,6 @@ int main(int argc, char** argv)
       argc, argv,
       {{"stop_in_progress", "a stopped IN request reports bytes the host did not take",
         FindingStopInProgress, "log.items[0].actual == 0U && log.items[1].actual == 0U"},
-       {"stop_in_race", "EPDIS written after the transfer completed during the stop",
-        FindingStopInRace, "!f.probe.bulk_in->IsStopping()"},
        {"close_keeps_endpoint_active", "a closed endpoint keeps USBAEP and answers NAK",
         FindingCloseKeepsEndpointActive, "f.hw.HostIn(7, 1).resp == Resp::TIMEOUT"},
        {"isochronous_frames", "isochronous IN is not scheduled for the next frame",
