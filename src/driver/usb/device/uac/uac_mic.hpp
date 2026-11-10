@@ -769,6 +769,7 @@ class UAC1MicrophoneQ : public DeviceClass
         active_ = false;
         acc_rem_ = 0;
         micro_debt_ = 0;
+        DropStalePcm();
         activate_pending_ = true;
         ep_iso_in_->Close(false);
         const ErrorCode result = ActivateStreaming(false);
@@ -927,6 +928,25 @@ class UAC1MicrophoneQ : public DeviceClass
     acc_rem_ = 0;
     micro_debt_ = 0;
     activate_pending_ = true;
+  }
+
+  /// 开始推流：丢弃队列里开始推流之前写入的 PCM（拔插、复位或上一次录音留下的），录音
+  /// 从最新的数据开始，延迟不因旧数据变大。只在主机选择 alt 1 时调用，等时请求失败后的
+  /// 恢复不丢数据。在 owner 里出队，也就是消费者一侧，应用线程可以同时写。
+  /// Streaming starts: drop the PCM written before it (left by a replug, a reset or the
+  /// previous capture) so the capture starts from fresh data and the latency does not
+  /// grow by stale data. Called only when the host selects alt 1; the recovery after a
+  /// failed isochronous request keeps the queue. It dequeues in the owner, the consumer
+  /// side, so the application thread may keep writing meanwhile.
+  void DropStalePcm()
+  {
+    uint8_t scratch[64];
+    for (size_t left = pcm_queue_.Size(); left != 0U;)
+    {
+      const size_t n = LibXR::min(left, sizeof(scratch));
+      if (pcm_queue_.PopBatch(scratch, n) != ErrorCode::OK) break;
+      left -= n;
+    }
   }
 
   /**

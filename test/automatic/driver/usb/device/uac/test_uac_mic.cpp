@@ -321,6 +321,53 @@ void TestUacActivateAndFill()
   TEST_ASSERT(f.uac.SetAltSetting(0, 0) == ErrorCode::NOT_SUPPORT);
 }
 
+/// 开始推流时丢弃之前写入的 PCM：第一帧不是旧数据，之后写入的照常发出。等时请求失败后
+/// 的恢复不是新的推流，队列里的数据保留。
+/// Starting the stream drops the PCM written before it: the first frame is not stale
+/// data, and what is written afterwards goes out as usual. The recovery after a failed
+/// isochronous request is not a new stream and keeps the queued data.
+void TestUacStartDropsStalePcm()
+{
+  UacFixture f;
+  f.uac.BindEndpoints(f.pool, 0, false);
+  std::vector<uint8_t> stale(200, 0xAA);  // more than one drain chunk
+  TEST_ASSERT(f.uac.WritePcm(stale.data(), stale.size()) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.QueueSize() == 200);
+
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.QueueSize() == 0);
+  f.iso.Complete();
+  TEST_ASSERT(f.iso.sent.back() == Zeros(32));
+
+  uint8_t fresh[32];
+  for (size_t i = 0; i < sizeof(fresh); ++i) fresh[i] = static_cast<uint8_t>(i + 1);
+  TEST_ASSERT(f.uac.WritePcm(fresh, sizeof(fresh)) == ErrorCode::OK);
+  BusTime tick;
+  f.uac.OnBusTime(false, tick);
+  f.iso.Complete();
+  TEST_ASSERT(f.iso.sent.back() == std::vector<uint8_t>(fresh, fresh + sizeof(fresh)));
+
+  // A failed isochronous request: the recovery re-activates the stream and keeps the
+  // queued data.
+  f.uac.OnBusTime(false, tick);
+  TEST_ASSERT(f.iso.active);
+  f.iso.CompleteWith(10, ErrorCode::FAILED);
+  std::vector<uint8_t> kept(32, 0x77);
+  TEST_ASSERT(f.uac.WritePcm(kept.data(), kept.size()) == ErrorCode::OK);
+  f.uac.OnBusTime(false, tick);
+  TEST_ASSERT(f.iso.active);
+  f.iso.Complete();
+  TEST_ASSERT(f.iso.sent.back() == kept);
+
+  // The host selects alt 1 again (a new capture): what was written meanwhile is dropped.
+  std::vector<uint8_t> stale2(64, 0xBB);
+  TEST_ASSERT(f.uac.WritePcm(stale2.data(), stale2.size()) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.SetAltSetting(1, 0) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.QueueSize() == 64);  // alt 0 keeps the queue
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.QueueSize() == 0);
+}
+
 void TestUacFrameDropCount()
 {
   UacFixture f;
@@ -681,6 +728,7 @@ void TestUacHighSpeedPacing()
 int main()
 {
   TestUacActivateAndFill();
+  TestUacStartDropsStalePcm();
   TestUacFrameDropCount();
   TestUacFailedRecovery();
   TestUacSetInterfaceFlow();

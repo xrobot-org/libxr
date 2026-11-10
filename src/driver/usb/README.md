@@ -54,6 +54,10 @@ device controller used by XRUSB. `CDC-JTAG` on ESP32-C3 and ESP32-C6 is implemen
 
 `CDCWriteTest` and `CDCReadTest` in `device/cdc/cdc_test.hpp` test CDC transfers.
 
+设备类在总线复位、拔插或重新配置时对用户侧数据的处理：`HID::SendInputReport` 在设备未配置期间立即返回失败，不排队；`GsUsbClass` 在主机启动通道（MODE START）时丢弃该通道上一次会话留下、还没发给主机的接收帧、错误帧和回显，其他通道的回显保留；`UAC1MicrophoneQ` 在主机开始推流（切到发送音频的 alt 设置）时丢弃之前写入的 PCM，录音从最新的数据开始；`DapLinkV2Class` 丢弃绑定变化前收到的命令，调试端口、时钟等在下一个会话的第一条命令之前由 Step 线程恢复默认值，注册了会话复位闸门并且闸门返回 false 时除外。
+
+How the device classes treat data on the user side across a bus reset, a cable replug or a reconfiguration: `HID::SendInputReport` fails at once while the device is not configured and queues nothing; `GsUsbClass` drops the receive frames, error frames and echoes of a channel that the previous session left unsent when the host starts the channel (MODE START), and keeps the echoes of the other channels; `UAC1MicrophoneQ` drops the PCM written before the host starts streaming (selects the alt setting that sends audio), so a capture starts from fresh data; `DapLinkV2Class` drops the commands received before the binding changed, and the Step thread puts the debug port, clock and the rest back to their defaults before the first command of the next session, unless a session reset gate is registered and returns false.
+
 ## 设备控制器 / Device Controllers
 
 | 平台 / Platform | 控制器 / Controller | 驱动 / Driver | 测试设备 / Tested on |
