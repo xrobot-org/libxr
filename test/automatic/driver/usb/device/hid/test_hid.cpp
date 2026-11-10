@@ -82,9 +82,11 @@ class TestHid : public TestHidBase
 class TestMouse : public HIDMouse
 {
  public:
+  using ControlTransferResult = DeviceClass::ControlTransferResult;
   explicit TestMouse(Endpoint::EPNumber in) : HIDMouse(in) {}
-  using HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>::BindEndpoints;
-  using HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>::UnbindEndpoints;
+  using HIDMouse::BindEndpoints;
+  using HIDMouse::OnClassRequest;
+  using HIDMouse::UnbindEndpoints;
 };
 
 class TestKeyboard : public HIDKeyboard
@@ -107,9 +109,11 @@ class TestKeyboard : public HIDKeyboard
 class TestGamepad : public HIDGamepad
 {
  public:
+  using ControlTransferResult = DeviceClass::ControlTransferResult;
   explicit TestGamepad(Endpoint::EPNumber in) : HIDGamepad(in) {}
-  using HID<50, 9, 0>::BindEndpoints;
-  using HID<50, 9, 0>::UnbindEndpoints;
+  using HIDGamepad::BindEndpoints;
+  using HIDGamepad::OnClassRequest;
+  using HIDGamepad::UnbindEndpoints;
 };
 
 void TestSendInputReport()
@@ -369,6 +373,145 @@ void TestMouseAndGamepad()
   TEST_ASSERT(pad.SendButtons(0x00, false) == ErrorCode::OK);
   in.Complete();
 }
+/// GET_REPORT as the host sends it: wValue = report type << 8 | report ID.
+enum : uint8_t
+{
+  REPORT_INPUT = 1,
+  REPORT_OUTPUT = 2,
+  REPORT_FEATURE = 3
+};
+
+/// Returns the control error code; `data` receives the IN data stage when it is OK.
+template <typename C>
+ErrorCode GetReport(C& hid, uint8_t type, uint8_t id, std::vector<uint8_t>& data,
+                    uint16_t length = 64)
+{
+  typename C::ControlTransferResult result{};
+  const ErrorCode ans = hid.OnClassRequest(
+      false, static_cast<uint8_t>(HIDKeyboard::ClassRequest::GET_REPORT),
+      static_cast<uint16_t>((static_cast<uint16_t>(type) << 8) | id), length, 0, result);
+  data.clear();
+  if (ans == ErrorCode::OK && result.write_data.size_ != 0U)
+  {
+    const auto* p = static_cast<const uint8_t*>(result.write_data.addr_);
+    data.assign(p, p + result.write_data.size_);
+  }
+  return ans;
+}
+
+/// HID 1.11 7.2.1: Get_Report is mandatory. A class answers it with the report it has;
+/// a report type or ID it does not have is refused (STALL), not answered with an empty
+/// data stage.
+void TestGetReport()
+{
+  std::vector<uint8_t> data;
+
+  // The base default has no report at all: every type stalls.
+  {
+    Fixture f;
+    TestHid hid(Number::EP1, Number::EP2, false);
+    hid.BindEndpoints(f.pool, 0, false);
+    TEST_ASSERT(GetReport(hid, REPORT_INPUT, 0, data) != ErrorCode::OK);
+    TEST_ASSERT(GetReport(hid, REPORT_OUTPUT, 0, data) != ErrorCode::OK);
+    TEST_ASSERT(GetReport(hid, REPORT_FEATURE, 0, data) != ErrorCode::OK);
+  }
+
+  // Keyboard: input = last report sent, output = last LED report, no feature report.
+  {
+    Fixture f;
+    TestKeyboard kbd(Number::EP1, Number::EP2, true);
+    kbd.BindEndpoints(f.pool, 0, false);
+    TEST_ASSERT(GetReport(kbd, REPORT_INPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data == std::vector<uint8_t>(8, 0));
+    TEST_ASSERT(GetReport(kbd, REPORT_OUTPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data == std::vector<uint8_t>(1, 0));
+
+    kbd.PressKey({HIDKeyboard::KeyCode::A}, HIDKeyboard::Modifier::LEFT_SHIFT, false);
+    const std::vector<uint8_t> pressed = {
+        HIDKeyboard::Modifier::LEFT_SHIFT, 0, 0x04, 0, 0, 0, 0, 0};
+    TEST_ASSERT(GetReport(kbd, REPORT_INPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data == pressed);
+    // A report that the endpoint refused (one already in flight) was never sent.
+    kbd.ReleaseAll(false);
+    TEST_ASSERT(GetReport(kbd, REPORT_INPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data == pressed);
+    f.in.Complete();
+    kbd.ReleaseAll(false);
+    TEST_ASSERT(GetReport(kbd, REPORT_INPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data == std::vector<uint8_t>(8, 0));
+    f.in.Complete();
+
+    f.out.HostSends({0x03});
+    TEST_ASSERT(GetReport(kbd, REPORT_OUTPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data == std::vector<uint8_t>({0x03}));
+    // The upper three bits of the LED report are constant padding.
+    f.out.HostSends({0xFF});
+    TEST_ASSERT(GetReport(kbd, REPORT_OUTPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data == std::vector<uint8_t>({0x1F}));
+    f.out.HostSends({0x03});
+    // The SET_REPORT data stage updates the same state.
+    std::array<uint8_t, 1> led_report{0x04};
+    ConstRawData led{led_report.data(), led_report.size()};
+    TEST_ASSERT(kbd.OnClassData(false,
+                                static_cast<uint8_t>(TestHid::ClassRequest::SET_REPORT),
+                                led) == ErrorCode::OK);
+    TEST_ASSERT(GetReport(kbd, REPORT_OUTPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data == std::vector<uint8_t>({0x04}));
+
+    // Nothing else exists: no feature report, no report ID, no unknown type.
+    TEST_ASSERT(GetReport(kbd, REPORT_FEATURE, 0, data) != ErrorCode::OK);
+    TEST_ASSERT(GetReport(kbd, REPORT_INPUT, 1, data) != ErrorCode::OK);
+    TEST_ASSERT(GetReport(kbd, REPORT_OUTPUT, 1, data) != ErrorCode::OK);
+    TEST_ASSERT(GetReport(kbd, 0, 0, data) != ErrorCode::OK);
+    TEST_ASSERT(GetReport(kbd, 4, 0, data) != ErrorCode::OK);
+  }
+
+  // Mouse: input only.
+  {
+    Fixture f;
+    TestMouse mouse(Number::EP1);
+    mouse.BindEndpoints(f.pool, 0, false);
+    TEST_ASSERT(GetReport(mouse, REPORT_INPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data == std::vector<uint8_t>(4, 0));
+    mouse.Move(HIDMouse::Button::LEFT, 5, -3, 1, false);
+    TEST_ASSERT(GetReport(mouse, REPORT_INPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data == std::vector<uint8_t>({0x01, 0x05, 0xFD, 0x01}));
+    f.in.Complete();
+    mouse.Release(false);
+    TEST_ASSERT(GetReport(mouse, REPORT_INPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data == std::vector<uint8_t>(4, 0));
+    TEST_ASSERT(GetReport(mouse, REPORT_OUTPUT, 0, data) != ErrorCode::OK);
+    TEST_ASSERT(GetReport(mouse, REPORT_FEATURE, 0, data) != ErrorCode::OK);
+    TEST_ASSERT(GetReport(mouse, REPORT_INPUT, 2, data) != ErrorCode::OK);
+  }
+
+  // Gamepad: input only. Before the first report it answers the neutral state the class
+  // starts in (axes at mid-range, no button), 9 bytes.
+  {
+    Block<128> in_storage;
+    EndpointPool pool{2};
+    MockEndpoint in{Number::EP1, Direction::IN, in_storage.Raw()};
+    TEST_ASSERT(pool.Put(&in) == ErrorCode::OK);
+    TestGamepad pad(Number::EP1);
+    pad.BindEndpoints(pool, 0, false);
+    TEST_ASSERT(GetReport(pad, REPORT_INPUT, 0, data) == ErrorCode::OK);
+    // Mid of 0..2047 is 1023 = 0x03FF, little endian.
+    TEST_ASSERT(data == std::vector<uint8_t>(
+                            {0xFF, 0x03, 0xFF, 0x03, 0xFF, 0x03, 0xFF, 0x03, 0x00}));
+    TEST_ASSERT(pad.Send(100, 200, 300, 400, 0x81, false) == ErrorCode::OK);
+    TEST_ASSERT(GetReport(pad, REPORT_INPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data ==
+                std::vector<uint8_t>({100, 0, 200, 0, 0x2C, 0x01, 0x90, 0x01, 0x81}));
+    // A report that was not sent (previous one still in flight) is not reported.
+    TEST_ASSERT(pad.Send(1, 2, 3, 4, 0x00, false) == ErrorCode::BUSY);
+    TEST_ASSERT(GetReport(pad, REPORT_INPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data ==
+                std::vector<uint8_t>({100, 0, 200, 0, 0x2C, 0x01, 0x90, 0x01, 0x81}));
+    in.Complete();
+    TEST_ASSERT(GetReport(pad, REPORT_OUTPUT, 0, data) != ErrorCode::OK);
+    TEST_ASSERT(GetReport(pad, REPORT_FEATURE, 0, data) != ErrorCode::OK);
+  }
+}
 }  // namespace
 
 int main()
@@ -381,5 +524,6 @@ int main()
   TestConfigurationRejectedWhenSlotTooSmall();
   TestKeyboardReports();
   TestMouseAndGamepad();
+  TestGetReport();
   std::puts("HID class: slot model, OUT lease, reset, idle rate and LED passed");
 }

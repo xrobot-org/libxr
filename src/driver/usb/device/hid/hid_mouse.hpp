@@ -90,7 +90,7 @@ class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>
   void Move(uint8_t buttons, int8_t x, int8_t y, int8_t wheel = 0, bool in_isr = false)
   {
     Report report = {buttons, x, y, wheel};
-    SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr);
+    Send(report, in_isr);
   }
 
   /**
@@ -99,10 +99,41 @@ class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>
   void Release(bool in_isr = false)
   {
     Report report = {0, 0, 0, 0};
-    SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr);
+    Send(report, in_isr);
   }
 
+ private:
+  /**
+   * @brief 发送一条输入报告；被端点拒绝的报告不算已发送，GET_REPORT 不会返回它
+   * Send one input report; a report the endpoint refused was not sent and GET_REPORT
+   * does not return it
+   */
+  void Send(const Report& report, bool in_isr)
+  {
+    if (SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr) == ErrorCode::OK)
+    {
+      last_input_ = report;
+    }
+  }
+
+  Report last_input_{};  ///< 最近发送的输入报告 / Last input report sent
+
  protected:
+  /**
+   * @brief GET_REPORT(Input)：返回最近发送的输入报告，尚未发送时为全 0；非 0 的 Report
+   *        ID 不存在，STALL。鼠标没有 Output / Feature 报告，沿用基类默认（STALL）。
+   * GET_REPORT(Input): the last input report sent, all zero before the first; a non-zero
+   * report ID does not exist and stalls. The mouse has no Output or Feature report and
+   * keeps the base default (STALL).
+   */
+  ErrorCode OnGetInputReport(uint8_t report_id,
+                             DeviceClass::ControlTransferResult& result) override
+  {
+    if (report_id != 0U) return ErrorCode::NOT_SUPPORT;
+    result.write_data = ConstRawData{&last_input_, sizeof(last_input_)};
+    return ErrorCode::OK;
+  }
+
   ErrorCode WriteDeviceDescriptor(DeviceDescriptor& header) override
   {
     header.data_.bDeviceClass = DeviceDescriptor::ClassID::HID;

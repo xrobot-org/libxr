@@ -54,6 +54,7 @@ class HIDGamepadT
     last_.z = Mid();
     last_.rx = Mid();
     last_.buttons = 0;
+    sent_ = last_;
   }
 
   /**
@@ -106,7 +107,7 @@ class HIDGamepadT
     last_.z = Clamp(z);
     last_.rx = Clamp(rx);
     last_.buttons = buttons;
-    return SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
+    return Submit(in_isr);
   }
 
   /**
@@ -118,7 +119,7 @@ class HIDGamepadT
   ErrorCode SendButtons(uint8_t buttons, bool in_isr = false)
   {
     last_.buttons = buttons;
-    return SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
+    return Submit(in_isr);
   }
 
   /**
@@ -136,10 +137,27 @@ class HIDGamepadT
     last_.y = Clamp(y);
     last_.z = Clamp(z);
     last_.rx = Clamp(rx);
-    return SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
+    return Submit(in_isr);
   }
 
  protected:
+  /**
+   * @brief GET_REPORT(Input)：返回最近发送的输入报告（9 字节），尚未发送时为构造时的中立
+   *        状态（轴居中、无按钮）；描述符没有 Report ID，非 0 的 ID 不存在，STALL。手柄
+   *        没有 Output / Feature 报告，沿用基类默认（STALL）。
+   * GET_REPORT(Input): the last input report sent (9 bytes); before the first, the
+   * neutral state the class is built in (axes centred, no button). The descriptor has no
+   * report ID, so a non-zero ID does not exist and stalls. The gamepad has no Output or
+   * Feature report and keeps the base default (STALL).
+   */
+  ErrorCode OnGetInputReport(uint8_t report_id,
+                             DeviceClass::ControlTransferResult& result) override
+  {
+    if (report_id != 0U) return ErrorCode::NOT_SUPPORT;
+    result.write_data = ConstRawData{&sent_, sizeof(sent_)};
+    return ErrorCode::OK;
+  }
+
   /**
    * @brief 写入设备描述符（Per-Interface） / Write device descriptor (Per-Interface)
    * @param header 设备描述符头 / Device descriptor header
@@ -226,7 +244,21 @@ class HIDGamepadT
         (static_cast<int32_t>(LOG_MIN) + static_cast<int32_t>(LOG_MAX)) / 2);
   }
 
-  Report last_{};  ///< 最近一次发送的输入报告 / Last-sent input report
+  /**
+   * @brief 提交 last_；端点收下才记入 sent_（被拒绝的报告主机从未见过）
+   * Submit last_; it is recorded in sent_ only when the endpoint took it (the host never
+   * saw a refused report)
+   */
+  ErrorCode Submit(bool in_isr)
+  {
+    const ErrorCode ans = SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
+    if (ans == ErrorCode::OK) sent_ = last_;
+    return ans;
+  }
+
+  Report
+      last_{};  ///< 当前状态（部分更新的基准）/ Current state (base of partial updates)
+  Report sent_{};  ///< 最近发送的输入报告 / Last input report sent
 };
 
 /**

@@ -372,15 +372,15 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
   void PressKey(std::initializer_list<KeyCode> keys, uint8_t mods = Modifier::NONE,
                 bool in_isr = false)
   {
-    report_ = {static_cast<uint8_t>(mods), 0, {0}};
-    const bool phantom = keys.size() > sizeof(report_.keys);
+    Report report = {static_cast<uint8_t>(mods), 0, {0}};
+    const bool phantom = keys.size() > sizeof(report.keys);
     size_t i = 0;
     for (auto k : keys)
     {
-      if (i >= sizeof(report_.keys)) break;
-      report_.keys[i++] = static_cast<uint8_t>(phantom ? KeyCode::ERROR_ROLLOVER : k);
+      if (i >= sizeof(report.keys)) break;
+      report.keys[i++] = static_cast<uint8_t>(phantom ? KeyCode::ERROR_ROLLOVER : k);
     }
-    SendInputReport(ConstRawData{&report_, sizeof(report_)}, in_isr);
+    Send(report, in_isr);
   }
 
   /**
@@ -389,7 +389,21 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
   void ReleaseAll(bool in_isr = false)
   {
     Report report = {0, 0, {0}};
-    SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr);
+    Send(report, in_isr);
+  }
+
+ private:
+  /**
+   * @brief 发送一条输入报告；主机收下之前不能再发，被端点拒绝的报告不算已发送
+   * Send one input report; a report the endpoint refused (one already in flight) was not
+   * sent and is not remembered for GET_REPORT
+   */
+  void Send(const Report& report, bool in_isr)
+  {
+    if (SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr) == ErrorCode::OK)
+    {
+      last_input_ = report;
+    }
   }
 
  protected:
@@ -426,7 +440,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
   {
     if (completion.slot.Valid() && completion.slot.data.size_ >= 1)
     {
-      led_state_ = *(static_cast<const uint8_t*>(completion.slot.data.addr_));
+      led_state_ = *(static_cast<const uint8_t*>(completion.slot.data.addr_)) & LED_MASK;
       on_led_change_cb_.Run(in_isr, GetNumLock(), GetCapsLock(), GetScrollLock());
     }
   }
@@ -458,12 +472,38 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
   {
     if (data.size_ >= 1)
     {
-      led_state_ = *(static_cast<const uint8_t*>(data.addr_));
+      led_state_ = *(static_cast<const uint8_t*>(data.addr_)) & LED_MASK;
       on_led_change_cb_.Run(in_isr, GetNumLock(), GetCapsLock(), GetScrollLock());
       return ErrorCode::OK;
     }
 
     return ErrorCode::NOT_SUPPORT;
+  }
+
+  /**
+   * @brief GET_REPORT(Input)：返回最近发送的输入报告，尚未发送时为全 0（无按键）；描述符
+   *        没有 Report ID，非 0 的 ID 不存在，STALL
+   * GET_REPORT(Input): the last input report sent, all zero (no key) before the first;
+   * the descriptor has no report ID, so a non-zero ID does not exist and stalls
+   */
+  ErrorCode OnGetInputReport(uint8_t report_id,
+                             DeviceClass::ControlTransferResult& result) override
+  {
+    if (report_id != 0U) return ErrorCode::NOT_SUPPORT;
+    result.write_data = ConstRawData{&last_input_, sizeof(last_input_)};
+    return ErrorCode::OK;
+  }
+
+  /**
+   * @brief GET_REPORT(Output)：返回最近收到的 LED 输出报告（1 字节），尚未收到时为 0
+   * GET_REPORT(Output): the last LED output report received (1 byte), 0 before the first
+   */
+  ErrorCode OnGetLastOutputReport(uint8_t report_id,
+                                  DeviceClass::ControlTransferResult& result) override
+  {
+    if (report_id != 0U) return ErrorCode::NOT_SUPPORT;
+    result.write_data = ConstRawData{&led_state_, sizeof(led_state_)};
+    return ErrorCode::OK;
   }
 
  public:
@@ -496,8 +536,10 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
   }
 
  private:
+  /// 五个 LED 位；高三位是常量填充 / The five LED bits; the upper three are padding
+  static constexpr uint8_t LED_MASK = 0x1F;
   uint8_t led_state_ = 0;  ///< LED 状态/ LED state
-  Report report_;          ///< 当前输入报告 / Current input report
+  Report last_input_{};    ///< 最近发送的输入报告 / Last input report sent
   LibXR::Callback<bool, bool, bool>
       on_led_change_cb_;  ///< LED 状态变化回调 / LED state change callback
 };

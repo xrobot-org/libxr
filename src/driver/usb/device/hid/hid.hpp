@@ -390,13 +390,17 @@ class HID : public DeviceClass
         switch (report_type)
         {
           case ReportType::INPUT:
-            // 查找或生成 Input Report（按你的设备实际逻辑）
+            // 派生类返回最近发送的 Input Report；没有该报告则 STALL。
+            // The derived class answers with the last Input Report it sent; a report it
+            // does not have stalls.
             return OnGetInputReport(report_id, result);
           case ReportType::OUTPUT:
-            // 查找或返回最近收到的 Output Report（通常很少实现GET Output）
+            // 最近收到的 Output Report；没有则 STALL。
+            // The last Output Report received; stalls when there is none.
             return OnGetLastOutputReport(report_id, result);
           case ReportType::FEATURE:
-            // 查找或生成 Feature Report
+            // Feature Report；没有则 STALL。
+            // A Feature Report; stalls when there is none.
             return OnGetFeatureReport(report_id, result);
           default:
             return OnCustomClassRequest(in_isr, bRequest, wValue, wLength, result);
@@ -500,37 +504,43 @@ class HID : public DeviceClass
   /**
    * @brief 获取输入报告
    * Get Input Report
+   *
+   * 类有该报告时把数据填入 result.write_data 并返回 OK；默认实现没有任何报告，返回
+   * NOT_SUPPORT，设备核心据此 STALL 控制管道（HID 1.11 7.2.1）。
+   * A class that has the report fills result.write_data and returns OK. The default has
+   * no report and returns NOT_SUPPORT, which the device core answers with a STALL of the
+   * control pipe (HID 1.11 7.2.1).
    */
   virtual ErrorCode OnGetInputReport(uint8_t report_id,
                                      DeviceClass::ControlTransferResult& result)
   {
     UNUSED(report_id);
-    result.write_data = ConstRawData{nullptr, 0};
-    return ErrorCode::OK;
+    UNUSED(result);
+    return ErrorCode::NOT_SUPPORT;
   }
 
   /**
-   * @brief 获取最近一次输出报告
-   * Get last Output Report
+   * @brief 获取最近一次输出报告；默认没有，STALL
+   * Get last Output Report; the default has none and stalls
    */
   virtual ErrorCode OnGetLastOutputReport(uint8_t report_id,
                                           DeviceClass::ControlTransferResult& result)
   {
     UNUSED(report_id);
-    result.write_data = ConstRawData{nullptr, 0};
-    return ErrorCode::OK;
+    UNUSED(result);
+    return ErrorCode::NOT_SUPPORT;
   }
 
   /**
-   * @brief 获取特征报告
-   * Get Feature Report
+   * @brief 获取特征报告；默认没有，STALL
+   * Get Feature Report; the default has none and stalls
    */
   virtual ErrorCode OnGetFeatureReport(uint8_t report_id,
                                        DeviceClass::ControlTransferResult& result)
   {
     UNUSED(report_id);
-    result.write_data = ConstRawData{nullptr, 0};
-    return ErrorCode::OK;
+    UNUSED(result);
+    return ErrorCode::NOT_SUPPORT;
   }
 
   /**
