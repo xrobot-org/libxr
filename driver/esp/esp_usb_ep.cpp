@@ -234,6 +234,13 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
   // interrupt advance the rest and call OnHardwareStopped when it is done.
   if (is_in)
   {
+    if (iso_abort_)
+    {
+      // 错过帧的禁用序列已经在跑：它改为以这次停止结束。
+      // A missed-frame disable is already running; it now ends as this stop.
+      iso_abort_ = false;
+      return StopResult::PENDING;
+    }
     bool enabled = false;
     if (ep_num == 0U)
     {
@@ -388,6 +395,13 @@ void ESP32USBEndpoint::AdvanceStop(bool in_isr)
       ESPUSBDetail::FlushTxFifo(dev, ep_num);
       stop_phase_ = StopPhase::NONE;
       transfer_active_ = false;
+      if (iso_abort_)
+      {
+        const uint32_t tag = transfer_tag_;
+        ResetTransferState();
+        OnHardwareComplete(in_isr, tag, 0U, ErrorCode::FAILED);
+        return;
+      }
       OnHardwareStopped(in_isr);
     }
     return;
@@ -415,7 +429,36 @@ void ESP32USBEndpoint::ConfirmStopAfterReset(bool in_isr)
   }
   stop_phase_ = StopPhase::NONE;
   transfer_active_ = false;
+  if (iso_abort_)
+  {
+    // 没有停止在等确认；请求由复位的收尾流程结束。
+    // No stop is waiting for a confirmation; the reset teardown ends the request.
+    iso_abort_ = false;
+    return;
+  }
   OnHardwareStopped(in_isr);
+}
+
+// 等时 IN 传输没有在安排的那一帧发出去（主机没有取，或令牌出错）：核心报告"未完成的等时
+// IN 传输"，应用要给端点置 NAK 并禁用它，等端点禁用中断，再冲刷发送 FIFO。请求以 FAILED
+// 结束，设备类据此提交下一帧。
+// An isochronous IN transfer was not sent in the frame it was scheduled for (the host
+// did not take it, or the token was corrupted): the core reports an incomplete
+// isochronous IN transfer, and the application sets the NAK and disables the endpoint,
+// waits for the endpoint-disabled interrupt and flushes the transmit FIFO. The request
+// ends with FAILED, on which the class submits the next frame.
+void ESP32USBEndpoint::OnIsoIncomplete()
+{
+  if (GetDirection() != Direction::IN || GetConfig().type != Type::ISOCHRONOUS) return;
+  if (!transfer_active_ || stop_phase_ != StopPhase::NONE) return;
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  auto& ctl = dev->in_eps[EPNumberToInt8(GetNumber()) - 1U].diepctl_reg;
+  if (ctl.epena == 0U) return;
+  iso_abort_ = true;
+  dev->diepmsk_reg.epdisbldmsk = 1;
+  ctl.snak = 1;
+  ctl.epdis = 1;
+  stop_phase_ = StopPhase::DIS_WAIT;
 }
 
 void ESP32USBEndpoint::ForceStop(bool in_isr)
@@ -775,6 +818,7 @@ void ESP32USBEndpoint::ResetTransferState()
   transfer_queued_size_ = 0U;
   dma_rx_status_bytes_ = 0U;
   dma_rx_status_seen_ = false;
+  iso_abort_ = false;
 }
 
 bool ESP32USBEndpoint::PrepareTransferBuffer(size_t size)

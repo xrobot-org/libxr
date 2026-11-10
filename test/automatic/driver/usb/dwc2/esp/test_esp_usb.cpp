@@ -326,8 +326,8 @@ void TestStart(const Mode& mode)
   TEST_ASSERT((f.hw.Peek(Dwc2::GAHBCFG) & Dwc2::AHB_GINT) != 0U);
   TEST_ASSERT(f.hw.Peek(Dwc2::GINTMSK) ==
               (Dwc2::GINT_USBRST | Dwc2::GINT_ENUMDNE | Dwc2::GINT_USBSUSP |
-               Dwc2::GINT_WKUP | Dwc2::GINT_IEPINT | Dwc2::GINT_OEPINT | Dwc2::GINT_OTG |
-               Dwc2::GINT_SOF));
+               Dwc2::GINT_WKUP | Dwc2::GINT_IEPINT | Dwc2::GINT_OEPINT |
+               Dwc2::GINT_IISOIXFR | Dwc2::GINT_OTG | Dwc2::GINT_SOF));
   TEST_ASSERT(!f.hw.IrqLine());
   // Start 是幂等的 / Start is idempotent
   f.device.Start(false);
@@ -454,6 +454,9 @@ void RunAll()
     TestStopStart(mode);
     TestFrameTicks<Probe>(mode);
     TestIsochronousFrames<Probe>(mode);
+    TestIsochronousMissedFrame<Probe>(mode);
+    TestUacStreams<Uac>(mode);
+    TestUacStopsWithoutFrameInterrupt<Uac>(mode);
     TestUacFrameInterruptIgnoresConfiguration<Uac>(mode);
     std::printf("esp usb: %s passed\n", mode.name);
     std::fflush(stdout);
@@ -464,14 +467,7 @@ void RunAll()
 // Findings: behaviour the backend does not have yet (not in the default run)
 // ---------------------------------------------------------------------------
 
-void FindingIsochronousMissedFrame() { TestIsochronousMissedFrame<Probe>(NORMAL); }
-
 void FindingStopInProgress() { TestStopIn<ExactProbe>(NORMAL); }
-void FindingUacStreams() { TestUacStreams<Uac>(NORMAL); }
-void FindingUacStopsWithoutFrameInterrupt()
-{
-  TestUacStopsWithoutFrameInterrupt<Uac>(NORMAL);
-}
 
 /// 手册要求先进入全局 OUT NAK 再禁用 OUT 端点；这个后端直接写 EPDIS。
 /// The manual requires the global OUT NAK before an OUT endpoint is disabled; this
@@ -495,14 +491,6 @@ int main(int argc, char** argv)
       argc, argv,
       {{"stop_in_progress", "a stopped IN request reports bytes the host did not take",
         FindingStopInProgress, "log.items[0].actual == 0U && log.items[1].actual == 0U"},
-       {"uac_streams",
-        "an isochronous IN request armed for a frame that has gone by is never ended",
-        FindingUacStreams, "packets == 3000U"},
-       {"uac_stops_without_frame_interrupt",
-        "the stream does not stop when the frame interrupt is off",
-        FindingUacStopsWithoutFrameInterrupt, "f.Stream(20) == 20U"},
-       {"isochronous_missed_frame", "a missed isochronous IN frame is never ended",
-        FindingIsochronousMissedFrame, "log.items[0].result == ErrorCode::FAILED"},
        {"out_disable_without_global_nak", "OUT endpoint disabled without global OUT NAK",
         FindingOutDisableWithoutGlobalNak, "disabled without global OUT NAK"}});
   if (handled >= 0) return handled;

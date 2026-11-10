@@ -113,10 +113,9 @@ behaviour yet and the case is not in the default run (see the next section).
 | 端点的停止序列进行中调用 Stop() / Stop() during the stop sequence of an endpoint | 全部 / all | `TestStopDuringInStop`（STM32） | 默认；非 DMA 的 OUT 端点是发现 / default; an OUT endpoint without DMA is a finding | 未运行 / not run |
 | 帧节拍：枚举后帧中断就是开的，需要帧节拍的类每个 SOF 收到一次 OnFrameTick，不需要的类收不到；帧中断不随配置变化，挂起关、恢复开 / frame ticks: the frame interrupt is on after enumeration, a class that needs frame ticks gets one OnFrameTick per SOF and one that does not gets none; the frame interrupt ignores the configuration, off at suspend, on at resume | UAC | `TestFrameTicks`, `TestUacFrameInterruptIgnoresConfiguration`, `TestSuspendResume` | 默认 / default | 默认 / default |
 | 核心对同一个 SOF 令牌把帧中断置位两次（STM32H723 实测，`Controller::sof_twice`）：每帧（高速时每微帧）仍只送一次 OnFrameTick，复位之后同一帧号的第一个 SOF 照常送出 / the core flags one SOF token twice (measured on an STM32H723, `Controller::sof_twice`): still one OnFrameTick per frame (microframe at high speed), and after a reset the first SOF with the same number is delivered | UAC | `TestFrameTicksWhenSofIsRaisedTwice` | 默认 / default | 不适用：ESP 后端没有这个处理，也没有硬件证据 / not applicable: the ESP backend has no such handling and there is no hardware evidence |
-| 等时 IN：每帧一个包、奇偶帧 / isochronous IN: one packet per frame, even and odd frames | UAC | `TestIsochronousFrames` | 默认 / default | 默认 / default |
-| 等时 IN：UAC1 麦克风 3000 帧出 3000 个包 / isochronous IN: the UAC1 microphone sends 3000 packets in 3000 frames | UAC | `TestUacStreams` | 默认 / default | 发现 / finding |
-| 等时 IN 错过了它的帧，以 FAILED 结束 / isochronous IN that missed its frame ends with FAILED | UAC | `TestIsochronousMissedFrame` | 默认 / default | 发现 / finding |
-| 帧中断被关掉时流停止 / the stream stops with the frame interrupt off | UAC | `TestUacStopsWithoutFrameInterrupt` | 默认 / default | 发现 / finding |
+| 等时 IN：每帧一个包、奇偶帧 / isochronous IN: one packet per frame, even and odd frames | UAC | `TestIsochronousFrames`, `TestUacStreams` | 默认 / default | 默认 / default |
+| 等时 IN 错过了它的帧，以 FAILED 结束 / isochronous IN that missed its frame ends with FAILED | UAC | `TestIsochronousMissedFrame` | 默认 / default | 默认 / default |
+| 帧中断被关掉时流停止 / the stream stops with the frame interrupt off | UAC | `TestUacStopsWithoutFrameInterrupt` | 默认 / default | 默认 / default |
 
 DFU 只用控制端点；等时 OUT 没有设备类使用，没有用例。
 DFU uses the control endpoint only; no class uses isochronous OUT and no case covers it.
@@ -137,10 +136,7 @@ returns 0 and the case belongs among the regular ones.
 | `test_stm32_usb_otg` | `dma_data_with_status_phase` | XFRC 表示编程的传输完成；STSPHSRX 表示主机进入了控制写的状态阶段 / XFRC reports the programmed transfer complete; STSPHSRX reports that the host entered the status stage of a control write | 两者在同一次中断里读到时，数据阶段的完成被当成"不是数据"丢掉 / read by the same interrupt, the completion of the data stage is dropped as "not data" |
 | `test_stm32_usb_otg` | `stop_leaves_out_endpoint_enabled` | 禁用 OUT 端点要等全局 OUT NAK 生效后写 EPDIS；传输长度寄存器只在端点禁用时改写 / an OUT endpoint is disabled with EPDIS once the global OUT NAK is in effect; the transfer size register is written only while the endpoint is disabled | 非 DMA 模式下、停止序列还在等全局 OUT NAK 时调用 Stop()：停止被直接确认，端点在硬件里仍使能，下一次会话在使能状态下改写该寄存器 / without DMA, Stop() while a stop sequence waits for the global OUT NAK: the stop is confirmed at once, the endpoint stays enabled in the hardware and the next session rewrites the register while it is enabled |
 | `test_esp_usb` | `stop_in_progress` | 完成里的长度是主机已取走的字节数 / the length in a completion is what the host took | 被停止的 IN 请求报告取进 FIFO 的字节数 / a stopped IN request reports the bytes fetched into the FIFO |
-| `test_esp_usb` | `uac_streams` | 等时 IN 请求安排的那一帧过去之后要由"未完成的等时 IN 传输"中断结束 / an isochronous IN request whose frame has gone by is ended through the incomplete isochronous IN interrupt | 这个中断没有打开也没有处理：主机没取走的请求一直挂着，UAC1 麦克风的流停住 / the interrupt is neither unmasked nor handled: a request the host did not take stays armed and the UAC1 microphone stream stalls |
-| `test_esp_usb` | `uac_stops_without_frame_interrupt` | 同上 / the same | 同上；关掉帧中断后流不能停下来 / the same; the stream cannot be stopped with the frame interrupt off |
 | `test_esp_usb` | `out_disable_without_global_nak` | 禁用 OUT 端点之前先进入全局 OUT NAK / the global OUT NAK comes before an OUT endpoint is disabled | 直接写 SNAK 和 EPDIS / writes SNAK and EPDIS directly |
-| `test_esp_usb` | `isochronous_missed_frame` | 错过帧的等时 IN 由"未完成的等时 IN 传输"中断报告，应用禁用端点 / an isochronous IN that missed its frame is reported by the incomplete isochronous IN interrupt and the application disables the endpoint | 没有打开也没有处理这个中断，请求一直挂着 / the interrupt is neither unmasked nor handled and the request stays armed |
 
 运行 / Run: `build/test/test_esp_usb --finding stop_in_progress`
 
