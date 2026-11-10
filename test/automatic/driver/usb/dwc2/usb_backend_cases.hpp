@@ -309,6 +309,16 @@ void TestControlSetupDuringOutData(const typename Fixture::ModeType& mode)
   TEST_ASSERT(std::memcmp(f.probe.output.data(), fresh.data(), 30) == 0);
   TEST_ASSERT(f.probe.abort_count == 1U);
   TEST_ASSERT(f.VendorRead(9, 64, data) == Result::OK && data.size() == 9U);
+
+  // 打断数据阶段的是另一种请求：应答的是新请求，不是旧请求 / A request of another kind
+  // interrupts the data stage: the new request is answered, not the old one
+  TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x41, 0x71, 0, 0, 100)) == Result::OK);
+  TEST_ASSERT(f.host.OutPacket(0, payload.data(), 64, 1) == Result::OK);
+  f.probe.response_size = 7;
+  TEST_ASSERT(f.host.ControlRead(Dwc2::Host::Setup(0xC1, 0x70, 5, 0, 64), data) ==
+              Result::OK);
+  TEST_ASSERT(data.size() == 7U && f.probe.last_value == 5U);
+  TEST_ASSERT(f.probe.abort_count == 2U);
 }
 
 /// 主机不取控制读的状态阶段就发下一个 SETUP：后面的控制读和控制写都正常。

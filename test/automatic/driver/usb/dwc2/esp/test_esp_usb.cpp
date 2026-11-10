@@ -435,6 +435,7 @@ void RunAll()
     TestControlRead<Probe>(mode);
     TestControlWrite<Probe>(mode);
     TestControlStall<Probe>(mode);
+    TestControlBackToBackSetups<Probe>(mode);
     TestControlSetupDuringOutData<Probe>(mode);
     TestControlSetupSkipsStatus<Probe>(mode);
     TestBulkIn<Probe>(mode);
@@ -470,7 +471,6 @@ void FindingStopInImmediateDisable() { TestStopIn<Probe>(IMMEDIATE); }
 void FindingStopInProgress() { TestStopIn<ExactProbe>(NORMAL); }
 void FindingStopInRace() { TestStopInRace<Probe>(NORMAL); }
 void FindingCloseKeepsEndpointActive() { TestReconfigure<ExactProbe>(NORMAL); }
-void FindingBackToBackSetups() { TestControlBackToBackSetups<Probe>(NORMAL); }
 void FindingSetupDuringInData() { TestControlSetupDuringInData<Probe>(NORMAL); }
 void FindingSetupAfterWriteData() { TestControlSetupAfterWriteData<Probe>(NORMAL); }
 
@@ -498,8 +498,6 @@ int main(int argc, char** argv)
         "EP0 OUT not enabled again after a stalled control write",
         FindingControlStallOutData,
         "f.VendorWrite(Bytes(4, 9)) == Result::OK && f.probe.data_count == 1U"},
-       {"back_to_back_setups", "the first of several back-to-back SETUPs is answered",
-        FindingBackToBackSetups, "f.probe.last_value == 3U && f.probe.requests == 1U"},
        {"setup_during_in_data",
         "EP0 IN is not stopped when a SETUP ends an IN data stage",
         FindingSetupDuringInData,
