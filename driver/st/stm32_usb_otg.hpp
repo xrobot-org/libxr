@@ -130,6 +130,7 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   void HandleInEndpoints();
   void HandleGlobalOutNak();
   void HandleSof();
+  void HandleIsoIncomplete();
   void ArmSetup();
   void DeliverSetup(const uint8_t* packet);
 
@@ -222,6 +223,7 @@ class STM32OtgEndpoint : public USB::Endpoint
   void OnDisabled();
   void OnGlobalOutNak();
   void OnFlushDone();
+  void OnIsoIncomplete();
   void PollStop();
   void ConfirmStop(bool in_isr);
   void ResetTransfer();
@@ -237,6 +239,9 @@ class STM32OtgEndpoint : public USB::Endpoint
   size_t hw_done_ = 0;        // IN: bytes written to the FIFO; OUT: bytes received.
   size_t stopped_actual_ = 0;
   StopStage stop_stage_ = StopStage::NONE;
+  // The running stop sequence disables an isochronous IN endpoint that missed its frame;
+  // it ends the request with FAILED instead of a confirmed stop.
+  bool iso_abort_ = false;
 };
 
 #if defined(USB_OTG_FS)
