@@ -250,7 +250,9 @@ class ESP32USBDevice : public USB::EndpointPool,
   /**
    * @brief 重新装填 EP0 setup 包接收计数 / Reload the EP0 setup-packet receive count
    */
-  void ReloadSetupPacketCount();
+  /// clear_nak 为 false 时 EP0 OUT 保持 NAK：只收 SETUP，不收 OUT 数据 / With clear_nak
+  /// false EP0 OUT keeps its NAK: it takes SETUP packets and no OUT data
+  void ReloadSetupPacketCount(bool clear_nak = true);
 
   /**
    * @brief 分发一批 USB 中断原因 / Dispatch one batch of USB interrupt causes

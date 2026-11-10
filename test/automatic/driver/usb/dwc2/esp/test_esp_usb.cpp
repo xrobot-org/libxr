@@ -435,10 +435,12 @@ void RunAll()
     TestControlRead<Probe>(mode);
     TestControlWrite<Probe>(mode);
     TestControlStall<Probe>(mode);
+    TestControlStallOutData<Probe>(mode);
     TestControlBackToBackSetups<Probe>(mode);
     TestControlSetupDuringInData<Probe>(mode);
     TestControlSetupDuringOutData<Probe>(mode);
     TestControlSetupSkipsStatus<Probe>(mode);
+    TestControlSetupAfterWriteData<Probe>(mode);
     TestBulkIn<Probe>(mode);
     TestBulkOut<Probe>(mode);
     TestInterrupt<Probe>(mode);
@@ -463,7 +465,6 @@ void RunAll()
 // Findings: behaviour the backend does not have yet (not in the default run)
 // ---------------------------------------------------------------------------
 
-void FindingControlStallOutData() { TestControlStallOutData<Probe>(NORMAL); }
 void FindingIsochronousFrames() { TestIsochronousFrames<Probe>(NORMAL); }
 void FindingIsochronousMissedFrame() { TestIsochronousMissedFrame<Probe>(NORMAL); }
 void FindingUacStreams() { TestUacStreams<Uac>(NORMAL); }
@@ -471,7 +472,6 @@ void FindingUacStreams() { TestUacStreams<Uac>(NORMAL); }
 void FindingStopInProgress() { TestStopIn<ExactProbe>(NORMAL); }
 void FindingStopInRace() { TestStopInRace<Probe>(NORMAL); }
 void FindingCloseKeepsEndpointActive() { TestReconfigure<ExactProbe>(NORMAL); }
-void FindingSetupAfterWriteData() { TestControlSetupAfterWriteData<Probe>(NORMAL); }
 
 /// 手册要求先进入全局 OUT NAK 再禁用 OUT 端点；这个后端直接写 EPDIS。
 /// The manual requires the global OUT NAK before an OUT endpoint is disabled; this
@@ -493,14 +493,7 @@ int main(int argc, char** argv)
 {
   const int handled = TestFindings::Run(
       argc, argv,
-      {{"control_stall_out_data",
-        "EP0 OUT not enabled again after a stalled control write",
-        FindingControlStallOutData,
-        "f.VendorWrite(Bytes(4, 9)) == Result::OK && f.probe.data_count == 1U"},
-       {"setup_after_write_data", "SETUP not received before a control write status",
-        FindingSetupAfterWriteData,
-        "f.VendorRead(9, 64, data) == Result::OK && data.size() == 9U"},
-       {"stop_in_progress", "a stopped IN request reports bytes the host did not take",
+      {{"stop_in_progress", "a stopped IN request reports bytes the host did not take",
         FindingStopInProgress, "log.items[0].actual == 0U && log.items[1].actual == 0U"},
        {"stop_in_race", "EPDIS written after the transfer completed during the stop",
         FindingStopInRace, "!f.probe.bulk_in->IsStopping()"},

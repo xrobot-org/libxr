@@ -545,10 +545,17 @@ void ESP32USBDevice::ResetEndpointHardwareState()
   }
 }
 
-void ESP32USBDevice::ReloadSetupPacketCount()
+void ESP32USBDevice::ReloadSetupPacketCount(bool clear_nak)
 {
   // EP0 setup 接收窗口在 reset/setup-done 之后都要重新装填 / Reload the EP0 setup receive
   // window after reset and after each setup-done transition.
+  // DMA 模式下核心只在 EP0 OUT 使能时把 SETUP 写进内存，而 SETUP 阶段结束、OUT 传输完成和
+  // 主机进入状态阶段都会让核心关掉它：每次都要重新使能。后面还有 OUT 数据要收时保持 NAK，
+  // 数据阶段开始时再清。
+  // With DMA the core stores a SETUP only while EP0 OUT is enabled, and the end of a
+  // SETUP stage, a completed OUT transfer and the host entering the status stage all make
+  // the core disable it: it is enabled again every time. While OUT data is still to come
+  // the NAK is kept, and the data stage clears it when it starts.
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   dev->doeptsiz0_reg.val = 0U;
   if (DmaEnabled())
@@ -561,7 +568,14 @@ void ESP32USBDevice::ReloadSetupPacketCount()
     REQUIRE(cache_sync_dma_buffer_result);
     dev->doepdma0_reg.dmaaddr =
         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(setup_packet_));
-    dev->doepctl0_reg.cnak = 1;
+    if (clear_nak)
+    {
+      dev->doepctl0_reg.cnak = 1;
+    }
+    else
+    {
+      dev->doepctl0_reg.snak = 1;
+    }
     dev->doepctl0_reg.epena = 1;
     if (endpoint_map_.out[0] != nullptr)
     {

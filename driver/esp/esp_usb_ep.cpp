@@ -618,6 +618,17 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
     }
   }
 
+  // EP0 OUT 收完一个数据包、或主机进入控制写的状态阶段之后被核心关掉：重新使能它来接收
+  // SETUP，保持 NAK。SETUP 阶段结束的情况在下面处理。
+  // EP0 OUT was disabled by the core after a data packet or when the host entered the
+  // status stage of a control write: enable it again for SETUP packets, with the NAK
+  // kept. The end of a SETUP stage is handled below.
+  if ((ep_num == 0U) && device_.DmaEnabled() && !intr.setup &&
+      (intr.xfercompl || intr.stsphsercvd) && (dev->doepctl0_reg.epena == 0U))
+  {
+    device_.ReloadSetupPacketCount(false);
+  }
+
   if (intr.setup)
   {
     if (device_.DmaEnabled())
@@ -669,9 +680,9 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
     // still enabled in the hardware with a packet in its FIFO, and the core stops it when
     // it handles the SETUP (StopHardware runs the disable and FIFO flush sequence).
 
-    if (device_.DmaEnabled() && !expect_out_data_stage)
+    if (device_.DmaEnabled())
     {
-      device_.ReloadSetupPacketCount();
+      device_.ReloadSetupPacketCount(!expect_out_data_stage);
     }
     device_.OnSetupPacket(in_isr, setup);
   }
@@ -911,10 +922,13 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
   {
     if (ep_num == 0U)
     {
-      dev->doeptsiz0_reg.val = 0U;
-      dev->doeptsiz0_reg.xfersize =
-          static_cast<uint32_t>((size == 0U) ? MaxPacketSize() : size);
-      dev->doeptsiz0_reg.pktcnt = pkt_count;
+      // 整字一次写入：EP0 OUT 此时可能正使能着等 SETUP，中间值不能落到寄存器里。
+      // Written as one word: EP0 OUT may be enabled for SETUP packets at this point, and
+      // no intermediate value may reach the register.
+      usb_dwc_doeptsiz0_reg_t tsiz = {};
+      tsiz.xfersize = static_cast<uint32_t>((size == 0U) ? MaxPacketSize() : size);
+      tsiz.pktcnt = pkt_count;
+      dev->doeptsiz0_reg.val = tsiz.val;
       if (device_.DmaEnabled() && (size > 0U))
       {
         dev->doepdma0_reg.dmaaddr =
