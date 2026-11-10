@@ -453,6 +453,7 @@ void RunAll()
     TestInterruptClearKeepsOthers(mode);
     TestStopStart(mode);
     TestFrameTicks<Probe>(mode);
+    TestIsochronousFrames<Probe>(mode);
     TestUacFrameInterruptIgnoresConfiguration<Uac>(mode);
     std::printf("esp usb: %s passed\n", mode.name);
     std::fflush(stdout);
@@ -463,11 +464,14 @@ void RunAll()
 // Findings: behaviour the backend does not have yet (not in the default run)
 // ---------------------------------------------------------------------------
 
-void FindingIsochronousFrames() { TestIsochronousFrames<Probe>(NORMAL); }
 void FindingIsochronousMissedFrame() { TestIsochronousMissedFrame<Probe>(NORMAL); }
-void FindingUacStreams() { TestUacStreams<Uac>(NORMAL); }
 
 void FindingStopInProgress() { TestStopIn<ExactProbe>(NORMAL); }
+void FindingUacStreams() { TestUacStreams<Uac>(NORMAL); }
+void FindingUacStopsWithoutFrameInterrupt()
+{
+  TestUacStopsWithoutFrameInterrupt<Uac>(NORMAL);
+}
 
 /// 手册要求先进入全局 OUT NAK 再禁用 OUT 端点；这个后端直接写 EPDIS。
 /// The manual requires the global OUT NAK before an OUT endpoint is disabled; this
@@ -491,12 +495,14 @@ int main(int argc, char** argv)
       argc, argv,
       {{"stop_in_progress", "a stopped IN request reports bytes the host did not take",
         FindingStopInProgress, "log.items[0].actual == 0U && log.items[1].actual == 0U"},
-       {"isochronous_frames", "isochronous IN is not scheduled for the next frame",
-        FindingIsochronousFrames, "in.resp == Resp::DATA && in.data.empty()"},
+       {"uac_streams",
+        "an isochronous IN request armed for a frame that has gone by is never ended",
+        FindingUacStreams, "packets == 3000U"},
+       {"uac_stops_without_frame_interrupt",
+        "the stream does not stop when the frame interrupt is off",
+        FindingUacStopsWithoutFrameInterrupt, "f.Stream(20) == 20U"},
        {"isochronous_missed_frame", "a missed isochronous IN frame is never ended",
         FindingIsochronousMissedFrame, "log.items[0].result == ErrorCode::FAILED"},
-       {"uac_streams", "UAC1 microphone sends in every other frame only",
-        FindingUacStreams, "packets == 3000U"},
        {"out_disable_without_global_nak", "OUT endpoint disabled without global OUT NAK",
         FindingOutDisableWithoutGlobalNak, "disabled without global OUT NAK"}});
   if (handled >= 0) return handled;

@@ -904,6 +904,12 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
   const uint16_t pkt_count = ESPUSBDetail::PacketCount(size, MaxPacketSize());
+  // 等时端点只在帧号奇偶与端点的奇偶位相同的帧里传输，每次传输都要设置：安排在下一帧。
+  // An isochronous endpoint transfers only in a frame whose parity equals the parity bit
+  // of the endpoint, which is programmed for each transfer: schedule it for the next
+  // frame.
+  const bool iso = GetConfig().type == Type::ISOCHRONOUS;
+  const bool odd_frame = (dev->dsts_reg.soffn & 1U) != 0U;
 
   if (GetDirection() == Direction::IN)
   {
@@ -928,6 +934,17 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
       {
         dev->in_eps[ep_num - 1U].diepdma_reg.dmaddr =
             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(transfer_hw_buffer_));
+      }
+      if (iso)
+      {
+        if (odd_frame)
+        {
+          dev->in_eps[ep_num - 1U].diepctl_reg.setd0pid = 1;
+        }
+        else
+        {
+          dev->in_eps[ep_num - 1U].diepctl_reg.setd1pid = 1;
+        }
       }
       ESPUSBDetail::StartEndpointTransfer(dev->in_eps[ep_num - 1U].diepctl_reg);
     }
@@ -969,6 +986,17 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
       {
         dev->out_eps[ep_num - 1U].doepdma_reg.dmaaddr =
             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(transfer_hw_buffer_));
+      }
+      if (iso)
+      {
+        if (odd_frame)
+        {
+          dev->out_eps[ep_num - 1U].doepctl_reg.setd0pid = 1;
+        }
+        else
+        {
+          dev->out_eps[ep_num - 1U].doepctl_reg.setd1pid = 1;
+        }
       }
       ESPUSBDetail::StartEndpointTransfer(dev->out_eps[ep_num - 1U].doepctl_reg);
     }
