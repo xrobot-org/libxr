@@ -326,6 +326,34 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
   )
   add_test(NAME stm32_usb_otg COMMAND test_stm32_usb_otg)
   set_tests_properties(stm32_usb_otg PROPERTIES TIMEOUT 120)
+
+  # ESP32-S2/S3 USB backend against the same controller model: the real backend source
+  # with fake ESP-IDF headers for an ESP32-S3. The backend stores a pointer in a 32-bit
+  # DMA address register, which a 64-bit compiler only accepts with -fpermissive; the
+  # register bit-fields are accessed as whole words, as ESP-IDF builds them; sdkconfig.h
+  # comes first, as it does through the platform headers on the target.
+  set(_esp_usb_backend
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp/esp_usb.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp/esp_usb_dev.cpp"
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp/esp_usb_ep.cpp"
+  )
+  set_source_files_properties(
+    ${_esp_usb_backend} PROPERTIES COMPILE_OPTIONS
+                                   "-fpermissive;-fstrict-volatile-bitfields;-include;sdkconfig.h"
+  )
+  add_executable(
+    test_esp_usb driver/usb/dwc2/esp/test_esp_usb.cpp driver/usb/dwc2/esp/fake_esp_idf.cpp
+                 ${_esp_usb_backend}
+  )
+  target_link_libraries(test_esp_usb PRIVATE xr)
+  target_include_directories(
+    test_esp_usb
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/dwc2"
+            "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/dwc2/esp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp"
+  )
+  add_test(NAME esp_usb COMMAND test_esp_usb)
+  set_tests_properties(esp_usb PROPERTIES TIMEOUT 120)
 endif()
 
 # cdc_test classes: lease return, DTR-triggered packet and the read re-arm.
