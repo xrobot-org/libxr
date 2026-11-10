@@ -10,8 +10,6 @@
 // completions, without DMA and with the core's internal DMA, on the core revisions the
 // backend distinguishes.
 
-#include <dlfcn.h>
-#include <execinfo.h>
 #include <unistd.h>
 
 #include <array>
@@ -190,6 +188,8 @@ struct Rig
 struct Probe : Rig
 {
   using ModeType = Mode;
+  static constexpr bool EXACT_IN_PROGRESS = true;
+  static constexpr bool CLOSE_DEACTIVATES = true;
   static bool HighSpeed(const Mode& mode) { return mode.high_speed; }
 
   ProbeClass probe;
@@ -343,11 +343,11 @@ void TestDisconnectReconnect(const Mode& mode)
 // UAC1 microphone
 // ---------------------------------------------------------------------------
 
-constexpr uint8_t UAC_STREAMING_INTERFACE = 1;
-
 /// UAC1 麦克风设备 / Device with the UAC1 microphone
 struct Uac : Rig
 {
+  using ModeType = Mode;
+
   UAC1MicrophoneQ<1, 16> mic;
   STM32USBDeviceOtgHS device;
 
@@ -363,6 +363,9 @@ struct Uac : Rig
     device.Start(false);
   }
   ~Uac() { device.Stop(false); }
+
+  /// 库外的代码关掉帧中断 / Code outside the library masks the frame interrupt
+  void MaskFrameInterrupt() { USB_OTG_HS->GINTMSK &= ~USB_OTG_GINTMSK_SOFM; }
 
   /// 每帧先发 SOF 再取一个等时 IN 包，返回非空包的个数 / Each frame: SOF, then one
   /// isochronous IN token; returns how many packets carried data
@@ -383,73 +386,6 @@ struct Uac : Rig
     return packets;
   }
 };
-
-/// 正常枚举后的 UAC1 麦克风连续出流：选中备用设置 1 后 3000 帧取到 3000 个 32 字节的包
-/// （16 kHz 单声道 16 bit，每毫秒 16 个采样），不是发一个包就停。在 STM32H723 板上测到
-/// 的也是连续出流。
-/// A UAC1 microphone streams continuously after a normal enumeration: with alternate
-/// setting 1 selected, 3000 frames give 3000 packets of 32 bytes (16 kHz mono 16 bit,
-/// 16 samples per millisecond) instead of one packet and silence. Continuous streaming
-/// is also what was measured on an STM32H723 board.
-void TestUacStreams(const Mode& mode)
-{
-  Uac f(mode);
-  TEST_ASSERT(f.host.Enumerate(7, 1) == Result::OK);
-  TEST_ASSERT(f.host.SetInterface(UAC_STREAMING_INTERFACE, 1) == Result::OK);
-  // 启动的头几帧：SET_INTERFACE 时提交的包没有被主机取走，以 FAILED 结束后重新开始
-  // Start-up: the packet submitted at SET_INTERFACE is not taken by the host, ends with
-  // FAILED and the stream starts over
-  (void)f.Stream(8);
-  const std::vector<uint8_t> pcm(32U * 16U, 0x5A);
-  unsigned packets = 0;
-  for (unsigned block = 0; block < 300; ++block)
-  {
-    (void)f.mic.WritePcm(pcm.data(), 32U * 10U);
-    packets += f.Stream(10);
-  }
-  TEST_ASSERT(packets == 3000U);
-  // 关流后不再出包，重新开流后继续 / No packets with the stream off, then on again
-  TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x01, 11, 0, 1, 0)) == Result::OK);
-  f.host.Sof(4);
-  TEST_ASSERT(f.host.StatusIn() == Result::OK);
-  TEST_ASSERT(f.Stream(10) == 0U);
-  TEST_ASSERT(f.host.SetInterface(UAC_STREAMING_INTERFACE, 1) == Result::OK);
-  (void)f.Stream(8);
-  TEST_ASSERT(f.Stream(100) == 100U);
-}
-
-/// 帧中断跟随配置：SET_CONFIGURATION 1 之后打开，SET_CONFIGURATION 0 之后关闭，再配置
-/// 又打开；在 STM32H723 板上测到的相同。帧中断被库外的代码关掉时，流在一个包之后停止。
-/// The frame interrupt follows the configuration: on after SET_CONFIGURATION 1, off
-/// after SET_CONFIGURATION 0 and on again when configured again, as measured on an
-/// STM32H723 board. With the frame interrupt turned off by code outside the library the
-/// stream stops after one packet.
-void TestUacFrameInterruptFollowsConfiguration(const Mode& mode)
-{
-  Uac f(mode);
-  f.host.Reset();
-  std::vector<uint8_t> data;
-  TEST_ASSERT(f.host.GetDescriptor(1, 0, 18, data) == Result::OK);
-  TEST_ASSERT(f.host.SetAddress(7) == Result::OK);
-  TEST_ASSERT(f.host.SetConfiguration(1) == Result::OK);
-  f.host.Sof(2);
-  TEST_ASSERT(!f.hw.SofMasked());
-  TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x00, 9, 0, 0, 0)) == Result::OK);
-  f.host.Sof(4);
-  TEST_ASSERT(f.host.StatusIn() == Result::OK);
-  f.host.Sof(2);
-  TEST_ASSERT(f.hw.SofMasked());
-  TEST_ASSERT(f.host.SetConfiguration(1) == Result::OK);
-  f.host.Sof(2);
-  TEST_ASSERT(!f.hw.SofMasked());
-
-  TEST_ASSERT(f.host.SetInterface(UAC_STREAMING_INTERFACE, 1) == Result::OK);
-  (void)f.Stream(8);
-  TEST_ASSERT(f.Stream(20) == 20U);
-  // 库外的代码关掉帧中断 / Code outside the library masks the frame interrupt
-  USB_OTG_HS->GINTMSK &= ~USB_OTG_GINTMSK_SOFM;
-  TEST_ASSERT(f.Stream(20) <= 1U);
-}
 
 // ---------------------------------------------------------------------------
 // The second controller instance
@@ -494,7 +430,11 @@ void RunAll()
       TestControlStall<Probe>(mode);
       TestControlStallOutData<Probe>(mode);
     }
-    TestControlSetupReplacesTransfer<Probe>(mode);
+    TestControlBackToBackSetups<Probe>(mode);
+    TestControlSetupDuringInData<Probe>(mode);
+    TestControlSetupDuringOutData<Probe>(mode);
+    TestControlSetupSkipsStatus<Probe>(mode);
+    if (!mode.dma) TestControlSetupAfterWriteData<Probe>(mode);
     TestBulkIn<Probe>(mode);
     TestBulkOut<Probe>(mode);
     TestInterrupt<Probe>(mode);
@@ -515,8 +455,9 @@ void RunAll()
   }
   for (const Mode& mode : FULL_SPEED_MODES)
   {
-    TestUacStreams(mode);
-    TestUacFrameInterruptFollowsConfiguration(mode);
+    TestUacStreams<Uac>(mode);
+    TestUacFrameInterruptFollowsConfiguration<Uac>(mode);
+    TestUacStopsWithoutFrameInterrupt<Uac>(mode);
   }
   TestFullSpeedCore();
 }
@@ -539,17 +480,7 @@ void FindingDmaStallOldCore() { TestControlStall<Probe>(DMA_281A); }
 /// DMA mode: after the data stage of a control write EP0 OUT stays disabled until the
 /// status stage completes. When the host gives up the status stage and sends the next
 /// SETUP, that SETUP cannot be stored and the new request is never answered.
-void FindingDmaSetupAfterWriteData()
-{
-  Probe f(DMA);
-  f.Up();
-  const auto payload = Bytes(10, 1);
-  TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x41, 0x71, 0, 0, 10)) == Result::OK);
-  TEST_ASSERT(f.host.OutPacket(0, payload.data(), payload.size(), 1) == Result::OK);
-  TEST_ASSERT(f.probe.data_count == 1U);
-  std::vector<uint8_t> data;
-  TEST_ASSERT(f.VendorRead(9, 64, data) == Result::OK && data.size() == 9U);
-}
+void FindingDmaSetupAfterWriteData() { TestControlSetupAfterWriteData<Probe>(DMA); }
 
 /// DMA 模式、3.00a 之后的核心：控制写的最后一个数据包的传输完成，和主机进入状态阶段的
 /// 通知（STSPHSRX）在同一次中断里被读到时，后端把这次完成当成"不是数据"丢掉，数据阶段
@@ -603,139 +534,18 @@ void FindingStopLeavesEndpointEnabled()
   TEST_ASSERT(f.host.Read(1, data) == Result::OK && data == bytes);
 }
 
-// ---------------------------------------------------------------------------
-// Trace of the frame interrupt mask (diagnostic, not a test)
-// ---------------------------------------------------------------------------
-
-/// `--trace-frame-interrupt [N [R [P]]]`：UAC1 麦克风从上电到取消配置的过程中，每次
-/// GINTMSK.SOFM 改变时打印阶段、新旧值和写寄存器的指令地址（相对可执行文件的偏移，可用
-/// addr2line 解析）。N 是 TXFFLSH 写 1 之后仍读到 1 的次数（默认 1）；R 为 1 时复位开始和
-/// 复位结束在同一次中断里被看到；P 为 1 时主机在开流之前先选中备用设置 1 再选回 0，
-/// 期间不取等时数据（主机音频驱动探测设备时的做法）。
-/// `--trace-frame-interrupt [N [R [P]]]`: for a UAC1 microphone from power-up to the
-/// deconfiguration, prints the phase, the old and new value and the address of the
-/// writing instruction (an offset into the executable, for addr2line) each time
-/// GINTMSK.SOFM changes. N is how many reads still see TXFFLSH set after it was written
-/// (1 by default); R = 1 makes the start and the end of the reset visible to the same
-/// interrupt; P = 1 makes the host select alternate setting 1 and then 0 again before it
-/// starts the stream, without taking isochronous data (what a host audio driver does
-/// when it probes the device).
-int TraceFrameInterrupt(unsigned busy_reads, bool reset_in_one_interrupt,
-                        bool probe_alternates)
-{
-  static const char* phase = "";
-  std::setvbuf(stdout, nullptr, _IONBF, 0);
-  Mode mode = SLAVE;
-  mode.flush_reads = busy_reads;
-  Uac f(mode, false);
-  f.hw.report_every_mask_write = true;
-  f.hw.on_sof_mask = [](uint32_t before, uint32_t after, uintptr_t pc)
-  {
-    // 写寄存器的指令和它的调用链 / The writing instruction and its callers
-    void* frames[48];
-    const int depth = backtrace(frames, 48);
-    int first = 0;
-    // 单步之后被打断的位置是下一条指令 / After the single step the interrupted
-    // location is the next instruction
-    while (first < depth && (reinterpret_cast<uintptr_t>(frames[first]) < pc ||
-                             reinterpret_cast<uintptr_t>(frames[first]) > pc + 16U))
-      ++first;
-    Dl_info info = {};
-    const uintptr_t base = dladdr(reinterpret_cast<void*>(pc), &info) != 0
-                               ? reinterpret_cast<uintptr_t>(info.dli_fbase)
-                               : 0U;
-    std::printf("  [%s] SOFM %u -> %u (GINTMSK 0x%08X -> 0x%08X) at", phase,
-                (before >> 3U) & 1U, (after >> 3U) & 1U, before, after);
-    if (first == depth) std::printf(" +0x%zx", static_cast<size_t>(pc - base));
-    for (int i = first; i < depth && i < first + 7; ++i)
-      std::printf(
-          " +0x%zx",
-          static_cast<size_t>(
-              (i == first ? pc : reinterpret_cast<uintptr_t>(frames[i]) - 1U) - base));
-    std::printf("\n");
-  };
-  auto step = [&](const char* name)
-  {
-    phase = name;
-    std::printf("%s: SOFM=%u\n", name, f.hw.SofMasked() ? 0U : 1U);
-  };
-  step("Init");
-  f.device.Init(false);
-  step("Start");
-  f.device.Start(false);
-  step("bus reset begins");
-  f.hw.HostResetBegin();
-  if (!reset_in_one_interrupt) f.Service();
-  step("bus reset ends (enumeration done)");
-  f.hw.HostResetEnd();
-  f.Service();
-  step("first SOFs");
-  f.host.Sof(3);
-  std::vector<uint8_t> data;
-  step("GET_DESCRIPTOR(device)");
-  TEST_ASSERT(f.host.GetDescriptor(1, 0, 18, data) == Result::OK);
-  step("SET_ADDRESS");
-  TEST_ASSERT(f.host.SetAddress(7) == Result::OK);
-  step("GET_DESCRIPTOR(configuration)");
-  TEST_ASSERT(f.host.GetDescriptor(2, 0, 255, data) == Result::OK);
-  step("SET_CONFIGURATION 1");
-  TEST_ASSERT(f.host.SetConfiguration(1) == Result::OK);
-  step("SOFs after SET_CONFIGURATION 1");
-  f.host.Sof(3);
-  auto set_interface = [&](uint8_t alternate)
-  {
-    TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x01, 11, alternate, 1, 0)) ==
-                Result::OK);
-    f.host.Sof(4);
-    const Result status = f.host.StatusIn();
-    if (status != Result::OK) f.hw.Dump(stdout);
-    TEST_ASSERT(status == Result::OK);
-  };
-  if (probe_alternates)
-  {
-    // 主机的音频驱动在探测时选中备用设置 1 再选回 0，期间不取等时数据 / A host audio
-    // driver selects alternate setting 1 and then 0 again while probing, without taking
-    // isochronous data
-    step("probe: SET_INTERFACE alternate 1");
-    set_interface(1);
-    f.host.Sof(3);
-    step("probe: SET_INTERFACE alternate 0");
-    set_interface(0);
-    step("SOFs after the probe");
-    f.host.Sof(3);
-  }
-  step("SET_INTERFACE alternate 1");
-  set_interface(1);
-  step("20 frames of isochronous IN");
-  const unsigned packets = f.Stream(20);
-  std::printf("  packets in 20 frames: %u\n", packets);
-  step("SET_INTERFACE alternate 0");
-  set_interface(0);
-  step("SET_CONFIGURATION 0");
-  TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x00, 9, 0, 0, 0)) == Result::OK);
-  f.host.Sof(6);
-  const Result deconfigured = f.host.StatusIn();
-  step("SOFs after SET_CONFIGURATION 0");
-  f.host.Sof(3);
-  std::printf("  SET_CONFIGURATION 0 status %s\n",
-              deconfigured == Result::OK ? "OK" : "not OK");
-  step("SET_CONFIGURATION 1 again");
-  const Result again = f.host.SetConfiguration(1);
-  f.host.Sof(3);
-  step("end");
-  std::printf("  SET_CONFIGURATION 1 status %s\n", again == Result::OK ? "OK" : "not OK");
-  f.check_on_exit = false;
-  return 0;
-}
-
 }  // namespace
 
 int main(int argc, char** argv)
 {
   if (argc >= 2 && std::strcmp(argv[1], "--trace-frame-interrupt") == 0)
-    return TraceFrameInterrupt(argc >= 3 ? static_cast<unsigned>(std::atoi(argv[2])) : 1U,
-                               argc >= 4 && std::atoi(argv[3]) != 0,
+  {
+    Mode mode = SLAVE;
+    mode.flush_reads = argc >= 3 ? static_cast<unsigned>(std::atoi(argv[2])) : 1U;
+    Uac f(mode, false);
+    return TraceFrameInterrupt(f, argc >= 4 && std::atoi(argv[3]) != 0,
                                argc >= 5 && std::atoi(argv[4]) != 0);
+  }
   const int handled = TestFindings::Run(
       argc, argv,
       {{"dma_stall_old_core", "EP0 OUT not enabled again after a stalled request",

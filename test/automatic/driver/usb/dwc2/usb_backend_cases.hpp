@@ -5,17 +5,26 @@
  * 每个用例是一个以夹具类型为参数的模板。夹具提供控制器模型 hw、主机脚本 host、探针设备类
  * probe、被测设备 device、Service()（运行中断处理）、Up()（枚举到配置 1）、
  * VendorRead/VendorWrite 和批量包长 bulk；用例只通过端点 API、DeviceCore 和总线事件
- * 驱动后端。每个夹具在析构时检查控制器模型没有记下违反手册的操作。
+ * 驱动后端。每个夹具在析构时检查控制器模型没有记下违反手册的操作。夹具的常量
+ * EXACT_IN_PROGRESS 为假时，被停止的 IN 请求报告的已发送长度不作检查；
+ * CLOSE_DEACTIVATES 为假时，只检查关闭的端点不再传数据，不检查它不应答。
  * Each case is a template over the fixture type. A fixture provides the controller model
  * hw, the host script host, the probe class probe, the device under test device,
  * Service() (runs the interrupt handler), Up() (enumerates to configuration 1),
  * VendorRead/VendorWrite and the bulk packet size bulk; a case drives the backend only
  * through the endpoint API, DeviceCore and bus events. Every fixture checks on
- * destruction that the controller model recorded no operation the manual forbids.
+ * destruction that the controller model recorded no operation the manual forbids. With
+ * the fixture constant EXACT_IN_PROGRESS false, the sent length a stopped IN request
+ * reports is not checked; with CLOSE_DEACTIVATES false, a closed endpoint is only
+ * checked to move no data, not to stay silent.
  */
 
 #pragma once
 
+#include <dlfcn.h>
+#include <execinfo.h>
+
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -222,23 +231,16 @@ void TestControlStallOutData(const typename Fixture::ModeType& mode)
   TEST_ASSERT(f.VendorRead(10, 64, data) == Result::OK && data.size() == 10U);
 }
 
-/// 背靠背的 SETUP：主机连发几个 SETUP，中间没有 IN/OUT 令牌，设备应答最后一个。再检查
-/// SETUP 打断多包数据阶段、打断 OUT 数据阶段和打断未取走的状态阶段：旧传输结束
-/// （设备类收到一次 abort），新传输完整。
+/// 背靠背的 SETUP：主机连发几个 SETUP，中间没有 IN/OUT 令牌，设备应答最后一个。三个
+/// SETUP 在同一次中断里被看到，和每个 SETUP 之后都进了中断，两种情况都检查。
 /// Back-to-back SETUPs: the host sends several SETUPs with no IN or OUT token in between
-/// and the device answers the last one. Then a SETUP interrupts a multi-packet data
-/// stage, an OUT data stage and a status stage that was not taken: the old transfer
-/// ends (one abort for the class) and the new one is complete.
+/// and the device answers the last one, both when one interrupt sees all three and when
+/// an interrupt follows each of them.
 template <typename Fixture>
-void TestControlSetupReplacesTransfer(const typename Fixture::ModeType& mode)
+void TestControlBackToBackSetups(const typename Fixture::ModeType& mode)
 {
   Fixture f(mode);
   f.Up();
-  for (size_t i = 0; i < f.probe.input.size(); ++i)
-    f.probe.input[i] = static_cast<uint8_t>(i + 1U);
-  std::vector<uint8_t> data;
-
-  // 三个 SETUP 在同一次中断里被看到 / Three SETUPs seen by one interrupt
   f.host.auto_service = false;
   f.probe.response_size = 5;
   const auto first = Dwc2::Host::Setup(0xC1, 0x70, 1, 0, 64);
@@ -251,42 +253,98 @@ void TestControlSetupReplacesTransfer(const typename Fixture::ModeType& mode)
   uint8_t pid = 1;
   std::vector<uint8_t> packet;
   TEST_ASSERT(f.host.InPacket(0, packet, &pid) == Result::OK && packet.size() == 5U);
+  TEST_ASSERT(f.probe.last_value == 3U && f.probe.requests == 1U);
   TEST_ASSERT(f.host.StatusOut() == Result::OK);
   TEST_ASSERT(f.probe.complete_count == 1U);
 
-  // 每个 SETUP 之后都进了中断 / An interrupt after every SETUP
+  const auto fourth = Dwc2::Host::Setup(0xC1, 0x70, 4, 0, 5);
   TEST_ASSERT(f.host.SendSetup(first) == Result::OK);
-  TEST_ASSERT(f.host.SendSetup(third) == Result::OK);
+  TEST_ASSERT(f.host.SendSetup(fourth) == Result::OK);
   pid = 1;
   TEST_ASSERT(f.host.InPacket(0, packet, &pid) == Result::OK && packet.size() == 5U);
+  TEST_ASSERT(f.probe.last_value == 4U && f.probe.requests == 2U);
   TEST_ASSERT(f.host.StatusOut() == Result::OK);
   TEST_ASSERT(f.probe.complete_count == 2U);
+}
 
-  // SETUP 打断多包数据阶段 / A SETUP interrupts a multi-packet data stage
-  const unsigned aborts = f.probe.abort_count;
+/// SETUP 打断多包的 IN 数据阶段：旧传输结束（设备类收到一次 abort），新请求的数据完整，
+/// 旧请求的包不会再出现。
+/// A SETUP interrupts a multi-packet IN data stage: the old transfer ends (one abort for
+/// the class), the data of the new request is complete and no packet of the old request
+/// shows up again.
+template <typename Fixture>
+void TestControlSetupDuringInData(const typename Fixture::ModeType& mode)
+{
+  Fixture f(mode);
+  f.Up();
+  for (size_t i = 0; i < f.probe.input.size(); ++i)
+    f.probe.input[i] = static_cast<uint8_t>(i + 1U);
+  std::vector<uint8_t> data;
+  std::vector<uint8_t> packet;
   f.probe.response_size = 200;
   TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0xC1, 0x70, 0, 0, 255)) == Result::OK);
-  pid = 1;
+  uint8_t pid = 1;
   TEST_ASSERT(f.host.InPacket(0, packet, &pid) == Result::OK && packet.size() == 64U);
+  for (size_t i = 0; i < f.probe.input.size(); ++i)
+    f.probe.input[i] = static_cast<uint8_t>(0x80U + i);
   TEST_ASSERT(f.VendorRead(70, 255, data) == Result::OK && data.size() == 70U);
   TEST_ASSERT(std::memcmp(data.data(), f.probe.input.data(), 70) == 0);
-  TEST_ASSERT(f.probe.abort_count == aborts + 1U && f.probe.complete_count == 3U);
+  TEST_ASSERT(f.probe.abort_count == 1U && f.probe.complete_count == 1U);
+  TEST_ASSERT(f.VendorWrite(Bytes(3, 5)) == Result::OK && f.probe.received == 3U);
+}
 
-  // SETUP 打断 OUT 数据阶段 / A SETUP interrupts an OUT data stage
+/// SETUP 打断 OUT 数据阶段：已经收到的第一个包被丢弃，新请求的数据完整交给设备类一次。
+/// A SETUP interrupts an OUT data stage: the first packet already received is dropped
+/// and the data of the new request reaches the class once, complete.
+template <typename Fixture>
+void TestControlSetupDuringOutData(const typename Fixture::ModeType& mode)
+{
+  Fixture f(mode);
+  f.Up();
+  std::vector<uint8_t> data;
   const auto payload = Bytes(100, 3);
   TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x41, 0x71, 0, 0, 100)) == Result::OK);
   TEST_ASSERT(f.host.OutPacket(0, payload.data(), 64, 1) == Result::OK);
-  TEST_ASSERT(f.VendorWrite(Bytes(30, 5)) == Result::OK);
+  const auto fresh = Bytes(30, 5);
+  TEST_ASSERT(f.VendorWrite(fresh) == Result::OK);
   TEST_ASSERT(f.probe.data_count == 1U && f.probe.received == 30U);
-  TEST_ASSERT(f.probe.abort_count == aborts + 2U);
+  TEST_ASSERT(std::memcmp(f.probe.output.data(), fresh.data(), 30) == 0);
+  TEST_ASSERT(f.probe.abort_count == 1U);
+  TEST_ASSERT(f.VendorRead(9, 64, data) == Result::OK && data.size() == 9U);
+}
 
-  // 主机不取状态阶段就发下一个 SETUP / The host skips the status stage
+/// 主机不取控制读的状态阶段就发下一个 SETUP：后面的控制读和控制写都正常。
+/// The host sends the next SETUP without taking the status stage of a control read: the
+/// control read and the control write that follow work.
+template <typename Fixture>
+void TestControlSetupSkipsStatus(const typename Fixture::ModeType& mode)
+{
+  Fixture f(mode);
+  f.Up();
+  std::vector<uint8_t> data;
+  std::vector<uint8_t> packet;
   f.probe.response_size = 8;
   TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0xC1, 0x70, 0, 0, 8)) == Result::OK);
-  pid = 1;
+  uint8_t pid = 1;
   TEST_ASSERT(f.host.InPacket(0, packet, &pid) == Result::OK && packet.size() == 8U);
   TEST_ASSERT(f.VendorRead(9, 64, data) == Result::OK && data.size() == 9U);
   TEST_ASSERT(f.VendorWrite(Bytes(3, 5)) == Result::OK && f.probe.received == 3U);
+}
+
+/// 主机不取控制写的状态阶段就发下一个 SETUP：数据阶段已经交给设备类，新请求照常处理。
+/// The host sends the next SETUP without taking the status stage of a control write: the
+/// data stage was already handed to the class and the new request is handled normally.
+template <typename Fixture>
+void TestControlSetupAfterWriteData(const typename Fixture::ModeType& mode)
+{
+  Fixture f(mode);
+  f.Up();
+  const auto payload = Bytes(10, 1);
+  TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x41, 0x71, 0, 0, 10)) == Result::OK);
+  TEST_ASSERT(f.host.OutPacket(0, payload.data(), payload.size(), 1) == Result::OK);
+  TEST_ASSERT(f.probe.data_count == 1U);
+  std::vector<uint8_t> data;
+  TEST_ASSERT(f.VendorRead(9, 64, data) == Result::OK && data.size() == 9U);
 }
 
 // ---------------------------------------------------------------------------
@@ -597,7 +655,9 @@ void TestStopIn(const typename Fixture::ModeType& mode)
   f.host.Sof(3);
   TEST_ASSERT(!f.probe.bulk_in->IsStopping());
   TEST_ASSERT(log.items.size() == 2U && log.Count(ErrorCode::ABORTED) == 2U);
-  TEST_ASSERT(log.items[0].actual == 0U && log.items[1].actual == 0U);
+  // 主机一个包也没取走 / The host took no packet
+  if (Fixture::EXACT_IN_PROGRESS)
+    TEST_ASSERT(log.items[0].actual == 0U && log.items[1].actual == 0U);
   TEST_ASSERT(f.hw.TxFifoWords(1) == 0U);
   TEST_ASSERT(f.hw.HostIn(7, 1).resp == Resp::NAK);
   f.Service();
@@ -617,7 +677,8 @@ void TestStopIn(const typename Fixture::ModeType& mode)
   f.probe.bulk_in->Flush(false);
   f.host.Sof(3);
   TEST_ASSERT(log.items.size() == 4U && log.items[3].result == ErrorCode::ABORTED);
-  TEST_ASSERT(log.items[3].actual <= packet && log.items[3].actual % packet == 0U);
+  if (Fixture::EXACT_IN_PROGRESS)
+    TEST_ASSERT(log.items[3].actual <= packet && log.items[3].actual % packet == 0U);
   TEST_ASSERT(f.hw.TxFifoWords(1) == 0U);
   // 主机的数据翻转已经前进了一个包；下一次传输从设备当前的翻转继续 / The host's toggle
   // advanced by one packet and the next transfer continues from the device's toggle
@@ -754,9 +815,18 @@ void TestReconfigure(const typename Fixture::ModeType& mode)
               f.probe.bulk_out_log.Count(ErrorCode::ABORTED) == 1U);
   TEST_ASSERT(f.probe.int_in_log.Count(ErrorCode::ABORTED) == 1U);
   TEST_ASSERT(f.probe.int_out_log.Count(ErrorCode::ABORTED) == 1U);
-  TEST_ASSERT(f.hw.HostIn(7, 1).resp == Resp::TIMEOUT);
-  TEST_ASSERT(f.hw.HostOut(7, 1, 0, nullptr, 0) == Resp::TIMEOUT);
-  TEST_ASSERT(f.hw.HostIn(7, 2).resp == Resp::TIMEOUT);
+  // 取消配置后的端点不再应答 / A deconfigured endpoint no longer answers
+  if (Fixture::CLOSE_DEACTIVATES)
+  {
+    TEST_ASSERT(f.hw.HostIn(7, 1).resp == Resp::TIMEOUT);
+    TEST_ASSERT(f.hw.HostOut(7, 1, 0, nullptr, 0) == Resp::TIMEOUT);
+    TEST_ASSERT(f.hw.HostIn(7, 2).resp == Resp::TIMEOUT);
+  }
+  else
+  {
+    TEST_ASSERT(f.hw.HostIn(7, 1).resp != Resp::DATA);
+    TEST_ASSERT(f.hw.HostOut(7, 1, 0, nullptr, 0) != Resp::ACK);
+  }
   TEST_ASSERT(f.hw.SofMasked());
   TEST_ASSERT(f.host.ControlRead(Dwc2::Host::Setup(0x80, 8, 0, 0, 1), data) ==
               Result::OK);
@@ -996,6 +1066,218 @@ void TestIsochronousMissedFrame(const typename Fixture::ModeType& mode)
   in = f.hw.HostIn(7, 3);
   f.Service();
   TEST_ASSERT(in.resp == Resp::DATA && in.data == bytes);
+}
+
+// ---------------------------------------------------------------------------
+// UAC1 microphone
+// ---------------------------------------------------------------------------
+
+/// UAC1 麦克风的流接口号（控制接口是 0）/ Streaming interface of the UAC1 microphone
+/// (the control interface is 0)
+inline constexpr uint8_t UAC_STREAMING_INTERFACE = 1;
+
+/// 正常枚举后的 UAC1 麦克风连续出流：选中备用设置 1 后 3000 帧取到 3000 个 32 字节的包
+/// （16 kHz 单声道 16 bit，每毫秒 16 个采样），不是发一个包就停。在 STM32H723 板上测到
+/// 的也是连续出流。
+/// A UAC1 microphone streams continuously after a normal enumeration: with alternate
+/// setting 1 selected, 3000 frames give 3000 packets of 32 bytes (16 kHz mono 16 bit,
+/// 16 samples per millisecond) instead of one packet and silence. Continuous streaming
+/// is also what was measured on an STM32H723 board.
+template <typename UacFixture>
+void TestUacStreams(const typename UacFixture::ModeType& mode)
+{
+  UacFixture f(mode);
+  TEST_ASSERT(f.host.Enumerate(7, 1) == Result::OK);
+  TEST_ASSERT(f.host.SetInterface(UAC_STREAMING_INTERFACE, 1) == Result::OK);
+  // 启动的头几帧：SET_INTERFACE 时提交的包没有被主机取走，以 FAILED 结束后重新开始
+  // Start-up: the packet submitted at SET_INTERFACE is not taken by the host, ends with
+  // FAILED and the stream starts over
+  (void)f.Stream(8);
+  const std::vector<uint8_t> pcm(32U * 16U, 0x5A);
+  unsigned packets = 0;
+  for (unsigned block = 0; block < 300; ++block)
+  {
+    (void)f.mic.WritePcm(pcm.data(), 32U * 10U);
+    packets += f.Stream(10);
+  }
+  if (packets != 3000U)
+    std::fprintf(stderr, "UAC1 microphone: %u packets in 3000 frames\n", packets);
+  TEST_ASSERT(packets == 3000U);
+  // 关流后不再出包，重新开流后继续 / No packets with the stream off, then on again
+  TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x01, 11, 0, 1, 0)) == Result::OK);
+  f.host.Sof(4);
+  TEST_ASSERT(f.host.StatusIn() == Result::OK);
+  TEST_ASSERT(f.Stream(10) == 0U);
+  TEST_ASSERT(f.host.SetInterface(UAC_STREAMING_INTERFACE, 1) == Result::OK);
+  (void)f.Stream(8);
+  TEST_ASSERT(f.Stream(100) == 100U);
+}
+
+/// 帧中断跟随配置：SET_CONFIGURATION 1 之后打开，SET_CONFIGURATION 0 之后关闭，再配置
+/// 又打开；在 STM32H723 板上测到的相同。
+/// The frame interrupt follows the configuration: on after SET_CONFIGURATION 1, off
+/// after SET_CONFIGURATION 0 and on again when configured again, as measured on an
+/// STM32H723 board.
+template <typename UacFixture>
+void TestUacFrameInterruptFollowsConfiguration(const typename UacFixture::ModeType& mode)
+{
+  UacFixture f(mode);
+  f.host.Reset();
+  std::vector<uint8_t> data;
+  TEST_ASSERT(f.host.GetDescriptor(1, 0, 18, data) == Result::OK);
+  TEST_ASSERT(f.host.SetAddress(7) == Result::OK);
+  TEST_ASSERT(f.host.SetConfiguration(1) == Result::OK);
+  f.host.Sof(2);
+  TEST_ASSERT(!f.hw.SofMasked());
+  TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x00, 9, 0, 0, 0)) == Result::OK);
+  f.host.Sof(4);
+  TEST_ASSERT(f.host.StatusIn() == Result::OK);
+  f.host.Sof(2);
+  TEST_ASSERT(f.hw.SofMasked());
+  TEST_ASSERT(f.host.SetConfiguration(1) == Result::OK);
+  f.host.Sof(2);
+  TEST_ASSERT(!f.hw.SofMasked());
+}
+
+/// 帧中断被库外的代码关掉时，流在一个包之后停止（数据来自每帧的节拍）；在 STM32H723
+/// 板上测到的相同。
+/// With the frame interrupt turned off by code outside the library the stream stops
+/// after one packet (the data comes from the per-frame tick), as measured on an
+/// STM32H723 board.
+template <typename UacFixture>
+void TestUacStopsWithoutFrameInterrupt(const typename UacFixture::ModeType& mode)
+{
+  UacFixture f(mode);
+  TEST_ASSERT(f.host.Enumerate(7, 1) == Result::OK);
+  TEST_ASSERT(f.host.SetInterface(UAC_STREAMING_INTERFACE, 1) == Result::OK);
+  (void)f.Stream(8);
+  TEST_ASSERT(f.Stream(20) == 20U);
+  f.MaskFrameInterrupt();
+  TEST_ASSERT(f.Stream(20) <= 1U);
+}
+
+// ---------------------------------------------------------------------------
+// Trace of the frame interrupt mask (diagnostic, not a test)
+// ---------------------------------------------------------------------------
+
+/// 测试程序的 `--trace-frame-interrupt [N [R [P]]]`：UAC1 麦克风从上电到取消配置的过程
+/// 中，每次写 GINTMSK 时打印阶段、SOFM 的新旧值和写寄存器的指令及其调用者的地址（相对
+/// 可执行文件的偏移，可用 addr2line 解析）。N 是冲刷位写 1 之后仍读到 1 的次数（默认
+/// 1）；R 为 1 时复位开始和复位结束在同一次中断里被看到；P 为 1 时主机在开流之前先选中
+/// 备用设置 1 再选回 0，期间不取等时数据（主机音频驱动探测设备时的做法）。夹具尚未
+/// Init/Start。
+/// `--trace-frame-interrupt [N [R [P]]]` of a test program: for a UAC1 microphone from
+/// power-up to the deconfiguration, prints the phase, the old and new value of SOFM and
+/// the addresses of the writing instruction and its callers (offsets into the
+/// executable, for addr2line) each time GINTMSK is written. N is how many reads still
+/// see a flush bit set after it was written (1 by default); R = 1 makes the start and
+/// the end of the reset visible to the same interrupt; P = 1 makes the host select
+/// alternate setting 1 and then 0 again before it starts the stream, without taking
+/// isochronous data (what a host audio driver does when it probes the device). The
+/// fixture is not yet initialized or started.
+template <typename UacFixture>
+int TraceFrameInterrupt(UacFixture& f, bool reset_in_one_interrupt, bool probe_alternates)
+{
+  static const char* phase = "";
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+  f.hw.report_every_mask_write = true;
+  f.hw.on_sof_mask = [](uint32_t before, uint32_t after, uintptr_t pc)
+  {
+    // 写寄存器的指令和它的调用链 / The writing instruction and its callers
+    void* frames[48];
+    const int depth = backtrace(frames, 48);
+    int first = 0;
+    // 单步之后被打断的位置是下一条指令 / After the single step the interrupted
+    // location is the next instruction
+    while (first < depth && (reinterpret_cast<uintptr_t>(frames[first]) < pc ||
+                             reinterpret_cast<uintptr_t>(frames[first]) > pc + 16U))
+      ++first;
+    Dl_info info = {};
+    const uintptr_t base = dladdr(reinterpret_cast<void*>(pc), &info) != 0
+                               ? reinterpret_cast<uintptr_t>(info.dli_fbase)
+                               : 0U;
+    std::printf("  [%s] SOFM %u -> %u (GINTMSK 0x%08X -> 0x%08X) at", phase,
+                (before >> 3U) & 1U, (after >> 3U) & 1U, before, after);
+    if (first == depth) std::printf(" +0x%zx", static_cast<size_t>(pc - base));
+    for (int i = first; i < depth && i < first + 7; ++i)
+      std::printf(
+          " +0x%zx",
+          static_cast<size_t>(
+              (i == first ? pc : reinterpret_cast<uintptr_t>(frames[i]) - 1U) - base));
+    std::printf("\n");
+  };
+  auto step = [&](const char* name)
+  {
+    phase = name;
+    std::printf("%s: SOFM=%u\n", name, f.hw.SofMasked() ? 0U : 1U);
+  };
+  step("Init");
+  f.device.Init(false);
+  step("Start");
+  f.device.Start(false);
+  step("bus reset begins");
+  f.hw.HostResetBegin();
+  if (!reset_in_one_interrupt) f.Service();
+  step("bus reset ends (enumeration done)");
+  f.hw.HostResetEnd();
+  f.Service();
+  step("first SOFs");
+  f.host.Sof(3);
+  std::vector<uint8_t> data;
+  step("GET_DESCRIPTOR(device)");
+  TEST_ASSERT(f.host.GetDescriptor(1, 0, 18, data) == Result::OK);
+  step("SET_ADDRESS");
+  TEST_ASSERT(f.host.SetAddress(7) == Result::OK);
+  step("GET_DESCRIPTOR(configuration)");
+  TEST_ASSERT(f.host.GetDescriptor(2, 0, 255, data) == Result::OK);
+  step("SET_CONFIGURATION 1");
+  TEST_ASSERT(f.host.SetConfiguration(1) == Result::OK);
+  step("SOFs after SET_CONFIGURATION 1");
+  f.host.Sof(3);
+  auto set_interface = [&](uint8_t alternate)
+  {
+    TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x01, 11, alternate, 1, 0)) ==
+                Result::OK);
+    f.host.Sof(4);
+    const Result status = f.host.StatusIn();
+    if (status != Result::OK) f.hw.Dump(stdout);
+    TEST_ASSERT(status == Result::OK);
+  };
+  if (probe_alternates)
+  {
+    // 主机的音频驱动在探测时选中备用设置 1 再选回 0，期间不取等时数据 / A host audio
+    // driver selects alternate setting 1 and then 0 again while probing, without taking
+    // isochronous data
+    step("probe: SET_INTERFACE alternate 1");
+    set_interface(1);
+    f.host.Sof(3);
+    step("probe: SET_INTERFACE alternate 0");
+    set_interface(0);
+    step("SOFs after the probe");
+    f.host.Sof(3);
+  }
+  step("SET_INTERFACE alternate 1");
+  set_interface(1);
+  step("20 frames of isochronous IN");
+  const unsigned packets = f.Stream(20);
+  std::printf("  packets in 20 frames: %u\n", packets);
+  step("SET_INTERFACE alternate 0");
+  set_interface(0);
+  step("SET_CONFIGURATION 0");
+  TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x00, 9, 0, 0, 0)) == Result::OK);
+  f.host.Sof(6);
+  const Result deconfigured = f.host.StatusIn();
+  step("SOFs after SET_CONFIGURATION 0");
+  f.host.Sof(3);
+  std::printf("  SET_CONFIGURATION 0 status %s\n",
+              deconfigured == Result::OK ? "OK" : "not OK");
+  step("SET_CONFIGURATION 1 again");
+  const Result again = f.host.SetConfiguration(1);
+  f.host.Sof(3);
+  step("end");
+  std::printf("  SET_CONFIGURATION 1 status %s\n", again == Result::OK ? "OK" : "not OK");
+  f.check_on_exit = false;
+  return 0;
 }
 
 }  // namespace UsbBackendCases

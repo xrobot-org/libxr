@@ -187,6 +187,8 @@ class Controller : public MmioTrap::Device
     frame_ = 0;
     violations.clear();
     notes.clear();
+    tolerated.clear();
+    before_read = nullptr;
     before_write = nullptr;
     after_write = nullptr;
     on_sof_mask = nullptr;
@@ -217,6 +219,12 @@ class Controller : public MmioTrap::Device
 
   std::vector<std::string> violations;  ///< 违反手册"必须"的操作 / Mandatory rules broken
   std::vector<std::string> notes;       ///< 值得记录但不判错 / Recorded, not judged
+  /// 含有这些文字的违反只记进 notes：已经作为"发现"单独列出的偏差 / Violations with
+  /// one of these texts only go to notes: deviations already listed as a finding
+  std::vector<std::string> tolerated;
+  /// 读寄存器（包括读改写指令的读）之前调用，不自动清掉 / Called before a register
+  /// is read (the read of a read-modify-write included); stays installed
+  std::function<void(uint32_t offset)> before_read;
   /// 写生效之前/之后调用一次（一次性钩子自己清掉）/ Called before / after a write lands
   std::function<void(uint32_t offset, uint32_t value)> before_write;
   std::function<void(uint32_t offset, uint32_t value)> after_write;
@@ -228,12 +236,12 @@ class Controller : public MmioTrap::Device
   /// event is written here
   FILE* log = nullptr;
 
-  uint32_t Peek(uint32_t offset) { return MmioPeek(offset); }
+  uint32_t Peek(uint32_t offset) { return Value(offset); }
   /// 寄存器现状，诊断用 / The register state, for diagnosis
   void Dump(FILE* file)
   {
     std::fprintf(file, "GINTSTS %08X GINTMSK %08X GAHBCFG %08X GRSTCTL %08X DCTL %08X\n",
-                 Gintsts(), gintmsk_, gahbcfg_, MmioPeek(GRSTCTL), MmioPeek(DCTL));
+                 Gintsts(), gintmsk_, gahbcfg_, Value(GRSTCTL), Value(DCTL));
     std::fprintf(file, "DAINT %08X DAINTMSK %08X DIEPMSK %08X DOEPMSK %08X rx %zu\n",
                  Daint(), daintmsk_, diepmsk_, doepmsk_, rx_.size());
     for (uint8_t i = 0; i < config_.endpoints; ++i)
@@ -506,6 +514,19 @@ class Controller : public MmioTrap::Device
 
   uint32_t MmioPeek(uint32_t offset) override
   {
+    if (before_read) before_read(offset);
+    return Value(offset);
+  }
+
+  void MmioAfterRead(uint32_t offset) override
+  {
+    Elapse(false);
+    AfterRead(offset);
+  }
+
+ private:
+  uint32_t Value(uint32_t offset)
+  {
     if (offset >= FIFO)
     {
       if (rx_.empty()) return 0U;
@@ -603,9 +624,8 @@ class Controller : public MmioTrap::Device
     return other_[offset / 4U];
   }
 
-  void MmioAfterRead(uint32_t offset) override
+  void AfterRead(uint32_t offset)
   {
-    Elapse(false);
     if (offset >= FIFO)
     {
       if (rx_.empty() || rx_.front().status)
@@ -708,6 +728,14 @@ class Controller : public MmioTrap::Device
     va_start(arguments, format);
     std::vsnprintf(text, sizeof(text), format, arguments);
     va_end(arguments);
+    for (const auto& known : tolerated)
+    {
+      if (std::strstr(text, known.c_str()) != nullptr)
+      {
+        notes.emplace_back(text);
+        return;
+      }
+    }
     violations.emplace_back(text);
   }
   void Log(const char* format, ...) __attribute__((format(printf, 2, 3)))

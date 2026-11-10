@@ -113,6 +113,8 @@ class ProbeClass : public DeviceClass
   std::array<uint8_t, 512> input{}, output{};
   size_t response_size = 0, received = 0;
   unsigned data_count = 0, complete_count = 0, abort_count = 0;
+  unsigned requests = 0;    ///< 交给本类的控制请求数 / Control requests handed over
+  uint16_t last_value = 0;  ///< 最近一个请求的 wValue / wValue of the latest request
   unsigned binds = 0, unbinds = 0, resets = 0;
   std::vector<uint8_t> resumed;  ///< ENDPOINT_RESUMED 的端点地址 / Endpoint addresses
   std::vector<BusTime> ticks;
@@ -175,6 +177,8 @@ class ProbeClass : public DeviceClass
   ErrorCode OnControlRequest(bool, const SetupPacket& setup,
                              ControlTransferResult& result) override
   {
+    ++requests;
+    last_value = setup.wValue;
     if (setup.bRequest == 0x70 && (setup.bmRequestType & 0x80U) != 0U)
     {
       result.InData() = {input.data(), response_size};
