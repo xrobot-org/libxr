@@ -646,7 +646,8 @@ void TestBulkInMultiPacket()
   TEST_ASSERT(f.device.Get(in, Endpoint::Direction::IN, Endpoint::EPNumber::EP1) ==
               ErrorCode::OK);
   Done done;
-  in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64}, false);
+  TEST_ASSERT(in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64}, false) ==
+              ErrorCode::OK);
   in->SetOnComplete(done.CallbackFor());
   const auto bytes = Bytes(100, 0x11);
   TEST_ASSERT(SubmitBytes(in, bytes) == ErrorCode::OK);
@@ -668,7 +669,8 @@ void TestBulkOutMultiPacket()
   TEST_ASSERT(f.device.Get(out, Endpoint::Direction::OUT, Endpoint::EPNumber::EP1) ==
               ErrorCode::OK);
   Done done;
-  out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64}, false);
+  TEST_ASSERT(out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64},
+                             false) == ErrorCode::OK);
   out->SetOnComplete(done.CallbackFor());
   const auto data = Bytes(128, 0x22);
   TEST_ASSERT(out->Receive(128, false) == ErrorCode::OK);
@@ -701,7 +703,8 @@ void TestStopCountsLatePacket()
   TEST_ASSERT(f.device.Get(out, Endpoint::Direction::OUT, Endpoint::EPNumber::EP1) ==
               ErrorCode::OK);
   Done done;
-  out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64}, false);
+  TEST_ASSERT(out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64},
+                             false) == ErrorCode::OK);
   out->SetOnComplete(done.CallbackFor());
   TEST_ASSERT(out->Receive(128, false) == ErrorCode::OK);
   // 包已收、CTR 未处理时停止：那个包计入进度 / The packet arrived; the stop counts it.
@@ -722,7 +725,8 @@ void TestBusResetEndsTransfers()
   Endpoint* in = nullptr;
   TEST_ASSERT(f.device.Get(in, Endpoint::Direction::IN, Endpoint::EPNumber::EP1) ==
               ErrorCode::OK);
-  in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64}, false);
+  TEST_ASSERT(in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64}, false) ==
+              ErrorCode::OK);
   const auto bytes = Bytes(64, 0x33);
   TEST_ASSERT(SubmitBytes(in, bytes) == ErrorCode::OK);
   TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatTx) == 0x0030U);
@@ -878,7 +882,8 @@ void TestStopRaceWithTransaction()
     TEST_ASSERT(f.device.Get(out, Endpoint::Direction::OUT, Endpoint::EPNumber::EP1) ==
                 ErrorCode::OK);
     Done done;
-    out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64}, false);
+    TEST_ASSERT(out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64},
+                               false) == ErrorCode::OK);
     out->SetOnComplete(done.CallbackFor());
     TEST_ASSERT(out->Receive(128, false) == ErrorCode::OK);
     TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatRx) == 0x3000U);  // VALID
@@ -904,7 +909,8 @@ void TestStopRaceWithTransaction()
     TEST_ASSERT(f.device.Get(in, Endpoint::Direction::IN, Endpoint::EPNumber::EP1) ==
                 ErrorCode::OK);
     Done done;
-    in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64}, false);
+    TEST_ASSERT(in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64},
+                              false) == ErrorCode::OK);
     in->SetOnComplete(done.CallbackFor());
     const auto bytes = Bytes(64, 9);
     TEST_ASSERT(SubmitBytes(in, bytes) == ErrorCode::OK);
@@ -970,7 +976,8 @@ void TestArmNotRearmedByRace()
     TEST_ASSERT(f.device.Get(in, Endpoint::Direction::IN, Endpoint::EPNumber::EP1) ==
                 ErrorCode::OK);
     Done done;
-    in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64}, false);
+    TEST_ASSERT(in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64},
+                              false) == ErrorCode::OK);
     in->SetOnComplete(done.CallbackFor());
     const auto bytes = Bytes(64, 0x44);
     FakeHw::on_write_post = [] { FakeHw::AckIn(1); };
@@ -988,7 +995,8 @@ void TestArmNotRearmedByRace()
     TEST_ASSERT(f.device.Get(out, Endpoint::Direction::OUT, Endpoint::EPNumber::EP1) ==
                 ErrorCode::OK);
     Done done;
-    out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64}, false);
+    TEST_ASSERT(out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64},
+                               false) == ErrorCode::OK);
     out->SetOnComplete(done.CallbackFor());
     const auto data = Bytes(64, 0x45);
     FakeHw::on_write_post = [&data]
