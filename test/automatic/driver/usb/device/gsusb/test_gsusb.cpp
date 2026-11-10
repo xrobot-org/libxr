@@ -52,6 +52,7 @@ class TestGs : public Gs
   using Gs::BindEndpoints;
   using Gs::Gs;
   using Gs::OnClassData;
+  using Gs::OnDeviceEvent;
   using Gs::OnVendorRequest;
   using Gs::UnbindEndpoints;
   using ControlTransferResult = DeviceClass::ControlTransferResult;
@@ -439,6 +440,25 @@ void TestEchoBackpressure()
   TEST_ASSERT(f.out.active);
 }
 
+/// 归还租约重挂的接收算作在途：之后的 ENDPOINT_RESUMED 不再挂第二条，否则两个完成都被
+/// 压住时后到的覆盖前一个。
+/// A receive rearmed by returning the lease counts as in flight: a later
+/// ENDPOINT_RESUMED arms no second one; otherwise, with both completions held, the later
+/// one overwrites the earlier.
+void TestResumeAfterReturnedLeaseArmsNothing()
+{
+  FreshTimerList();
+  GsFixture f;
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f, true, false);
+  f.out.HostSends(ClassicFrame(0x3000u, 0x300u, 1, 0, 0, {0x01}));
+  TEST_ASSERT(f.out.active);  // the returned lease rearmed the receive
+  f.gs.OnDeviceEvent(false, DeviceEvent::ENDPOINT_RESUMED,
+                     static_cast<uint8_t>(f.out.GetAddress()));
+  // One receive in flight: the other slot is still free.
+  TEST_ASSERT(f.out.Receive(f.out.GetGranted().slot_capacity, false) == ErrorCode::OK);
+}
+
 void TestUserIdRoundTripAndDatabaseWrite()
 {
   FreshTimerList();
@@ -561,6 +581,7 @@ int main()
   TestOverflowFlagRidesOnTheChannelsNextFrame();
   TestEchoHasPriority();
   TestEchoBackpressure();
+  TestResumeAfterReturnedLeaseArmsNothing();
   TestUserIdRoundTripAndDatabaseWrite();
   TestMultiChannelRoundRobin();
   TestErrorFrameHasOwnQueue();

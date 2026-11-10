@@ -1355,9 +1355,11 @@ class GsUsbClass : public DeviceClass
    */
   void ReturnLease(bool in_isr, const Endpoint::Slot& slot)
   {
-    // OK：租约重新挂接收；ABORTED：槽随解绑作废，无需处理。
-    // OK: the lease rearms the receive; ABORTED: the slot went stale, nothing to do.
-    (void)ep_data_out_->ReturnSlot(slot, in_isr);
+    // OK：租约重新挂接收，这条接收算作在途，RearmOut 不再挂第二条；ABORTED：槽随
+    // 解绑作废，无需处理。
+    // OK: the lease rearms the receive, which counts as in flight so RearmOut arms no
+    // second one; ABORTED: the slot went stale, nothing to do.
+    if (ep_data_out_->ReturnSlot(slot, in_isr) == ErrorCode::OK) out_armed_ = true;
   }
 
   /**
