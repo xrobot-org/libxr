@@ -718,6 +718,96 @@ void TestBootProtocol()
               g.in.Last().data == std::vector<uint8_t>({0x02, 0x07, 0xF8, 0x00}));
 }
 
+/// One Input main item of a report descriptor with the globals and locals in effect.
+struct InputItem
+{
+  uint32_t flags;
+  int32_t logical_min, logical_max;
+  uint32_t usage_min, usage_max;
+  uint32_t size, count;
+};
+
+/// Walks the short items of a report descriptor the way a host parser does: Logical
+/// Minimum / Maximum are signed two's complement of the item's own size
+/// (HID 1.11 6.2.2.7), Usage Minimum / Maximum are unsigned.
+std::vector<InputItem> ParseInputItems(const uint8_t* desc, size_t length)
+{
+  std::vector<InputItem> items;
+  InputItem now{};
+  for (size_t at = 0; at < length;)
+  {
+    const uint8_t prefix = desc[at];
+    const size_t size = (prefix & 3U) == 3U ? 4U : (prefix & 3U);
+    const uint8_t type = (prefix >> 2) & 3U;
+    const uint8_t tag = prefix >> 4;
+    TEST_ASSERT(at + 1 + size <= length);
+    uint32_t value = 0;
+    for (size_t i = 0; i < size; ++i)
+      value |= static_cast<uint32_t>(desc[at + 1 + i]) << (8 * i);
+    int32_t sign = static_cast<int32_t>(value);
+    if (size == 1U) sign = static_cast<int8_t>(value);
+    if (size == 2U) sign = static_cast<int16_t>(value);
+    if (type == 1U)  // Global
+    {
+      if (tag == 1U) now.logical_min = sign;
+      if (tag == 2U) now.logical_max = sign;
+      if (tag == 7U) now.size = value;
+      if (tag == 9U) now.count = value;
+    }
+    else if (type == 2U)  // Local
+    {
+      if (tag == 1U) now.usage_min = value;
+      if (tag == 2U) now.usage_max = value;
+    }
+    else if (type == 0U && tag == 8U)  // Main: Input
+    {
+      now.flags = value;
+      items.push_back(now);
+    }
+    if (type == 0U)
+    {
+      now.usage_min = 0;
+      now.usage_max = 0;
+    }
+    at += 1 + size;
+  }
+  return items;
+}
+
+/// The key array of the keyboard report must cover every usage the class can send: the
+/// Keyboard/Keypad page up to ExSel (0xA4), which holds F13-F24 (0x68-0x73). The Logical
+/// Maximum 0xA4 does not fit a signed byte (it would read as -92), so it takes two bytes.
+void TestKeyboardReportDescriptorRange()
+{
+  const auto items =
+      ParseInputItems(HID_KEYBOARD_REPORT_DESC, sizeof(HID_KEYBOARD_REPORT_DESC));
+  // Modifier bits, reserved byte, key array.
+  TEST_ASSERT(items.size() == 3);
+  const InputItem& keys = items[2];
+  TEST_ASSERT((keys.flags & 0x03U) == 0U);  // Data, Array
+  TEST_ASSERT(keys.size == 8 && keys.count == 6);
+  TEST_ASSERT(keys.logical_min == 0 && keys.logical_max == 0xA4);
+  TEST_ASSERT(keys.usage_min == 0 && keys.usage_max == 0xA4);
+
+  using Key = HIDKeyboard::KeyCode;
+  for (Key key : {Key::A, Key::F12, Key::F13, Key::F20, Key::F24, Key::EXECUTE, Key::MUTE,
+                  Key::LANG9, Key::CRSEL_PROPS, Key::EXSEL})
+  {
+    const int value = static_cast<uint8_t>(key);
+    TEST_ASSERT(value >= keys.logical_min && value <= keys.logical_max);
+    TEST_ASSERT(static_cast<uint32_t>(value) >= keys.usage_min &&
+                static_cast<uint32_t>(value) <= keys.usage_max);
+  }
+
+  // F13-F24 go out as sent.
+  Fixture f;
+  TestKeyboard kbd(Number::EP1, Number::EP2, false);
+  kbd.BindEndpoints(f.pool, 0, false);
+  kbd.PressKey({Key::F13, Key::F24}, 0, false);
+  TEST_ASSERT(f.in.Last().data == std::vector<uint8_t>({0, 0, 0x68, 0x73, 0, 0, 0, 0}));
+  f.in.Complete();
+}
+
 /// End to end through the device core: after SET_CONFIGURATION the host's GET_REPORT is
 /// answered with the report, or the control pipe stalls for one the class does not have.
 void TestGetReportThroughDeviceCore()
@@ -757,6 +847,7 @@ int main()
   TestGetReport();
   TestClassCodes();
   TestBootProtocol();
+  TestKeyboardReportDescriptorRange();
   TestGetReportThroughDeviceCore();
   std::puts("HID class: slot model, OUT lease, reset, idle rate and LED passed");
 }
