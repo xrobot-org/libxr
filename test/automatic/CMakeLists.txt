@@ -346,7 +346,9 @@ set_tests_properties(usb_sim_contract PROPERTIES TIMEOUT 60)
 # the BSP compositions, the controller limits and the frame interrupt.
 add_executable(test_usb_sim_profiles driver/usb/sim/test_usb_sim_profiles.cpp)
 target_link_libraries(test_usb_sim_profiles PRIVATE xr)
-target_include_directories(test_usb_sim_profiles PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_include_directories(
+  test_usb_sim_profiles PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.."
+                                "${CMAKE_CURRENT_SOURCE_DIR}/driver/debug/sim")
 add_test(NAME usb_sim_profiles COMMAND test_usb_sim_profiles)
 set_tests_properties(usb_sim_profiles PROPERTIES TIMEOUT 120)
 
@@ -374,3 +376,9 @@ set_tests_properties(swd_target PROPERTIES TIMEOUT 30)
 add_executable(swd_target_bitbang driver/debug/sim/swd_target_bitbang.cpp)
 target_link_libraries(swd_target_bitbang PRIVATE xr)
 target_include_directories(swd_target_bitbang PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# End to end: a real debugger over USB/IP to the DAP v2 class, the SwdGeneralGPIO engine
+# and the simulated SWD target (manual and nightly use; not a ctest).
+add_executable(dap_sim_usbip driver/debug/sim/dap_sim_usbip.cpp)
+target_link_libraries(dap_sim_usbip PRIVATE xr pthread)
+target_include_directories(dap_sim_usbip PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")

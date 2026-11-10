@@ -35,9 +35,10 @@
 
 #include "cdc_uart.hpp"
 #include "daplink_v2.hpp"
-#include "debug/swd.hpp"
+#include "debug/swd_general_gpio.hpp"
 #include "hid.hpp"
 #include "sim_findings.hpp"
+#include "swd_target.hpp"
 #include "uac_mic.hpp"
 #include "usb_sim_profiles.hpp"
 
@@ -299,41 +300,20 @@ void TestOtgFsSmallInFifo()
 // ESP32-S3
 // ---------------------------------------------------------------------------
 
-/// 每次传输成功、读出固定字的 SWD 探针；DP 读 0 得到 DPIDR
-/// SWD probe whose every transfer succeeds and reads a fixed word; a DP read of 0 gives
-/// the DPIDR
-class FakeSwd : public LibXR::Debug::Swd
-{
- public:
-  static constexpr uint32_t DPIDR = 0x2BA01477U;
+using Engine = Debug::SwdGeneralGPIO<Debug::Sim::SimSwclkPin, Debug::Sim::SimSwdioPin>;
 
-  ErrorCode SetClockHz(uint32_t) override { return ErrorCode::OK; }
-  void Close() override {}
-  ErrorCode LineReset() override { return ErrorCode::OK; }
-  ErrorCode EnterSwd() override { return ErrorCode::OK; }
-  ErrorCode Transfer(const LibXR::Debug::SwdProtocol::Request& req,
-                     LibXR::Debug::SwdProtocol::Response& resp) override
-  {
-    if (req.rnw) resp.rdata = DPIDR;
-    resp.ack = LibXR::Debug::SwdProtocol::Ack::OK;
-    resp.parity_ok = true;
-    return ErrorCode::OK;
-  }
-  void IdleClocks(uint32_t) override {}
-  ErrorCode SeqWriteBits(uint32_t, const uint8_t*) override { return ErrorCode::OK; }
-  ErrorCode SeqReadBits(uint32_t cycles, uint8_t* out) override
-  {
-    if (out != nullptr) std::memset(out, 0, (cycles + 7U) / 8U);
-    return ErrorCode::OK;
-  }
-};
-
-/// XR-DAP-S3：DAP v2 + CDC，DAP 命令由 Step 线程执行
-/// XR-DAP-S3: DAP v2 + CDC, DAP commands run by the Step thread
+/// XR-DAP-S3：DAP v2 + CDC，DAP 命令由 Step 线程执行；SWD 是真实的位操作引擎，接仿真引脚
+/// 和 SWD 目标仿真，DPIDR 来自目标
+/// XR-DAP-S3: DAP v2 + CDC, DAP commands run by the Step thread; SWD is the real
+/// bit-banging engine on simulated pins with the simulated SWD target behind them, and
+/// the DPIDR comes from the target
 void TestEsp32S3XrDap()
 {
-  FakeSwd swd;
-  DapLinkV2Class<FakeSwd> dap(EP::EP1, EP::EP1, swd);
+  Debug::Sim::Target target;
+  Debug::Sim::SimSwclkPin swclk(target.wire);
+  Debug::Sim::SimSwdioPin swdio(target.wire);
+  Engine engine(swclk, swdio, 0u, Debug::SwdGpioTiming{});
+  DapLinkV2Class<Engine> dap(EP::EP1, EP::EP1, engine);
   CDCUart cdc(EP::EP2, EP::EP2, EP::EP3, 1024, 1024, 8);
   SimDevice device(Esp32S3Profile(), DeviceDescriptor::PacketSize0::SIZE_64, 0x1209,
                    0x0030, 0x0100, {&LANGUAGE}, {{&dap, &cdc}});
@@ -370,7 +350,8 @@ void TestEsp32S3XrDap()
   TEST_ASSERT(idr.size() == 7 && idr[1] == 1 && idr[2] == 1);
   const uint32_t dpidr = static_cast<uint32_t>(idr[3] | (idr[4] << 8) | (idr[5] << 16) |
                                                (static_cast<uint32_t>(idr[6]) << 24));
-  TEST_ASSERT(dpidr == FakeSwd::DPIDR);
+  TEST_ASSERT(dpidr == Debug::Sim::DebugPort::DPIDR);
+  TEST_ASSERT(target.wire.protocol_errors == 0 && target.wire.contention == 0);
 
   CdcRoundTrip(host, cdc, 2, 2, 64, 64, 300);
   stop.store(true);
