@@ -249,15 +249,24 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
     // Unmask EPDISD and INEPNE so the interrupt can drive the sequence.
     dev->diepmsk_reg.epdisbldmsk = 1;
     dev->diepmsk_reg.inepnakeffmsk = 1;
+    // NAK 已经生效时（SETUP 让核心自己给 EP0 IN 置了 NAK，那次 INEPNE 早已处理过）不再
+    // 等 INEPNE，直接写 EPDIS。
+    // With the NAK already in effect (a SETUP made the core set it on EP0 IN, and that
+    // INEPNE was handled long ago) there is no INEPNE to wait for: write EPDIS directly.
+    bool nak_effective = false;
     if (ep_num == 0U)
     {
+      nak_effective = dev->diepctl0_reg.naksts != 0U;
       dev->diepctl0_reg.snak = 1;
+      if (nak_effective) dev->diepctl0_reg.epdis = 1;
     }
     else
     {
+      nak_effective = dev->in_eps[ep_num - 1U].diepctl_reg.naksts != 0U;
       dev->in_eps[ep_num - 1U].diepctl_reg.snak = 1;
+      if (nak_effective) dev->in_eps[ep_num - 1U].diepctl_reg.epdis = 1;
     }
-    stop_phase_ = StopPhase::SNAK_WAIT;
+    stop_phase_ = nak_effective ? StopPhase::DIS_WAIT : StopPhase::SNAK_WAIT;
     return StopResult::PENDING;
   }
 
@@ -654,14 +663,11 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
     ep0_out_phase_ = Ep0OutPhase::SETUP;
     ResetTransferState();
 
-    if (device_.endpoint_map_.in[0] != nullptr)
-    {
-      auto* ep0_in = static_cast<ESP32USBEndpoint*>(device_.endpoint_map_.in[0]);
-      if (ep0_in->transfer_active_)
-      {
-        ep0_in->ResetTransferState();
-      }
-    }
+    // EP0 IN 上被这个 SETUP 打断的传输不在这里清软件状态：它在硬件里还使能着、FIFO 里
+    // 还有包，核心处理 SETUP 时会停止它（StopHardware 走禁用端点、冲刷 FIFO 的序列）。
+    // The EP0 IN transfer this SETUP interrupts keeps its software state here: it is
+    // still enabled in the hardware with a packet in its FIFO, and the core stops it when
+    // it handles the SETUP (StopHardware runs the disable and FIFO flush sequence).
 
     if (device_.DmaEnabled() && !expect_out_data_stage)
     {

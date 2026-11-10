@@ -436,6 +436,7 @@ void RunAll()
     TestControlWrite<Probe>(mode);
     TestControlStall<Probe>(mode);
     TestControlBackToBackSetups<Probe>(mode);
+    TestControlSetupDuringInData<Probe>(mode);
     TestControlSetupDuringOutData<Probe>(mode);
     TestControlSetupSkipsStatus<Probe>(mode);
     TestBulkIn<Probe>(mode);
@@ -470,7 +471,6 @@ void FindingUacStreams() { TestUacStreams<Uac>(NORMAL); }
 void FindingStopInProgress() { TestStopIn<ExactProbe>(NORMAL); }
 void FindingStopInRace() { TestStopInRace<Probe>(NORMAL); }
 void FindingCloseKeepsEndpointActive() { TestReconfigure<ExactProbe>(NORMAL); }
-void FindingSetupDuringInData() { TestControlSetupDuringInData<Probe>(NORMAL); }
 void FindingSetupAfterWriteData() { TestControlSetupAfterWriteData<Probe>(NORMAL); }
 
 /// 手册要求先进入全局 OUT NAK 再禁用 OUT 端点；这个后端直接写 EPDIS。
@@ -497,10 +497,6 @@ int main(int argc, char** argv)
         "EP0 OUT not enabled again after a stalled control write",
         FindingControlStallOutData,
         "f.VendorWrite(Bytes(4, 9)) == Result::OK && f.probe.data_count == 1U"},
-       {"setup_during_in_data",
-        "EP0 IN is not stopped when a SETUP ends an IN data stage",
-        FindingSetupDuringInData,
-        "f.VendorRead(70, 255, data) == Result::OK && data.size() == 70U"},
        {"setup_after_write_data", "SETUP not received before a control write status",
         FindingSetupAfterWriteData,
         "f.VendorRead(9, 64, data) == Result::OK && data.size() == 9U"},
