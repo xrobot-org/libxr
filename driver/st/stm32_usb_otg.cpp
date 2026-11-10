@@ -339,7 +339,6 @@ void STM32USBOtgDevice::HandleInterrupt()
   // One snapshot, a fixed order, no re-read: a bus reset first, so that endpoint events
   // of the old session in the same snapshot are ended by the reset.
   const uint32_t status = core_->GINTSTS & core_->GINTMSK;
-  if (status & USB_OTG_GINTSTS_MMIS) core_->GINTSTS = USB_OTG_GINTSTS_MMIS;
   if (status & USB_OTG_GINTSTS_USBRST) OnUsbReset();
   if (status & USB_OTG_GINTSTS_ENUMDNE) OnEnumerationDone();
   if (status & USB_OTG_GINTSTS_RXFLVL) DrainRxFifo();
