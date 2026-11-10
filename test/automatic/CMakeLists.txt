@@ -341,3 +341,11 @@ target_link_libraries(test_usb_sim_contract PRIVATE xr)
 target_include_directories(test_usb_sim_contract PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 add_test(NAME usb_sim_contract COMMAND test_usb_sim_contract)
 set_tests_properties(usb_sim_contract PROPERTIES TIMEOUT 60)
+
+# Hardware profiles of the simulation backend (FSDEV, STM32 OTG FS, ESP32-S3, CH32 OTG FS):
+# the BSP compositions, the controller limits and the frame interrupt.
+add_executable(test_usb_sim_profiles driver/usb/sim/test_usb_sim_profiles.cpp)
+target_link_libraries(test_usb_sim_profiles PRIVATE xr)
+target_include_directories(test_usb_sim_profiles PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME usb_sim_profiles COMMAND test_usb_sim_profiles)
+set_tests_properties(usb_sim_profiles PROPERTIES TIMEOUT 120)

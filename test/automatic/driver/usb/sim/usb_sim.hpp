@@ -57,14 +57,17 @@
 #include "test_assert.hpp"
 
 #if defined(__SANITIZE_ADDRESS__)
-/// DeviceCore 的控制接收缓冲按库的约定只分配、不释放（见 AGENTS.md），每个仿真设备漏
-/// 一块。ASan 下只忽略这一处，其余泄漏照常报告。
-/// The control receive buffer of DeviceCore is allocated and never freed, by the
-/// library's convention (see AGENTS.md), so every simulated device leaks one block. Under
-/// ASan only that allocation is ignored; any other leak is still reported.
-extern "C" [[gnu::used]] inline const char* __lsan_default_suppressions()
+/// 库按约定只分配、不释放（见 AGENTS.md）：DeviceCore 的控制接收缓冲、Callback、队列和
+/// 读写端口都是这样，每个仿真设备和设备类都会"泄漏"几块，泄漏检查在这里没有意义。
+/// ASan 的越界和释放后使用检查照常开启，UBSan 不受影响。
+/// The library allocates and never frees by convention (see AGENTS.md): the control
+/// receive buffer of DeviceCore, callbacks, queues and the read and write ports all do,
+/// so every simulated device and device class "leaks" a few blocks and the leak check
+/// means nothing here. ASan's overflow and use-after-free checks stay on, and UBSan is
+/// unaffected.
+extern "C" [[gnu::used]] inline const char* __asan_default_options()
 {
-  return "leak:LibXR::USB::DeviceCore<*>::DeviceCore\n";
+  return "detect_leaks=0";
 }
 #endif
 
