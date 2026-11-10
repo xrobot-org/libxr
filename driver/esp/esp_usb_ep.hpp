@@ -1,5 +1,6 @@
 #pragma once
 
+#include "esp_def.hpp"
 #include "usb/core/ep.hpp"
 
 #if (SOC_USB_OTG_SUPPORTED &&                                                \
