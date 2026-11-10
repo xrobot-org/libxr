@@ -1264,10 +1264,19 @@ class DFUClass : public DfuInterfaceClassBase
 
     if (wLength == 0u)
     {
-      // 零长度 DNLOAD 表示结束数据阶段并进入 manifest，
+      if (state_ == DFUState::DFU_IDLE)
+      {
+        // DFU 1.1 A.2.3：dfuIDLE 里只有 wLength > 0 的 DNLOAD 是合法转移；零长度 DNLOAD
+        // 没有可结束的下载，控制管道 STALL，进入 dfuERROR（errSTALLEDPKT）。
+        // DFU 1.1 A.2.3: in dfuIDLE only a DNLOAD with wLength > 0 is a valid
+        // transition; a zero-length DNLOAD has no download to end, so the control pipe
+        // is stalled and the device enters dfuERROR (errSTALLEDPKT).
+        return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
+      }
+      // dfuDNLOAD-IDLE 里的零长度 DNLOAD 表示结束数据阶段并进入 manifest，
       // 但前提是之前至少成功接收过一个 payload block。
-      // A zero-length DNLOAD terminates the data phase and requests manifest,
-      // but only after at least one payload block was accepted.
+      // A zero-length DNLOAD in dfuDNLOAD-IDLE terminates the data phase and requests
+      // manifest, but only after at least one payload block was accepted.
       pending_dnload_length_ = 0u;
       pending_block_num_ = block_num;
       if (!download_started_)

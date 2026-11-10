@@ -330,6 +330,59 @@ void TestBootloaderDownload()
   boot.UnbindEndpoints(f.pool, false);
 }
 
+/// DFU 1.1 A.2.3: in dfuIDLE the only valid DNLOAD is one with wLength > 0. A zero-length
+/// DNLOAD there stalls the control pipe and enters dfuERROR (errSTALLEDPKT); the core's
+/// following abort of the request must not clear that error. In dfuDNLOAD-IDLE a
+/// zero-length DNLOAD is still the end of the download.
+void TestZeroLengthDownloadInIdleStalls()
+{
+  BootFixture f;
+  TestBoot& boot = f.boot;
+  boot.BindEndpoints(f.pool, 0, false);
+  TestBoot::ControlTransferResult result;
+  auto ask = [&](uint8_t req, uint16_t val, uint16_t len)
+  {
+    result.write_data = {};
+    return boot.OnClassRequest(false, req, val, len, 0, result);
+  };
+  auto state = [&]()
+  {
+    TEST_ASSERT(ask(DFU_GETSTATE, 0, 1) == ErrorCode::OK);
+    return Bytes(result.write_data)[0];
+  };
+
+  TEST_ASSERT(state() == static_cast<uint8_t>(DFUState::DFU_IDLE));
+  TEST_ASSERT(ask(DFU_DNLOAD, 0, 0) != ErrorCode::OK);
+  SetupPacket setup{};
+  setup.bmRequestType = 0x21;
+  setup.bRequest = DFU_DNLOAD;
+  boot.OnControlAbort(false, setup);
+  TEST_ASSERT(ask(DFU_GETSTATUS, 0, 6) == ErrorCode::OK);
+  TEST_ASSERT(Bytes(result.write_data)[0] ==
+              static_cast<uint8_t>(DFUStatusCode::ERR_STALLEDPKT));
+  TEST_ASSERT(Bytes(result.write_data)[4] == static_cast<uint8_t>(DFUState::DFU_ERROR));
+  // Nothing was staged: a following block is refused in dfuERROR until it is cleared.
+  TEST_ASSERT(ask(DFU_DNLOAD, 0, 16) != ErrorCode::OK);
+  TEST_ASSERT(ask(DFU_CLRSTATUS, 0, 0) == ErrorCode::OK);
+  TEST_ASSERT(state() == static_cast<uint8_t>(DFUState::DFU_IDLE));
+
+  // A block with data is still accepted from dfuIDLE and a zero-length DNLOAD then ends
+  // the download from dfuDNLOAD-IDLE.
+  TEST_ASSERT(ask(DFU_DNLOAD, 0, 16) == ErrorCode::OK);
+  std::array<uint8_t, 16> payload{};
+  ConstRawData data{payload.data(), payload.size()};
+  TEST_ASSERT(boot.OnClassData(false, DFU_DNLOAD, data) == ErrorCode::OK);
+  TEST_ASSERT(ask(DFU_GETSTATUS, 0, 6) == ErrorCode::OK);
+  boot.OnClassInDataStatusComplete(false, DFU_GETSTATUS);
+  boot.Process();
+  TEST_ASSERT(ask(DFU_GETSTATUS, 0, 6) == ErrorCode::OK);
+  TEST_ASSERT(Bytes(result.write_data)[4] ==
+              static_cast<uint8_t>(DFUState::DFU_DNLOAD_IDLE));
+  TEST_ASSERT(ask(DFU_DNLOAD, 1, 0) == ErrorCode::OK);
+  TEST_ASSERT(state() == static_cast<uint8_t>(DFUState::DFU_MANIFEST_SYNC));
+  boot.UnbindEndpoints(f.pool, false);
+}
+
 /// Constructing a backend whose seal record does not fit inside the image region is a
 /// fatal configuration error.
 bool SealConfigAborts(size_t image_limit, size_t seal_offset)
@@ -621,6 +674,7 @@ int main()
   TestRuntimeJumpsFromProcess();
   TestBootloaderDownload();
   TestTruncatedDownloadKeepsError();
+  TestZeroLengthDownloadInIdleStalls();
   TestSealPlacement();
   TestBusyGetStatusAfterStepDone();
   TestBusyGetStatusWhileStepPending();
