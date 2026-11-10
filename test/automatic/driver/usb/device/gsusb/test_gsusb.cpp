@@ -4,15 +4,15 @@
  *        Host tests for the gs_usb (CAN adapter) device class.
  *
  * 覆盖槽模型迁移改动的路径：每通道一个 SPSC 接收队列加一个 echo 队列、
- * 服务里取槽打包提交、echo 总是优先、echo 队列满时保留 OUT 租约作背压、
+ * 服务里取槽打包提交、echo 与接收帧轮流发送、echo 队列满时保留 OUT 租约作背压、
  * RX 队列满时丢帧计数并在该通道发往主机的下一帧（含 echo）置
  * CAN_FLAG_OVERFLOW，以及 SET_USER_ID 只改 RAM 与待写标志、由 100 ms Timer
  * 任务落库。
  * Covers the paths the slot-model migration changed: one SPSC RX queue per channel
- * plus one echo queue, slot packing and submission in the class service, absolute
- * echo priority, the OUT lease held as backpressure while the echo queue is full,
- * dropped frames counted per channel with CAN_FLAG_OVERFLOW on that channel's next
- * frame to the host (echoes included), and SET_USER_ID only touching RAM plus a
+ * plus one echo queue, slot packing and submission in the class service, echoes and
+ * received frames taking turns, the OUT lease held as backpressure while the echo queue
+ * is full, dropped frames counted per channel with CAN_FLAG_OVERFLOW on that channel's
+ * next frame to the host (echoes included), and SET_USER_ID only touching RAM plus a
  * pending flag with the 100 ms Timer task writing the Database.
  */
 
@@ -350,9 +350,9 @@ void TestOverflowFlagRidesOnTheChannelsNextFrame()
   {
     f.can0.Inject(0x100u + i, {static_cast<uint8_t>(i)});
   }
-  // Echoes for channel 1 and channel 0 queue next; echoes go first.
-  f.out.HostSends(ClassicFrame(0x10u, 0x301u, 1, 1, 0, {0x11}));
+  // Echoes for channel 0 and channel 1 queue next; it is the echoes' turn first.
   f.out.HostSends(ClassicFrame(0x20u, 0x300u, 1, 0, 0, {0x22}));
+  f.out.HostSends(ClassicFrame(0x10u, 0x301u, 1, 1, 0, {0x11}));
   for (unsigned i = 0; i < 16 && f.in.active; ++i)
   {
     f.in.Complete();
@@ -370,9 +370,10 @@ void TestOverflowFlagRidesOnTheChannelsNextFrame()
   TEST_ASSERT(overflow == 1);
 }
 
-/// Echo frames go to the host before any queued RX frame: the host's TX path (echo ->
-/// netif_wake_queue in the Linux driver) is not delayed behind received traffic.
-void TestEchoHasPriority()
+/// 同时有 echo 和接收帧待发时轮流发送，只有一类时直接发送；每一类内部保持顺序。
+/// Echoes and received frames alternate while both are pending and go out directly when
+/// only one kind is; each kind keeps its own order.
+void TestEchoAndReceivedFramesAlternate()
 {
   FreshTimerList();
   GsFixture f;
@@ -396,7 +397,8 @@ void TestEchoHasPriority()
   }
 
   TEST_ASSERT(f.in.sent.size() == 9);
-  // The two frames already on the wire, then every echo, then the rest of the RX queue.
+  // The two frames already on the wire, then echo and RX frame take turns (the echo
+  // first, as the last frame sent was a received one), then the RX frames left over.
   for (unsigned i = 0; i < 2; ++i)
   {
     TEST_ASSERT(ReadU32(f.in.sent[i], 0) == 0xFFFFFFFFu);
@@ -404,13 +406,76 @@ void TestEchoHasPriority()
   }
   for (unsigned i = 0; i < 3; ++i)
   {
-    TEST_ASSERT(ReadU32(f.in.sent[2 + i], 0) == 0x3000u + i);
+    TEST_ASSERT(ReadU32(f.in.sent[2 + 2 * i], 0) == 0x3000u + i);
+    TEST_ASSERT(ReadU32(f.in.sent[3 + 2 * i], 0) == 0xFFFFFFFFu);
+    TEST_ASSERT(f.in.sent[3 + 2 * i][WIRE_HEADER] == 2 + i);
   }
-  for (unsigned i = 0; i < 4; ++i)
+  TEST_ASSERT(ReadU32(f.in.sent[8], 0) == 0xFFFFFFFFu);
+  TEST_ASSERT(f.in.sent[8][WIRE_HEADER] == 5);
+}
+
+/// 主机突发：一个 CAN 总线每毫秒只送出几帧，USB 每毫秒只有固定的批量事务数。每发一帧要
+/// 占 OUT、echo 和（总线送回来之后）接收帧三个事务；echo 一律优先时接收帧在突发期间得不
+/// 到 IN 事务，32 项的通道 1
+/// 接收队列溢出丢帧；轮流发送时事务数刚好够，一帧不丢、顺序不变。 A host burst: a CAN bus
+/// that delivers only a few frames per millisecond and a fixed number of bulk
+/// transactions per millisecond. Each frame sent costs an OUT, an echo and (once the bus
+/// returns it) a received frame transaction; with echoes always first the received frames
+/// get no IN transaction during the burst and the 32-entry channel 1 RX queue overflows;
+/// with alternation the budget just suffices and no frame is lost or reordered.
+void TestHostBurstOnARateLimitedBus()
+{
+  FreshTimerList();
+  GsFixture f;
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f);
+
+  constexpr unsigned FRAMES = 600;
+  constexpr unsigned BUS_PER_MS = 8;    // frames the CAN bus returns per millisecond
+  constexpr unsigned BULK_PER_MS = 24;  // bulk transactions a full-speed frame holds
+  unsigned sent = 0, delivered = 0;
+  std::vector<uint32_t> got;  // can_id of every non-echo frame on channel 1
+  bool overflow = false;
+  unsigned idle = 0;
+  for (unsigned ms = 0; ms < 4000 && idle < 20; ++ms)
   {
-    TEST_ASSERT(ReadU32(f.in.sent[5 + i], 0) == 0xFFFFFFFFu);
-    TEST_ASSERT(f.in.sent[5 + i][WIRE_HEADER] == 2 + i);
+    for (unsigned i = 0; i < BUS_PER_MS && delivered < f.can0.tx.size(); ++i, ++delivered)
+    {
+      const auto& tx = f.can0.tx[delivered];
+      f.can1.Inject(tx.id, std::vector<uint8_t>(tx.data, tx.data + tx.dlc));
+    }
+    unsigned budget = BULK_PER_MS;
+    bool moved = false;
+    while (budget > 0)
+    {
+      bool progress = false;
+      if (f.in.active)
+      {
+        f.in.Complete();
+        const auto& frame = f.in.sent.back();
+        if (frame[9] == 1 && ReadU32(frame, 0) == 0xFFFFFFFFu)
+          got.push_back(ReadU32(frame, 4));
+        if ((frame[10] & GsUsb::CAN_FLAG_OVERFLOW) != 0U) overflow = true;
+        --budget;
+        progress = true;
+      }
+      if (budget > 0 && f.out.active && sent < FRAMES)
+      {
+        f.out.HostSends(
+            ClassicFrame(sent, 0x100u + sent, 1, 0, 0, {static_cast<uint8_t>(sent)}));
+        ++sent;
+        --budget;
+        progress = true;
+      }
+      if (!progress) break;
+      moved = true;
+    }
+    idle = moved ? 0 : idle + 1;
   }
+  TEST_ASSERT(sent == FRAMES);
+  TEST_ASSERT(!overflow);
+  TEST_ASSERT(got.size() == FRAMES);
+  for (unsigned i = 0; i < FRAMES; ++i) TEST_ASSERT(got[i] == 0x100u + i);
 }
 
 void TestEchoBackpressure()
@@ -579,14 +644,14 @@ int main()
   TestCanRxToHost();
   TestRxQueueOverflowFlag();
   TestOverflowFlagRidesOnTheChannelsNextFrame();
-  TestEchoHasPriority();
+  TestEchoAndReceivedFramesAlternate();
+  TestHostBurstOnARateLimitedBus();
   TestEchoBackpressure();
   TestResumeAfterReturnedLeaseArmsNothing();
   TestUserIdRoundTripAndDatabaseWrite();
   TestMultiChannelRoundRobin();
   TestErrorFrameHasOwnQueue();
   std::puts(
-      "gs_usb class: queues, echo priority, backpressure, overflow, USER_ID, round-robin "
-      "and "
-      "error queue passed");
+      "gs_usb class: queues, echo and RX alternation, burst, backpressure, overflow, "
+      "USER_ID, round-robin and error queue passed");
 }

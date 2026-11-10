@@ -32,16 +32,18 @@ namespace LibXR::USB
  *
  * 接收路径：每个 CAN 源一个 SPSC 队列（rx_queue_size 为每通道容量），echo 单独一个
  * SPSC 队列（生产者是 USB OUT 处理）。CAN 回调与 OUT 处理只入队并请求类服务，
- * 服务里取槽、打包、提交。echo 总是优先，其后通道间轮流发送；RX 队列满时丢帧并
- * 按通道计数，溢出标志随该通道发往主机的下一帧（RX、错误帧或 echo）上报。
+ * 服务里取槽、打包、提交。echo 与接收帧在两者都有待发时轮流发送，只有一类时直接发送；
+ * 接收帧在通道间轮流；RX 队列满时丢帧并按通道计数，溢出标志随该通道发往主机的下一帧
+ * （RX、错误帧或 echo）上报。
  *
  * Receive path: one SPSC queue per CAN source (rx_queue_size is the per-channel
  * capacity) plus one echo SPSC queue whose producer is the USB OUT handling. CAN
  * callbacks and the OUT handler only enqueue and request the class service; the
- * service acquires slots, packs and submits. Echo frames always go first, then the
- * channels are drained round-robin; a full RX queue drops the frame and counts it
- * per channel, and the overflow flag rides on that channel's next frame to the host
- * (RX, error or echo).
+ * service acquires slots, packs and submits. Echo frames and received frames alternate
+ * while both are pending and go out directly when only one kind is; received frames
+ * are drained round-robin across the channels; a full RX queue drops the frame and
+ * counts it per channel, and the overflow flag rides on that channel's next frame to
+ * the host (RX, error or echo).
  */
 template <std::size_t CanChNum>
 class GsUsbClass : public DeviceClass
@@ -1124,6 +1126,9 @@ class GsUsbClass : public DeviceClass
   // 发往主机的调度状态，只在 owner（完成回调与服务）上下文访问。
   // Host-send scheduling state, accessed only in the owner (completions and service).
   uint8_t rr_ = 0;  ///< 通道轮流游标 / Round-robin channel cursor
+  /// 下一帧先取接收帧（刚发过 echo）/ The next pick tries a received frame first (an
+  /// echo went out last)
+  bool rx_turn_ = false;
 
   // echo 背压：OUT 租约被持有，echo 帧暂存，服务补推后归还租约。
   // Echo backpressure: the OUT lease is held with the frame stashed until the service
@@ -1300,17 +1305,39 @@ class GsUsbClass : public DeviceClass
   }
 
   /**
-   * @brief 选下一帧发往主机：echo 优先，通道间轮流，通道内 FIFO /
-   *        Pick the next frame for the host: echo first, channels round-robin, FIFO
-   *        within a channel
+   * @brief 选下一帧发往主机：echo 与接收帧都有待发时轮流，只有一类时直接发；接收帧通道间
+   *        轮流，通道内 FIFO /
+   *        Pick the next frame for the host: echoes and received frames alternate while
+   *        both are pending and a lone kind goes out directly; received frames go round
+   *        robin across channels, FIFO within a channel
+   *
+   * echo 一律优先会让突发期间的接收帧得不到发送机会，RX 队列溢出。
+   * Serving echoes first would starve the received frames during a host burst until
+   * their queue overflows.
    */
   bool PickFrame(QueueItem& item)
   {
+    if (rx_turn_)
+    {
+      if (PickReceived(item))
+      {
+        rx_turn_ = false;
+        return true;
+      }
+      return echo_queue_.Pop(item) == ErrorCode::OK;
+    }
     if (echo_queue_.Pop(item) == ErrorCode::OK)
     {
+      rx_turn_ = true;
       return true;
     }
+    return PickReceived(item);
+  }
 
+  /// 通道间轮流取一帧接收帧（错误帧先于同通道的数据帧）/ Take one received frame,
+  /// channels round-robin (an error frame before the channel's data frames)
+  bool PickReceived(QueueItem& item)
+  {
     for (std::size_t k = 0; k < can_count_; ++k)
     {
       const uint8_t ch = static_cast<uint8_t>((rr_ + k) % can_count_);

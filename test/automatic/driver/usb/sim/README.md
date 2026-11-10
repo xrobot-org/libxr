@@ -51,9 +51,10 @@ arguments runs the regular cases only; `--list-findings` lists the known-defect 
 the same command returns 0 and the case belongs among the regular ones. Item numbers refer to
 `C-missing-fixes.md` (which Line A fixes the candidate still lacks).
 
-| 程序 / Program | 用例 / Case | 条目 / Item | 现象 / Symptom |
-| --- | --- | --- | --- |
-| `usb_sim_classes gsusb2` + `gs_burst.py`（手动 / manual） | gs_usb 突发 / gs_usb burst | 无编号（新）/ none (new) | 通道 0 突发时通道 1 的接收帧丢失，内核 `rx_over_errors` 增加；回显和接收轮流发送后不再丢 / channel 1 loses received frames during a burst on channel 0 and the kernel counts `rx_over_errors`; with echo and receive served alternately nothing is lost |
+这个目录里目前没有这样的用例；调试仿真目录里有（`../../debug/sim/README.md`）。
+
+No such case is left in this directory; the debug simulation directory has some
+(`../../debug/sim/README.md`).
 
 运行 / Run: `build/test/test_dap_fuzz --finding padded_atomic_group`
 
@@ -109,17 +110,21 @@ uac"` selects the classes. `<build-dir>` must be an absolute path.
 
 `usb_sim_classes gsusb2` 是两通道 gs_usb，CAN 总线每毫秒最多送出 `GS_BUS_RATE` 帧，把通道 0 发出的
 帧作为通道 1 的接收帧交回。`gs_burst.py` 在通道 0 上尽快发一批帧，报告通道 1 收到什么和内核的
-`rx_over_errors`。服务端不限带宽时不丢帧；`USBIP_BULK_PER_MS` 设到 32 以下（一个全速帧装不下更多
-24 字节的批量事务）后，通道 1 的接收帧大量丢失并上报溢出：
+`rx_over_errors`。`USBIP_BULK_PER_MS` 设到 32 以下（一个全速帧装不下更多 24 字节的批量事务）时，
+USB 的事务数比总线更紧：
 `GS_BUS_RATE=8 USBIP_BULK_PER_MS=24 build/test/usb_sim_classes gsusb2 3240`，挂接后
-`python3 gs_burst.py 600`。原因在 `gs_usb.hpp`：主机帧一入队就回显，`PickFrame` 总是先发回显，
-接收队列（默认 32 帧）满了就丢。这不是 `C-missing-fixes.md` 里的条目。
+`python3 gs_burst.py 600`。IN 端点先发回显时，通道 1 的接收帧在突发期间得不到事务，32 帧的接收队列
+满了就丢，内核报告 `rx_over_errors`；回显和接收帧轮流发送（`gs_usb.hpp` 的 `PickFrame`）后一帧不丢。
+`test_gsusb.cpp` 的 `TestHostBurstOnARateLimitedBus` 是同一实验的确定性版本，在默认 `ctest` 里。
 
 `usb_sim_classes gsusb2` is a two-channel gs_usb whose CAN bus delivers at most `GS_BUS_RATE` frames per
 millisecond and returns channel 0's transmissions as received frames on channel 1. `gs_burst.py` sends a
 burst on channel 0 as fast as the adapter accepts it and reports what channel 1 received and the
-kernel's `rx_over_errors`. With an unlimited server nothing is lost; with `USBIP_BULK_PER_MS` at 32 or
-below (one full-speed frame holds no more 24-byte bulk transactions) most of channel 1's received frames
-are lost and the overflow is reported. The cause is in `gs_usb.hpp`: a host frame is echoed as soon as it
-is queued, `PickFrame` always serves the echo first, and the receive queue (32 frames by default) drops
-when full. This is not an item of `C-missing-fixes.md`.
+kernel's `rx_over_errors`. With `USBIP_BULK_PER_MS` at 32 or below (one full-speed frame holds no more
+24-byte bulk transactions) the USB transactions are scarcer than the bus:
+`GS_BUS_RATE=8 USBIP_BULK_PER_MS=24 build/test/usb_sim_classes gsusb2 3240`, then
+`python3 gs_burst.py 600` after attaching. When the IN endpoint serves echoes first, channel 1's
+received frames get no transaction during the burst, the 32-frame receive queue drops when full and
+the kernel reports `rx_over_errors`; with echoes and received frames served alternately
+(`PickFrame` in `gs_usb.hpp`) nothing is lost. `TestHostBurstOnARateLimitedBus` in `test_gsusb.cpp` is
+the deterministic version of the same experiment and is part of the default `ctest`.
