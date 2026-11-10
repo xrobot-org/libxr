@@ -23,28 +23,26 @@ namespace LibXR
  *       topic's fixed size, only the leading prefix is guaranteed valid and the remaining
  *       tail stays unspecified; when it is longer, only the prefix matching the topic
  *       size is kept and the rest is truncated.
+ * @note 重新同步规则：包头和整包两个 CRC 都通过之前，字节只看不取；任一 CRC 不对，说明
+ *       队首的前缀只是数据里碰巧出现的 0x5A，只丢这一个字节再接着找。两个 CRC 都通过的包
+ *       是真包，版本不对或 topic 未注册时整包跳过。所以噪声、未注册的 topic 都不会连带
+ *       丢掉后面的真包。
+ *       Resync rule: bytes are only peeked until both the header CRC and the packet CRC
+ *       pass; if either fails, the prefix at the front is a 0x5A that merely occurs in
+ *       the data, and only that one byte is dropped before searching on. A packet that
+ *       passes both CRCs is real and is skipped whole when its version differs or its
+ *       topic is not registered. Noise and unregistered topics therefore never take a
+ *       following real packet with them.
  */
 class Topic::Server
 {
  public:
   /**
-   * @enum Status
-   * @brief parser 当前所在阶段 / Current stage of the parser
-   */
-  enum class Status : uint8_t
-  {
-    WAIT_START,     ///< 正在找下一包前缀 / Searching for the next packet prefix.
-    WAIT_TOPIC,     ///< 已读到前缀，正在等完整头 / Prefix received; waiting for the full
-                    ///< header.
-    WAIT_DATA_CRC,  ///< 头已接受，正在等 payload 和尾 CRC / Header accepted; waiting for
-                    ///< payload plus trailing CRC.
-  };
-
-  /**
    * @brief 构造 parser 并分配内部暂存队列 / Construct the parser and allocate its
    *        internal staging queue
-   * @param buffer_length 内部字节队列和暂存缓冲区大小 / Size of the internal byte queue
-   *        and staging buffer
+   * @param buffer_length 内部字节队列和暂存缓冲区大小，也是能接收的最大包长 / Size of
+   *        the internal byte queue and staging buffer, which is also the largest packet
+   *        accepted
    */
   Server(size_t buffer_length);
 
@@ -67,14 +65,14 @@ class Topic::Server
 
   /**
    * @brief 在普通上下文里喂入一批新字节 / Feed one new byte batch in normal context
-   * @param data 新收到的原始字节 / Newly received raw bytes
+   * @param data 新收到的原始字节，长度不限 / Newly received raw bytes, of any length
    * @return 成功解析并发布的包数量 / Number of packets parsed and published
    */
   size_t ParseData(ConstRawData data);
 
   /**
    * @brief 在回调/ISR 路径里喂入一批新字节 / Feed one new byte batch in callback/ISR path
-   * @param data 新收到的原始字节 / Newly received raw bytes
+   * @param data 新收到的原始字节，长度不限 / Newly received raw bytes, of any length
    * @param in_isr 当前是否位于 ISR / Whether the current path is in ISR context
    * @return 成功解析并发布的包数量 / Number of packets parsed and published
    */
@@ -82,14 +80,15 @@ class Topic::Server
 
  private:
   /**
-   * @enum ParseResult
-   * @brief 一次 payload 阶段处理结果 / Result of one payload-stage handling step
+   * @enum Step
+   * @brief 队首一次处理的结果 / Result of handling the queue front once
    */
-  enum class ParseResult : uint8_t
+  enum class Step : uint8_t
   {
-    NEED_MORE,  ///< 当前包还没收全 / Current packet is still incomplete.
-    DROPPED,    ///< 当前包被丢弃 / Current packet is dropped.
-    DELIVERED   ///< 当前包已发布 / Current packet is delivered.
+    NEED_MORE,  ///< 队首的包还没收全 / The packet at the front is incomplete.
+    DISCARDED,  ///< 丢掉了一个假前缀字节或一个不接收的完整包 / Dropped one false prefix
+                ///< byte or one whole packet that is not accepted.
+    DELIVERED   ///< 队首的包已发布 / The packet at the front was published.
   };
 
   /**
@@ -103,48 +102,37 @@ class Topic::Server
   size_t ParseDataRaw(ConstRawData data, bool from_callback, bool in_isr);
 
   /**
-   * @brief 把输入流同步到下一条 packet 起点 / Synchronize the input stream to the next
-   *        packet start
-   * @return 若已找到起始字节则返回 `true`，否则返回 `false` / Returns `true` when a
-   *         packet start byte is found, otherwise `false`
+   * @brief 处理队列里已有的字节，直到需要更多输入 / Handle the queued bytes until more
+   *        input is needed
+   * @param from_callback 是否来自回调路径 / Whether the current parse comes from
+   *        callback path
+   * @param in_isr 当前是否位于 ISR / Whether the current path is in ISR context
+   * @return 发布的包数量 / Number of packets published
+   */
+  size_t ParseQueued(bool from_callback, bool in_isr);
+
+  /**
+   * @brief 丢掉前缀之前的字节，让队首是前缀字节 / Drop the bytes before the next prefix
+   *        so the queue starts with a prefix byte
+   * @return 找到前缀返回 `true` / Returns `true` when a prefix byte is at the front
    */
   bool SyncToPacketStart();
 
   /**
-   * @brief 在已对齐前缀后继续读取并校验完整头部 / Read and validate the full header
-   *        after the prefix is aligned
-   * @return 头部有效返回 `true`，否则返回 `false` / Returns `true` when the header is
-   *         valid, otherwise `false`
-   */
-  bool ReadHeader();
-
-  /**
-   * @brief 读取当前包的 payload 和尾 CRC，并在成功时发布 / Read the payload and
-   *        trailing CRC of the current packet and publish it on success
+   * @brief 处理队首以前缀开头的一个包：先只看不取，整包 CRC 都通过后才从队列取走。
+   *        Handle one packet that starts at the queue front: peek first, and remove
+   *        it from the queue only after both CRCs pass.
    * @param from_callback 是否来自回调路径 / Whether the current parse comes from
    *        callback path
    * @param in_isr 当前是否位于 ISR / Whether the current path is in ISR context
-   * @return 当前 payload 阶段的处理结果 / Result of the current payload stage
+   * @return 这一次处理的结果 / Result of this step
    */
-  ParseResult ReadPayload(bool from_callback, bool in_isr);
+  Step HandleFrontPacket(bool from_callback, bool in_isr);
 
-  /**
-   * @brief 清空当前包的解析上下文并回到找起点状态 / Clear the current packet parsing
-   *        context and return to the start-search state
-   */
-  void ResetParser();
-
-  Status status_ = Status::WAIT_START;  ///< 当前 parser 阶段 / Current parser stage.
-  uint32_t data_len_ = 0;  ///< 当前包头声明的 payload 长度 / Payload length declared by
-                           ///< the current header.
   RBTree<uint32_t> topic_map_;  ///< 从 topic 名称 CRC32 到 topic 句柄的映射 / Map from
                                 ///< topic-name CRC32 to topic handle.
   QueueBase queue_;             ///< 输入字节 FIFO / Input byte FIFO.
   RawData parse_buff_;  ///< 当前包头和 payload 的暂存缓冲区 / Staging buffer holding the
                         ///< current header and payload.
-  TopicHandle current_topic_ =
-      nullptr;  ///< 当前包命中的目标 topic / Target topic matched by the current packet.
-  MicrosecondTimestamp current_timestamp_;  ///< 当前包头里的时间戳 / Timestamp carried by
-                                            ///< the current packet header.
 };
 }  // namespace LibXR
