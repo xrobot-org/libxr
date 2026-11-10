@@ -200,6 +200,13 @@ class Controller : public MmioTrap::Device
   /// (the manual gives eight clocks)
   unsigned self_clear_reads = 1;
 
+  /// EPDIS 写入之后，再过多少次寄存器访问端点才真正禁用并置 EPDISD（0 表示立即）；
+  /// 总线上再发生任何事时也已经生效。手册只要求等待 EPDISD 中断，没有给出时间。
+  /// How many further register accesses pass before a written EPDIS disables the
+  /// endpoint and sets EPDISD (0 = at once); any later bus event finds it done. The
+  /// manual only asks to wait for the EPDISD interrupt and gives no time.
+  unsigned disable_latency = 0;
+
   /// 3.00a 之后的核心在 DMA 模式下收到 SETUP 包时就置 XFRC|STPKTRX，而不是等到 SETUP
   /// 阶段结束和 STUP 一起置位 / Cores after 3.00a in DMA mode: raise XFRC|STPKTRX when
   /// the SETUP packet arrives instead of together with STUP at the end of the SETUP stage
@@ -561,7 +568,7 @@ class Controller : public MmioTrap::Device
       switch ((offset - DIEP) % 0x20U)
       {
         case EP_CTL:
-          return in.ctl | (in.stuck_disable ? CTL_EPDIS : 0U);
+          return in.ctl | (in.stuck_disable || in.disable_due != 0U ? CTL_EPDIS : 0U);
         case EP_INT:
           return InInt(in);
         case EP_TSIZ:
@@ -582,7 +589,7 @@ class Controller : public MmioTrap::Device
       switch ((offset - DOEP) % 0x20U)
       {
         case EP_CTL:
-          return out.ctl | (out.stuck_disable ? CTL_EPDIS : 0U);
+          return out.ctl | (out.stuck_disable || out.disable_due != 0U ? CTL_EPDIS : 0U);
         case EP_INT:
           return out.intr;
         case EP_TSIZ:
@@ -598,6 +605,7 @@ class Controller : public MmioTrap::Device
 
   void MmioAfterRead(uint32_t offset) override
   {
+    Elapse(false);
     if (offset >= FIFO)
     {
       if (rx_.empty() || rx_.front().status)
@@ -662,6 +670,7 @@ class Controller : public MmioTrap::Device
     }
     if (log != nullptr) Log("write %03X = %08X", offset, value);
     Write(offset, value);
+    Elapse(false);
     if (after_write)
     {
       auto hook = std::move(after_write);
@@ -678,11 +687,13 @@ class Controller : public MmioTrap::Device
     std::vector<uint32_t> partial;             // Words of the packet being written.
     bool reprogrammed = false;  // DIEPTSIZ was written while the endpoint was enabled.
     bool stuck_disable = false;
+    unsigned disable_due = 0;  // Register accesses left until a written EPDIS acts.
   };
   struct OutEp
   {
     uint32_t ctl = 0, intr = 0, tsiz = 0, dma = 0;
     bool stuck_disable = false;
+    unsigned disable_due = 0;
   };
   struct RxWord
   {
@@ -797,10 +808,34 @@ class Controller : public MmioTrap::Device
 
   /// 总线上发生了别的事：自清位早已清零 / Something else happened on the bus: the
   /// self-clearing bits are long clear
+  /// 一次寄存器访问过去了：到期的 EPDIS 生效 / One register access went by: a due
+  /// EPDIS takes effect
+  void Elapse(bool all)
+  {
+    for (uint8_t i = 0; i < config_.endpoints; ++i)
+    {
+      InEp& in = in_[i];
+      if (in.disable_due != 0U && (all || --in.disable_due == 0U))
+      {
+        in.disable_due = 0;
+        in.ctl &= ~CTL_EPENA;
+        in.intr |= INT_EPDISD;
+      }
+      OutEp& out = out_[i];
+      if (out.disable_due != 0U && (all || --out.disable_due == 0U))
+      {
+        out.disable_due = 0;
+        out.ctl &= ~CTL_EPENA;
+        out.intr |= INT_EPDISD;
+      }
+    }
+  }
+
   void Tick(const char* event, unsigned number = 0)
   {
     busy_reads_ = 0;
     busy_bits_ = 0;
+    Elapse(true);
     if (log != nullptr) Log("bus: %s %u (frame %u)", event, number, frame_);
   }
 
@@ -956,8 +991,7 @@ class Controller : public MmioTrap::Device
     {
       if ((in.ctl & CTL_EPENA) != 0U)
       {
-        in.ctl &= ~CTL_EPENA;
-        in.intr |= INT_EPDISD;
+        in.disable_due = disable_latency + 1U;
         in.stuck_disable = false;
       }
       else if (!in.stuck_disable)
@@ -1013,8 +1047,7 @@ class Controller : public MmioTrap::Device
       {
         if (!gonak_effective_ && TypeOf(out.ctl) != Type::ISOCHRONOUS)
           Violation("OUT endpoint %u disabled without global OUT NAK in effect", num);
-        out.ctl &= ~CTL_EPENA;
-        out.intr |= INT_EPDISD;
+        out.disable_due = disable_latency + 1U;
         out.stuck_disable = false;
       }
       else if (!out.stuck_disable)
