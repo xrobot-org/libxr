@@ -137,6 +137,107 @@ class LoopbackCan : public CAN
   std::deque<ClassicPack> pending_;
 };
 
+/// 两个通道的 CAN 总线模型：总线每毫秒最多送出 rate 帧（默认 8，环境变量 GS_BUS_RATE），
+/// 通道 0 发出的帧在总线上排队，按这个速率作为通道 1 的接收帧交回；通道 1 发出的帧同样
+/// 交给通道 0。总线队列不设上限，每秒在标准输出打印一次统计。
+/// A two-channel CAN bus model: the bus delivers at most rate frames per millisecond (8
+/// by default, environment variable GS_BUS_RATE). Frames sent on channel 0 queue on the
+/// bus and come back at that rate as received frames on channel 1; frames sent on
+/// channel 1 go to channel 0 the same way. The bus queue is unbounded, and a statistics
+/// line is printed once a second.
+class CanBus
+{
+ public:
+  class Node : public CAN
+  {
+   public:
+    ErrorCode SetConfig(const CAN::Configuration&) override { return ErrorCode::OK; }
+    uint32_t GetClockFreq() const override { return 48000000u; }
+    ErrorCode AddMessage(const ClassicPack& pack) override
+    {
+      bus_->Transmit(index_, pack);
+      return ErrorCode::OK;
+    }
+    using CAN::OnMessage;
+
+   private:
+    friend class CanBus;
+    CanBus* bus_ = nullptr;
+    unsigned index_ = 0;
+  };
+
+  CanBus()
+  {
+    const char* rate = std::getenv("GS_BUS_RATE");
+    if (rate != nullptr) rate_ = static_cast<unsigned>(std::atoi(rate));
+    for (unsigned i = 0; i < 2; ++i)
+    {
+      nodes_[i].bus_ = this;
+      nodes_[i].index_ = i;
+    }
+    std::thread([this] { Run(); }).detach();
+  }
+
+  Node& Channel(unsigned index) { return nodes_[index]; }
+
+ private:
+  struct Entry
+  {
+    unsigned from;
+    CAN::ClassicPack pack;
+  };
+
+  void Transmit(unsigned from, const CAN::ClassicPack& pack)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    queue_.push_back({from, pack});
+    ++sent_;
+    if (queue_.size() > peak_) peak_ = queue_.size();
+  }
+
+  void Run()
+  {
+    auto next = std::chrono::steady_clock::now();
+    auto report = next + std::chrono::seconds(1);
+    while (true)
+    {
+      next += std::chrono::milliseconds(1);
+      std::this_thread::sleep_until(next);
+      for (unsigned i = 0; i < rate_; ++i)
+      {
+        Entry entry;
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if (queue_.empty()) break;
+          entry = queue_.front();
+          queue_.pop_front();
+          ++delivered_;
+        }
+        nodes_[entry.from ^ 1U].OnMessage(entry.pack, false);
+      }
+      if (next >= report)
+      {
+        report += std::chrono::seconds(1);
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (sent_ != reported_)
+        {
+          std::printf("bus: sent %u delivered %u backlog %zu peak %zu rate %u/ms\n",
+                      sent_, delivered_, queue_.size(), peak_, rate_);
+          std::fflush(stdout);
+          reported_ = sent_;
+        }
+      }
+    }
+  }
+
+  Node nodes_[2];
+  std::mutex mutex_;
+  std::deque<Entry> queue_;
+  unsigned rate_ = 8;
+  unsigned sent_ = 0, delivered_ = 0, reported_ = 0;
+  size_t peak_ = 0;
+};
+
 // ---------------------------------------------------------------------------
 // DFU
 // ---------------------------------------------------------------------------
@@ -204,6 +305,19 @@ int main(int argc, char** argv)
                          {2, Endpoint::Direction::OUT, 512, 0}};
     return Serve(gs, 0x1D50, 0x606F, "gsusb", port, profile);
   }
+  if (kind == "gsusb2")
+  {
+    // 两个通道、带速率限制的总线：用来复现通道 0 突发发送时通道 1 的接收丢帧。
+    // Two channels on a rate-limited bus, to reproduce receive loss on channel 1 while
+    // channel 0 bursts.
+    static CanBus bus;
+    static GsUsbClass<2> gs(Endpoint::EPNumber::EP1, Endpoint::EPNumber::EP2,
+                            {&bus.Channel(0), &bus.Channel(1)});
+    Sim::Profile profile;
+    profile.endpoints = {{1, Endpoint::Direction::IN, 512, 0},
+                         {2, Endpoint::Direction::OUT, 512, 0}};
+    return Serve(gs, 0x1D50, 0x606F, "gsusb2", port, profile);
+  }
   if (kind == "dfu")
   {
     static std::array<uint8_t, 256 * 1024> memory{};
@@ -256,6 +370,6 @@ int main(int argc, char** argv)
     profile.endpoints = {{1, Endpoint::Direction::IN, 512, 0}};
     return Serve(mic, 0x1209, 0x0006, "uac", port, profile);
   }
-  std::fprintf(stderr, "usage: usb_sim_classes <hid|gsusb|dfu|uac> [port]\n");
+  std::fprintf(stderr, "usage: usb_sim_classes <hid|gsusb|gsusb2|dfu|uac> [port]\n");
   return 2;
 }

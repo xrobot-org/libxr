@@ -422,6 +422,25 @@ class UsbIpServer
     return ep->MaxPacketSize();
   }
 
+  /// 总线带宽：环境变量 USBIP_BULK_PER_MS 限制每毫秒（真实时间）完成的批量/中断事务数，
+  /// 0 或不设置为不限。全速总线一帧装得下的事务数有限，设备的 IN、OUT 事务要共用它。
+  /// Bus bandwidth: the environment variable USBIP_BULK_PER_MS limits the bulk and
+  /// interrupt transactions completed per millisecond of real time; 0 or unset is
+  /// unlimited. A full-speed frame holds a limited number of transactions that the
+  /// device's IN and OUT transactions share.
+  bool BulkAllowed()
+  {
+    if (bulk_per_ms_ == 0) return true;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - bulk_window_ >= std::chrono::milliseconds(100)) bulk_window_ = now;
+    while (now - bulk_window_ >= std::chrono::milliseconds(1))
+    {
+      bulk_window_ += std::chrono::milliseconds(1);
+      bulk_used_ = 0;
+    }
+    return bulk_used_ < bulk_per_ms_;
+  }
+
   /// URB 推进一步；完成时返回 true 并给出状态 / One step; true with a status when done
   bool Step(Urb& urb, int32_t& status)
   {
@@ -430,8 +449,10 @@ class UsbIpServer
     const uint16_t packet = PacketSize(urb);
     if (urb.in)
     {
+      if (!BulkAllowed()) return false;
       const InResult r = device_.InToken(static_cast<uint8_t>(urb.ep));
       if (r.handshake == Handshake::NAK) return false;
+      ++bulk_used_;
       progress_ = true;
       if (r.handshake == Handshake::STALL)
       {
@@ -451,8 +472,10 @@ class UsbIpServer
     const size_t n = std::min<size_t>(packet, urb.length - urb.sent);
     std::vector<uint8_t> chunk(urb.out.begin() + urb.sent,
                                urb.out.begin() + urb.sent + n);
+    if (!BulkAllowed()) return false;
     const Handshake hs = device_.OutPacket(static_cast<uint8_t>(urb.ep), chunk);
     if (hs == Handshake::NAK) return false;
+    ++bulk_used_;
     progress_ = true;
     if (hs == Handshake::STALL)
     {
@@ -656,6 +679,12 @@ class UsbIpServer
   bool progress_ = false;
   std::chrono::steady_clock::time_point next_frame_ = std::chrono::steady_clock::now();
   bool trace_ = std::getenv("USBIP_TRACE") != nullptr;
+  unsigned bulk_per_ms_ =
+      std::getenv("USBIP_BULK_PER_MS") != nullptr
+          ? static_cast<unsigned>(std::atoi(std::getenv("USBIP_BULK_PER_MS")))
+          : 0U;
+  std::chrono::steady_clock::time_point bulk_window_ = std::chrono::steady_clock::now();
+  unsigned bulk_used_ = 0;
   std::FILE* record_ = OpenRecord();
 };
 
