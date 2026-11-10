@@ -349,6 +349,11 @@ void TestControlSetupAfterWriteData(const typename Fixture::ModeType& mode)
   TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x41, 0x71, 0, 0, 10)) == Result::OK);
   TEST_ASSERT(f.host.OutPacket(0, payload.data(), payload.size(), 1) == Result::OK);
   TEST_ASSERT(f.probe.data_count == 1U);
+  // 数据阶段已经收完：再来的 OUT 数据包不被收下 / The data stage is complete: a further
+  // OUT data packet is not taken
+  TEST_ASSERT(f.hw.HostOut(7, 0, 0, payload.data(), payload.size()) != Resp::ACK);
+  f.Service();
+  TEST_ASSERT(f.probe.data_count == 1U);
   std::vector<uint8_t> data;
   TEST_ASSERT(f.VendorRead(9, 64, data) == Result::OK && data.size() == 9U);
 }
