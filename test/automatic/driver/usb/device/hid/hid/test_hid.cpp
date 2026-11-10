@@ -335,6 +335,27 @@ void TestKeyboardReports()
               pressed[2] == static_cast<uint8_t>(HIDKeyboard::KeyCode::A) &&
               pressed[3] == static_cast<uint8_t>(HIDKeyboard::KeyCode::B));
   f.in.Complete();
+
+  // 六个键填满所有键位；超过六个是幻影状态：六个键位都填 ErrorRollOver，修饰键照常上报。
+  // Six keys fill every slot; more than six is the phantom state: all six slots hold
+  // ErrorRollOver and the modifiers are reported as usual.
+  using Key = HIDKeyboard::KeyCode;
+  keyboard.PressKey({Key::A, Key::B, Key::C, Key::D, Key::E, Key::F},
+                    HIDKeyboard::Modifier::LEFT_CTRL, false);
+  TEST_ASSERT(
+      f.in.Last().data ==
+      std::vector<uint8_t>({HIDKeyboard::Modifier::LEFT_CTRL, 0,
+                            static_cast<uint8_t>(Key::A), static_cast<uint8_t>(Key::B),
+                            static_cast<uint8_t>(Key::C), static_cast<uint8_t>(Key::D),
+                            static_cast<uint8_t>(Key::E), static_cast<uint8_t>(Key::F)}));
+  f.in.Complete();
+  keyboard.PressKey({Key::A, Key::B, Key::C, Key::D, Key::E, Key::F, Key::G},
+                    HIDKeyboard::Modifier::LEFT_SHIFT, false);
+  TEST_ASSERT(f.in.Last().length == 8);
+  TEST_ASSERT(f.in.Last().data == std::vector<uint8_t>({HIDKeyboard::Modifier::LEFT_SHIFT,
+                                                        0, 1, 1, 1, 1, 1, 1}));
+  f.in.Complete();
+
   keyboard.ReleaseAll(false);
   TEST_ASSERT(f.in.Last().data == std::vector<uint8_t>(8, 0));
   f.in.Complete();
