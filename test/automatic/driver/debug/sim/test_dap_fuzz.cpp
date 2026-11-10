@@ -633,15 +633,25 @@ void RunUnplugSeed(unsigned seed, unsigned commands)
 }
 
 /// 命令池占满、后到的包被留住（held）时拔插：留住的 OUT 槽要还给端点，否则重新枚举后
-/// 端点少了接收槽，主机再也发不出包。一条长延时命令占住 Step 线程，三条 DAP_Info 填满
-/// 命令池，再到的包留在 held 里。
+/// 端点少了接收槽，主机再也发不出包。一条 DAP_Delay（65.5 ms）占住 Step 线程，三条
+/// DAP_Info 填满命令池，再到的两个包留在 held 里，下一个包被 NAK。
+/// 这个场景要求延时命令在填池和确认 NAK 的整个过程中还没有结束；主机线程被调度走得太久
+/// （负载高、ASan）时延时先结束，Step 线程放出命令槽，多收下的包不是缺陷。所以只有
+/// 从延时命令被收下到最后一次 NAK 不超过 HOLD_WINDOW 时才判定，超过就丢弃这一轮重来。
 /// Unplug while the command pool is full and later packets are held: the held OUT slots
 /// must go back to the endpoint, otherwise after re-enumeration the endpoint is short of
-/// receive slots and the host can no longer send. A long delay keeps the Step thread
-/// busy, three DAP_Info commands fill the command pool, and packets arriving later stay
-/// in the held list.
-void TestUnplugWithHeldPackets()
+/// receive slots and the host can no longer send. A DAP_Delay (65.5 ms) keeps the Step
+/// thread busy, three DAP_Info commands fill the command pool, the next two packets stay
+/// in the held list and the one after that is NAKed.
+/// The scenario needs the delay to be still running while the pool is filled and the NAK
+/// is confirmed. If the host thread is descheduled for long (high load, ASan) the delay
+/// ends first, the Step thread gives command slots back and an extra accepted packet is
+/// not a defect. So the result counts only when no more than HOLD_WINDOW passed between
+/// the delay being accepted and the last NAK; otherwise the round is discarded and
+/// repeated.
+bool TryUnplugWithHeldPackets()
 {
+  constexpr auto HOLD_WINDOW = std::chrono::milliseconds(30);
   g_seed = 7;
   std::mt19937 rng(7);
   Rig r(0, 1);
@@ -659,18 +669,29 @@ void TestUnplugWithHeldPackets()
     if (!delay_sent) std::this_thread::yield();
   }
   FUZZ_ASSERT(delay_sent);
+  const auto delay_accepted = std::chrono::steady_clock::now();
+  // 命令池的槽数是通告的包数，一个槽被延时命令占着，再加 2 个留住的包
+  // The command pool has as many slots as the advertised packet count, one is taken by
+  // the delay, plus two held packets
+  const unsigned expected = g.packet_count + 1u;
   unsigned accepted = 0;
-  for (unsigned attempts = 0; attempts < 20000 && accepted < 8; ++attempts)
+  for (unsigned attempts = 0; attempts < 20000 && accepted < expected; ++attempts)
   {
     if (r.device.OutPacket(OUT_EP, {0x00, 0xFE}) == Sim::Handshake::ACK)
       ++accepted;
     else
       std::this_thread::yield();
   }
-  // 命令池的槽数是通告的包数，一个槽被延时命令占着，再加 2 个留住的包
-  // The command pool has as many slots as the advertised packet count, one is taken by
-  // the delay, plus two held packets
-  FUZZ_ASSERT(accepted == g.packet_count + 1u);
+  // 池和两个留住的包都满了：后面的包必须全部被 NAK / Pool and held packets are full:
+  // every further packet must be NAKed
+  unsigned extra = 0;
+  for (unsigned attempts = 0; attempts < 200u; ++attempts)
+  {
+    if (r.device.OutPacket(OUT_EP, {0x00, 0xFE}) == Sim::Handshake::ACK) ++extra;
+  }
+  if (std::chrono::steady_clock::now() - delay_accepted > HOLD_WINDOW) return false;
+  FUZZ_ASSERT(accepted == expected);
+  FUZZ_ASSERT(extra == 0u);
   r.device.Disconnect();
   s.Forget();
   s.idle_limit = std::chrono::seconds(5);
@@ -680,6 +701,14 @@ void TestUnplugWithHeldPackets()
   g.Connect();
   for (int i = 0; i < 16; ++i) g.Random();
   s.Drain();
+  return true;
+}
+
+void TestUnplugWithHeldPackets()
+{
+  for (int round = 0; round < 50; ++round)
+    if (TryUnplugWithHeldPackets()) return;
+  FUZZ_ASSERT(false);
 }
 
 /// WAIT 要如实报告：DAP_TransferConfigure 的 WAIT 重试为 0，目标连回两个 WAIT，
