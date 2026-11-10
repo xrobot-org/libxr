@@ -495,15 +495,25 @@ void ESP32USBEndpoint::HandleInInterrupt(bool in_isr)
   usb_dwc_diepint_reg_t intr = {};
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
 
+  // 停止序列正在等的那一位不在这里清，留给 AdvanceStop：它可能在上面的 AdvanceStop 之后
+  // 才置位（EPDIS 刚写下去端点就禁用了），在这里清掉就没人处理，停止会一直等到超时。
+  // The bit the stop sequence is waiting for is not cleared here but left to AdvanceStop:
+  // it may have been set after the AdvanceStop above (the endpoint was disabled right
+  // after EPDIS was written), and clearing it here would leave it unhandled and the stop
+  // waiting until it times out.
+  uint32_t awaited = 0U;
+  if (stop_phase_ == StopPhase::SNAK_WAIT) awaited = USB_DWC_INEPNE_MSK;
+  if (stop_phase_ == StopPhase::DIS_WAIT) awaited = USB_DWC_EPDISD_MSK;
+
   if (ep_num == 0U)
   {
     intr.val = dev->diepint0_reg.val;
-    dev->diepint0_reg.val = intr.val;
+    dev->diepint0_reg.val = intr.val & ~awaited;
   }
   else
   {
     intr.val = dev->in_eps[ep_num - 1U].diepint_reg.val;
-    dev->in_eps[ep_num - 1U].diepint_reg.val = intr.val;
+    dev->in_eps[ep_num - 1U].diepint_reg.val = intr.val & ~awaited;
   }
 
   if (!device_.DmaEnabled() && intr.txfemp)
@@ -555,15 +565,19 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
   usb_dwc_doepint_reg_t intr = {};
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
 
+  // 停止序列等的 EPDISD 留给 AdvanceStop 清（见 HandleInInterrupt）。
+  // The EPDISD a stop sequence waits for is left to AdvanceStop (see HandleInInterrupt).
+  const uint32_t awaited = (stop_phase_ == StopPhase::DIS_WAIT) ? USB_DWC_EPDISD_MSK : 0U;
+
   if (ep_num == 0U)
   {
     intr.val = dev->doepint0_reg.val;
-    dev->doepint0_reg.val = intr.val;
+    dev->doepint0_reg.val = intr.val & ~awaited;
   }
   else
   {
     intr.val = dev->out_eps[ep_num - 1U].doepint_reg.val;
-    dev->out_eps[ep_num - 1U].doepint_reg.val = intr.val;
+    dev->out_eps[ep_num - 1U].doepint_reg.val = intr.val & ~awaited;
   }
 
   const bool ep0_setup_related =

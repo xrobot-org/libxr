@@ -110,7 +110,7 @@ constexpr Mode NORMAL{"SETUP event at the end of the SETUP stage"};
 constexpr Mode EARLY{"SETUP event with the packet", true};
 constexpr Mode SLOW{"slow flush and disable", false, 3, 12};
 constexpr Mode IMMEDIATE{"endpoint disable takes effect at once", false, 1, 0};
-constexpr Mode MODES[] = {NORMAL, EARLY, SLOW};
+constexpr Mode MODES[] = {NORMAL, EARLY, SLOW, IMMEDIATE};
 
 RawData Mem(size_t bytes) { return {Arena().Alloc(bytes, 64U), bytes}; }
 
@@ -467,7 +467,6 @@ void FindingIsochronousFrames() { TestIsochronousFrames<Probe>(NORMAL); }
 void FindingIsochronousMissedFrame() { TestIsochronousMissedFrame<Probe>(NORMAL); }
 void FindingUacStreams() { TestUacStreams<Uac>(NORMAL); }
 
-void FindingStopInImmediateDisable() { TestStopIn<Probe>(IMMEDIATE); }
 void FindingStopInProgress() { TestStopIn<ExactProbe>(NORMAL); }
 void FindingStopInRace() { TestStopInRace<Probe>(NORMAL); }
 void FindingCloseKeepsEndpointActive() { TestReconfigure<ExactProbe>(NORMAL); }
@@ -517,8 +516,6 @@ int main(int argc, char** argv)
         FindingIsochronousMissedFrame, "log.items[0].result == ErrorCode::FAILED"},
        {"uac_streams", "UAC1 microphone sends in every other frame only",
         FindingUacStreams, "packets == 3000U"},
-       {"stop_in_immediate_disable", "EPDISD cleared unhandled when it is set at once",
-        FindingStopInImmediateDisable, "!f.probe.bulk_in->IsStopping()"},
        {"out_disable_without_global_nak", "OUT endpoint disabled without global OUT NAK",
         FindingOutDisableWithoutGlobalNak, "disabled without global OUT NAK"}});
   if (handled >= 0) return handled;
