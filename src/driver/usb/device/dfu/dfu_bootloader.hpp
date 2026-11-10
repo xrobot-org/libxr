@@ -63,6 +63,11 @@ class DfuBootloaderBackend
     }
     seal_storage_size_ =
         AlignUp(sizeof(SealRecord), NonZeroWriteSize(flash_.MinWriteSize()));
+    // image_size_limit 包含 seal 记录：seal 必须整体落在镜像区之内。
+    // image_size_limit includes the seal record, which must lie entirely inside the
+    // image region.
+    REQUIRE(seal_offset_ <= image_size_limit_ &&
+            seal_storage_size_ <= image_size_limit_ - seal_offset_);
     seal_storage_ = new uint8_t[seal_storage_size_];
     transfer_size_ = PayloadLimit();
     if (transfer_size_ == 0u)

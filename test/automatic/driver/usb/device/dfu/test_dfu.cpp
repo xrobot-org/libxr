@@ -16,9 +16,14 @@
  * application calls Process(), with no Timer task.
  */
 
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <array>
+#include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -31,6 +36,12 @@
 
 using namespace LibXR;
 using namespace LibXR::USB;
+
+extern "C" void libxr_fatal_error(const char* file, uint32_t line, bool)
+{
+  std::fprintf(stderr, "%s:%u: USB product assertion failed\n", file, line);
+  std::abort();
+}
 
 namespace
 {
@@ -197,7 +208,8 @@ struct BootFixture
 {
   std::array<uint8_t, 4096> flash_mem{};
   RamFlash flash{256, 8, {flash_mem.data(), flash_mem.size()}};
-  TestBoot boot{flash, 0, 2048, 2048, &JumpToApp, nullptr, false};
+  // The 16-byte seal record is the last part of the 2048-byte image region.
+  TestBoot boot{flash, 0, 2048, 2032, &JumpToApp, nullptr, false};
   EndpointPool pool{2};
   DeviceComposition composition{pool, {&TEST_LANGUAGE}, {{&boot}}};
   Callback<uint32_t> handler;
@@ -287,6 +299,27 @@ void TestBootloaderDownload()
   TEST_ASSERT(Bytes(result.write_data)[0] ==
               static_cast<uint8_t>(DFUState::DFU_MANIFEST_SYNC));
 
+  // GETSTATUS starts the manifest; it runs from Process() after the status stage and
+  // writes the seal record at the configured offset.
+  TEST_ASSERT(ask(DFU_GETSTATUS, 0, 6, 0) == ErrorCode::OK);
+  TEST_ASSERT(Bytes(result.write_data)[4] ==
+              static_cast<uint8_t>(DFUState::DFU_MANIFEST));
+  boot.OnClassInDataStatusComplete(false, DFU_GETSTATUS);
+  boot.Process();
+  TEST_ASSERT(ask(DFU_GETSTATUS, 0, 6, 0) == ErrorCode::OK);
+  TEST_ASSERT(Bytes(result.write_data)[0] == static_cast<uint8_t>(DFUStatusCode::OK));
+  TEST_ASSERT(Bytes(result.write_data)[4] ==
+              static_cast<uint8_t>(DFUState::DFU_MANIFEST_WAIT_RESET));
+  uint32_t seal_magic = 0;
+  uint32_t seal_size = 0;
+  std::memcpy(&seal_magic, f.flash_mem.data() + 2032, sizeof(seal_magic));
+  std::memcpy(&seal_size, f.flash_mem.data() + 2036, sizeof(seal_size));
+  TEST_ASSERT(seal_magic == DfuBootloaderBackend::SEAL_MAGIC);
+  TEST_ASSERT(seal_size == payload.size());
+  // A backend constructed over the same flash finds the sealed image.
+  DfuBootloaderBackend reopened(f.flash, 0, 2048, 2032, &JumpToApp, nullptr, false);
+  TEST_ASSERT(reopened.HasValidImage() && reopened.ImageSize() == payload.size());
+
   // A block longer than wTransferSize is refused.
   TEST_ASSERT(ask(DFU_DNLOAD, 0, 257, 0) != ErrorCode::OK);
   // DETACH belongs to the runtime class, not to the bootloader.
@@ -295,6 +328,33 @@ void TestBootloaderDownload()
   TEST_ASSERT(ask(DFU_GETSTATUS, 0, 6, 9) == ErrorCode::NOT_FOUND);
 
   boot.UnbindEndpoints(f.pool, false);
+}
+
+/// Constructing a backend whose seal record does not fit inside the image region is a
+/// fatal configuration error.
+bool SealConfigAborts(size_t image_limit, size_t seal_offset)
+{
+  const pid_t child = fork();
+  TEST_ASSERT(child >= 0);
+  if (child == 0)
+  {
+    std::array<uint8_t, 4096> mem{};
+    RamFlash flash{256, 8, {mem.data(), mem.size()}};
+    DfuBootloaderBackend backend(flash, 0, image_limit, seal_offset, &JumpToApp, nullptr,
+                                 false);
+    _exit(0);
+  }
+  int status = 0;
+  TEST_ASSERT(waitpid(child, &status, 0) == child);
+  return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
+}
+
+void TestSealPlacement()
+{
+  TEST_ASSERT(!SealConfigAborts(2048, 2032));
+  TEST_ASSERT(SealConfigAborts(2048, 2048));
+  TEST_ASSERT(SealConfigAborts(2048, 2040));
+  TEST_ASSERT(SealConfigAborts(2048, 4096));
 }
 
 /// 截短的 DNLOAD 数据阶段锁存错误，核心随后的 STALL（OnControlAbort）不能把它清掉；
@@ -451,7 +511,7 @@ void TestWinUsbSetComesFromComposition()
   TestRuntime rt(&JumpToBootloader);
   std::array<uint8_t, 4096> flash_mem{};
   RamFlash flash{256, 8, {flash_mem.data(), flash_mem.size()}};
-  TestBoot boot{flash, 0, 2048, 2048, &JumpToApp, nullptr, false};
+  TestBoot boot{flash, 0, 2048, 2032, &JumpToApp, nullptr, false};
   EndpointPool pool{2};
   DeviceComposition composite(pool, {&TEST_LANGUAGE}, {{&boot, &rt}});
   TEST_ASSERT(static_cast<DeviceClass&>(rt).GetBosCapabilityCount() == 0U);
@@ -473,6 +533,7 @@ int main()
   TestRuntimeJumpsFromProcess();
   TestBootloaderDownload();
   TestTruncatedDownloadKeepsError();
+  TestSealPlacement();
   TestPollWaitCountsFromTheAnswer();
   TestWinUsbSetComesFromComposition();
   std::puts(
