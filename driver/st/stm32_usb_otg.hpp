@@ -118,7 +118,6 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   USB_OTG_INEndpointTypeDef* InEp(uint8_t num) const;
   USB_OTG_OUTEndpointTypeDef* OutEp(uint8_t num) const;
   volatile uint32_t& Fifo(uint8_t num) const;
-  uint32_t CoreId() const;
 
   void HandleInterrupt();
   void OnUsbReset();

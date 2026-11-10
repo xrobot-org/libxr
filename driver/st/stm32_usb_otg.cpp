@@ -219,8 +219,6 @@ volatile uint32_t& STM32USBOtgDevice::Fifo(uint8_t num) const
       reinterpret_cast<uintptr_t>(core_) + USB_OTG_FIFO_BASE + num * USB_OTG_FIFO_SIZE);
 }
 
-uint32_t STM32USBOtgDevice::CoreId() const { return core_id_; }
-
 void STM32USBOtgDevice::Start(bool)
 {
   USB::EndpointPool::HardwareScope hardware(this);
@@ -302,7 +300,7 @@ void STM32USBOtgDevice::ArmSetup()
 {
   auto* out0 = OutEp(0);
   // Newer cores must not be reprogrammed while EP0 OUT is still enabled (as HAL does).
-  if (CoreId() > USB_OTG_CORE_ID_300A && (out0->DOEPCTL & USB_OTG_DOEPCTL_EPENA) != 0U)
+  if (core_id_ > USB_OTG_CORE_ID_300A && (out0->DOEPCTL & USB_OTG_DOEPCTL_EPENA) != 0U)
     return;
   out0->DOEPTSIZ =
       USB_OTG_DOEPTSIZ_STUPCNT | (1U << PKTCNT_POS) | (SETUP_COUNT * SETUP_SIZE);
@@ -450,7 +448,7 @@ void STM32USBOtgDevice::DeliverSetup(const uint8_t* packet)
 
 void STM32USBOtgDevice::HandleOutEndpoints()
 {
-  const uint32_t core_id = CoreId();
+  const uint32_t core_id = core_id_;
   uint32_t bits = (Device()->DAINT & Device()->DAINTMSK) >> 16U;
   while (bits != 0U)
   {
