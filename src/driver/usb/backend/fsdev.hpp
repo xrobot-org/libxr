@@ -321,9 +321,6 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
         static_cast<uint16_t>(HW::ReadCntr() & ~(HW::kCntrRunMask | HW::kCntrSofm)));
   }
 
-  void Init(bool in_isr) override { DeviceCore<FullSpeedCapabilities>::Init(in_isr); }
-  void Deinit(bool in_isr) override { DeviceCore<FullSpeedCapabilities>::Deinit(in_isr); }
-
   ~FSDevDevice() override
   {
     if (self_ == this)
