@@ -363,17 +363,22 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
    * @brief 按下指定按键 / Press the specified key(s)
    * @param keys 按键列表（最多 6 个）/ List of keys (max 6)
    * @param mods 修饰键 / Modifiers
-   * @note 标准 HID Boot 协议只支持最多 6 键 / Boot protocol supports up to 6 keys
+   * @note 标准 HID Boot 协议只支持最多 6 键。超过 6 个键时按 HID 规范报告幻影状态：六个
+   *       键位全部填 ErrorRollOver（0x01），修饰键照常上报。
+   *       Boot protocol supports up to 6 keys. With more than 6 keys the phantom state of
+   *       the HID specification is reported: all six key slots hold ErrorRollOver
+   *       (0x01), the modifiers are reported as usual.
    */
   void PressKey(std::initializer_list<KeyCode> keys, uint8_t mods = Modifier::NONE,
                 bool in_isr = false)
   {
-    ASSERT(keys.size() <= 6);
     report_ = {static_cast<uint8_t>(mods), 0, {0}};
+    const bool phantom = keys.size() > sizeof(report_.keys);
     size_t i = 0;
     for (auto k : keys)
     {
-      report_.keys[i++] = static_cast<uint8_t>(k);
+      if (i >= sizeof(report_.keys)) break;
+      report_.keys[i++] = static_cast<uint8_t>(phantom ? KeyCode::ERROR_ROLLOVER : k);
     }
     SendInputReport(ConstRawData{&report_, sizeof(report_)}, in_isr);
   }
