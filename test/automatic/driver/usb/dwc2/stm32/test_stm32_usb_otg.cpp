@@ -425,11 +425,8 @@ void RunAll()
     TestEnumeration<Probe>(mode);
     TestControlRead<Probe>(mode);
     TestControlWrite<Probe>(mode);
-    if (!(mode.dma && mode.core <= Dwc2::SNPSID_300A))
-    {
-      TestControlStall<Probe>(mode);
-      TestControlStallOutData<Probe>(mode);
-    }
+    TestControlStall<Probe>(mode);
+    TestControlStallOutData<Probe>(mode);
     TestControlBackToBackSetups<Probe>(mode);
     TestControlSetupDuringInData<Probe>(mode);
     TestControlSetupDuringOutData<Probe>(mode);
@@ -465,15 +462,6 @@ void RunAll()
 // ---------------------------------------------------------------------------
 // Findings: behaviour the backend does not have yet (not in the default run)
 // ---------------------------------------------------------------------------
-
-/// DMA 模式、3.00a 及更早的核心：控制请求被 STALL 之后 EP0 OUT 没有重新使能。手册要求
-/// DMA 模式下使能 EP0 OUT 才能接收 SETUP，于是下一个 SETUP 留在接收 FIFO 里，设备不再
-/// 应答控制请求。
-/// DMA mode on a core up to 3.00a: EP0 OUT is not enabled again after a control request
-/// was stalled. The manual requires EP0 OUT to be enabled to receive a SETUP in DMA mode,
-/// so the next SETUP stays in the receive FIFO and the device answers no more control
-/// requests.
-void FindingDmaStallOldCore() { TestControlStall<Probe>(DMA_281A); }
 
 /// DMA 模式：控制写的数据阶段收完后 EP0 OUT 处于禁用状态，直到状态阶段完成才重新使能。
 /// 主机放弃状态阶段、直接发下一个 SETUP 时，这个 SETUP 写不进内存，新请求得不到应答。
@@ -548,9 +536,7 @@ int main(int argc, char** argv)
   }
   const int handled = TestFindings::Run(
       argc, argv,
-      {{"dma_stall_old_core", "EP0 OUT not enabled again after a stalled request",
-        FindingDmaStallOldCore},
-       {"dma_setup_after_write_data", "SETUP not received before a control write status",
+      {{"dma_setup_after_write_data", "SETUP not received before a control write status",
         FindingDmaSetupAfterWriteData},
        {"dma_data_with_status_phase", "XFRC read together with STSPHSRX is dropped",
         FindingDmaDataWithStatusPhase},
