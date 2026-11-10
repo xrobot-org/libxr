@@ -20,9 +20,12 @@
  * accesses at one address therefore follow the hardware, with the backend source compiled
  * as it is. Linux x86-64 only; accesses are handled as aligned 32-bit words.
  *
- * 在调试器里运行时，这两个信号要交给程序：`handle SIGSEGV SIGTRAP nostop noprint pass`。
- * Under a debugger both signals must be passed on:
- * `handle SIGSEGV SIGTRAP nostop noprint pass`.
+ * 单步用的是处理器的陷阱标志，所以这样的程序不能在 gdb 里运行（gdb 自己占用单步陷阱）。
+ * 不属于寄存器区的非法访问会打印地址、指令地址和调用栈再终止。
+ * The single step uses the trap flag of the processor, so such a program does not run
+ * under gdb (which takes the single-step trap for itself). An invalid access outside the
+ * register area prints its address, the instruction address and a backtrace before the
+ * program dies.
  */
 
 #pragma once

@@ -155,7 +155,8 @@ void TestControlRead(const typename Fixture::ModeType& mode)
       if (packet.size() < 64U) break;
     }
     TEST_ASSERT(packets == shape.packets && data.size() == shape.expected);
-    TEST_ASSERT(std::memcmp(data.data(), f.probe.input.data(), data.size()) == 0);
+    TEST_ASSERT(data.empty() ||
+                std::memcmp(data.data(), f.probe.input.data(), data.size()) == 0);
     // 数据阶段结束后设备不再发数据 / Nothing more follows the data stage
     TEST_ASSERT(f.hw.HostIn(7, 0).resp == Resp::NAK);
     f.Service();
