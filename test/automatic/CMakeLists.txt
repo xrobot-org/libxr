@@ -360,3 +360,17 @@ target_include_directories(usb_sim_usbip PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..
 add_executable(usb_sim_classes driver/usb/sim/usb_sim_classes.cpp)
 target_link_libraries(usb_sim_classes PRIVATE xr pthread)
 target_include_directories(usb_sim_classes PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# SWD target simulation: ADIv5 SW-DP and MEM-AP at the pin level, through the Swd
+# interface and through SwdGeneralGPIO with simulated pins.
+add_executable(test_swd_target driver/debug/sim/test_swd_target.cpp)
+target_link_libraries(test_swd_target PRIVATE xr)
+target_include_directories(test_swd_target PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME swd_target COMMAND test_swd_target)
+set_tests_properties(swd_target PROPERTIES TIMEOUT 30)
+
+# remote_bitbang server for the simulated SWD target, so that real OpenOCD can drive it
+# (manual and nightly use; not a ctest).
+add_executable(swd_target_bitbang driver/debug/sim/swd_target_bitbang.cpp)
+target_link_libraries(swd_target_bitbang PRIVATE xr)
+target_include_directories(swd_target_bitbang PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
