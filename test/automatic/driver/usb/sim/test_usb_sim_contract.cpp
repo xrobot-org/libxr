@@ -16,6 +16,7 @@
  * running when it is released, and slots acquired and submitted from another thread.
  */
 
+#include <atomic>
 #include <cstdio>
 #include <mutex>
 #include <thread>
@@ -43,9 +44,17 @@ using SimHost = Sim::Host<Caps>;
 class Probe : public DeviceClass
 {
  public:
-  explicit Probe(uint8_t number, bool arm_out = true) : number_(number), arm_out_(arm_out)
+  explicit Probe(uint8_t number, bool arm_out = true, bool wants_time = false)
+      : number_(number), arm_out_(arm_out), wants_time_(wants_time)
   {
   }
+
+  /// 要帧时间的类：每个到达核心的 SOF 都在 owner 里调用 OnBusTime
+  /// A class that wants bus time: every SOF that reaches the core calls OnBusTime in the
+  /// owner
+  bool WantsBusTime() const override { return wants_time_; }
+  void OnBusTime(bool, const BusTime&) override { ++bus_times; }
+  std::atomic<unsigned> bus_times{0};
 
   Endpoint* in = nullptr;
   Endpoint* out = nullptr;
@@ -150,6 +159,7 @@ class Probe : public DeviceClass
   LIBXR_PACKED_END
   uint8_t number_;
   bool arm_out_;
+  bool wants_time_;
 };
 
 /// 仿真设备加探针类，已上电、复位并完成枚举 / Simulated device with the probe class,
@@ -160,8 +170,9 @@ struct Bench
   SimDevice device;
   SimHost host;
 
-  explicit Bench(const Profile& profile = {}, bool arm_out = true)
-      : probe(1, arm_out),
+  explicit Bench(const Profile& profile = {}, bool arm_out = true,
+                 bool wants_time = false)
+      : probe(1, arm_out, wants_time),
         device(profile, DeviceDescriptor::PacketSize0::SIZE_64, 0x1209, 0x0001, 0x0100,
                {&TEST_LANGUAGE}, {{&probe}}),
         host(device)
@@ -223,6 +234,28 @@ void TestInBorrowOrderAndZlp()
   TEST_ASSERT(b.probe.in_done[1].result == ErrorCode::OK &&
               b.probe.in_done[1].actual == 64);
   // 没有请求时 NAK / NAK with nothing submitted
+  TEST_ASSERT(b.device.InToken(1).handshake == Handshake::NAK);
+}
+
+/// 包长整数倍的传输带 zlp 时，主机先取到满包，再取到一个单独的零长包，传输在零长包
+/// 之后才完成；不带 zlp 时满包取走就完成，之后是 NAK。
+/// A packet-multiple transfer with zlp: the host gets the full packet and then a separate
+/// zero-length packet, and the transfer completes only after it; without zlp it completes
+/// with the full packet and the next token is NAKed.
+void TestZeroLengthPacketAfterPacketMultiple()
+{
+  Bench b;
+  b.SubmitIn(Bytes(PACKET, 50), true);
+  const InResult full = b.device.InToken(1);
+  TEST_ASSERT(full.handshake == Handshake::ACK && full.data.size() == PACKET);
+  TEST_ASSERT(b.probe.in_done.empty());
+  const InResult zlp = b.device.InToken(1);
+  TEST_ASSERT(zlp.handshake == Handshake::ACK && zlp.data.empty());
+  TEST_ASSERT(b.probe.in_done.size() == 1 && b.probe.in_done[0].actual == PACKET);
+
+  b.SubmitIn(Bytes(PACKET, 7), false);
+  TEST_ASSERT(b.device.InToken(1).data.size() == PACKET);
+  TEST_ASSERT(b.probe.in_done.size() == 2);
   TEST_ASSERT(b.device.InToken(1).handshake == Handshake::NAK);
 }
 
@@ -299,6 +332,40 @@ void TestStopConfirmedAfterFrames()
               b.probe.in_done[0].result == ErrorCode::ABORTED &&
               b.probe.in_done[0].actual == 64);
   TEST_ASSERT(b.device.StopTimeouts() == 0);
+}
+
+/// 重新 SET_CONFIGURATION 时旧绑定上有在途数据：停止待决期间状态阶段不就绪，新绑定要等
+/// 停止确认之后才建立，之后端点照常工作。
+/// SET_CONFIGURATION again with data in flight on the old binding: the status stage is
+/// not ready while the stop is pending, the new binding is made only after the stop is
+/// confirmed, and the endpoints work as usual afterwards.
+void TestReconfigureWaitsForPendingStop()
+{
+  Profile profile;
+  profile.stop_mode = StopMode::FRAMES;
+  profile.stop_frames = 3;
+  // 类要帧时间：待决停止期间每一帧都让 owner 处理一次事件，重新绑定不能趁机提前发生。
+  // The class wants bus time: every frame during the pending stop makes the owner handle
+  // an event, and the new binding must not happen early because of it.
+  Bench b(profile, true, true);
+  b.SubmitIn(Bytes(200, 3));
+  TEST_ASSERT(b.device.InToken(1).data.size() == 64);
+
+  b.device.Setup(MakeSetup(0x00, 9, 1, 0, 0));
+  TEST_ASSERT(b.device.In(1)->StopPending());
+  TEST_ASSERT(b.device.InToken(0).handshake == Handshake::NAK);
+  b.device.Sof();
+  b.device.Sof();
+  TEST_ASSERT(b.device.InToken(0).handshake == Handshake::NAK);
+  TEST_ASSERT(!b.probe.Bound());
+  b.device.Sof();  // 第三帧确认停止 / the third frame confirms the stop
+  const InResult status = b.device.InToken(0);
+  TEST_ASSERT(status.handshake == Handshake::ACK && status.data.empty());
+  TEST_ASSERT(b.probe.Bound());
+  TEST_ASSERT(b.probe.in_done.size() == 1 &&
+              b.probe.in_done[0].result == ErrorCode::ABORTED);
+  b.SubmitIn(Bytes(5, 9));
+  TEST_ASSERT(b.host.BulkIn(1, PACKET, 64) == Bytes(5, 9));
 }
 
 /// 停止一直不确认：第 STOP_FRAME_LIMIT 帧触发停止超时，设备断开，复位后重新枚举可用。
@@ -522,9 +589,11 @@ int main()
 {
   TestEnumeration();
   TestInBorrowOrderAndZlp();
+  TestZeroLengthPacketAfterPacketMultiple();
   TestOutBorrowAlternates();
   TestUnbindEndsRequestsOnce();
   TestStopConfirmedAfterFrames();
+  TestReconfigureWaitsForPendingStop();
   TestStopTimeoutRecovers();
   TestSuspendPausesStopCounting();
   TestDisconnectWhileSuspendedWithPendingStop();
