@@ -308,6 +308,26 @@ target_compile_definitions(
 add_test(NAME ch32_usbfs COMMAND test_ch32_usbfs)
 set_tests_properties(ch32_usbfs PROPERTIES TIMEOUT 30)
 
+# STM32 OTG backend against a model of the DWC2 device controller: the real backend
+# source with a fake CubeMX main.h, its register accesses trapped at the OTG addresses
+# (Linux x86-64 only).
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+  add_executable(
+    test_stm32_usb_otg
+    driver/usb/dwc2/stm32/test_stm32_usb_otg.cpp driver/usb/dwc2/stm32/fake_stm32_hal.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/st/stm32_usb_otg.cpp"
+  )
+  target_link_libraries(test_stm32_usb_otg PRIVATE xr)
+  target_include_directories(
+    test_stm32_usb_otg
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/dwc2"
+            "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/dwc2/stm32"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/st"
+  )
+  add_test(NAME stm32_usb_otg COMMAND test_stm32_usb_otg)
+  set_tests_properties(stm32_usb_otg PROPERTIES TIMEOUT 120)
+endif()
+
 # cdc_test classes: lease return, DTR-triggered packet and the read re-arm.
 add_executable(test_usb_cdc_test driver/usb/device/cdc/test_cdc_test.cpp)
 target_link_libraries(test_usb_cdc_test PRIVATE xr)
