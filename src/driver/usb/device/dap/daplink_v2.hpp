@@ -1319,27 +1319,6 @@ class DapLinkV2Class : public DeviceClass
   /// gives (before it is limited by the IN slot)
   static constexpr uint16_t ConfiguredDapPacketSize() { return MAX_DAP_PACKET_SIZE; }
 
-  /**
-   * @brief Clip response length by DAP packet size and buffer capacity
-   */
-  uint16_t ClipResponseLength(uint16_t len, uint16_t cap) const
-  {
-    const uint16_t DAP_PS = GetDapPacketSize();
-    if (len > DAP_PS)
-    {
-      len = DAP_PS;
-    }
-    if (len > RESP_SLOT_SIZE)
-    {
-      len = RESP_SLOT_SIZE;
-    }
-    if (len > cap)
-    {
-      len = cap;
-    }
-    return len;
-  }
-
   // ============================================================================
   // Queued command helpers
   // ============================================================================
