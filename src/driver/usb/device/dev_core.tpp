@@ -301,7 +301,6 @@ void DeviceCore<C>::Abort(bool in_isr)
   phase_ = Phase::IDLE;
   control_in_ = {nullptr, 0};
   transferred_ = 0;
-  in_segment_size_ = 0;
   in_tail_zero_ = false;
   status_out_armed_ = false;
   status_out_seen_ = false;
@@ -394,7 +393,6 @@ void DeviceCore<C>::SendNextIn(bool in_isr)
   if constexpr ((C::SPEEDS & SpeedBit(Speed::HIGH)) != 0U)
     if (this->other_speed_descriptor && transferred_ <= 1U && transferred_ + amount > 1U)
       static_cast<uint8_t*>(slot.data.addr_)[1U - transferred_] = 7U;
-  in_segment_size_ = amount;
   // A reply shorter than wLength that ends on a packet boundary is terminated by a
   // ZLP within the same request.
   const bool last = transferred_ + amount == control_in_.size_;
@@ -433,7 +431,7 @@ void DeviceCore<C>::InComplete(bool in_isr, const Endpoint::Completion& completi
   // A newer SETUP waits or replaces this transfer: its bookkeeping goes on (a transfer
   // the host completed still completes), but nothing of it may stall EP0 or send on it.
   const bool superseded = Superseded();
-  if (phase_ != Phase::DATA_IN || completion.actual != in_segment_size_)
+  if (phase_ != Phase::DATA_IN)
   {
     if (!superseded) Stall(in_isr);
     return;

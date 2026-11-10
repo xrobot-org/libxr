@@ -177,7 +177,6 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   RawData control_out_;
   ConstRawData control_in_{nullptr, 0};
   size_t transferred_ = 0;
-  size_t in_segment_size_ = 0;
   bool in_tail_zero_ = false;
   bool status_out_armed_ = false;
   bool status_out_seen_ = false;
