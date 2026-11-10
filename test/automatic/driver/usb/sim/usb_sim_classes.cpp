@@ -307,9 +307,9 @@ int main(int argc, char** argv)
   }
   if (kind == "gsusb2")
   {
-    // 两个通道、带速率限制的总线：用来复现通道 0 突发发送时通道 1 的接收丢帧。
-    // Two channels on a rate-limited bus, to reproduce receive loss on channel 1 while
-    // channel 0 bursts.
+    // 两个通道、带速率限制的总线：通道 0 突发发送时，通道 1 的接收帧不应丢失。
+    // Two channels on a rate-limited bus: while channel 0 bursts, channel 1 must not lose
+    // received frames.
     static CanBus bus;
     static GsUsbClass<2> gs(Endpoint::EPNumber::EP1, Endpoint::EPNumber::EP2,
                             {&bus.Channel(0), &bus.Channel(1)});

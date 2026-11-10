@@ -22,11 +22,12 @@
  * Seeds: DAP_FUZZ_SEEDS (default 6), DAP_FUZZ_CMDS (default 120); a failure prints the
  * seed.
  *
- * 对候选线的调整：每个 DAP_QueueCommands 包就地应答（README 的迁移说明和
- * TestQueueAndExecuteAnswerPerPacket 规定如此），所以不再有"排队包的应答随触发包"。
- * One adjustment for the candidate: every DAP_QueueCommands packet is answered in place
- * (the README migration note and TestQueueAndExecuteAnswerPerPacket say so), so queued
- * packets no longer wait for the trigger.
+ * 每个 DAP_QueueCommands 包就地应答（src/driver/usb/README.md 的迁移说明和
+ * test_daplink_v2 的 TestQueueAndExecuteAnswerPerPacket 规定如此），所以排队包不等
+ * 触发包。
+ * Every DAP_QueueCommands packet is answered in place (the migration notes in
+ * src/driver/usb/README.md and TestQueueAndExecuteAnswerPerPacket in test_daplink_v2 say
+ * so), so queued packets do not wait for a trigger packet.
  */
 
 #include <atomic>
@@ -38,7 +39,6 @@
 #include <thread>
 #include <vector>
 
-#include "automatic/driver/usb/sim/sim_findings.hpp"
 #include "automatic/driver/usb/sim/usb_sim.hpp"
 #include "daplink_v2.hpp"
 #include "swd_target.hpp"
@@ -501,15 +501,15 @@ class Generator
     }
   }
 
-  /// 原子命令：候选线上每个 DAP_QueueCommands / DAP_ExecuteCommands 包就地执行并立即
-  /// 应答，应答是 DAP_ExecuteCommands 的格式 [0x7F, n, ...]（候选线 README 的迁移说明和
-  /// test_daplink_v2 的 TestQueueAndExecuteAnswerPerPacket 都是这样规定的；Line A
-  /// 把排队包 的应答推迟到触发包，见 C-missing-fixes 第 12a 项）。 Atomic commands: on
-  /// the candidate every DAP_QueueCommands / DAP_ExecuteCommands packet runs its commands
-  /// in place and is answered at once, in the DAP_ExecuteCommands format [0x7F, n, ...]
-  /// (the candidate's README migration note and test_daplink_v2
-  /// TestQueueAndExecuteAnswerPerPacket say so; Line A defers the responses of queued
-  /// packets to the trigger packet, C-missing-fixes item 12a).
+  /// 原子命令：每个 DAP_QueueCommands / DAP_ExecuteCommands 包就地执行并立即应答，应答
+  /// 是 DAP_ExecuteCommands 的格式 [0x7F, n, ...]（src/driver/usb/README.md 的迁移说明和
+  /// test_daplink_v2 的 TestQueueAndExecuteAnswerPerPacket 都是这样规定的；有的固件把
+  /// 排队包的应答推迟到触发包，这里不是）。
+  /// Atomic commands: every DAP_QueueCommands / DAP_ExecuteCommands packet runs its
+  /// commands in place and is answered at once, in the DAP_ExecuteCommands format
+  /// [0x7F, n, ...] (the migration notes in src/driver/usb/README.md and
+  /// TestQueueAndExecuteAnswerPerPacket in test_daplink_v2 say so; some firmware defers
+  /// the responses of queued packets to the trigger packet, this one does not).
   void Atomic()
   {
     const int k = Rand(0, 2);
@@ -563,9 +563,9 @@ void Setup(Rig& r, Session& s, Generator& g)
   const Bytes caps = Query(r, s, 0xF0);
   const Bytes count = Query(r, s, 0xFE);
   FUZZ_ASSERT(caps.size() == 3 && count.size() == 3);
-  // 候选线不声明原子命令位（0x10），每个组包就地应答（第 12a 项）；SWD 位必须在
-  // The candidate does not announce the atomic-commands bit (0x10); every group packet is
-  // answered in place (item 12a). The SWD bit must be set.
+  // 不声明原子命令位（0x10），每个组包就地应答；SWD 位必须在
+  // The atomic-commands bit (0x10) is not announced; every group packet is answered in
+  // place. The SWD bit must be set.
   FUZZ_ASSERT((caps[2] & 0x01u) != 0u);
   g.SetIdentity(caps[2], count[2]);
   g.QueryInfo();
@@ -791,7 +791,8 @@ void Regular()
 
 }  // namespace
 
-int main(int argc, char** argv)
+int main()
 {
-  return USB::Sim::RunTestProgram(argc, argv, Regular, {});
+  Regular();
+  return 0;
 }

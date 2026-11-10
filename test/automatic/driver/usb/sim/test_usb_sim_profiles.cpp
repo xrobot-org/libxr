@@ -36,7 +36,6 @@
 #include "daplink_v2.hpp"
 #include "debug/swd_general_gpio.hpp"
 #include "hid.hpp"
-#include "sim_findings.hpp"
 #include "swd_target.hpp"
 #include "uac_mic.hpp"
 #include "usb_sim_profiles.hpp"
@@ -502,4 +501,8 @@ void RegularCases()
 }
 }  // namespace
 
-int main(int argc, char** argv) { return RunTestProgram(argc, argv, RegularCases, {}); }
+int main()
+{
+  RegularCases();
+  return 0;
+}

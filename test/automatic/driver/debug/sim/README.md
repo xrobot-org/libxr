@@ -26,22 +26,31 @@ the model). On top of it sit the real DAP v2 class and the USB simulation backen
 | `swd_target_bitbang.cpp`, `openocd_calibrate.sh`, `pyocd_calibrate.sh`, `openocd_sim.cfg` | 用真实 OpenOCD / pyOCD 校准目标模型 / calibrating the model with real OpenOCD / pyOCD |
 | `keil_sim.ini` | Keil uVision 的调试初始化脚本，只在 Windows 上用，Linux 上没有跑过 / Keil uVision debug init script, Windows only, not run on Linux |
 
-## 与候选线库的一处差别 / One difference from the candidate library
+## 原子命令组与录制的会话 / Atomic command groups and the recorded sessions
 
-1. 每个 `DAP_QueueCommands` / `DAP_ExecuteCommands` 包就地执行并立即应答，应答是
-   `DAP_ExecuteCommands` 的格式 `[0x7F, n, ...]`，能力字节不带原子命令位（0x10）。候选线的
-   README 迁移说明和 `test_daplink_v2.cpp` 的 `TestQueueAndExecuteAnswerPerPacket` 都这样规定，所以
-   随机测试不再有"排队包的应答随触发包"，回放测试只在 `DAP_Info(CAPABILITIES)` 的应答里不比较
-   0x10 这一位（`00 01 11` 对 `00 01 01`），其余字节逐字节比较。Line A 的做法见
-   `C-missing-fixes.md` 第 12a 项。
+`replay/*.txt` 里的会话是用一个声明了原子命令能力位（`DAP_Info(CAPABILITIES)` 的 0x10）的固件录的，
+那种固件把 `DAP_QueueCommands` 包的应答推迟到触发它们的 `DAP_ExecuteCommands` 包。这里的 DAP v2 类
+不声明 0x10：每个 `DAP_QueueCommands` / `DAP_ExecuteCommands` 包就地执行并立即应答，应答是
+`DAP_ExecuteCommands` 的格式 `[0x7F, n, ...]`（见 `src/driver/usb/README.md` 的迁移说明和
+`test_daplink_v2.cpp` 的 `TestQueueAndExecuteAnswerPerPacket`）。因此：
 
-1. Every `DAP_QueueCommands` / `DAP_ExecuteCommands` packet runs in place and is answered at once, in the
-   `DAP_ExecuteCommands` format `[0x7F, n, ...]`, and the capabilities byte carries no atomic-commands
-   bit (0x10). The candidate's README migration note and `TestQueueAndExecuteAnswerPerPacket` in
-   `test_daplink_v2.cpp` say so; the random test therefore has no "responses of queued packets come with
-   the trigger", and the replay test leaves out only that bit of the `DAP_Info(CAPABILITIES)` response
-   (`00 01 11` against `00 01 01`) and compares every other byte exactly. Line A's behaviour is item 12a
-   of `C-missing-fixes.md`.
+- `test_dap_replay` 只在 `DAP_Info(CAPABILITIES)` 的应答里不比较 0x10 这一位（录制是 `00 01 11`，
+  这里是 `00 01 01`），其余字节逐字节比较；录制里没有排队命令。
+- `test_dap_fuzz` 期望每个组包由它自己的应答就地回答，不等触发包。
+
+The sessions in `replay/*.txt` were recorded with firmware that announced the atomic-commands capability
+bit (0x10 in `DAP_Info(CAPABILITIES)`); such firmware defers the responses of `DAP_QueueCommands` packets
+to the `DAP_ExecuteCommands` packet that triggers them. The DAP v2 class here does not announce 0x10:
+every `DAP_QueueCommands` / `DAP_ExecuteCommands` packet runs its commands in place and is answered at
+once, in the `DAP_ExecuteCommands` format `[0x7F, n, ...]` (see the migration notes in
+`src/driver/usb/README.md` and `TestQueueAndExecuteAnswerPerPacket` in `test_daplink_v2.cpp`). As a
+consequence:
+
+- `test_dap_replay` leaves out only the 0x10 bit of the `DAP_Info(CAPABILITIES)` response (`00 01 11` in
+  the recordings, `00 01 01` here) and compares every other byte exactly; the recordings contain no
+  queued commands.
+- `test_dap_fuzz` expects every group packet to be answered by its own response in place, without
+  waiting for a trigger packet.
 
 ## 在 Linux 主机上用真实调试器 / Real debuggers on a Linux host
 

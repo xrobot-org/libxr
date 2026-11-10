@@ -456,10 +456,10 @@ void TestEndpointHalt()
 }
 
 /// 槽句柄带借出戳：重复归还、提交后再归还、用旧句柄提交都得到 STATE_ERR，并且不影响槽的
-/// 当前持有者（候选线的契约，见 ep.hpp）。
+/// 当前持有者（契约见 ep.hpp）。
 /// Slot handles carry a lend stamp: a double return, a release after submit and a submit
 /// through an older handle all get STATE_ERR and leave the slot's current holder alone
-/// (the candidate's contract, see ep.hpp).
+/// (the contract is described in ep.hpp).
 void TestStaleSlotHandles()
 {
   Bench b;

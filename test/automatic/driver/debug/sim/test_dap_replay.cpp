@@ -78,16 +78,16 @@ std::string ToHex(const std::vector<uint8_t>& data)
   return text.empty() ? "-" : text;
 }
 
-/// 录制来自 Line A，它的 DAP_Info(CAPABILITIES) 声明原子命令位（0x10）；候选线不声明，
-/// 每个 DAP_QueueCommands/DAP_ExecuteCommands 包就地应答（候选线 README 的迁移说明和
-/// TestQueueAndExecuteAnswerPerPacket 规定如此，C-missing-fixes 第 12a 项）。所以只有
-/// 这一个应答里的这一位不参与比较，其余字节全部逐字节比。
-/// The recordings come from Line A, whose DAP_Info(CAPABILITIES) announces the atomic
-/// commands bit (0x10). The candidate does not: every DAP_QueueCommands /
-/// DAP_ExecuteCommands packet is answered in place (the candidate's README migration
-/// note and TestQueueAndExecuteAnswerPerPacket say so, C-missing-fixes item 12a). So that
-/// one bit of that one response is left out of the comparison; every other byte is
-/// compared exactly.
+/// 录制用的固件在 DAP_Info(CAPABILITIES) 里声明了原子命令位（0x10）；这里的 DAP v2 类
+/// 不声明，每个 DAP_QueueCommands/DAP_ExecuteCommands 包就地应答
+/// （src/driver/usb/README.md 的迁移说明和 TestQueueAndExecuteAnswerPerPacket
+/// 规定如此）。所以只有这一个应答里的这一位不参与比较，其余字节全部逐字节比。
+/// The firmware used for the recordings announced the atomic-commands bit (0x10) in
+/// DAP_Info(CAPABILITIES). The DAP v2 class here does not: every DAP_QueueCommands /
+/// DAP_ExecuteCommands packet is answered in place (the migration notes in
+/// src/driver/usb/README.md and TestQueueAndExecuteAnswerPerPacket say so). So that one
+/// bit of that one response is left out of the comparison; every other byte is compared
+/// exactly.
 std::string WithoutAtomicBit(const std::string& request_hex, std::string response_hex)
 {
   if (request_hex.compare(0, 4, "00f0") == 0 && response_hex.size() == 6 &&

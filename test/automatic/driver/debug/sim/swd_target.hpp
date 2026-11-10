@@ -20,8 +20,9 @@
  *   command layer.
  * - `SimSwclkPin` / `SimSwdioPin`：两个 GPIO，给 `SwdGeneralGPIO` 这类位操作引擎用。
  *   Two GPIOs for bit-banging engines such as `SwdGeneralGPIO`.
- * - remote_bitbang 服务端（阶段 5）：给真实 OpenOCD、pyOCD 校准这个模型。
- *   A remote_bitbang server (stage 5) for real OpenOCD and pyOCD to calibrate the model.
+ * - remote_bitbang 服务端（swd_target_bitbang.cpp）：给真实 OpenOCD、pyOCD 校准这个模型。
+ *   A remote_bitbang server (swd_target_bitbang.cpp) for real OpenOCD and pyOCD to
+ *   calibrate the model.
  *
  * 故障注入：WAIT、总线错误（置 STICKYERR，之后 FAULT）、读数据校验错、不应答（掉线）、
  * 目标复位。

@@ -17,7 +17,6 @@ reference implementation of the contract and a real backend that differs from it
 | `usb_sim_profiles.hpp` | 硬件档位：STM32F103 FSDEV、STM32F407 OTG FS、ESP32-S3、CH32 OTG FS / hardware profiles |
 | `test_usb_sim_contract.cpp` | 后端契约测试 / backend contract tests |
 | `test_usb_sim_profiles.cpp` | 档位上的设备类、控制器限制、帧中断 / classes on the profiles, controller limits, the frame interrupt |
-| `sim_findings.hpp` | 已知缺陷用例的运行入口 / runner for the known-defect cases |
 | `usbip_server.hpp`, `usbip_lib.sh` | USB/IP 服务端和挂接函数 / USB/IP server and the attach helpers |
 | `usb_sim_usbip.cpp`, `usb_sim_classes.cpp` | CDC 回环；HID、gs_usb、DFU、UAC 服务端 / CDC loopback; HID, gs_usb, DFU and UAC servers |
 | `acm_echo.py`, `plug_cycle.sh`, `class_checks.py`, `classes_e2e.sh`, `uac_check.py`, `gs_burst.py` | 主机侧检查 / host-side checks |
@@ -36,27 +35,6 @@ changes. The simulation does the same, selected by `Profile::sof_policy`:
 | `AT_STOPS` (默认 / default) | STM32 OTG、ESP32 DWC2、FSDEV | `Start()`、`OnStopsSettled()`、`OnBusTimeNeedChanged()`；有待决停止时一直开 / while a stop is pending |
 | `AT_CONTROL_READY` | CH32 OTG FS/HS | `OnControlReady()` 里打开；`OnBusTimeNeedChanged()` 里随需要开关 / turned on there; on or off with the need in `OnBusTimeNeedChanged()` |
 | `ALWAYS` | 无（理想控制器）/ none (ideal controller) | 每帧都送，只用来把设备类和策略隔开 / every frame, to separate a class from the policy |
-
-## 发现：不在默认运行里的用例 / Findings: cases kept out of the default run
-
-下面的用例断言了候选线的库目前做不到的行为。断言没有放宽，也没有 `add_test`，默认 `ctest` 不跑它们。
-测试程序不带参数时只跑常规用例；`--list-findings` 列出已知缺陷用例，`--finding <名字>` 单独运行，
-断言失败时进程以 SIGABRT 退出并输出位置。库修好后同一条命令返回 0，用例应移进常规用例。条目编号来自
-`C-missing-fixes.md`（Line A 的修复在候选线上缺什么）。
-
-The cases below assert behaviour the candidate library does not have yet. Their assertions are not
-weakened and they have no `add_test`, so the default `ctest` does not run them. A test program without
-arguments runs the regular cases only; `--list-findings` lists the known-defect cases and
-`--finding <name>` runs one, aborting with its location when an assertion fails. Once the library is fixed
-the same command returns 0 and the case belongs among the regular ones. Item numbers refer to
-`C-missing-fixes.md` (which Line A fixes the candidate still lacks).
-
-这个目录里目前没有这样的用例；调试仿真目录里有（`../../debug/sim/README.md`）。
-
-No such case is left in this directory; the debug simulation directory has some
-(`../../debug/sim/README.md`).
-
-运行 / Run: `build/test/test_dap_fuzz --finding padded_atomic_group`
 
 ## 经 USB/IP 交给内核 / Handing the device to the kernel over USB/IP
 
@@ -110,21 +88,28 @@ uac"` selects the classes. `<build-dir>` must be an absolute path.
 
 `usb_sim_classes gsusb2` 是两通道 gs_usb，CAN 总线每毫秒最多送出 `GS_BUS_RATE` 帧，把通道 0 发出的
 帧作为通道 1 的接收帧交回。`gs_burst.py` 在通道 0 上尽快发一批帧，报告通道 1 收到什么和内核的
-`rx_over_errors`。`USBIP_BULK_PER_MS` 设到 32 以下（一个全速帧装不下更多 24 字节的批量事务）时，
-USB 的事务数比总线更紧：
+`rx_over_errors`。`USBIP_BULK_PER_MS` 设到 32 以下（全速总线一帧能装下的 24 字节批量事务不超过
+32 个）时，USB 的事务数比 CAN 总线更紧：
 `GS_BUS_RATE=8 USBIP_BULK_PER_MS=24 build/test/usb_sim_classes gsusb2 3240`，挂接后
-`python3 gs_burst.py 600`。IN 端点先发回显时，通道 1 的接收帧在突发期间得不到事务，32 帧的接收队列
-满了就丢，内核报告 `rx_over_errors`；回显和接收帧轮流发送（`gs_usb.hpp` 的 `PickFrame`）后一帧不丢。
-`test_gsusb.cpp` 的 `TestHostBurstOnARateLimitedBus` 是同一实验的确定性版本，在默认 `ctest` 里。
+`python3 gs_burst.py 600`。预期结果是通道 1 收到全部 600 帧、按序、无缺号，`rx_over_errors` 为 0：
+IN 端点上回显帧和接收帧在两类都有待发时轮流发送（`gs_usb.hpp` 的 `PickFrame`），突发期间通道 1 的
+接收帧每两个事务至少得到一个。如果 IN 端点总是先发回显，通道 1 的接收帧在突发期间得不到事务，接收
+队列（每通道 32 帧）满了就丢帧，内核会报告 `rx_over_errors` 并且缺号。`test_gsusb.cpp` 的
+`TestHostBurstOnARateLimitedBus` 是同一实验的确定性版本，`TestEchoAndReceivedFramesAlternate` 检查
+轮流的顺序，两者都在默认 `ctest` 里。
 
 `usb_sim_classes gsusb2` is a two-channel gs_usb whose CAN bus delivers at most `GS_BUS_RATE` frames per
 millisecond and returns channel 0's transmissions as received frames on channel 1. `gs_burst.py` sends a
 burst on channel 0 as fast as the adapter accepts it and reports what channel 1 received and the
-kernel's `rx_over_errors`. With `USBIP_BULK_PER_MS` at 32 or below (one full-speed frame holds no more
-24-byte bulk transactions) the USB transactions are scarcer than the bus:
+kernel's `rx_over_errors`. With `USBIP_BULK_PER_MS` at 32 or below (a full-speed frame holds at most 32
+bulk transactions of 24 bytes) the USB transactions are scarcer than the CAN bus:
 `GS_BUS_RATE=8 USBIP_BULK_PER_MS=24 build/test/usb_sim_classes gsusb2 3240`, then
-`python3 gs_burst.py 600` after attaching. When the IN endpoint serves echoes first, channel 1's
-received frames get no transaction during the burst, the 32-frame receive queue drops when full and
-the kernel reports `rx_over_errors`; with echoes and received frames served alternately
-(`PickFrame` in `gs_usb.hpp`) nothing is lost. `TestHostBurstOnARateLimitedBus` in `test_gsusb.cpp` is
-the deterministic version of the same experiment and is part of the default `ctest`.
+`python3 gs_burst.py 600` after attaching. The expected result is that channel 1 receives all 600
+frames, in order, with no gap and `rx_over_errors` 0: on the IN endpoint, echo frames and received
+frames are sent alternately while both kinds are pending (`PickFrame` in `gs_usb.hpp`), so during the
+burst channel 1's received frames get at least every second transaction. If the IN endpoint always
+sent echoes first, channel 1's received frames would get no transaction during the burst, the receive
+queue (32 frames per channel) would overflow and drop frames, and the kernel would report
+`rx_over_errors` and the sequence would have gaps. `TestHostBurstOnARateLimitedBus` in `test_gsusb.cpp`
+is the deterministic version of the same experiment and `TestEchoAndReceivedFramesAlternate` checks the
+order of the alternation; both are part of the default `ctest`.

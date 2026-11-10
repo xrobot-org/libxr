@@ -81,11 +81,12 @@ inline Profile Esp32S3Profile()
 }
 
 /// CH32 OTG FS（CH32V30x）：EP1–EP4 双向，包长上限 64；停止立即完成；帧中断在
-/// OnControlReady 里打开，之后不再关闭。这个档位不在 Line A 的档位里，是按候选线的 CH32
-/// 后端加的。
+/// OnControlReady 里打开，之后随类的需要在 OnBusTimeNeedChanged 里开关。这个档位照 CH32
+/// OTG FS 后端的行为建模。
 /// CH32 OTG FS (CH32V30x): EP1 to EP4 in both directions, packet limit 64; a stop
-/// completes at once; the frame interrupt is turned on in OnControlReady and never off
-/// again. This profile is not among Line A's; it follows the candidate's CH32 backend.
+/// completes at once; the frame interrupt is turned on in OnControlReady and afterwards
+/// follows the class's need in OnBusTimeNeedChanged. This profile models the behaviour
+/// of the CH32 OTG FS backend.
 inline Profile Ch32OtgFsProfile()
 {
   Profile profile;

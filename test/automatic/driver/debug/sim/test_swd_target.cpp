@@ -26,7 +26,6 @@
 #include <cstdio>
 #include <functional>
 
-#include "automatic/driver/usb/sim/sim_findings.hpp"
 #include "debug/swd_general_gpio.hpp"
 #include "swd_target.hpp"
 #include "test_assert.hpp"
@@ -545,7 +544,8 @@ void RegularCases()
 
 }  // namespace
 
-int main(int argc, char** argv)
+int main()
 {
-  return USB::Sim::RunTestProgram(argc, argv, RegularCases, {});
+  RegularCases();
+  return 0;
 }
