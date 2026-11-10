@@ -135,7 +135,7 @@ returns 0 and the case belongs among the regular ones.
 
 | 程序 / Program | 用例 / Case | 手册或契约的要求 / What the manual or the contract requires | 后端的做法 / What the backend does |
 | --- | --- | --- | --- |
-| `test_stm32_usb_otg` | `dma_data_with_status_phase` | XFRC 表示编程的传输完成；STSPHSRX 表示主机进入了控制写的状态阶段 / XFRC reports the programmed transfer complete; STSPHSRX reports that the host entered the status stage of a control write | 两者在同一次中断里读到时，数据阶段的完成被当成"不是数据"丢掉 / read by the same interrupt, the completion of the data stage is dropped as "not data" |
+| `test_stm32_usb_otg` | `dma_data_with_status_phase` | XFRC 表示编程的传输完成；STSPHSRX 表示主机进入了控制写的状态阶段 / XFRC reports the programmed transfer complete; STSPHSRX reports that the host entered the status stage of a control write | 两者在同一次中断里读到时，数据阶段的完成被当成"不是数据"丢掉；这是按位说明推断的，两者能否同时读到有待在硬件上确认 / read by the same interrupt, the completion of the data stage is dropped as "not data"; inferred from the bit descriptions, whether both can be read together is to be confirmed on hardware |
 | `test_stm32_usb_otg` | `stop_leaves_out_endpoint_enabled` | 禁用 OUT 端点要等全局 OUT NAK 生效后写 EPDIS；传输长度寄存器只在端点禁用时改写 / an OUT endpoint is disabled with EPDIS once the global OUT NAK is in effect; the transfer size register is written only while the endpoint is disabled | 非 DMA 模式下、停止序列还在等全局 OUT NAK 时调用 Stop()：停止被直接确认，端点在硬件里仍使能，下一次会话在使能状态下改写该寄存器 / without DMA, Stop() while a stop sequence waits for the global OUT NAK: the stop is confirmed at once, the endpoint stays enabled in the hardware and the next session rewrites the register while it is enabled |
 | `test_esp_usb` | `stop_in_progress` | 完成里的长度是主机已取走的字节数 / the length in a completion is what the host took | 被停止的 IN 请求报告取进 FIFO 的字节数 / a stopped IN request reports the bytes fetched into the FIFO |
 
