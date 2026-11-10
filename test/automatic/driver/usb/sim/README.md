@@ -36,6 +36,45 @@ changes. The simulation does the same, selected by `Profile::sof_policy`:
 | `AT_CONTROL_READY` | CH32 OTG FS/HS | `OnControlReady()` 里打开；`OnBusTimeNeedChanged()` 里随需要开关 / turned on there; on or off with the need in `OnBusTimeNeedChanged()` |
 | `ALWAYS` | 无（理想控制器）/ none (ideal controller) | 每帧都送，只用来把设备类和策略隔开 / every frame, to separate a class from the policy |
 
+真实后端重估帧中断开关的地方（读代码）：STM32 OTG 是 `Connect()`（`Start()`）、`OnStopsSettled()`、
+启动待决停止时（`StopHardware` 里端点仍在使能）、TX FIFO 清空完成时（`PollTxFlush`，总线复位和端点
+停止都会清空；`RequestTxFlush` 先无条件打开 SOFM），以及 `OnBusTimeNeedChanged()`；ESP32 是复位处理、
+`OnStopsSettled()`、启动待决停止时和 `OnBusTimeNeedChanged()`。仿真的 `AT_STOPS` 只建模了
+`Start()`、待决停止开始、`OnStopsSettled()` 和 `OnBusTimeNeedChanged()`，没有建模复位时的 TX FIFO 清空，
+EP0 的停止也总是立即完成。
+
+在 STM32H723（OTG_HS）上的测量是：没有 `OnBusTimeNeedChanged()` 时枚举之后帧中断已经打开，取消配置后
+仍然开着，UAC 麦克风连续出流；有它时取消配置后关闭、重新配置后打开，出流相同。读代码解释了后两点：
+取消配置时端点上没有待决停止，后端没有别的重估点，所以开关不变。枚举之后是什么让它打开没有确定：读代码
+只能列出候选（绑定之后的某个待决停止，或者总线复位时 TX FIFO 清空在类还处于绑定状态时完成），没有寄存器
+跟踪。因此仿真的 STM32 OTG、ESP32 档位在没有 `OnBusTimeNeedChanged()` 时枚举之后帧中断是关的，这一点与
+测量不符，不能用来推断真实后端上 UAC 会在一个包之后停下。用例检查的是通知带来的变化：配置后打开、
+取消配置后关闭（`TestFrameInterruptFollowsTheConfiguration`），运行中才需要帧时间的类得到 SOF
+（`test_usb_sim_contract.cpp` 的 `TestFrameInterruptFollowsARuntimeNeed`）。
+
+Where the real backends re-evaluate the frame interrupt enable (from reading the code): on STM32 OTG
+`Connect()` (`Start()`), `OnStopsSettled()`, when a pending stop starts (`StopHardware` with the endpoint
+still enabled), when a TX FIFO flush completes (`PollTxFlush`; a bus reset and an endpoint stop both
+flush, and `RequestTxFlush` turns SOFM on unconditionally first) and `OnBusTimeNeedChanged()`; on ESP32
+the reset handling, `OnStopsSettled()`, when a pending stop starts and `OnBusTimeNeedChanged()`. The
+simulated `AT_STOPS` models only `Start()`, the start of a pending stop, `OnStopsSettled()` and
+`OnBusTimeNeedChanged()`; it does not model the TX FIFO flush at a bus reset, and an EP0 stop always
+completes at once.
+
+Measured on an STM32H723 (OTG_HS): without `OnBusTimeNeedChanged()` the frame interrupt is already on
+after enumeration and stays on after the deconfiguration, and the UAC microphone streams continuously;
+with it, the deconfiguration turns it off, configuring turns it on again, and streaming is the same.
+Reading the code explains the last two points: at the deconfiguration no stop is pending on the
+endpoints, the backend has no other re-evaluation point, and the enable stays as it was. What turns it on
+after enumeration was not determined: the code only gives candidates (a pending stop after the binding,
+or the TX FIFO flush of a bus reset completing while the class is still bound), and there is no register
+trace. So without `OnBusTimeNeedChanged()` the simulated STM32 OTG and ESP32 profiles have the frame
+interrupt off after enumeration, which differs from the measurement, and the simulation must not be read
+as saying that a UAC stops after one packet on a real backend. The cases check what the notification
+changes: on once configured and off after the deconfiguration
+(`TestFrameInterruptFollowsTheConfiguration`), and a class that needs bus time only at run time gets
+SOFs (`TestFrameInterruptFollowsARuntimeNeed` in `test_usb_sim_contract.cpp`).
+
 ## 经 USB/IP 交给内核 / Handing the device to the kernel over USB/IP
 
 `usb_sim_usbip` 和 `usb_sim_classes` 不是 ctest 目标，需要带 `vhci-hcd` 的 Linux 主机：先

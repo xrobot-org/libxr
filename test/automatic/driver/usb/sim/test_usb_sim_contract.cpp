@@ -52,7 +52,9 @@ class Probe : public DeviceClass
   /// 要帧时间的类：每个到达核心的 SOF 都在 owner 里调用 OnBusTime
   /// A class that wants bus time: every SOF that reaches the core calls OnBusTime in the
   /// owner
-  bool WantsBusTime() const override { return wants_time_; }
+  bool WantsBusTime() const override { return wants_time_.load(); }
+  /// 运行时改变需求 / Change the need at run time
+  void SetWantsBusTime(bool wanted) { wants_time_.store(wanted); }
   void OnBusTime(bool, const BusTime&) override { ++bus_times; }
   std::atomic<unsigned> bus_times{0};
 
@@ -159,7 +161,7 @@ class Probe : public DeviceClass
   LIBXR_PACKED_END
   uint8_t number_;
   bool arm_out_;
-  bool wants_time_;
+  std::atomic<bool> wants_time_;
 };
 
 /// 仿真设备加探针类，已上电、复位并完成枚举 / Simulated device with the probe class,
@@ -518,6 +520,38 @@ void TestFrameInterruptFollowsTheBackend()
   TEST_ASSERT(b.device.SofDelivered() == 2U);
 }
 
+/// 类在运行中才需要帧时间、端点上没有任何活动（没有待决停止）：DeviceCore 在处理完下一个
+/// 事件后通过 OnBusTimeNeedChanged() 通知后端，帧中断才打开；需求消失后同样关闭。没有这个
+/// 通知，后端没有别的重估点，SOF 一直到不了核心（STM32 OTG、ESP32 的 UpdateTick 只在
+/// 启动、停止开始、停止确认时运行，STM32 OTG 还在 TX FIFO 清空完成时运行）。
+/// A class that comes to need bus time at run time with no endpoint activity (no pending
+/// stop): after the next event DeviceCore reports it through OnBusTimeNeedChanged() and
+/// only then does the frame interrupt turn on; it turns off again when the need goes.
+/// Without that report the backend has no other re-evaluation point and the SOFs never
+/// reach the core (UpdateTick on STM32 OTG and ESP32 runs only at start, at the start of
+/// a stop and when stops are confirmed; on STM32 OTG also when a TX FIFO flush finishes).
+void TestFrameInterruptFollowsARuntimeNeed()
+{
+  Bench b;
+  b.device.Sof();
+  TEST_ASSERT(b.device.SofDelivered() == 0U && !b.device.FrameInterruptOn());
+
+  b.probe.SetWantsBusTime(true);
+  bool ok = false;
+  (void)b.host.ControlIn(MakeSetup(0x80, 8, 0, 0, 1), ok);  // GET_CONFIGURATION
+  TEST_ASSERT(ok && b.device.FrameInterruptOn());
+  const unsigned bus_times = b.probe.bus_times.load();
+  for (int i = 0; i < 3; ++i) b.device.Sof();
+  TEST_ASSERT(b.device.SofDelivered() == 3U);
+  TEST_ASSERT(b.probe.bus_times.load() == bus_times + 3U);
+
+  b.probe.SetWantsBusTime(false);
+  (void)b.host.ControlIn(MakeSetup(0x80, 8, 0, 0, 1), ok);
+  TEST_ASSERT(ok && !b.device.FrameInterruptOn());
+  b.device.Sof();
+  TEST_ASSERT(b.device.SofDelivered() == 3U);
+}
+
 /// 守卫内发起的中断挂起到释放时执行：每次启动硬件时主机立刻取走数据，完成在启动返回后
 /// 才到，两个槽的顺序和内容都对。
 /// An interrupt raised inside the guard runs when it is released: the host takes the
@@ -600,6 +634,7 @@ int main()
   TestEndpointHalt();
   TestStaleSlotHandles();
   TestFrameInterruptFollowsTheBackend();
+  TestFrameInterruptFollowsARuntimeNeed();
   TestInterruptPendedInsideGuard();
   TestSubmitFromAnotherThread();
   std::puts("usb sim: backend contract");

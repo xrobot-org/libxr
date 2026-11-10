@@ -26,14 +26,21 @@
  *
  * 帧中断和真实控制器一样只在后端打开它时才送到 DeviceCore：有待决停止时，或者后端按
  * `SofPolicy` 在自己的重估点（Start、OnStopsSettled、DeviceCore 的
- * `OnBusTimeNeedChanged()`，CH32 还有 OnControlReady）看到 `WantsBusTime()` 为真。仿真
- * 的重估点和真实后端一一对应，不会比它们更聪明。
+ * `OnBusTimeNeedChanged()`，CH32 还有 OnControlReady）看到 `WantsBusTime()` 为真。这是
+ * 按读代码得到的模型，只有这几个重估点：真实的 STM32 OTG 后端还会在总线复位的 TX FIFO
+ * 清空完成时重估（PollTxFlush 里的 UpdateTick），仿真没有建模；真实板子上哪个重估点在
+ * 枚举之后让帧中断保持打开没有确定，所以在没有 `OnBusTimeNeedChanged()` 的情况下，仿真
+ * 的 STM32 OTG、ESP32 档位在枚举之后帧中断是关的，这一点和 STM32H723 上的测量不符。
  * As on a real controller, the frame interrupt reaches DeviceCore only while the backend
  * has it on: while a stop is pending, or after the backend saw `WantsBusTime()` true at
  * one of its own re-evaluation points (Start, OnStopsSettled, the DeviceCore hook
- * `OnBusTimeNeedChanged()`, and OnControlReady on CH32) as `SofPolicy` selects. The
- * re-evaluation points match the real backends one to one; the simulation is not
- * cleverer than they are.
+ * `OnBusTimeNeedChanged()`, and OnControlReady on CH32) as `SofPolicy` selects. This is a
+ * model made from reading the code and has only these points: the real STM32 OTG backend
+ * also re-evaluates when the TX FIFO flush after a bus reset completes (UpdateTick in
+ * PollTxFlush), which is not modelled; which re-evaluation point keeps the frame
+ * interrupt on after enumeration on a real board was not determined, so without
+ * `OnBusTimeNeedChanged()` the simulated STM32 OTG and ESP32 profiles have the frame
+ * interrupt off after enumeration, which differs from what was measured on an STM32H723.
  */
 
 #pragma once
