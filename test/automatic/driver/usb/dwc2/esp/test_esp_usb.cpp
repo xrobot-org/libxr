@@ -464,6 +464,10 @@ void RunAll()
 // Findings: behaviour the backend does not have yet (not in the default run)
 // ---------------------------------------------------------------------------
 
+/// 被停止的 IN 请求报告的长度应是主机已取走的字节数；后端报告的是取进发送 FIFO 的字节数，
+/// 主机一个包也没取走时也报整包。
+/// A stopped IN request has to report the bytes the host took; the backend reports the
+/// bytes fetched into the transmit FIFO, a whole packet even when the host took none.
 void FindingStopInProgress() { TestStopIn<ExactProbe>(NORMAL); }
 
 }  // namespace
