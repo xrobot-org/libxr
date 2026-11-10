@@ -107,6 +107,7 @@ behaviour yet and the case is not in the default run (see the next section).
 | 停止在途的 OUT 请求 / stopping an OUT request in flight | CDC、gs_usb、HID、DAP v1、DAP v2 | `TestStopOut` | 默认 / default | 默认，不经全局 OUT NAK 是发现 / default; the missing global OUT NAK is a finding |
 | 重新配置 1 → 0 → 1 / reconfiguration 1 → 0 → 1 | 全部 / all | `TestReconfigure` | 默认 / default | 默认，关闭的端点仍应答 NAK 是发现 / default; a closed endpoint that still answers NAK is a finding |
 | 传输进行中总线复位；复位后端点不再 STALL、OUT 端点 NAK / bus reset in the middle of transfers; no STALL and NAKed OUT endpoints after a reset | 全部 / all | `TestBusResetMidTransfer`, `TestBusResetClearsHalt` | 默认 / default | 默认 / default |
+| 处理别的中断时到来的总线复位 / a bus reset that arrives while another interrupt is handled | 全部 / all | `TestInterruptClearKeepsOthers`（ESP） | 未运行 / not run | 默认 / default |
 | 挂起与恢复 / suspend and resume | 全部 / all | `TestSuspendResume` | 默认 / default | 默认 / default |
 | 断开与重连、Stop()/Start() / disconnect and reconnect, Stop() and Start() | 全部；DFU（下载后重新枚举）/ all; DFU (enumeration after a download) | `TestDisconnectReconnect`（STM32）、`TestStopStart`（ESP） | 默认 / default | 默认 / default |
 | 端点的停止序列进行中调用 Stop() / Stop() during the stop sequence of an endpoint | 全部 / all | `TestStopDuringInStop`（STM32） | 默认；非 DMA 的 OUT 端点是发现 / default; an OUT endpoint without DMA is a finding | 未运行 / not run |
@@ -145,7 +146,6 @@ returns 0 and the case belongs among the regular ones.
 | `test_esp_usb` | `close_keeps_endpoint_active` | 停用端点要清 USBAEP，之后核心不应答发给它的令牌 / deactivating an endpoint clears USBAEP, after which the core ignores its tokens | 关闭端点只关中断屏蔽位，端点继续应答 NAK / closing an endpoint only drops the interrupt mask and the endpoint keeps answering NAK |
 | `test_esp_usb` | `isochronous_frames`, `uac_streams` | 等时 IN 只在 EONUM 与帧号奇偶相同的帧里发数据，每次传输都要设置 / isochronous IN sends only in the frame whose parity equals EONUM, which is programmed for each transfer | 只在激活端点时设成偶数帧：UAC1 麦克风 3000 帧里发出 1500 个包 / set to even once when the endpoint is activated: the UAC1 microphone sends 1500 packets in 3000 frames |
 | `test_esp_usb` | `isochronous_missed_frame` | 错过帧的等时 IN 由"未完成的等时 IN 传输"中断报告，应用禁用端点 / an isochronous IN that missed its frame is reported by the incomplete isochronous IN interrupt and the application disables the endpoint | 没有打开也没有处理这个中断，请求一直挂着 / the interrupt is neither unmasked nor handled and the request stays armed |
-| `test_esp_usb` | `interrupt_clear_loses_reset` | 中断状态位写 1 清除 / interrupt status bits are cleared by writing 1 | 用位域赋值清一个位，读改写把此刻挂起的其他位一起清掉：处理挂起中断时到来的总线复位丢失 / clears one bit with a bit-field assignment; the read-modify-write clears every other pending bit: a bus reset that arrives while the suspend interrupt is handled is lost |
 
 运行 / Run: `build/test/test_esp_usb --finding uac_streams`
 

@@ -383,6 +383,49 @@ void TestStopStart(const Mode& mode)
               f.probe.bulk_out_log.items[0].data == bytes);
 }
 
+/// 中断状态寄存器的位是写 1 清除的，清一个位不能碰别的位：处理挂起中断的过程中到来的
+/// 总线复位不会丢，设备回到地址 0，主机照常枚举。
+/// The bits of the interrupt status register are cleared by writing 1, and clearing one
+/// must not touch the others: a bus reset that arrives while the suspend interrupt is
+/// being handled is not lost, the device is back at address 0 and the host enumerates it.
+void TestInterruptClearKeepsOthers(const Mode& mode)
+{
+  Probe f(mode);
+  f.Up();
+  f.hw.HostSuspend();
+  // 第一次读中断状态是取挂起的中断；复位在此之后、挂起位被清除之前到来：要么在清除的
+  // 那次写之前，要么在清除用的读改写的读之前
+  // The first read of the interrupt status takes the pending interrupts; the reset
+  // arrives after it and before the suspend bit is cleared: before the write that clears
+  // it, or before the read of a read-modify-write that clears it
+  unsigned reads = 0;
+  bool arrived = false;
+  f.hw.before_read = [&](uint32_t offset)
+  {
+    if (offset != Dwc2::GINTSTS || ++reads != 2U || arrived) return;
+    arrived = true;
+    f.hw.HostResetBegin();
+  };
+  f.hw.before_write = [&](uint32_t offset, uint32_t)
+  {
+    if (offset != Dwc2::GINTSTS || arrived) return;
+    arrived = true;
+    f.hw.HostResetBegin();
+  };
+  f.Service();
+  f.hw.before_read = nullptr;
+  f.hw.before_write = nullptr;
+  TEST_ASSERT(arrived);
+  f.Service();
+  f.hw.HostResetEnd();
+  f.Service();
+  TEST_ASSERT(f.probe.resets == 2U);
+  f.host.address = 0;
+  f.host.ResetToggles();
+  std::vector<uint8_t> data;
+  TEST_ASSERT(f.host.GetDescriptor(1, 0, 18, data) == Result::OK && data.size() == 18U);
+}
+
 void RunAll()
 {
   for (const Mode& mode : MODES)
@@ -405,6 +448,7 @@ void RunAll()
     TestBusResetMidTransfer<Probe>(mode);
     TestBusResetClearsHalt<Probe>(mode);
     TestSuspendResume<Probe>(mode);
+    TestInterruptClearKeepsOthers(mode);
     TestStopStart(mode);
     TestFrameTicks<Probe>(mode);
     TestUacFrameInterruptIgnoresConfiguration<Uac>(mode);
@@ -422,37 +466,6 @@ void FindingIsochronousFrames() { TestIsochronousFrames<Probe>(NORMAL); }
 void FindingIsochronousMissedFrame() { TestIsochronousMissedFrame<Probe>(NORMAL); }
 void FindingUacStreams() { TestUacStreams<Uac>(NORMAL); }
 
-/// 中断状态寄存器的位是写 1 清除的。后端用位域赋值清一个位，编译出来是读出整个寄存器、
-/// 置位、写回，于是把这一刻挂起的其他中断也一起清掉：处理挂起中断的过程中到来的总线
-/// 复位就这样丢了，设备留在旧地址上，主机枚举不到它。
-/// The bits of the interrupt status register are cleared by writing 1. The backend
-/// clears one with a bit-field assignment, which compiles to reading the whole register,
-/// setting the bit and writing it back, and so clears every other interrupt pending at
-/// that moment: a bus reset that arrives while the suspend interrupt is being handled is
-/// lost, the device stays at its old address and the host cannot enumerate it.
-void FindingInterruptClearLosesReset()
-{
-  Probe f(NORMAL);
-  f.Up();
-  f.hw.HostSuspend();
-  unsigned reads = 0;
-  f.hw.before_read = [&](uint32_t offset)
-  {
-    // 第一次读是取挂起的中断，第二次是清除挂起位的读改写 / The first read takes the
-    // pending interrupts, the second is the read-modify-write that clears the suspend bit
-    if (offset == Dwc2::GINTSTS && ++reads == 2U) f.hw.HostResetBegin();
-  };
-  f.Service();
-  f.hw.before_read = nullptr;
-  f.Service();
-  f.hw.HostResetEnd();
-  f.Service();
-  TEST_ASSERT(f.probe.resets == 2U);
-  f.host.address = 0;
-  f.host.ResetToggles();
-  std::vector<uint8_t> data;
-  TEST_ASSERT(f.host.GetDescriptor(1, 0, 18, data) == Result::OK && data.size() == 18U);
-}
 void FindingStopInImmediateDisable() { TestStopIn<Probe>(IMMEDIATE); }
 void FindingStopInProgress() { TestStopIn<ExactProbe>(NORMAL); }
 void FindingStopInRace() { TestStopInRace<Probe>(NORMAL); }
@@ -506,9 +519,6 @@ int main(int argc, char** argv)
         FindingIsochronousMissedFrame, "log.items[0].result == ErrorCode::FAILED"},
        {"uac_streams", "UAC1 microphone sends in every other frame only",
         FindingUacStreams, "packets == 3000U"},
-       {"interrupt_clear_loses_reset",
-        "bit-field write to GINTSTS clears other interrupts",
-        FindingInterruptClearLosesReset, "f.probe.resets == 2U"},
        {"stop_in_immediate_disable", "EPDISD cleared unhandled when it is set at once",
         FindingStopInImmediateDisable, "!f.probe.bulk_in->IsStopping()"},
        {"out_disable_without_global_nak", "OUT endpoint disabled without global OUT NAK",
