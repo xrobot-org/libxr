@@ -335,7 +335,6 @@ template <typename C>
 void DeviceCore<C>::Stall(bool in_isr)
 {
   Abort(in_isr);
-  phase_ = Phase::STALLED;
   if (in0_) (void)in0_->Stall(in_isr);
   if (out0_) (void)out0_->Stall(in_isr);
 }

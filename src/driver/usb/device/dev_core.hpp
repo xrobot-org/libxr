@@ -123,8 +123,7 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
     DATA_IN,
     DATA_OUT,
     STATUS_IN,
-    STATUS_OUT,
-    STALLED
+    STATUS_OUT
   };
   /// A step that resumes once every endpoint stop is confirmed.
   enum class Continuation : uint8_t
