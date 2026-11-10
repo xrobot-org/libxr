@@ -42,7 +42,7 @@ static const constexpr uint8_t HID_MOUSE_REPORT_DESC[] = {
  * @class HIDMouse
  * @brief 标准 USB HID 鼠标派生类 / Standard USB HID Mouse derived class
  */
-class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>
+class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0, 2>
 {
  public:
   /**
@@ -52,8 +52,7 @@ class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>
    * @param interface_string 接口字符串 / Interface string
    */
   HIDMouse(Endpoint::EPNumber in_ep_num, uint8_t in_ep_interval = 1,
-           const char* interface_string =
-               HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>::DEFAULT_INTERFACE_STRING)
+           const char* interface_string = DEFAULT_INTERFACE_STRING)
       : HID(in_ep_num, Endpoint::EPNumber::EP_INVALID, false, in_ep_interval, 1,
             interface_string)
   {
@@ -134,11 +133,17 @@ class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief 写入设备描述符：类代码为 0，由接口描述符给出（HID 1.11 4.1）；boot 子类和鼠标
+   *        协议在接口描述符里
+   * Write the device descriptor: class code 0, the class is given per interface (HID 1.11
+   * 4.1); the boot subclass and the mouse protocol are in the interface descriptor
+   */
   ErrorCode WriteDeviceDescriptor(DeviceDescriptor& header) override
   {
-    header.data_.bDeviceClass = DeviceDescriptor::ClassID::HID;
-    header.data_.bDeviceSubClass = 1;
-    header.data_.bDeviceProtocol = 2;  // Mouse
+    header.data_.bDeviceClass = DeviceDescriptor::ClassID::PER_INTERFACE;
+    header.data_.bDeviceSubClass = 0;
+    header.data_.bDeviceProtocol = 0;
     return ErrorCode::OK;
   }
 

@@ -19,6 +19,8 @@
 #include <vector>
 
 #include "../../mock_endpoint.hpp"
+#include "dev_core.hpp"
+#include "ep_pool.hpp"
 #include "hid.hpp"
 #include "hid_gamepad.hpp"
 #include "hid_keyboard.hpp"
@@ -512,6 +514,234 @@ void TestGetReport()
     TEST_ASSERT(GetReport(pad, REPORT_FEATURE, 0, data) != ErrorCode::OK);
   }
 }
+
+static constexpr auto TEST_LANGUAGE = DescriptorStrings::MakeLanguagePack(
+    DescriptorStrings::Language::EN_US, "LibXR", "USB tests", "0");
+
+/// A full-speed device core around one or two HID functions of one configuration.
+class HidDevice : public DeviceCore<FullSpeedCapabilities>
+{
+ public:
+  HidDevice(EndpointPool& pool, ConfigDescriptorItem* a)
+      : DeviceCore(pool, USBSpec::USB_2_0, Speed::FULL,
+                   DeviceDescriptor::PacketSize0::SIZE_64, 0x1209, 0x4321, 0x0100,
+                   {&TEST_LANGUAGE}, {{a}})
+  {
+  }
+  HidDevice(EndpointPool& pool, ConfigDescriptorItem* a, ConfigDescriptorItem* b)
+      : DeviceCore(pool, USBSpec::USB_2_0, Speed::FULL,
+                   DeviceDescriptor::PacketSize0::SIZE_64, 0x1209, 0x4321, 0x0100,
+                   {&TEST_LANGUAGE}, {{a, b}})
+  {
+  }
+  void Start(bool) override {}
+  void Stop(bool) override {}
+
+ protected:
+  ErrorCode SetAddress(uint8_t, ControlContext) override { return ErrorCode::OK; }
+  void OnStopTimeout(bool) override {}
+};
+
+/// Endpoint 0 and two interrupt IN endpoints (EP1, EP3) of a device under test.
+struct HidDeviceFixture
+{
+  Block<64> ep0_in_storage, ep0_out_storage;
+  Block<128> in1_storage, in3_storage;
+  EndpointPool pool{4};
+  MockEndpoint in0{Number::EP0, Direction::IN, ep0_in_storage.Raw()};
+  MockEndpoint out0{Number::EP0, Direction::OUT, ep0_out_storage.Raw()};
+  MockEndpoint in1{Number::EP1, Direction::IN, in1_storage.Raw()};
+  MockEndpoint in3{Number::EP3, Direction::IN, in3_storage.Raw()};
+  HidDeviceFixture()
+  {
+    TEST_ASSERT(pool.Put(&in1) == ErrorCode::OK);
+    TEST_ASSERT(pool.Put(&in3) == ErrorCode::OK);
+    pool.SetEndpoint0(&in0, &out0);
+  }
+  /// Plays one SETUP and returns the IN data stage the device started.
+  template <typename Device>
+  std::vector<uint8_t> Control(Device& device, uint8_t kind, uint8_t request,
+                               uint16_t value, uint16_t length, uint16_t index = 0)
+  {
+    in0.active = false;
+    out0.active = false;
+    const size_t stalls_before = in0.stalls;
+    const size_t starts_before = in0.starts.size();
+    SetupPacket packet{kind, request, value, index, length};
+    device.OnSetupPacket(true, &packet);
+    stalled = in0.stalls != stalls_before;
+    if (in0.starts.size() == starts_before) return {};
+    return in0.Last().data;
+  }
+  bool stalled = false;
+};
+
+struct ClassCodes
+{
+  uint8_t cls, sub, proto;
+  bool operator==(const ClassCodes& o) const
+  {
+    return cls == o.cls && sub == o.sub && proto == o.proto;
+  }
+};
+
+/// bDeviceClass / bDeviceSubClass / bDeviceProtocol of the device descriptor the host
+/// reads.
+template <typename Device>
+ClassCodes ReadDeviceCodes(HidDeviceFixture& f, Device& device)
+{
+  const auto desc = f.Control(device, 0x80, 6, 0x0100, 18);
+  TEST_ASSERT(desc.size() == 18 && desc[0] == 18 && desc[1] == 1);
+  return {desc[4], desc[5], desc[6]};
+}
+
+/// The class, subclass and protocol of every interface descriptor in the configuration
+/// descriptor the host reads.
+template <typename Device>
+std::vector<ClassCodes> ReadInterfaceCodes(HidDeviceFixture& f, Device& device)
+{
+  const auto cfg = f.Control(device, 0x80, 6, 0x0200, 255);
+  TEST_ASSERT(cfg.size() >= 9 && cfg[1] == 2);
+  TEST_ASSERT(cfg.size() == static_cast<size_t>(cfg[2] | (cfg[3] << 8)));
+  std::vector<ClassCodes> list;
+  for (size_t at = cfg[0]; at + 2 <= cfg.size(); at += cfg[at])
+  {
+    TEST_ASSERT(cfg[at] >= 2 && at + cfg[at] <= cfg.size());
+    if (cfg[at + 1] == 4) list.push_back({cfg[at + 5], cfg[at + 6], cfg[at + 7]});
+  }
+  return list;
+}
+
+/// HID 1.11 4.1 / 4.2: the HID class (and, for a boot device, the boot subclass and the
+/// keyboard / mouse protocol) belongs to the interface descriptor; a device that is
+/// nothing but HID keeps bDeviceClass 0 so the host reads the class per interface.
+void TestClassCodes()
+{
+  // Keyboard alone: boot interface, keyboard protocol, nothing on the device.
+  {
+    HidDeviceFixture f;
+    TestKeyboard kbd(Number::EP1, Number::EP2, false);
+    HidDevice device(f.pool, &kbd);
+    device.Init(false);
+    TEST_ASSERT(ReadDeviceCodes(f, device) == (ClassCodes{0, 0, 0}));
+    const auto itf = ReadInterfaceCodes(f, device);
+    TEST_ASSERT(itf.size() == 1 && itf[0] == (ClassCodes{3, 1, 1}));
+  }
+  // Mouse alone: boot interface, mouse protocol.
+  {
+    HidDeviceFixture f;
+    TestMouse mouse(Number::EP1);
+    HidDevice device(f.pool, &mouse);
+    device.Init(false);
+    TEST_ASSERT(ReadDeviceCodes(f, device) == (ClassCodes{0, 0, 0}));
+    const auto itf = ReadInterfaceCodes(f, device);
+    TEST_ASSERT(itf.size() == 1 && itf[0] == (ClassCodes{3, 1, 2}));
+  }
+  // Gamepad alone: no boot protocol.
+  {
+    HidDeviceFixture f;
+    TestGamepad pad(Number::EP1);
+    HidDevice device(f.pool, &pad);
+    device.Init(false);
+    TEST_ASSERT(ReadDeviceCodes(f, device) == (ClassCodes{0, 0, 0}));
+    const auto itf = ReadInterfaceCodes(f, device);
+    TEST_ASSERT(itf.size() == 1 && itf[0] == (ClassCodes{3, 0, 0}));
+  }
+  // Keyboard and mouse in one configuration: the device descriptor is not taken over by
+  // either function (it stays the default of a composite device) and each interface
+  // carries its own codes.
+  {
+    HidDeviceFixture f;
+    TestKeyboard kbd(Number::EP1, Number::EP2, false);
+    TestMouse mouse(Number::EP3);
+    HidDevice device(f.pool, &kbd, &mouse);
+    device.Init(false);
+    const ClassCodes dev = ReadDeviceCodes(f, device);
+    TEST_ASSERT(dev.cls == 0xEF && dev.sub == 2 && dev.proto == 1);
+    const auto itf = ReadInterfaceCodes(f, device);
+    TEST_ASSERT(itf.size() == 2);
+    TEST_ASSERT(itf[0] == (ClassCodes{3, 1, 1}) && itf[1] == (ClassCodes{3, 1, 2}));
+  }
+  // Keyboard and gamepad: only the keyboard interface is a boot interface.
+  {
+    HidDeviceFixture f;
+    TestKeyboard kbd(Number::EP1, Number::EP2, false);
+    TestGamepad pad(Number::EP3);
+    HidDevice device(f.pool, &kbd, &pad);
+    device.Init(false);
+    const auto itf = ReadInterfaceCodes(f, device);
+    TEST_ASSERT(itf.size() == 2);
+    TEST_ASSERT(itf[0] == (ClassCodes{3, 1, 1}) && itf[1] == (ClassCodes{3, 0, 0}));
+  }
+}
+
+/// A boot interface must honour SET_PROTOCOL / GET_PROTOCOL (HID 1.11 7.2.5, 7.2.6). Its
+/// report has the same bytes in both protocols: keyboard = modifier, reserved, six keys;
+/// mouse = buttons, X, Y (and a wheel byte after them), none with a report ID
+/// (HID 1.11 appendix B).
+void TestBootProtocol()
+{
+  constexpr uint8_t GET_PROTOCOL = 0x03, SET_PROTOCOL = 0x0B;
+  Fixture f;
+  TestKeyboard kbd(Number::EP1, Number::EP2, false);
+  kbd.BindEndpoints(f.pool, 0, false);
+  TestKeyboard::ControlTransferResult result;
+  auto protocol = [&]()
+  {
+    result.write_data = {};
+    TEST_ASSERT(kbd.OnClassRequest(false, GET_PROTOCOL, 0, 1, 0, result) ==
+                ErrorCode::OK);
+    TEST_ASSERT(result.write_data.size_ == 1U);
+    return static_cast<const uint8_t*>(result.write_data.addr_)[0];
+  };
+  TEST_ASSERT(protocol() == 1U);  // Report protocol after enumeration.
+  TEST_ASSERT(kbd.OnClassRequest(false, SET_PROTOCOL, 0, 0, 0, result) == ErrorCode::OK);
+  TEST_ASSERT(protocol() == 0U);  // Boot protocol.
+  kbd.PressKey({HIDKeyboard::KeyCode::A}, HIDKeyboard::Modifier::LEFT_CTRL, false);
+  TEST_ASSERT(f.in.Last().data == std::vector<uint8_t>({HIDKeyboard::Modifier::LEFT_CTRL,
+                                                        0, 0x04, 0, 0, 0, 0, 0}));
+  TEST_ASSERT(kbd.OnClassRequest(false, SET_PROTOCOL, 1, 0, 0, result) == ErrorCode::OK);
+  TEST_ASSERT(protocol() == 1U);
+
+  Fixture g;
+  TestMouse mouse(Number::EP1);
+  mouse.BindEndpoints(g.pool, 0, false);
+  TEST_ASSERT(mouse.OnClassRequest(false, SET_PROTOCOL, 0, 0, 0, result) ==
+              ErrorCode::OK);
+  result.write_data = {};
+  TEST_ASSERT(mouse.OnClassRequest(false, GET_PROTOCOL, 0, 1, 0, result) ==
+              ErrorCode::OK);
+  TEST_ASSERT(result.write_data.size_ == 1U &&
+              static_cast<const uint8_t*>(result.write_data.addr_)[0] == 0U);
+  mouse.Move(HIDMouse::Button::RIGHT, 7, -8, 0, false);
+  TEST_ASSERT(g.in.Last().length >= 3 &&
+              g.in.Last().data == std::vector<uint8_t>({0x02, 0x07, 0xF8, 0x00}));
+}
+
+/// End to end through the device core: after SET_CONFIGURATION the host's GET_REPORT is
+/// answered with the report, or the control pipe stalls for one the class does not have.
+void TestGetReportThroughDeviceCore()
+{
+  HidDeviceFixture f;
+  TestKeyboard kbd(Number::EP1, Number::EP2, false);
+  HidDevice device(f.pool, &kbd);
+  device.Init(false);
+  (void)f.Control(device, 0x00, 9, 1, 0);  // SET_CONFIGURATION 1
+  TEST_ASSERT(!f.stalled);
+
+  // GET_REPORT(Input, ID 0), wLength 8: the last report, here still all zero.
+  auto data = f.Control(device, 0xA1, 0x01, 0x0100, 8, 0);
+  TEST_ASSERT(!f.stalled && data == std::vector<uint8_t>(8, 0));
+  // GET_REPORT(Output, ID 0), wLength 1: the LED report.
+  data = f.Control(device, 0xA1, 0x01, 0x0200, 1, 0);
+  TEST_ASSERT(!f.stalled && data == std::vector<uint8_t>(1, 0));
+  // A report the keyboard does not have stalls the control pipe.
+  (void)f.Control(device, 0xA1, 0x01, 0x0300, 8, 0);  // Feature
+  TEST_ASSERT(f.stalled);
+  (void)f.Control(device, 0xA1, 0x01, 0x0101, 8, 0);  // Input, ID 1
+  TEST_ASSERT(f.stalled);
+}
+
 }  // namespace
 
 int main()
@@ -525,5 +755,8 @@ int main()
   TestKeyboardReports();
   TestMouseAndGamepad();
   TestGetReport();
+  TestClassCodes();
+  TestBootProtocol();
+  TestGetReportThroughDeviceCore();
   std::puts("HID class: slot model, OUT lease, reset, idle rate and LED passed");
 }

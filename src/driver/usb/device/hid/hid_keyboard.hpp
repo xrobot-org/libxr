@@ -50,7 +50,7 @@ static const constexpr uint8_t HID_KEYBOARD_REPORT_DESC[] = {
  *        Standard USB HID Keyboard derived class
  *
  */
-class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
+class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1, 1>
 {
  public:
   /**
@@ -66,8 +66,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
   HIDKeyboard(Endpoint::EPNumber in_ep_num, Endpoint::EPNumber out_ep_num,
               bool enable_out_endpoint = false, uint8_t in_ep_interval = 1,
               uint8_t out_ep_interval = 1,
-              const char* interface_string =
-                  HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>::DEFAULT_INTERFACE_STRING)
+              const char* interface_string = DEFAULT_INTERFACE_STRING)
       : HID(in_ep_num, out_ep_num, enable_out_endpoint, in_ep_interval, out_ep_interval,
             interface_string)
   {
@@ -408,15 +407,18 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
 
  protected:
   /**
-   * @brief 写入设备描述符 / Write device descriptor
+   * @brief 写入设备描述符：类代码为 0，由接口描述符给出（HID 1.11 4.1）；boot 子类和键盘
+   *        协议在接口描述符里
+   * Write the device descriptor: class code 0, the class is given per interface (HID 1.11
+   * 4.1); the boot subclass and the keyboard protocol are in the interface descriptor
    * @param header 设备描述符头指针 / Device descriptor header pointer
    * @return ErrorCode 返回 OK / Always returns OK
    */
   ErrorCode WriteDeviceDescriptor(DeviceDescriptor& header) override
   {
-    header.data_.bDeviceClass = DeviceDescriptor::ClassID::HID;
-    header.data_.bDeviceSubClass = 1;
-    header.data_.bDeviceProtocol = 1;
+    header.data_.bDeviceClass = DeviceDescriptor::ClassID::PER_INTERFACE;
+    header.data_.bDeviceSubClass = 0;
+    header.data_.bDeviceProtocol = 0;
     return ErrorCode::OK;
   }
 

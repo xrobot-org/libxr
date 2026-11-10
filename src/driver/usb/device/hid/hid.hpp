@@ -26,10 +26,20 @@ namespace LibXR::USB
  * @tparam REPORT_DESC_LEN 报告描述符长度 / Report descriptor length (bytes)
  * @tparam TX_REPORT_LEN Input Report 长度 / Input report length (bytes)
  * @tparam RX_REPORT_LEN Output Report 长度 / Output report length (bytes) [default: 0]
+ * @tparam BOOT_PROTOCOL 接口声明的启动协议：0 无，1 键盘，2 鼠标（HID 1.11 4.3）。
+ * 非 0 时接口子类为 1（boot），接口协议为该值；报告在启动协议下必须是 HID 1.11 附录 B
+ * 的格式。
+ * Boot protocol the interface declares: 0 none, 1 keyboard, 2 mouse (HID 1.11 4.3). When
+ * non-zero the interface subclass is 1 (boot) and the interface protocol is this value;
+ * the report must then have the format of HID 1.11 appendix B in the boot protocol.
  */
-template <size_t REPORT_DESC_LEN, size_t TX_REPORT_LEN, size_t RX_REPORT_LEN = 0>
+template <size_t REPORT_DESC_LEN, size_t TX_REPORT_LEN, size_t RX_REPORT_LEN = 0,
+          uint8_t BOOT_PROTOCOL = 0>
 class HID : public DeviceClass
 {
+  static_assert(BOOT_PROTOCOL <= 2,
+                "BOOT_PROTOCOL is 0 (none), 1 (keyboard) or 2 (mouse)");
+
  public:
   // 暴露单接口的 HID 功能默认使用这个接口字符串。
   // Default interface string for HID functions that expose one interface.
@@ -192,8 +202,8 @@ class HID : public DeviceClass
         0,                                                   // bAlternateSetting
         static_cast<uint8_t>(enable_out_endpoint_ ? 2 : 1),  // bNumEndpoints
         0x03,                                                // bInterfaceClass (HID)
-        0x00,                                                // bInterfaceSubClass
-        0x00,                        // bInterfaceProtocol (可选键盘/鼠标设置1/2)
+        static_cast<uint8_t>(BOOT_PROTOCOL != 0 ? 1 : 0),    // bInterfaceSubClass (boot)
+        BOOT_PROTOCOL,               // bInterfaceProtocol (1 键盘 / 2 鼠标)
         GetInterfaceStringIndex(0u)  // iInterface
     };
 
