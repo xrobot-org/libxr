@@ -967,16 +967,16 @@ void TestHostAboveAdvertisedPacketCountThreaded()
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
   while (answered < TOTAL && std::chrono::steady_clock::now() < deadline)
   {
-    if (sent < TOTAL && sent - answered < DEPTH && f.out.active)
+    if (sent < TOTAL && sent - answered < DEPTH && f.out.IsActive())
     {
       f.out.HostSends(sent % 2u == 0u ? TAR : BLOCK);
       ++sent;
       continue;
     }
-    if (f.in.active)
+    if (f.in.IsActive())
     {
       const size_t want = (answered % 2u == 0u) ? 3U : 516U;
-      if (f.in.Last().length != want) order_ok = false;
+      if (f.in.LastLength() != want) order_ok = false;
       f.in.Complete();
       ++answered;
       continue;

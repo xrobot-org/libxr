@@ -69,9 +69,28 @@ class MockEndpoint : public Endpoint
   size_t limit = UINT16_MAX;
   ErrorCode configure_result = ErrorCode::OK;
   bool fail_next_start = false;
+  // 只有多线程测试会在另一个线程里扮演硬件/主机。StartHardware/StopHardware 在 lock 下
+  // 改状态，对应真实 MCU 上屏蔽中断的临界区；主机侧读写同一状态也必须取这把锁。
+  // Only multi-threaded tests play the hardware/host from another thread.
+  // StartHardware/StopHardware change state under lock, which models the interrupt-masked
+  // region of a real MCU; the host side takes the same lock to read or write that state.
   std::mutex lock;
 
   const Start& Last() const { return starts.back(); }
+
+  /// 在锁内读取 active，供另一个线程扮演主机时使用 / Read `active` under the lock, for a
+  /// host played from another thread.
+  bool IsActive()
+  {
+    std::lock_guard<std::mutex> guard(lock);
+    return active;
+  }
+  /// 在锁内读取最近一次启动的长度 / Length of the last start, read under the lock.
+  size_t LastLength()
+  {
+    std::lock_guard<std::mutex> guard(lock);
+    return starts.back().length;
+  }
 
   /// IN: the host takes the whole request.
   void Complete(bool in_isr = true)
@@ -101,10 +120,21 @@ class MockEndpoint : public Endpoint
   /// OUT: the host sends bytes into the armed slot.
   void HostSends(const std::vector<uint8_t>& bytes)
   {
-    TEST_ASSERT(active && bytes.size() <= starts.back().capacity);
-    active = false;
-    if (!bytes.empty()) std::memcpy(starts.back().address, bytes.data(), bytes.size());
-    OnHardwareComplete(true, starts.back().tag, bytes.size());
+    uint8_t* address;
+    uint32_t tag;
+    {
+      // 与 Complete 一样：状态在锁内，OnHardwareComplete 在锁外（它可能就地运行 owner，
+      // 进而在 StartHardware 里取同一把锁）。
+      // As in Complete: state under the lock, OnHardwareComplete outside it (it may run
+      // the owner in place, which takes the same lock in StartHardware).
+      std::lock_guard<std::mutex> guard(lock);
+      TEST_ASSERT(active && bytes.size() <= starts.back().capacity);
+      active = false;
+      address = starts.back().address;
+      tag = starts.back().tag;
+    }
+    if (!bytes.empty()) std::memcpy(address, bytes.data(), bytes.size());
+    OnHardwareComplete(true, tag, bytes.size());
   }
   void ConfirmStop()
   {
