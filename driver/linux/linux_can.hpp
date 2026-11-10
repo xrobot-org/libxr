@@ -68,8 +68,13 @@ class LinuxCANFD : public FDCAN
   /**
    * @brief 构造并接管接口：等待接口出现，用 rtnetlink 配置经典 CAN 后拉起
    *        Construct and take over the interface, configuring classic CAN via rtnetlink.
+   * @param interface_name SocketCAN 接口名 / SocketCAN interface name, e.g. can0.
    * @param config 仲裁相位与工作模式；只改这两个部分，FD 开关保持系统原状
    *        Nominal phase and mode; FD state is left untouched.
+   * @param rx_stack_size 接收线程栈大小，用户回调也在此栈运行 / RX thread stack size,
+   *        which also backs user callbacks.
+   * @param realtime 接收线程是否使用 SCHED_FIFO（无权限时回退默认策略）/ Use SCHED_FIFO
+   *        for RX, falling back to the default policy without privileges.
    * @note 构造会阻塞到接口出现且配置成功；需要 CAP_NET_ADMIN。
    *       Blocks until the interface exists and is configured; needs CAP_NET_ADMIN.
    */
@@ -79,8 +84,13 @@ class LinuxCANFD : public FDCAN
   /**
    * @brief 构造并接管接口：等待接口出现，用 rtnetlink 配置仲裁/数据相位与 FD 模式
    *        Construct and take over the interface, configuring both phases and FD mode.
+   * @param interface_name SocketCAN 接口名 / SocketCAN interface name, e.g. can0.
    * @param config FD 配置；fd_mode.fd_enabled 决定是否开启 FD 及其 MTU
    *        FD configuration; fd_mode.fd_enabled selects FD mode and the link MTU.
+   * @param rx_stack_size 接收线程栈大小，用户回调也在此栈运行 / RX thread stack size,
+   *        which also backs user callbacks.
+   * @param realtime 接收线程是否使用 SCHED_FIFO（无权限时回退默认策略）/ Use SCHED_FIFO
+   *        for RX, falling back to the default policy without privileges.
    * @note 构造会阻塞到接口出现且配置成功；需要 CAP_NET_ADMIN。
    *       Blocks until the interface exists and is configured; needs CAP_NET_ADMIN.
    */
