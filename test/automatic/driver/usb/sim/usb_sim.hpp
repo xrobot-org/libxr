@@ -25,15 +25,15 @@
  * count frames.
  *
  * 帧中断和真实控制器一样只在后端打开它时才送到 DeviceCore：有待决停止时，或者后端按
- * `SofPolicy` 在自己的重估点（Start、OnStopsSettled，CH32 还有 OnControlReady）看到
- * `WantsBusTime()` 为真。候选线的 DeviceCore 没有"需求变化"回调，所以仿真不会比真实后端
- * 更聪明：类在两个重估点之间才开始需要帧时间，就收不到 `OnBusTime`。
+ * `SofPolicy` 在自己的重估点（Start、OnStopsSettled、DeviceCore 的
+ * `OnBusTimeNeedChanged()`，CH32 还有 OnControlReady）看到 `WantsBusTime()` 为真。仿真
+ * 的重估点和真实后端一一对应，不会比它们更聪明。
  * As on a real controller, the frame interrupt reaches DeviceCore only while the backend
  * has it on: while a stop is pending, or after the backend saw `WantsBusTime()` true at
- * one of its own re-evaluation points (Start, OnStopsSettled, and OnControlReady on
- * CH32) as `SofPolicy` selects. The candidate DeviceCore has no "need changed" hook, so
- * the simulation is not cleverer than the real backends: a class that starts to need
- * bus time between two re-evaluation points gets no `OnBusTime`.
+ * one of its own re-evaluation points (Start, OnStopsSettled, the DeviceCore hook
+ * `OnBusTimeNeedChanged()`, and OnControlReady on CH32) as `SofPolicy` selects. The
+ * re-evaluation points match the real backends one to one; the simulation is not
+ * cleverer than they are.
  */
 
 #pragma once
@@ -86,12 +86,15 @@ enum class StopMode : uint8_t
 /// 后端何时重估帧中断开关 / When the backend re-evaluates its frame interrupt enable
 enum class SofPolicy : uint8_t
 {
-  /// STM32 OTG、ESP32 DWC2、FSDEV：Start 和 OnStopsSettled 里重估，开关随
-  /// `WantsBusTime()` 开或关 / STM32 OTG, ESP32 DWC2, FSDEV: re-evaluated in Start and
-  /// OnStopsSettled, on or off with `WantsBusTime()`
+  /// STM32 OTG、ESP32 DWC2、FSDEV：Start、OnStopsSettled 和 OnBusTimeNeedChanged
+  /// （直接调用 OnStopsSettled）里重估，开关随 `WantsBusTime()` 开或关 / STM32 OTG,
+  /// ESP32 DWC2, FSDEV: re-evaluated in Start, OnStopsSettled and OnBusTimeNeedChanged
+  /// (which calls OnStopsSettled), on or off with `WantsBusTime()`
   AT_STOPS,
-  /// CH32 OTG：OnControlReady 里 `WantsBusTime()` 为真就打开，之后不再关闭 / CH32 OTG:
-  /// OnControlReady turns it on when `WantsBusTime()` is true and it is never turned off
+  /// CH32 OTG：OnControlReady 里 `WantsBusTime()` 为真就打开，OnBusTimeNeedChanged 里
+  /// 随 `WantsBusTime()` 开或关 / CH32 OTG: OnControlReady turns it on when
+  /// `WantsBusTime()` is true, OnBusTimeNeedChanged sets it on or off with
+  /// `WantsBusTime()`
   AT_CONTROL_READY,
   /// 理想控制器：每帧都送（隔离测试用，不对应任何真实后端）/ Ideal controller, every
   /// frame is delivered (to isolate a class from the policy; no real backend)
@@ -734,6 +737,24 @@ class Device : public EndpointPool, public DeviceCore<Caps>
     if (profile_.sof_policy != SofPolicy::AT_CONTROL_READY) return;
     EndpointPool::HardwareScope hardware(this);
     if (this->WantsBusTime()) sof_on_ = true;
+  }
+
+  /// WantsBusTime() 变化：和真实后端一样重估帧中断。STM32 OTG、ESP32、FSDEV 直接调用
+  /// OnStopsSettled；CH32 按需求开或关。
+  /// WantsBusTime() changed: re-evaluate the frame interrupt as the real backends do.
+  /// STM32 OTG, ESP32 and FSDEV call OnStopsSettled; CH32 sets it on or off with the
+  /// need.
+  void OnBusTimeNeedChanged() override
+  {
+    if (profile_.sof_policy == SofPolicy::AT_STOPS)
+    {
+      OnStopsSettled();
+    }
+    else if (profile_.sof_policy == SofPolicy::AT_CONTROL_READY)
+    {
+      EndpointPool::HardwareScope hardware(this);
+      sof_on_ = this->WantsBusTime();
+    }
   }
 
  public:

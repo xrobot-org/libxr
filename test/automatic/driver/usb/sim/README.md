@@ -24,16 +24,17 @@ reference implementation of the contract and a real backend that differs from it
 
 ## 帧中断 / The frame interrupt
 
-候选线的 `DeviceCore` 没有"需求变化"回调，真实后端只在自己的重估点看 `WantsBusTime()`。仿真照做，
-由 `Profile::sof_policy` 选择：
+真实后端只在自己的重估点看 `WantsBusTime()`：`Start()`、`OnStopsSettled()`，以及类的需要变化时
+`DeviceCore` 调用的 `OnBusTimeNeedChanged()`。仿真照做，由 `Profile::sof_policy` 选择：
 
-The candidate `DeviceCore` has no "need changed" hook, and the real backends look at `WantsBusTime()`
-only at their own re-evaluation points. The simulation does the same, selected by `Profile::sof_policy`:
+A real backend looks at `WantsBusTime()` only at its own re-evaluation points: `Start()`,
+`OnStopsSettled()`, and `OnBusTimeNeedChanged()`, which `DeviceCore` calls when a class's need
+changes. The simulation does the same, selected by `Profile::sof_policy`:
 
 | 策略 / Policy | 后端 / Backends | 重估点 / Re-evaluation points |
 | --- | --- | --- |
-| `AT_STOPS` (默认 / default) | STM32 OTG、ESP32 DWC2、FSDEV | `Start()`、`OnStopsSettled()`；有待决停止时一直开 / while a stop is pending |
-| `AT_CONTROL_READY` | CH32 OTG FS/HS | `OnControlReady()` 里打开，之后不关 / turned on there, never off |
+| `AT_STOPS` (默认 / default) | STM32 OTG、ESP32 DWC2、FSDEV | `Start()`、`OnStopsSettled()`、`OnBusTimeNeedChanged()`；有待决停止时一直开 / while a stop is pending |
+| `AT_CONTROL_READY` | CH32 OTG FS/HS | `OnControlReady()` 里打开；`OnBusTimeNeedChanged()` 里随需要开关 / turned on there; on or off with the need in `OnBusTimeNeedChanged()` |
 | `ALWAYS` | 无（理想控制器）/ none (ideal controller) | 每帧都送，只用来把设备类和策略隔开 / every frame, to separate a class from the policy |
 
 ## 发现：不在默认运行里的用例 / Findings: cases kept out of the default run
@@ -52,12 +53,9 @@ the same command returns 0 and the case belongs among the regular ones. Item num
 
 | 程序 / Program | 用例 / Case | 条目 / Item | 现象 / Symptom |
 | --- | --- | --- | --- |
-| `test_usb_sim_profiles` | `uac_frame_ticks_otg_fs` | 2（帧中断跟随 `WantsBusTime()`，Line A 65cd2abf）/ 2 (frame interrupt follows `WantsBusTime()`, Line A 65cd2abf) | STM32 OTG 风格的后端：UAC 在 SET_INTERFACE 之后 12 帧只出 1 个包，帧中断没有打开 / UAC sends 1 packet in 12 frames after SET_INTERFACE, the frame interrupt is never turned on |
-| `test_usb_sim_profiles` | `uac_frame_ticks_esp32s3` | 2 | 同上，ESP32-S3 风格 / same, ESP32-S3 style |
 | `usb_sim_classes gsusb2` + `gs_burst.py`（手动 / manual） | gs_usb 突发 / gs_usb burst | 无编号（新）/ none (new) | 通道 0 突发时通道 1 的接收帧丢失，内核 `rx_over_errors` 增加；回显和接收轮流发送后不再丢 / channel 1 loses received frames during a burst on channel 0 and the kernel counts `rx_over_errors`; with echo and receive served alternately nothing is lost |
-| `classes_e2e.sh`（`CLASSES=uac USBIP_SOF=stops`，手动 / manual） | UAC 经 `snd-usb-audio` 采集 / UAC capture through `snd-usb-audio` | 2 | 默认策略下 `arecord` 在约 0.6 s 后报 `read error: Input/output error`：561 个等时 IN URB 只有第一个带数据（一个 96 字节包）；`USBIP_SOF=control` 和 `always` 下 3 s 采集 144000 个样本连续无断点 / with the default policy `arecord` fails after about 0.6 s with `read error: Input/output error`: of 561 isochronous IN URBs only the first carries data (one 96-byte packet); with `USBIP_SOF=control` and `always` a 3 s capture gives 144000 continuous samples |
 
-运行 / Run: `build/test/test_usb_sim_profiles --finding uac_frame_ticks_otg_fs`
+运行 / Run: `build/test/test_dap_fuzz --finding padded_atomic_group`
 
 ## 经 USB/IP 交给内核 / Handing the device to the kernel over USB/IP
 

@@ -386,6 +386,10 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
 
   void OnControllerReset() override { discard_ = false; }
 
+  /// WantsBusTime() 变化：按新的需求重估 SOFM / WantsBusTime() changed: re-evaluate SOFM
+  /// from the new need
+  void OnBusTimeNeedChanged() override { OnStopsSettled(); }
+
   void OnStopsSettled() override
   {
     if (!connected_)

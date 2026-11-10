@@ -104,6 +104,7 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   void OnControlReady() override;
   void OnStopTimeout(bool in_isr) override;
   void OnStopsSettled() override;
+  void OnBusTimeNeedChanged() override { OnStopsSettled(); }
   USB::Speed ReadBusSpeed() const override;
 
  private:

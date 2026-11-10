@@ -274,6 +274,17 @@ void CH32USBOtgFS::OnControlReady()
 #endif
 }
 
+void CH32USBOtgFS::OnBusTimeNeedChanged()
+{
+#if defined(USBFS_UIE_DEV_SOF)
+  USB::EndpointPool::HardwareScope hardware(this);
+  if (WantsBusTime())
+    USBFSD->INT_EN |= USBFS_UIE_DEV_SOF;
+  else
+    USBFSD->INT_EN &= static_cast<uint8_t>(~USBFS_UIE_DEV_SOF);
+#endif
+}
+
 void CH32USBOtgFS::Start(bool)
 {
   // OTGFS 与 FSDEV 共用同一套 USB 48 MHz 时钟选择规则。

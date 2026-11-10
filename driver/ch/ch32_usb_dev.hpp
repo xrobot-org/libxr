@@ -127,6 +127,7 @@ class CH32USBOtgFS : public USB::EndpointPool,
   ErrorCode SetAddress(uint8_t address, USB::ControlContext context) override;
 
   void OnControlReady() override;
+  void OnBusTimeNeedChanged() override;
 
   void Start(bool in_isr) override;
   void Stop(bool in_isr) override;
@@ -178,6 +179,7 @@ class CH32USBOtgHS : public USB::EndpointPool,
   }
 
   void OnControlReady() override;
+  void OnBusTimeNeedChanged() override;
 
   void Start(bool in_isr) override;
   void Stop(bool in_isr) override;

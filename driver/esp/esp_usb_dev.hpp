@@ -135,6 +135,12 @@ class ESP32USBDevice : public USB::EndpointPool,
    */
   void OnStopsSettled() override;
 
+  /**
+   * @brief WantsBusTime 变化：按新的需求重新决定是否保留 SOF 中断
+   *        WantsBusTime changed: decide again whether the SOF interrupt stays on
+   */
+  void OnBusTimeNeedChanged() override { OnStopsSettled(); }
+
  private:
   friend class ESP32USBEndpoint;
 

@@ -7,9 +7,9 @@
  * 等时、同号 IN/OUT 类型冲突，OTG FS 的小 IN FIFO，ESP32-S3 的 TX FIFO 个数。超出限制时
  * 端点配置失败，SET_CONFIGURATION 回 STALL，设备留在地址状态，换一个合法配置仍能用。
  * 最后是帧中断：UAC 麦克风在 SET_INTERFACE 之后要靠每帧的 OnBusTime 出数据。后端在
- * 自己的重估点才看 WantsBusTime()，CH32 风格（OnControlReady）和理想控制器上 UAC 正常
- * 出流；STM32 OTG 与 ESP32 风格（Start、OnStopsSettled）上帧中断没有打开，UAC 只出
- * 一个包就停了。后两个用例保持完整断言，不在默认运行里，见 README.md 的"发现"一节。
+ * 自己的重估点（Start、OnStopsSettled、DeviceCore 的 OnBusTimeNeedChanged，CH32 还有
+ * OnControlReady）才看 WantsBusTime()：STM32 OTG、ESP32、CH32 风格和理想控制器上 UAC
+ * 都每帧出一个包，类解除绑定后帧中断重新关闭。
  * Each profile first runs the composition of the BSP that uses it (CDC on F103 and DevC,
  * DAP v2 + CDC on XR-DAP-S3): enumeration, descriptor packet sizes within the FIFO or
  * PMA, data in both directions. Then the profile's limits: no isochronous and IN/OUT
@@ -18,11 +18,10 @@
  * stays addressed, and a legal configuration still works.
  * Last the frame interrupt: after SET_INTERFACE the UAC microphone produces data from the
  * per-frame OnBusTime. A backend looks at WantsBusTime() only at its own re-evaluation
- * points; with the CH32 style (OnControlReady) and on an ideal controller the UAC
- * streams, while on the STM32 OTG and ESP32 style (Start, OnStopsSettled) the frame
- * interrupt is not on and the UAC sends one packet and stops. The last two cases keep
- * their full assertions and are not in the default run; see the findings section of
- * README.md.
+ * points (Start, OnStopsSettled, the DeviceCore hook OnBusTimeNeedChanged, and
+ * OnControlReady on CH32): on the STM32 OTG, ESP32 and CH32 style and on an ideal
+ * controller the UAC sends one packet per frame, and the frame interrupt is off again
+ * once the class is unbound.
  */
 
 #include <atomic>
@@ -437,16 +436,20 @@ std::vector<size_t> UacOnProfile(const Profile& profile, unsigned frames)
   return StreamPackets(device, host, mic, frames);
 }
 
-/// 理想控制器（每帧都送）和 CH32 风格（OnControlReady 打开帧中断）上，UAC 每帧一个包，
-/// 包长 32 B（16 kHz 单声道 16 bit 每毫秒 16 个采样）。
-/// On an ideal controller (every frame delivered) and with the CH32 style
-/// (OnControlReady turns the frame interrupt on), the UAC sends one packet per frame of
-/// 32 B (16 samples of 16 kHz mono 16 bit per millisecond).
+/// 理想控制器（每帧都送）、STM32 OTG 与 ESP32 风格（OnBusTimeNeedChanged 重估帧中断）
+/// 和 CH32 风格上，UAC 每帧一个包，包长 32 B（16 kHz 单声道 16 bit 每毫秒 16 个采样）。
+/// 枚举和 SET_INTERFACE 不产生待决停止，帧中断只能靠 OnBusTimeNeedChanged 打开。
+/// On an ideal controller (every frame delivered), with the STM32 OTG and ESP32 style
+/// (OnBusTimeNeedChanged re-evaluates the frame interrupt) and with the CH32 style, the
+/// UAC sends one packet per frame of 32 B (16 samples of 16 kHz mono 16 bit per
+/// millisecond). Enumeration and SET_INTERFACE produce no pending stop, so the frame
+/// interrupt can only come from OnBusTimeNeedChanged.
 void TestUacStreamsWhenFramesArrive()
 {
   Profile ideal;
   ideal.sof_policy = SofPolicy::ALWAYS;
-  for (const Profile& profile : {ideal, Ch32OtgFsProfile()})
+  for (const Profile& profile :
+       {ideal, OtgFsDevCProfile(), Esp32S3Profile(), Ch32OtgFsProfile()})
   {
     const auto sizes = UacOnProfile(profile, 12);
     TEST_ASSERT(sizes.size() == 12);
@@ -454,45 +457,34 @@ void TestUacStreamsWhenFramesArrive()
   }
 }
 
-/// CH32 风格：配置完成后帧中断打开，并且一直开着 / CH32 style: the frame interrupt is on
-/// once configured and stays on
-void TestCh32StyleFrameInterrupt()
+/// 帧中断随 UAC 的需要开关：配置完成（UAC 绑定）后打开，取消配置（UAC 解除绑定）并等
+/// 待决停止确认后关闭。STM32 OTG、ESP32 和 CH32 风格都一样。
+/// The frame interrupt follows the UAC's need: on once configured (the UAC is bound), off
+/// again after the deconfiguration (the UAC is unbound) and once pending stops are
+/// confirmed. The same on the STM32 OTG, ESP32 and CH32 style.
+void TestFrameInterruptFollowsTheUac()
 {
-  UAC1MicrophoneQ<1, 16> mic(EP::EP1, 16000);
-  SimDevice device(Ch32OtgFsProfile(), DeviceDescriptor::PacketSize0::SIZE_64, 0x1209,
-                   0x0041, 0x0100, {&LANGUAGE}, {{&mic}});
-  SimHost host(device);
-  PowerUp(device);
-  TEST_ASSERT(!device.FrameInterruptOn());
-  TEST_ASSERT(host.Enumerate());
-  TEST_ASSERT(device.FrameInterruptOn());
-  const unsigned before = device.SofDelivered();
-  for (int i = 0; i < 3; ++i) device.Sof();
-  TEST_ASSERT(device.SofDelivered() == before + 3);
-  // CH32 不会再关闭它 / CH32 never turns it off again
-  TEST_ASSERT(host.ControlOut(MakeSetup(0x00, 9, 0, 0, 0)));
-  TEST_ASSERT(device.FrameInterruptOn());
-}
-
-/// 缺陷（C-missing-fixes.md 第 2 项）：STM32 OTG 与 ESP32 风格的后端只在 Start 和
-/// OnStopsSettled 里看 WantsBusTime()。UAC 从绑定起就要帧时间，但枚举和 SET_INTERFACE
-/// 不产生待决停止，帧中断一直是关的，UAC 只出 SET_INTERFACE 提交的那一个包。
-/// Defect (C-missing-fixes.md item 2): STM32 OTG and ESP32 style backends look at
-/// WantsBusTime() only in Start and OnStopsSettled. The UAC wants bus time from its bind,
-/// but enumeration and SET_INTERFACE produce no pending stop, so the frame interrupt
-/// stays off and the UAC sends only the one packet SET_INTERFACE submitted.
-void FindingUacFrameTicksOtgFs()
-{
-  const auto sizes = UacOnProfile(OtgFsDevCProfile(), 12);
-  std::fprintf(stderr, "UAC packets in 12 frames: %zu\n", sizes.size());
-  TEST_ASSERT(sizes.size() == 12);
-}
-
-void FindingUacFrameTicksEsp32S3()
-{
-  const auto sizes = UacOnProfile(Esp32S3Profile(), 12);
-  std::fprintf(stderr, "UAC packets in 12 frames: %zu\n", sizes.size());
-  TEST_ASSERT(sizes.size() == 12);
+  uint16_t pid = 0x0041;
+  for (const Profile& profile :
+       {OtgFsDevCProfile(), Esp32S3Profile(), Ch32OtgFsProfile()})
+  {
+    UAC1MicrophoneQ<1, 16> mic(EP::EP1, 16000);
+    SimDevice device(profile, DeviceDescriptor::PacketSize0::SIZE_64, 0x1209, pid++,
+                     0x0100, {&LANGUAGE}, {{&mic}});
+    SimHost host(device);
+    PowerUp(device);
+    TEST_ASSERT(!device.FrameInterruptOn());
+    TEST_ASSERT(host.Enumerate());
+    TEST_ASSERT(device.FrameInterruptOn());
+    const unsigned before = device.SofDelivered();
+    for (int i = 0; i < 3; ++i) device.Sof();
+    TEST_ASSERT(device.SofDelivered() == before + 3);
+    // 取消配置后 UAC 解除绑定，不再需要帧时间 / The deconfiguration unbinds the UAC,
+    // which no longer wants bus time
+    TEST_ASSERT(host.ControlOut(MakeSetup(0x00, 9, 0, 0, 0)));
+    for (int i = 0; i < 4; ++i) device.Sof();
+    TEST_ASSERT(!device.FrameInterruptOn());
+  }
 }
 
 void RegularCases()
@@ -505,16 +497,9 @@ void RegularCases()
   TestEsp32S3XrDap();
   TestEsp32S3InEndpointLimit();
   TestUacStreamsWhenFramesArrive();
-  TestCh32StyleFrameInterrupt();
+  TestFrameInterruptFollowsTheUac();
   std::puts("usb sim profiles: FSDEV, OTG FS and ESP32-S3 limits");
 }
 }  // namespace
 
-int main(int argc, char** argv)
-{
-  return RunTestProgram(
-      argc, argv, RegularCases,
-      {{"uac_frame_ticks_otg_fs", "C-missing-fixes item 2", FindingUacFrameTicksOtgFs},
-       {"uac_frame_ticks_esp32s3", "C-missing-fixes item 2",
-        FindingUacFrameTicksEsp32S3}});
-}
+int main(int argc, char** argv) { return RunTestProgram(argc, argv, RegularCases, {}); }

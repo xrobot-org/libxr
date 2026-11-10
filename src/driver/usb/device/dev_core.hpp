@@ -73,6 +73,10 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   virtual void OnStopTimeout(bool in_isr) { UNUSED(in_isr); }
   /// Every endpoint stop is confirmed (frame counting may end).
   virtual void OnStopsSettled() {}
+  /// WantsBusTime() changed (a class was bound or unbound, or started or stopped
+  /// needing bus time). The backend turns its frame interrupt on or off to match. Runs
+  /// in the owner, after the events that caused the change.
+  virtual void OnBusTimeNeedChanged() {}
   virtual Speed ReadBusSpeed() const { return speed_; }
   Speed GetSpeed() const { return speed_; }
 
@@ -131,6 +135,8 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
     STATUS   ///< Send the status stage of SET_INTERFACE.
   };
   void ProcessEvents(bool in_isr, uint32_t events);
+  void DispatchEvents(bool in_isr, uint32_t events);
+  void ReconcileBusTime();
   void Continue(bool in_isr);
   void Initialize(bool in_isr);
   void Deinitialize(bool in_isr);
@@ -179,6 +185,7 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   bool replacing_setup_ = false;
   uint8_t pending_address_ = 0xff;
   uint32_t deferred_events_ = 0;  ///< Events held back while an endpoint stops.
+  bool bus_time_wanted_ = false;  ///< WantsBusTime() last reported to the backend.
   Continuation continuation_ = Continuation::NONE;
   uint16_t pending_config_ = 0;
   Callback<const Endpoint::Completion&> in_callback_ =

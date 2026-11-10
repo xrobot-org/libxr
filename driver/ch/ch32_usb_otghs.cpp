@@ -409,6 +409,15 @@ void CH32USBOtgHS::OnControlReady()
   if (WantsBusTime()) USBHSD->INT_EN |= USBHS_UIE_SOF_ACT;
 }
 
+void CH32USBOtgHS::OnBusTimeNeedChanged()
+{
+  USB::EndpointPool::HardwareScope hardware(this);
+  if (WantsBusTime())
+    USBHSD->INT_EN |= USBHS_UIE_SOF_ACT;
+  else
+    USBHSD->INT_EN &= static_cast<uint8_t>(~USBHS_UIE_SOF_ACT);
+}
+
 void CH32USBOtgHS::Start(bool)
 {
   // OTGHS 先选择共享 48 MHz 时钟源，再打开 USBHS 自己的总线时钟。
