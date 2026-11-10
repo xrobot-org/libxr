@@ -678,6 +678,16 @@ void STM32USBOtgDevice::ForceStopAll(bool in_isr)
     Device()->DCTL |= USB_OTG_DCTL_CGONAK;
     flush_pending_ = 0U;
     flush_active_ = NO_FLUSH;
+    // An IN stop still waiting for its NAK has not written EPDIS. The endpoint must not
+    // stay enabled: the next session programs its transfer size ("Transfer stop
+    // programming for IN endpoints"; the bus reset of that session flushes the FIFO).
+    for (uint8_t i = 0; i < endpoint_count_; ++i)
+    {
+      if (in_[i] != nullptr &&
+          in_[i]->stop_stage_ == STM32OtgEndpoint::StopStage::IN_NAK &&
+          (InEp(i)->DIEPCTL & USB_OTG_DIEPCTL_EPENA) != 0U)
+        InEp(i)->DIEPCTL |= USB_OTG_DIEPCTL_SNAK | USB_OTG_DIEPCTL_EPDIS;
+    }
   }
   for (uint8_t i = 0; i < endpoint_count_; ++i)
   {

@@ -339,6 +339,31 @@ void TestDisconnectReconnect(const Mode& mode)
   TEST_ASSERT(f.host.Read(1, data) == Result::OK && data == bytes);
 }
 
+/// IN 端点的停止序列还没走完（SNAK 已写、EPDIS 未写）时调用 Stop()，中间没有进过中断：
+/// 请求以 ABORTED 结束一次，端点在硬件里被禁用。下一次会话里它的传输长度寄存器是在端点
+/// 禁用时写的，发出的是新数据。
+/// Stop() while the stop sequence of an IN endpoint is under way (SNAK written, EPDIS not
+/// yet) and no interrupt was taken in between: the request ends once with ABORTED and
+/// the endpoint is disabled in the hardware. In the next session its transfer size
+/// register is written while it is disabled and the new data goes out.
+void TestStopDuringInStop(const Mode& mode)
+{
+  Probe f(mode);
+  f.Up();
+  TEST_ASSERT(SubmitBytes(f.probe.bulk_in, Bytes(64, 1)) == ErrorCode::OK);
+  f.device.Deinit(false);
+  f.device.Stop(false);
+  TEST_ASSERT(f.probe.bulk_in_log.Count(ErrorCode::ABORTED) == 1U);
+  f.device.Init(false);
+  f.device.Start(false);
+  TEST_ASSERT(f.host.Enumerate(5, 1) == Result::OK);
+  TEST_ASSERT((f.hw.InCtl(1) & Dwc2::CTL_EPENA) == 0U);
+  const auto bytes = Bytes(9, 2);
+  std::vector<uint8_t> data;
+  TEST_ASSERT(SubmitBytes(f.probe.bulk_in, bytes) == ErrorCode::OK);
+  TEST_ASSERT(f.host.Read(1, data) == Result::OK && data == bytes);
+}
+
 // ---------------------------------------------------------------------------
 // UAC1 microphone
 // ---------------------------------------------------------------------------
@@ -444,6 +469,7 @@ void RunAll()
     TestBusResetMidTransfer<Probe>(mode);
     TestSuspendResume<Probe>(mode);
     TestDisconnectReconnect(mode);
+    TestStopDuringInStop(mode);
     TestFrameTicks<Probe>(mode);
     TestIsochronousFrames<Probe>(mode);
     TestIsochronousMissedFrame<Probe>(mode);
@@ -489,32 +515,6 @@ void FindingDmaDataWithStatusPhase()
   TEST_ASSERT(f.host.StatusIn() == Result::OK);
 }
 
-/// 端点停止序列还没走完（SNAK 已写、EPDIS 未写）时调用 Stop()：停止被直接确认，端点在
-/// 硬件里仍是使能的。下一次会话里对它写传输长度寄存器时端点仍处于使能状态，而手册要求
-/// 先按"停止传输"的序列禁用端点、且只在端点禁用时改写这个寄存器。
-/// Stop() while an endpoint stop sequence is under way (SNAK written, EPDIS not yet):
-/// the stop is confirmed at once and the endpoint stays enabled in the hardware. In the
-/// next session its transfer size register is written while it is still enabled; the
-/// manual requires the endpoint to be disabled by the transfer stop sequence and the
-/// register to be written only while it is disabled.
-void FindingStopLeavesEndpointEnabled()
-{
-  Probe f(SLAVE);
-  f.Up();
-  TEST_ASSERT(SubmitBytes(f.probe.bulk_in, Bytes(64, 1)) == ErrorCode::OK);
-  f.device.Deinit(false);
-  f.device.Stop(false);  // 中间没有进过中断 / No interrupt was taken in between
-  TEST_ASSERT(f.probe.bulk_in_log.Count(ErrorCode::ABORTED) == 1U);
-  f.device.Init(false);
-  f.device.Start(false);
-  TEST_ASSERT(f.host.Enumerate(5, 1) == Result::OK);
-  TEST_ASSERT((f.hw.InCtl(1) & Dwc2::CTL_EPENA) == 0U);
-  const auto bytes = Bytes(9, 2);
-  std::vector<uint8_t> data;
-  TEST_ASSERT(SubmitBytes(f.probe.bulk_in, bytes) == ErrorCode::OK);
-  TEST_ASSERT(f.host.Read(1, data) == Result::OK && data == bytes);
-}
-
 }  // namespace
 
 int main(int argc, char** argv)
@@ -530,9 +530,7 @@ int main(int argc, char** argv)
   const int handled = TestFindings::Run(
       argc, argv,
       {{"dma_data_with_status_phase", "XFRC read together with STSPHSRX is dropped",
-        FindingDmaDataWithStatusPhase},
-       {"stop_leaves_endpoint_enabled", "Stop() during an endpoint stop sequence",
-        FindingStopLeavesEndpointEnabled}});
+        FindingDmaDataWithStatusPhase}});
   if (handled >= 0) return handled;
   RunAll();
   std::printf("stm32 otg: all tests passed\n");
