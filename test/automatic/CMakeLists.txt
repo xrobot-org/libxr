@@ -349,3 +349,14 @@ target_link_libraries(test_usb_sim_profiles PRIVATE xr)
 target_include_directories(test_usb_sim_profiles PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 add_test(NAME usb_sim_profiles COMMAND test_usb_sim_profiles)
 set_tests_properties(usb_sim_profiles PROPERTIES TIMEOUT 120)
+
+# The simulated device over USB/IP for a real host stack (manual and nightly use on a
+# Linux machine with vhci-hcd; not a ctest).
+add_executable(usb_sim_usbip driver/usb/sim/usb_sim_usbip.cpp)
+target_link_libraries(usb_sim_usbip PRIVATE xr pthread)
+target_include_directories(usb_sim_usbip PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# HID, gs_usb, DFU and UAC over USB/IP for the kernel drivers (manual and nightly use).
+add_executable(usb_sim_classes driver/usb/sim/usb_sim_classes.cpp)
+target_link_libraries(usb_sim_classes PRIVATE xr pthread)
+target_include_directories(usb_sim_classes PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
