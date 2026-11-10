@@ -914,7 +914,10 @@ ErrorCode LinuxCANFD::OpenSocket()
   }
   const int index = request.ifr_ifindex;
 
-  const can_err_mask_t errors = CAN_ERR_MASK;
+  // 仲裁丢失是总线上的正常现象，不是错误，不订阅。
+  // Lost arbitration is normal on a shared bus, not an error; it is not subscribed.
+  const can_err_mask_t errors =
+      CAN_ERR_MASK & ~static_cast<can_err_mask_t>(CAN_ERR_LOSTARB);
   if (setsockopt(fd, SOL_CAN_RAW, CAN_RAW_ERR_FILTER, &errors, sizeof(errors)) < 0)
   {
     return fail(SocketError(errno));
