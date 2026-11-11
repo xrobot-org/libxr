@@ -13,6 +13,7 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -21,6 +22,7 @@
 #include <vector>
 
 #include "../../mock_endpoint.hpp"
+#include "../../thread_wait.hpp"
 #include "daplink_v1.hpp"
 #include "debug/swd.hpp"
 #include "dev_core.hpp"
@@ -45,6 +47,9 @@ class FakeSwd : public LibXR::Debug::Swd
  public:
   unsigned enters = 0, closes = 0, line_resets = 0;
   uint32_t clock_hz = 0;
+  /// SetClockHz calls, readable from another thread: the Step thread's session start ends
+  /// with one, so a test that waits for it knows Step has begun the command it holds.
+  std::atomic<unsigned> clock_calls{0};
   unsigned writes = 0, reads = 0;
   std::vector<std::thread::id> callers;
 
@@ -52,6 +57,7 @@ class FakeSwd : public LibXR::Debug::Swd
   {
     Note();
     clock_hz = hz;
+    clock_calls.fetch_add(1);
     return ErrorCode::OK;
   }
   void Close() override
@@ -334,14 +340,24 @@ void TestNoStaleResponseAfterRebind()
   Fixture f;
   TestDap dap(Number::EP1, Number::EP2, swd);
   dap.BindEndpoints(f.pool, 0, false);
-  Run(dap);
 
-  // DAP_Delay 10000 us.
-  f.out.HostSends(Report({static_cast<uint8_t>(CommandId::DELAY), 0x10, 0x27}));
-  std::thread dap_thread([&dap]() { (void)dap.Step(1000); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(3));
+  // The longest DAP_Delay, 65535 us, so that the unbind lands inside it. The first Step
+  // of a session ends its session start with SetClockHz and then takes the IN slot for
+  // the response: waiting for that call means Step holds the command. The test then
+  // checks that Step had not finished, so a missed window is a failure, not a silent loss
+  // of coverage.
+  f.out.HostSends(Report({static_cast<uint8_t>(CommandId::DELAY), 0xFF, 0xFF}));
+  std::atomic<bool> step_returned{false};
+  std::thread dap_thread(
+      [&]()
+      {
+        (void)dap.Step(1000);
+        step_returned.store(true);
+      });
+  TEST_ASSERT(WaitUntil([&]() { return swd.clock_calls.load() != 0U; }));
   dap.UnbindEndpoints(f.pool, false);
   dap.BindEndpoints(f.pool, 0, false);
+  TEST_ASSERT(!step_returned.load());
   dap_thread.join();
   Run(dap);
   TEST_ASSERT(f.in.starts.empty());

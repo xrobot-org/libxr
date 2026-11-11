@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "../../mock_endpoint.hpp"
+#include "../../thread_wait.hpp"
 #include "daplink_v2.hpp"
 #include "debug/swd.hpp"
 #include "device_composition.hpp"
@@ -55,12 +56,16 @@ class FakeSwd : public LibXR::Debug::Swd
  public:
   unsigned enters = 0, closes = 0, sequences = 0;
   uint32_t clock_hz = 0;
+  /// SetClockHz calls, readable from another thread. The Step thread's session start ends
+  /// with one, so a test that waits for it knows Step has begun the command it holds.
+  std::atomic<unsigned> clock_calls{0};
   std::vector<std::thread::id> callers;
 
   ErrorCode SetClockHz(uint32_t hz) override
   {
     Note();
     clock_hz = hz;
+    clock_calls.fetch_add(1);
     return ErrorCode::OK;
   }
   void Close() override
@@ -309,10 +314,22 @@ void TestUnbindWhileHoldingInSlot()
   DapFixture f;
   f.dap.BindEndpoints(f.pool, 0, false);
 
-  f.out.HostSends({DELAY, 0x10, 0x27});  // 10000 us
-  std::thread dap_thread([&f]() { (void)f.dap.Step(1000); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  // The longest DAP_Delay, 65535 us, so that the unbind lands inside it. Step ends its
+  // session start with SetClockHz and then takes an IN slot for the response: waiting for
+  // that call means Step holds the command, and the unbind follows within microseconds.
+  // The test then checks that Step had not finished yet, so a missed window is a failure,
+  // not a silent loss of coverage.
+  f.out.HostSends({DELAY, 0xFF, 0xFF});
+  std::atomic<bool> step_returned{false};
+  std::thread dap_thread(
+      [&]()
+      {
+        (void)f.dap.Step(1000);
+        step_returned.store(true);
+      });
+  TEST_ASSERT(WaitUntil([&]() { return f.swd.clock_calls.load() != 0U; }));
   f.dap.UnbindEndpoints(f.pool, false);
+  TEST_ASSERT(!step_returned.load());
   dap_thread.join();
   TEST_ASSERT(f.in.starts.empty());
   // The application's loop steps again; unbound, Step gives back what it holds.
@@ -398,13 +415,23 @@ void TestNextCommandReceivedDuringDelay()
   DapFixture f;
   f.dap.BindEndpoints(f.pool, 0, false);
 
-  f.out.HostSends({DELAY, 0x10, 0x27});  // 10000 us
-  std::thread dap_thread([&f]() { (void)f.dap.Step(1000); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  // The longest DAP_Delay (65535 us); the second command goes in after Step has begun the
+  // first one (see TestUnbindWhileHoldingInSlot), and the test checks that Step had not
+  // finished by then.
+  f.out.HostSends({DELAY, 0xFF, 0xFF});
+  std::atomic<bool> step_returned{false};
+  std::thread dap_thread(
+      [&]()
+      {
+        (void)f.dap.Step(1000);
+        step_returned.store(true);
+      });
+  TEST_ASSERT(WaitUntil([&]() { return f.swd.clock_calls.load() != 0U; }));
 
   // The host sends the next command while the delay is pending: it is received (the USB
   // side does not wait for the DAP thread) but not executed, and nothing answers.
   f.out.HostSends({INFO, PACKET_SIZE_ID});
+  TEST_ASSERT(!step_returned.load());
   dap_thread.join();
 
   // The delay response goes first; the received command answers after it.
@@ -707,8 +734,16 @@ void TestWakeStep()
   TEST_ASSERT(f.dap.WaitForWork(0) == ErrorCode::TIMEOUT);
 
   std::atomic<bool> woke{false};
-  std::thread waiter([&]() { woke.store(f.dap.WaitForWork(2000) == ErrorCode::OK); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  std::atomic<long> waiter_tid{0};
+  std::thread waiter(
+      [&]()
+      {
+        waiter_tid.store(CurrentTid());
+        woke.store(f.dap.WaitForWork(2000) == ErrorCode::OK);
+      });
+  // Wake it once the kernel shows it blocked in WaitForWork, not after a fixed sleep.
+  TEST_ASSERT(WaitUntil([&]() { return waiter_tid.load() != 0; }));
+  TEST_ASSERT(WaitUntilBlocked(waiter_tid.load()));
   f.dap.WakeStep(false);
   waiter.join();
   TEST_ASSERT(woke.load());
@@ -766,14 +801,19 @@ void TestWaitForWork()
     TEST_ASSERT(f.dap.WaitForWork(0) == ErrorCode::TIMEOUT);
 
     std::atomic<bool> returned{false};
+    std::atomic<long> waiter_tid{0};
     ErrorCode result = ErrorCode::FAILED;
     std::thread waiter(
         [&]()
         {
+          waiter_tid.store(CurrentTid());
           result = f.dap.WaitForWork(2000);
           returned.store(true);
         });
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // It must still be blocked when the host has taken nothing: wait for the kernel to
+    // show it blocked, then check that WaitForWork has not returned.
+    TEST_ASSERT(WaitUntil([&]() { return waiter_tid.load() != 0; }));
+    TEST_ASSERT(WaitUntilBlocked(waiter_tid.load()));
     TEST_ASSERT(!returned.load());
     f.in.Complete();
     waiter.join();
@@ -1091,11 +1131,19 @@ void TestRebindDuringBatchThenDelay()
   f.dap.BindEndpoints(f.pool, 0, false);
   const uint8_t EXECUTE = static_cast<uint8_t>(CommandId::EXECUTE_COMMANDS);
 
-  // [EXECUTE, 2, DAP_Delay 20000 us, DAP_Info(PACKET_SIZE)].
-  f.out.HostSends({EXECUTE, 2, DELAY, 0x20, 0x4E, INFO, PACKET_SIZE_ID});
-  std::thread dap_thread([&f]() { (void)f.dap.Step(1000); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  // [EXECUTE, 2, DAP_Delay 65535 us, DAP_Info(PACKET_SIZE)]; the unbind goes in once Step
+  // has begun the batch (see TestUnbindWhileHoldingInSlot).
+  f.out.HostSends({EXECUTE, 2, DELAY, 0xFF, 0xFF, INFO, PACKET_SIZE_ID});
+  std::atomic<bool> step_returned{false};
+  std::thread dap_thread(
+      [&]()
+      {
+        (void)f.dap.Step(1000);
+        step_returned.store(true);
+      });
+  TEST_ASSERT(WaitUntil([&]() { return f.swd.clock_calls.load() != 0U; }));
   f.dap.UnbindEndpoints(f.pool, false);
+  TEST_ASSERT(!step_returned.load());
   dap_thread.join();
   Run(f);  // the application's loop goes on stepping while unbound
   f.dap.BindEndpoints(f.pool, 0, false);

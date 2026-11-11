@@ -21,12 +21,14 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <thread>
 
+#include "../../thread_wait.hpp"
 #include "device_composition.hpp"
 #include "dfu_bootloader.hpp"
 #include "dfu_runtime.hpp"
@@ -179,28 +181,54 @@ void TestRuntimeDetach()
 /// from the status stage, has expired; no Timer task or class service is involved.
 void TestRuntimeJumpsFromProcess()
 {
-  g_jumps = 0;
-  TestRuntime rt(&JumpToBootloader, nullptr, 20u);
-  EndpointPool pool{2};
-  rt.BindEndpoints(pool, 3, false);
-  TestRuntime::ControlTransferResult result;
+  // The 20 ms timeout is part of what is tested, so two things are handled with care:
+  // - "The timeout starts at the status stage": 30 ms (more than the timeout) pass
+  // between
+  //   DETACH and the status stage, and Process() must not jump. Time passing is the point
+  //   here, and a longer pause cannot break it.
+  // - "Not expired right after the status stage": Process() runs a moment after
+  //   OnControlComplete and must not jump. That holds only if the thread was not
+  //   descheduled for longer than the timeout in between, which a loaded host can do. The
+  //   steady clock measures the gap; when it was 10 ms or more the attempt says nothing
+  //   about the class and is repeated with a fresh object (up to 20 times, and a test
+  //   that never gets a clean attempt fails).
+  // The jump itself is waited for by polling Process(), not by a fixed sleep.
+  bool clean = false;
+  for (unsigned attempt = 0; attempt < 20U && !clean; ++attempt)
+  {
+    g_jumps = 0;
+    TestRuntime rt(&JumpToBootloader, nullptr, 20u);
+    EndpointPool pool{2};
+    rt.BindEndpoints(pool, 3, false);
+    TestRuntime::ControlTransferResult result;
 
-  rt.Process();
-  TEST_ASSERT(g_jumps == 0);
-  TEST_ASSERT(rt.OnClassRequest(false, DFU_DETACH, 0, 0, 3, result) == ErrorCode::OK);
-  // The timeout starts at the status stage.
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
-  rt.Process();
-  TEST_ASSERT(g_jumps == 0);
-  rt.OnControlComplete(false, SetupPacket{0x21, DFU_DETACH, 0, 3, 0});
-  rt.Process();
-  TEST_ASSERT(g_jumps == 0);
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
-  rt.Process();
-  TEST_ASSERT(g_jumps == 1);
-  // The jump happens once.
-  rt.Process();
-  TEST_ASSERT(g_jumps == 1);
+    rt.Process();
+    TEST_ASSERT(g_jumps == 0);
+    TEST_ASSERT(rt.OnClassRequest(false, DFU_DETACH, 0, 0, 3, result) == ErrorCode::OK);
+    // The timeout starts at the status stage.
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    rt.Process();
+    TEST_ASSERT(g_jumps == 0);
+    const auto begin = std::chrono::steady_clock::now();
+    rt.OnControlComplete(false, SetupPacket{0x21, DFU_DETACH, 0, 3, 0});
+    rt.Process();
+    const auto gap = std::chrono::steady_clock::now() - begin;
+    if (gap >= std::chrono::milliseconds(10)) continue;
+    clean = true;
+    TEST_ASSERT(g_jumps == 0);
+    // The jump comes once the timeout has expired.
+    TEST_ASSERT(LibXR::USB::Test::WaitUntil(
+        [&]()
+        {
+          rt.Process();
+          return g_jumps != 0;
+        }));
+    TEST_ASSERT(g_jumps == 1);
+    // The jump happens once.
+    rt.Process();
+    TEST_ASSERT(g_jumps == 1);
+  }
+  TEST_ASSERT(clean);
 }
 
 /// The bootloader class, its RAM flash and the composition that gives it a service pool.
