@@ -998,6 +998,45 @@ void TestFrameTicks(const typename Fixture::ModeType& mode)
   }
 }
 
+/// 核心对同一个 SOF 令牌把帧中断置位两次（STM32H723 上测得，两次的 DSTS.FNSOF 相同）：
+/// 每帧（高速时每微帧）仍恰好送一次 OnFrameTick，间隔为 1；高速的各个微帧帧号不同，
+/// 一个都不能丢。总线复位之后，同一帧号的第一个 SOF 同样要送出。
+/// The core flags the same SOF token twice (measured on an STM32H723, both times with the
+/// same DSTS.FNSOF): every frame (microframe at high speed) still delivers exactly one
+/// OnFrameTick with an interval of one; the microframes of high speed have different
+/// numbers and none may be dropped. After a bus reset the first SOF with the same
+/// number is delivered as well.
+template <typename Fixture>
+void TestFrameTicksWhenSofIsRaisedTwice(const typename Fixture::ModeType& mode)
+{
+  Fixture f(mode, true);
+  f.Up();
+  f.hw.sof_twice = true;
+  f.probe.ticks.clear();
+  const unsigned before = f.interrupts;
+  f.host.Sof(40);
+  TEST_ASSERT(f.probe.ticks.size() == 40U);
+  TEST_ASSERT(f.interrupts >=
+              before + 80U);  // 每个令牌两次中断 / Two interrupts per token
+  for (size_t i = 0; i < f.probe.ticks.size(); ++i)
+  {
+    if (i != 0U) TEST_ASSERT(f.probe.ticks[i].elapsed_intervals == 1U);
+    if (Fixture::HighSpeed(mode))
+      TEST_ASSERT(f.probe.ticks[i].microframe == ((f.hw.Frame() - 39U + i) & 7U));
+    else
+      TEST_ASSERT(f.probe.ticks[i].microframe == 0xFFU);
+  }
+  // 复位之后帧号从刚处理过的值重新开始 / After a reset the number restarts at the one
+  // just handled
+  const uint16_t handled = f.hw.Frame();
+  f.host.frame_per_retry = false;  // 枚举期间没有 SOF / No SOF during the enumeration
+  TEST_ASSERT(f.host.Enumerate(7, 1) == Result::OK);
+  f.probe.ticks.clear();
+  f.hw.HostSetNextFrame(handled);
+  f.host.Sof();
+  TEST_ASSERT(f.probe.ticks.size() == 1U);
+}
+
 /// 等时 IN 的奇偶帧：请求在第 N 帧提交，安排在第 N+1 帧发送；第 N 帧里的 IN 令牌得到
 /// 零长包，第 N+1 帧发出数据并完成一次。偶数帧和奇数帧提交各检查一次。
 /// Even and odd frames of isochronous IN: a request submitted in frame N is scheduled

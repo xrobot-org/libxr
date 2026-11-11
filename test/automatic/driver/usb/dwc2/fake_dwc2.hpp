@@ -216,6 +216,13 @@ class Controller : public MmioTrap::Device
   /// 3.10a 的核心在非 DMA 模式下弹出 SETUP 数据状态字时置 XFRC|STPKTRX / A 3.10a core
   /// without DMA raises XFRC|STPKTRX when the SETUP data status word is popped
   bool slave_setup_event = false;
+  /// STM32 OTG_HS 内嵌全速 PHY 上测得：每个 SOF 令牌 GINTSTS.SOF 被置位两次，间隔约
+  /// 1.4 us，两次读到的 DSTS.FNSOF 相同。开启后，驱动清除某个 SOF 之后，模型对同一令牌
+  /// 再置位一次 / Measured on an STM32 OTG_HS with the embedded full-speed PHY: the core
+  /// sets GINTSTS.SOF twice per SOF token, about 1.4 us apart, with the same DSTS.FNSOF.
+  /// When on, the model sets the flag once more for the same token after the driver has
+  /// cleared the first one
+  bool sof_twice = false;
 
   std::vector<std::string> violations;  ///< 违反手册"必须"的操作 / Mandatory rules broken
   std::vector<std::string> notes;       ///< 值得记录但不判错 / Recorded, not judged
@@ -350,6 +357,14 @@ class Controller : public MmioTrap::Device
     }
     frame_ = static_cast<uint16_t>((frame_ + 1U) & (HighSpeed() ? 0x3FFFU : 0x7FFU));
     latched_ |= GINT_SOF;
+    sof_again_ = sof_twice;
+  }
+
+  /// 把下一个 SOF 将带的帧号安排为 next（复位后主机重新计帧）/ Make next the frame
+  /// number the next SOF carries (the host counts again after a reset)
+  void HostSetNextFrame(uint16_t next)
+  {
+    frame_ = static_cast<uint16_t>((next - 1U) & (HighSpeed() ? 0x3FFFU : 0x7FFU));
   }
 
   Resp HostSetup(uint8_t address, const uint8_t* packet)
@@ -1151,6 +1166,11 @@ class Controller : public MmioTrap::Device
         return;
       case GINTSTS:
         latched_ &= ~(value & GINT_W1C);
+        if ((value & GINT_SOF) != 0U && sof_again_)
+        {
+          sof_again_ = false;
+          latched_ |= GINT_SOF;
+        }
         return;
       case GINTMSK:
         gintmsk_ = value;
@@ -1288,6 +1308,7 @@ class Controller : public MmioTrap::Device
     busy_bits_ = 0;
     busy_reads_ = 0;
     latched_ = 0;
+    sof_again_ = false;
     gintmsk_ = 0;
     grxfsiz_ = config_.fifo_depth;
     for (auto& value : txf_)
@@ -1315,7 +1336,8 @@ class Controller : public MmioTrap::Device
   uint32_t gotgctl_ = 0, gotgint_ = 0, gahbcfg_ = 0, gusbcfg_ = 0, grstctl_ = 0;
   uint32_t busy_bits_ = 0;
   unsigned busy_reads_ = 0;
-  uint32_t latched_ = 0;  // Write-one-to-clear bits of GINTSTS.
+  uint32_t latched_ = 0;    // Write-one-to-clear bits of GINTSTS.
+  bool sof_again_ = false;  // The repeated SOF of the last token is still due.
   uint32_t gintmsk_ = 0, grxfsiz_ = 0, txf_[16] = {};
   uint32_t dcfg_ = 0, dctl_ = 0, diepmsk_ = 0, doepmsk_ = 0, daintmsk_ = 0;
   uint32_t diepempmsk_ = 0, enumspd_ = 1;

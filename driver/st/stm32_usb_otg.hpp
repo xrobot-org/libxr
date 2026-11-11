@@ -146,6 +146,7 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   static constexpr uint8_t MAX_DEVICES = 2;
   static constexpr uint8_t NO_FLUSH = 0xFF;
   static constexpr uint8_t FLUSH_ALL = 0x10;
+  static constexpr uint32_t NO_SOF_POSITION = 0xFFFFFFFFU;  // FNSOF has 14 bits.
 
   // Register blocks of this core.
   USB_OTG_DeviceTypeDef* Device() const;
@@ -188,6 +189,12 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   alignas(4) uint8_t setup_[8] = {};  // Non-DMA SETUP packet.
   USB::Speed bus_speed_ = USB::Speed::FULL;
   bool discard_ = false;  // Bus reset seen, the owner has not applied it yet.
+  /// 最近处理的 SOF 的 DSTS.FNSOF（高速时低 3 位是微帧号）；核心可能对同一个 SOF 令牌把
+  /// 帧中断置位两次，帧号相同的第二次被忽略；连接和总线复位时置为无效值 / DSTS.FNSOF of
+  /// the SOF handled last (the low 3 bits are the microframe at high speed); the core may
+  /// flag one SOF token twice and the second one with the same number is ignored; set to
+  /// an invalid value at connect and at bus reset
+  uint32_t last_sof_position_ = NO_SOF_POSITION;
   uint8_t global_nak_users_ = 0;
   uint32_t flush_pending_ = 0;  // Bit n: TX FIFO n; bit 16: every TX FIFO.
   uint8_t flush_active_ = NO_FLUSH;

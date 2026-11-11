@@ -229,6 +229,7 @@ void STM32USBOtgDevice::Start(bool)
 void STM32USBOtgDevice::Connect()
 {
   discard_ = false;
+  last_sof_position_ = NO_SOF_POSITION;
   core_->GINTSTS = 0xBFFFFFFFU;
   uint32_t mask = USB_OTG_GINTMSK_USBRST | USB_OTG_GINTMSK_ENUMDNEM |
                   USB_OTG_GINTMSK_USBSUSPM | USB_OTG_GINTMSK_WUIM |
@@ -373,6 +374,7 @@ void STM32USBOtgDevice::HandleInterrupt()
 void STM32USBOtgDevice::OnUsbReset()
 {
   core_->GINTSTS = USB_OTG_GINTSTS_USBRST;
+  last_sof_position_ = NO_SOF_POSITION;
   // Data of the old session is dropped until the owner has applied the reset.
   discard_ = true;
   Device()->DCTL &= ~USB_OTG_DCTL_RWUSIG;
@@ -570,6 +572,15 @@ void STM32USBOtgDevice::HandleIsoIncomplete()
 void STM32USBOtgDevice::HandleSof()
 {
   core_->GINTSTS = USB_OTG_GINTSTS_SOF;
+  const uint32_t position =
+      (Device()->DSTS & USB_OTG_DSTS_FNSOF) >> USB_OTG_DSTS_FNSOF_Pos;
+  // The core can set GINTSTS.SOF a second time about 1.4 us after the first one for the
+  // same token (measured on an STM32H723 with the embedded full-speed PHY; the ST HAL
+  // sees it too). DSTS.FNSOF is the same both times, so a position that was just handled
+  // is skipped. At high speed the low 3 bits are the microframe, so every microframe
+  // still differs from the one before.
+  if (position == last_sof_position_) return;
+  last_sof_position_ = position;
   // Backstop for stops: the register state is checked once per frame.
   for (uint8_t i = 0; i < endpoint_count_; ++i)
   {
@@ -578,8 +589,6 @@ void STM32USBOtgDevice::HandleSof()
     if (out_[i] != nullptr && out_[i]->stop_stage_ != STM32OtgEndpoint::StopStage::NONE)
       out_[i]->PollStop();
   }
-  const uint32_t position =
-      (Device()->DSTS & USB_OTG_DSTS_FNSOF) >> USB_OTG_DSTS_FNSOF_Pos;
   if (bus_speed_ == USB::Speed::HIGH)
     OnSof(true, static_cast<uint16_t>(position >> 3U),
           static_cast<uint8_t>(position & 7U));

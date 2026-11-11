@@ -476,6 +476,7 @@ void RunAll()
     TestDisconnectReconnect(mode);
     TestStopDuringInStop(mode);
     TestFrameTicks<Probe>(mode);
+    TestFrameTicksWhenSofIsRaisedTwice<Probe>(mode);
     TestIsochronousFrames<Probe>(mode);
     TestIsochronousMissedFrame<Probe>(mode);
     TestTwoIsochronousStreams<Probe>(mode);
