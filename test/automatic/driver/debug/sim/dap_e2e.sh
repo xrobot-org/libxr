@@ -3,9 +3,13 @@
 # dap_sim_usbip (DAP v2 class + SwdGeneralGPIO + simulated SWD target over USB/IP),
 # attaches it through vhci, and runs OpenOCD (and pyOCD and probe-rs when their paths are
 # given) against it, with and without injected WAITs. Needs vhci-hcd, usbip and openocd.
+# The server runs on a free TCP port with a random busid and is attached only after the
+# script has checked that it is the server it started (usbip_lib.sh); a system usbipd on
+# the stock port is never reached.
 # 端到端测试 DAP v2 类：启动 dap_sim_usbip（DAP v2 类 + SwdGeneralGPIO + SWD 目标仿真，经
 # USB/IP），经 vhci 挂接，用 OpenOCD（给了路径时还有 pyOCD、probe-rs）跑会话，带和不带
-# 注入的 WAIT。
+# 注入的 WAIT。服务端用空闲的 TCP 端口和随机 busid，脚本确认它就是自己启动的那个之后才挂接
+# （usbip_lib.sh），不会连到系统 usbipd 的默认端口。
 #
 # The host has real CMSIS-DAP probes, so the simulated one is selected in several ways at
 # once: its VID:PID 1209:0002 must belong to exactly one device on the host and that
@@ -27,7 +31,11 @@
 # 两者都匹配的设备。DAP_PRIV="sudo -n" 只让调试器以 root 运行（usbfs 需要），脚本本身和
 # 仿真探针以调用者身份运行。pyOCD 和 probe-rs 没有总线端口选项，会打开找到的每个
 # CMSIS-DAP 探针读序列号，所以只有在设置 DAP_TOOLS_SCAN_OK=1 且主机上没有其他探针时才运行。
-# Exit status: 0 all passed, 1 a check failed.
+# A missing tool (usbip, sudo -n, openocd) or kernel module (vhci_hcd), and a debugger that
+# cannot open the device through usbfs, are COULD NOT RUN (exit status 3), not a failure.
+# 缺工具（usbip、sudo -n、openocd）或内核模块（vhci_hcd），以及调试器经 usbfs 打不开设备，
+# 是 COULD NOT RUN（退出码 3），不算失败。
+# Exit status: 0 all passed, 1 a check failed, 3 nothing failed but something could not run.
 set -u
 BUILD=$(realpath "${1:?build dir}")
 PYOCD=${2:-}
@@ -35,26 +43,31 @@ PROBERS=${3:-}
 cd "$(dirname "$0")"
 . ../../usb/sim/usbip_lib.sh
 PRIV=${DAP_PRIV:-}
+sim_check_host || exit $?
+sim_need_tools openocd || exit $?
+[ -x "$BUILD/test/dap_sim_usbip" ] || { echo "COULD NOT RUN: $BUILD/test/dap_sim_usbip is not built"; exit 3; }
+if [ -n "$PRIV" ] && ! $PRIV true 2>/dev/null; then
+  echo "COULD NOT RUN: DAP_PRIV ($PRIV) does not work here"
+  exit 3
+fi
 VIDPID_VID=1209
 VIDPID_PID=0002
 WORK=$(mktemp -d)
-SERVER_PID=""
 DEV=""
 fail=0
+skipped=0
 
 cleanup() {
   sim_detach
-  [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
+  sim_stop_server
   rm -rf "$WORK"
 }
 trap cleanup EXIT
 
 start() {
   sim_detach
-  if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; fi
-  env "$@" "$BUILD/test/dap_sim_usbip" "$SIM_TCP_PORT" > "$WORK/dap.log" 2>&1 &
-  SERVER_PID=$!
-  sleep 1
+  sim_start_server "$WORK/dap.log" env "$@" "$BUILD/test/dap_sim_usbip" @PORT@ ||
+    { echo "FAIL: the server did not start"; exit 1; }
   sim_attach || { echo "FAIL attach"; exit 1; }
   DEV=""
   for _ in $(seq 1 50); do
@@ -70,7 +83,11 @@ target_clean() {
 }
 check() {
   local name=$1; shift
-  if "$@" && target_clean; then echo "PASS $name"; else
+  if "$@" && target_clean; then echo "PASS $name"
+  elif grep -qE "LIBUSB_ERROR_ACCESS|Permission denied|Access denied" "$WORK/tool.log"; then
+    echo "COULD NOT RUN $name (the debugger cannot open the device; set DAP_PRIV=\"sudo -n\")"
+    skipped=1
+  else
     echo "FAIL $name"; fail=1
     tail -3 "$WORK/tool.log" | sed "s/^/    /"; grep "^target:" "$WORK/dap.log" | tail -1 | sed "s/^/    /"
   fi
@@ -120,4 +137,6 @@ if [ -n "$PROBERS" ]; then
   fi
 fi
 
-exit $fail
+[ "$fail" -ne 0 ] && exit 1
+[ "$skipped" -ne 0 ] && exit 3
+exit 0

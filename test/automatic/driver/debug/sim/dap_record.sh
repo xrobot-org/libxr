@@ -8,7 +8,11 @@
 # the debugger only; pyOCD and probe-rs only with DAP_TOOLS_SCAN_OK=1).
 # 录下真实主机工具的 DAP v2 会话供回放测试使用：启动带 USBIP_RECORD 的 dap_sim_usbip，
 # 经 vhci 挂接，跑一次 OpenOCD 会话（带和不带注入的 WAIT），可选再跑 pyOCD、probe-rs，
-# 每次都对照它写入的镜像检查。设备的选择同 dap_e2e.sh。
+# 每次都对照它写入的镜像检查。设备的选择同 dap_e2e.sh；服务端用空闲端口和随机 busid，确认是
+# 自己启动的之后才挂接（usbip_lib.sh）。缺工具或内核模块时退出码为 3（COULD NOT RUN）。
+# The server runs on a free port with a random busid and is attached only after the script
+# has checked that it is the one it started (usbip_lib.sh). A missing tool or kernel module
+# exits with status 3 (COULD NOT RUN).
 set -u
 BUILD=$(realpath "${1:?build dir}")
 OUT=$(realpath "${2:?out dir}")
@@ -17,8 +21,14 @@ PROBERS=${4:-}
 cd "$(dirname "$0")"
 . ../../usb/sim/usbip_lib.sh
 PRIV=${DAP_PRIV:-}
+sim_check_host || exit $?
+sim_need_tools openocd || exit $?
+[ -x "$BUILD/test/dap_sim_usbip" ] || { echo "COULD NOT RUN: $BUILD/test/dap_sim_usbip is not built"; exit 3; }
+if [ -n "$PRIV" ] && ! $PRIV true 2>/dev/null; then
+  echo "COULD NOT RUN: DAP_PRIV ($PRIV) does not work here"
+  exit 3
+fi
 WORK=$(mktemp -d)
-SERVER_PID=""
 DEV=""
 fail=0
 python3 -c "import sys; sys.stdout.buffer.write(bytes((i * 37 + 11) & 0xFF for i in range(4096)))" \
@@ -26,8 +36,7 @@ python3 -c "import sys; sys.stdout.buffer.write(bytes((i * 37 + 11) & 0xFF for i
 
 stop_server() {
   sim_detach
-  if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; fi
-  SERVER_PID=""
+  sim_stop_server
 }
 cleanup() {
   stop_server
@@ -38,10 +47,8 @@ trap cleanup EXIT
 start() {
   local name=$1; shift
   stop_server
-  env USBIP_RECORD="$WORK/$name.raw" "$@" "$BUILD/test/dap_sim_usbip" "$SIM_TCP_PORT" \
-    > "$WORK/dap.log" 2>&1 &
-  SERVER_PID=$!
-  sleep 1
+  sim_start_server "$WORK/dap.log" env USBIP_RECORD="$WORK/$name.raw" "$@" \
+    "$BUILD/test/dap_sim_usbip" @PORT@ || { echo "FAIL: the server did not start"; exit 1; }
   sim_attach || { echo "FAIL attach"; exit 1; }
   DEV=""
   for _ in $(seq 1 50); do

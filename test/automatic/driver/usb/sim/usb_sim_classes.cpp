@@ -4,7 +4,7 @@
  *        the kernel over USB/IP: HID, gs_usb, DFU.
  *
  * 用法 / Usage: usb_sim_classes <hid|gsusb|dfu> [port]，然后
- * `sudo usbip --tcp-port <port> attach -r 127.0.0.1 -b 1-1`。
+ * `sudo usbip --tcp-port <port> attach -r 127.0.0.1 -b <busid>`。
  * - hid：厂商自定义用法页，8 字节输入/输出报告；主机写入的输出报告按位取反后作为输入
  *   报告回传（hidraw）。不用键盘、鼠标，免得往主机注入真实输入。
  *   hid: vendor-defined usage page, 8-byte input/output reports; an output report from
@@ -278,15 +278,14 @@ int Serve(Class& klass, uint16_t vid, uint16_t pid, const char* product, uint16_
   static Sim::Device<Caps> device(profile, DeviceDescriptor::PacketSize0::SIZE_64, vid,
                                   pid, 0x0100, {&language}, {{&klass}});
   Sim::UsbIpServer<Caps> server(device, port);
-  server.Run();
-  return 0;
+  return server.Run();
 }
 }  // namespace
 
 int main(int argc, char** argv)
 {
   const std::string kind = argc > 1 ? argv[1] : "";
-  const uint16_t port = argc > 2 ? static_cast<uint16_t>(std::atoi(argv[2])) : 3240;
+  const uint16_t port = argc > 2 ? static_cast<uint16_t>(std::atoi(argv[2])) : 3290;
 
   if (kind == "hid")
   {

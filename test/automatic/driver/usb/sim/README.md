@@ -55,19 +55,28 @@ setting 1 directly after enumeration, after a stop and restart, and after a susp
 
 ## 经 USB/IP 交给内核 / Handing the device to the kernel over USB/IP
 
-`usb_sim_usbip` 和 `usb_sim_classes` 不是 ctest 目标，需要带 `vhci-hcd` 的 Linux 主机：先
-`sudo modprobe vhci-hcd`，启动服务端，再 `sudo usbip --tcp-port 3240 attach -r 127.0.0.1 -b 1-1`。
-脚本里的挂接、摘除和设备选择都在 `usbip_lib.sh`：端口从导入时的远端 URL 找，设备按 sysfs 路径在
+`usb_sim_usbip` 和 `usb_sim_classes` 不是 ctest 目标，需要带 `vhci-hcd` 的 Linux 主机。手动使用：
+先 `sudo modprobe vhci-hcd`，启动服务端（它打印实际的端口和 busid；默认端口 3290、busid `sim-1`，都不是
+系统 usbipd 的 3240 和 1-1），再 `sudo usbip --tcp-port <端口> attach -r 127.0.0.1 -b <busid>`。
+脚本自己启动服务端：`usbip_lib.sh` 选一个空闲的 TCP 端口和一个随机的 busid，等服务端自己的日志说
+它在该端口以该 busid 监听，挂接前再确认该端口对设备列表返回这个随机 busid，所以不会连到主机上别的
+usbipd。挂接、摘除和设备选择也都在 `usbip_lib.sh`：端口从导入时的远端 URL 找，设备按 sysfs 路径在
 vhci 之下判定，从不只凭端口号或 VID:PID，因为主机上可能有同 ID 的真实设备（例如真实的 gs_usb
-适配器）。脚本以调用者身份运行，`sudo -n` 只用于 `usbip` 和仿真适配器接口上的 `ip link`。
+适配器）。脚本以调用者身份运行，`sudo -n` 只用于 `usbip` 和仿真适配器接口上的 `ip link`；脚本不加载
+也不卸载任何内核模块，缺 `vhci_hcd` 时报告 COULD NOT RUN。
 
-`usb_sim_usbip` and `usb_sim_classes` are not ctest targets and need a Linux host with `vhci-hcd`:
-`sudo modprobe vhci-hcd`, start the server, then
-`sudo usbip --tcp-port 3240 attach -r 127.0.0.1 -b 1-1`. Attaching, detaching and picking the device
-are in `usbip_lib.sh`: the port is found from the remote URL used at import and a device is the one
-whose sysfs path lies under vhci, never the port number or VID:PID alone, because the host may have a
-real device with the same ids (a real gs_usb adapter, say). The scripts run as the calling user;
-`sudo -n` is for `usbip` and for `ip link` on the simulated adapter's interface only.
+`usb_sim_usbip` and `usb_sim_classes` are not ctest targets and need a Linux host with `vhci-hcd`. By
+hand: `sudo modprobe vhci-hcd`, start the server (it prints the port and busid it uses; the defaults,
+port 3290 and busid `sim-1`, are not the 3240 and 1-1 of a system usbipd), then
+`sudo usbip --tcp-port <port> attach -r 127.0.0.1 -b <busid>`. The scripts start the server themselves:
+`usbip_lib.sh` picks a free TCP port and a random busid, waits until the server's own log says it
+listens on that port with that busid, and before attaching checks that the port answers a device list
+with this random busid, so a script never reaches another usbipd on the host. Attaching, detaching and
+picking the device are in `usbip_lib.sh` too: the port is found from the remote URL used at import and
+a device is the one whose sysfs path lies under vhci, never the port number or VID:PID alone, because
+the host may have a real device with the same ids (a real gs_usb adapter, say). The scripts run as the
+calling user; `sudo -n` is for `usbip` and for `ip link` on the simulated adapter's interface only. No
+script loads or unloads a kernel module; a missing `vhci_hcd` is reported as COULD NOT RUN.
 
 Python 脚本（`acm_echo.py`、`class_checks.py`、`uac_check.py`、`gs_burst.py`）只用标准库，3.8 及以上都能运行。
 
@@ -79,19 +88,25 @@ library only and run on Python 3.8 or newer.
 |control\|always` | 仿真控制器的帧中断策略（上表），默认 `stops` / frame interrupt policy of the simulated controller, `stops` by default |
 | `USBIP_BULK_PER_MS=N` | 每毫秒最多完成 N 个批量/中断事务（全速总线一帧的容量），0 为不限 / at most N bulk or interrupt transactions per millisecond, 0 is unlimited |
 | `USBIP_TRACE=1`, `USBIP_RECORD=<file>`, `USBIP_BIND=<addr>` | URB 跟踪、录制、监听地址 / URB trace, recording, listen address |
+| `USBIP_BUSID=<id>` | 服务端导出的 busid，默认 `sim-1`；脚本给每次运行一个随机值 / busid the server exports, `sim-1` by default; the scripts set a random one per run |
 | `GS_BUS_RATE=N` | `gsusb2` 的总线每毫秒送出的帧数，默认 8 / frames per millisecond of the `gsusb2` bus, 8 by default |
 
 `classes_e2e.sh <build-dir>` 对每个类报告 PASS、FAIL 或 COULD NOT RUN（退出码 0、1、3）。hidraw、
 usbfs（dfu-util）和 ALSA 采集在多数主机上需要 root 或 audio 组；打开失败时报告 COULD NOT RUN 并附上
-内核能看到的部分（驱动绑定、读到的描述符），不算通过。`plug_cycle.sh` 反复挂接 CDC 设备并在传输中途
-摘除。CDCUart 在拔插后保留发送队列里没交给端点的字节，所以重新打开串口后开头可能先收到上一次连接
+内核能看到的部分（驱动绑定、读到的描述符），不算通过。缺 usbip、`sudo -n`、dfu-util、arecord，缺
+`vhci_hcd`、`gs_usb`、`snd_usb_audio` 模块或 hidraw 支持，同样是 COULD NOT RUN，不是 FAIL。
+`plug_cycle.sh <build-dir> [次数]` 启动 `usb_sim_usbip`，反复挂接 CDC 设备并在传输中途摘除，退出码
+约定相同（串口打不开、没有 `cdc_acm` 是 COULD NOT RUN）。CDCUart 在拔插后保留发送队列里没交给端点的字节，所以重新打开串口后开头可能先收到上一次连接
 留下的数据（`acm_echo.py` 的 `DRAIN` 就是为此）。
 
 `classes_e2e.sh <build-dir>` reports PASS, FAIL or COULD NOT RUN per class (exit status 0, 1, 3).
 hidraw, usbfs (dfu-util) and ALSA capture need root or the audio group on most hosts; when the open
 fails the class is COULD NOT RUN together with what the kernel did show (the driver bound, the
-descriptors it read), never a pass. `plug_cycle.sh` attaches the CDC device over and over and detaches
-it in the middle of a transfer. CDCUart keeps the bytes of its transmit queue that were not yet handed
+descriptors it read), never a pass. A missing usbip, `sudo -n`, dfu-util or arecord, a missing
+`vhci_hcd`, `gs_usb` or `snd_usb_audio` module or hidraw support is COULD NOT RUN too, not a FAIL.
+`plug_cycle.sh <build-dir> [cycles]` starts `usb_sim_usbip`, attaches the CDC device over and over and
+detaches it in the middle of a transfer; the exit status convention is the same (a serial port that
+cannot be opened, or no `cdc_acm`, is COULD NOT RUN). CDCUart keeps the bytes of its transmit queue that were not yet handed
 to the endpoint across a replug, so a reopened port may first receive data left over from the previous
 connection (`DRAIN` in `acm_echo.py` is for that).
 
@@ -112,7 +127,7 @@ uac"` selects the classes. `<build-dir>` must be an absolute path.
 帧作为通道 1 的接收帧交回。`gs_burst.py` 在通道 0 上尽快发一批帧，报告通道 1 收到什么和内核的
 `rx_over_errors`。`USBIP_BULK_PER_MS` 设到 32 以下（全速总线一帧能装下的 24 字节批量事务不超过
 32 个）时，USB 的事务数比 CAN 总线更紧：
-`GS_BUS_RATE=8 USBIP_BULK_PER_MS=24 build/test/usb_sim_classes gsusb2 3240`，挂接后
+`GS_BUS_RATE=8 USBIP_BULK_PER_MS=24 build/test/usb_sim_classes gsusb2 3290`，按它打印的端口和 busid 挂接后
 `python3 gs_burst.py 600`。预期结果是通道 1 收到全部 600 帧、按序、无缺号，`rx_over_errors` 为 0：
 IN 端点上回显帧和接收帧在两类都有待发时轮流发送（`gs_usb.hpp` 的 `PickFrame`），突发期间通道 1 的
 接收帧每两个事务至少得到一个。如果 IN 端点总是先发回显，通道 1 的接收帧在突发期间得不到事务，接收
@@ -125,8 +140,8 @@ millisecond and returns channel 0's transmissions as received frames on channel 
 burst on channel 0 as fast as the adapter accepts it and reports what channel 1 received and the
 kernel's `rx_over_errors`. With `USBIP_BULK_PER_MS` at 32 or below (a full-speed frame holds at most 32
 bulk transactions of 24 bytes) the USB transactions are scarcer than the CAN bus:
-`GS_BUS_RATE=8 USBIP_BULK_PER_MS=24 build/test/usb_sim_classes gsusb2 3240`, then
-`python3 gs_burst.py 600` after attaching. The expected result is that channel 1 receives all 600
+`GS_BUS_RATE=8 USBIP_BULK_PER_MS=24 build/test/usb_sim_classes gsusb2 3290`, then
+`python3 gs_burst.py 600` after attaching with the port and busid it prints. The expected result is that channel 1 receives all 600
 frames, in order, with no gap and `rx_over_errors` 0: on the IN endpoint, echo frames and received
 frames are sent alternately while both kinds are pending (`PickFrame` in `gs_usb.hpp`), so during the
 burst channel 1's received frames get at least every second transaction. If the IN endpoint always

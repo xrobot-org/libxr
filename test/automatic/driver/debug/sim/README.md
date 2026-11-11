@@ -61,6 +61,11 @@ CMSIS-DAP 探针时设备的选择规则见 `dap_e2e.sh` 开头：VID:PID 1209:0
 vhci 之下，`DAP_PRIV="sudo -n"` 只给调试器加前缀；pyOCD 和 probe-rs 会打开找到的每个探针，所以只有
 `DAP_TOOLS_SCAN_OK=1` 时才运行。
 
+`dap_e2e.sh` 和 `dap_record.sh` 自己启动 `dap_sim_usbip`，用空闲的 TCP 端口和随机 busid，并在挂接前确认
+连上的是自己启动的服务端（`../../usb/sim/usbip_lib.sh`），不会连到系统 usbipd 的默认端口。缺 usbip、
+`sudo -n`、openocd 或 `vhci_hcd` 模块时退出码为 3（COULD NOT RUN），1 是检查失败。
+
+
 `dap_e2e.sh <build-dir>` starts `dap_sim_usbip`, attaches it through vhci and runs two OpenOCD sessions
 (registers, 64 KiB download, reset, step; with and without injected WAITs); the target's protocol-error
 and contention counters must be 0. `dap_record.sh` records sessions for the replay. `openocd_calibrate.sh`
@@ -68,3 +73,8 @@ calibrates the target model against real OpenOCD over remote_bitbang, without US
 CMSIS-DAP probes, the selection rule is at the top of `dap_e2e.sh`: VID:PID 1209:0002 must belong to
 exactly one device on the host and it must lie under vhci, and `DAP_PRIV="sudo -n"` prefixes the debugger
 only; pyOCD and probe-rs open every probe they find, so they run only with `DAP_TOOLS_SCAN_OK=1`.
+
+`dap_e2e.sh` and `dap_record.sh` start `dap_sim_usbip` themselves, on a free TCP port with a random busid,
+and check that they reached the server they started before they attach (`../../usb/sim/usbip_lib.sh`);
+the stock port of a system usbipd is never used. A missing usbip, `sudo -n`, openocd or `vhci_hcd`
+module exits with status 3 (COULD NOT RUN); 1 is a failed check.

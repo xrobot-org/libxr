@@ -12,10 +12,10 @@
  * the host see an ordinary CMSIS-DAP v2 probe.
  *
  * 用法 / Usage: dap_sim_usbip [port]，然后
- * `sudo usbip --tcp-port <port> attach -r 127.0.0.1 -b 1-1`。环境变量 SWD_WAIT_EVERY /
- * SWD_WAIT_BURST 在目标上周期性注入 WAIT。
- * Then `sudo usbip --tcp-port <port> attach -r 127.0.0.1 -b 1-1`. The environment
- * variables SWD_WAIT_EVERY / SWD_WAIT_BURST inject periodic WAITs on the target.
+ * `sudo usbip --tcp-port <port> attach -r 127.0.0.1 -b <busid>`。环境变量 SWD_WAIT_EVERY
+ * / SWD_WAIT_BURST 在目标上周期性注入 WAIT。 Then `sudo usbip --tcp-port <port> attach -r
+ * 127.0.0.1 -b <busid>`. The environment variables SWD_WAIT_EVERY / SWD_WAIT_BURST inject
+ * periodic WAITs on the target.
  */
 
 #include <array>
@@ -43,7 +43,7 @@ using Engine = Debug::SwdGeneralGPIO<Debug::Sim::SimSwclkPin, Debug::Sim::SimSwd
 
 int main(int argc, char** argv)
 {
-  const uint16_t port = argc > 1 ? static_cast<uint16_t>(std::atoi(argv[1])) : 3240;
+  const uint16_t port = argc > 1 ? static_cast<uint16_t>(std::atoi(argv[1])) : 3290;
 
   static Debug::Sim::Target target;
   if (const char* every = std::getenv("SWD_WAIT_EVERY"))
@@ -112,6 +112,5 @@ int main(int argc, char** argv)
       .detach();
 
   Sim::UsbIpServer<FullSpeedCapabilities> server(device, port);
-  server.Run();
-  return 0;
+  return server.Run();
 }

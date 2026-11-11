@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # openocd_calibrate.sh <build-dir>: calibrate the simulated SWD target against real
 # OpenOCD. Starts swd_target_bitbang, runs the sessions below and prints PASS or FAIL
-# for each; exits non-zero on any failure. Needs openocd in PATH.
+# for each; exits 1 on any failure, 3 when it could not run (no openocd in PATH, or
+# swd_target_bitbang not built).
 set -u
 BUILD=$(realpath "${1:?build dir}")
 cd "$(dirname "$0")"
+command -v openocd >/dev/null 2>&1 || { echo "COULD NOT RUN: openocd is not installed or not in PATH"; exit 3; }
+[ -x "$BUILD/test/swd_target_bitbang" ] || { echo "COULD NOT RUN: $BUILD/test/swd_target_bitbang is not built"; exit 3; }
 WORK=$(mktemp -d)
 SERVER_PID=""
 trap '[ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; rm -rf "$WORK"' EXIT

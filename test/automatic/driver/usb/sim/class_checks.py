@@ -8,8 +8,10 @@ The host also has real USB devices, among them a gs_usb adapter with the same VI
 the simulated one. A device or interface is therefore only ever accepted when its sysfs
 path lies under the vhci host controller, and nothing else is opened or reconfigured.
 The script runs as the calling user; `sudo -n` is used for `ip link` on the simulated
-adapter's interface only. A node the user cannot open (hidraw is root-only) is reported
-as "could not run" (exit status 3), not as a pass.
+adapter's interface only. A node the user cannot open (hidraw is root-only), a missing
+kernel facility (no hidraw support, no gs_usb module, no SocketCAN) and a missing
+`sudo -n ip` are reported as "could not run" (exit status 3), not as a failure or a pass.
+usage: class_checks.py hid|gsusb [count [sysfs directory of the simulated device]]
 Exit status: 0 pass, 1 fail, 3 could not run.
 """
 
@@ -26,8 +28,16 @@ import time
 COULD_NOT_RUN = 3
 
 
+# The sysfs directory of the simulated device (argument 3), when the caller knows it: then
+# only nodes below it are used, not those of another simulated device with the same ids.
+SIM_DEVICE = os.path.realpath(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
+
+
 def on_vhci(path):
-    return "/vhci_hcd." in os.path.realpath(path)
+    real = os.path.realpath(path)
+    if "/vhci_hcd." not in real:
+        return False
+    return SIM_DEVICE is None or (real + "/").startswith(SIM_DEVICE + "/")
 
 
 def find_hidraw(vid, pid):
@@ -51,6 +61,9 @@ def check_hid(count):
             break
         time.sleep(0.1)
     if not dev:
+        if not os.path.isdir("/sys/class/hidraw"):
+            print("COULD NOT RUN hid: the kernel has no hidraw support")
+            return COULD_NOT_RUN
         print("FAIL hid: no hidraw node under vhci")
         return 1
     try:
@@ -100,6 +113,18 @@ def ip_link(*args):
 
 
 def check_gsusb(count):
+    if not hasattr(socket, "AF_CAN"):
+        print("COULD NOT RUN gsusb: this Python has no SocketCAN support")
+        return COULD_NOT_RUN
+    try:
+        usable = subprocess.run(
+            ["sudo", "-n", "ip", "-V"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ).returncode == 0
+    except FileNotFoundError:
+        usable = False
+    if not usable:
+        print("COULD NOT RUN gsusb: `sudo -n ip` does not work here")
+        return COULD_NOT_RUN
     ifname = None
     for _ in range(50):
         ifname = find_can(0x1D50, 0x606F)
@@ -107,6 +132,9 @@ def check_gsusb(count):
             break
         time.sleep(0.1)
     if not ifname:
+        if not os.path.isdir("/sys/module/gs_usb"):
+            print("COULD NOT RUN gsusb: the gs_usb kernel module is not loaded")
+            return COULD_NOT_RUN
         print("FAIL gsusb: no CAN interface under vhci")
         return 1
     ip_link("set", ifname, "down")

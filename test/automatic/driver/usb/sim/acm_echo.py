@@ -1,4 +1,9 @@
-"""Loopback test for the simulated CDC device: write random data to a ttyACM, read it back."""
+"""Loopback test for the simulated CDC device: write random data to a ttyACM, read it back.
+
+usage: acm_echo.py <tty> [bytes]
+Exit status: 0 pass, 1 fail, 3 could not run (the node cannot be opened, for example the
+user is not in the dialout group).
+"""
 
 import os
 import random
@@ -12,7 +17,11 @@ dev = sys.argv[1]
 total = int(sys.argv[2]) if len(sys.argv) > 2 else 65536
 chunk_sizes = [1, 7, 63, 64, 65, 128, 500, 1000]
 
-fd = os.open(dev, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+try:
+    fd = os.open(dev, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+except (PermissionError, FileNotFoundError) as e:
+    print(f"{dev}: {e}")
+    sys.exit(3)
 tty.setraw(fd)
 attrs = termios.tcgetattr(fd)
 attrs[3] &= ~termios.ECHO

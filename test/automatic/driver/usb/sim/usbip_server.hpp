@@ -65,14 +65,23 @@ class UsbIpServer
   static constexpr uint32_t URB_ZERO_PACKET = 0x0040;
   static constexpr int32_t EPIPE_STATUS = -32, ECONNRESET_STATUS = -104;
 
-  UsbIpServer(Device<Caps>& device, uint16_t port, const char* busid = "1-1")
-      : device_(device), host_(device), port_(port), busid_(busid)
+  /// busid 默认是 "sim-1"，不用 usbipd 的 "1-1"；环境变量 USBIP_BUSID 覆盖它，脚本给每次
+  /// 运行一个随机的 busid，挂接前据此确认连上的是自己启动的服务端
+  /// The default busid is "sim-1", not the "1-1" of a system usbipd; the environment
+  /// variable USBIP_BUSID overrides it, and the scripts give each run a random busid so
+  /// that they can tell, before attaching, that they reached the server they started
+  UsbIpServer(Device<Caps>& device, uint16_t port, const char* busid = "sim-1")
+      : device_(device),
+        host_(device),
+        port_(port),
+        busid_(std::getenv("USBIP_BUSID") != nullptr ? std::getenv("USBIP_BUSID") : busid)
   {
   }
 
-  /// 监听并依次服务客户端（一次一个），永不返回 / Listen and serve clients one at a
-  /// time; never returns
-  void Run()
+  /// 监听并依次服务客户端（一次一个）；监听失败时返回 1，否则永不返回 / Listen and
+  /// serve clients one at a time; returns 1 when it cannot listen, otherwise never
+  /// returns
+  int Run()
   {
     const int listener = socket(AF_INET, SOCK_STREAM, 0);
     const int one = 1;
@@ -90,7 +99,7 @@ class UsbIpServer
         listen(listener, 1) != 0)
     {
       std::perror("usbip listen");
-      return;
+      return 1;
     }
     std::printf("usbip: listening on %s:%u busid %s\n", bind_to, port_, busid_.c_str());
     std::fflush(stdout);

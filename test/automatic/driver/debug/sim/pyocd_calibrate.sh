@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # pyocd_calibrate.sh <build-dir> [pyocd]: calibrate the simulated SWD target against real
 # pyOCD with the pyocd-bitbang probe plugin. Starts swd_target_bitbang, runs the sessions
-# below and prints PASS or FAIL for each; exits non-zero on any failure.
+# below and prints PASS or FAIL for each; exits 1 on any failure, 3 when it could not run
+# (pyOCD not found, or swd_target_bitbang not built).
 set -u
 BUILD=$(realpath "${1:?build dir}")
 PYOCD=${2:-pyocd}
+command -v "$PYOCD" >/dev/null 2>&1 || { echo "COULD NOT RUN: $PYOCD is not installed or not in PATH"; exit 3; }
+[ -x "$BUILD/test/swd_target_bitbang" ] || { echo "COULD NOT RUN: $BUILD/test/swd_target_bitbang is not built"; exit 3; }
 WORK=$(mktemp -d)
 SERVER_PID=""
 trap '[ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null; rm -rf "$WORK"' EXIT
