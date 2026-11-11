@@ -1042,6 +1042,10 @@ void TestFrameTicksWhenSofIsRaisedTwice(const typename Fixture::ModeType& mode)
 /// Even and odd frames of isochronous IN: a request submitted in frame N is scheduled
 /// for frame N+1; an IN token in frame N gets a zero-length packet, frame N+1 sends the
 /// data and completes once. Checked for a submission in an even and in an odd frame.
+/// 依赖模型的假设：未到安排的那一帧时等时 IN 端点以零长包应答（手册没有写，见
+/// fake_dwc2.hpp 的 ASSUMPTION）。
+/// Depends on a model ASSUMPTION: before its scheduled frame the isochronous IN endpoint
+/// answers a zero-length packet (not stated in the manual, see fake_dwc2.hpp).
 template <typename Fixture>
 void TestIsochronousFrames(const typename Fixture::ModeType& mode)
 {
@@ -1078,6 +1082,10 @@ void TestIsochronousFrames(const typename Fixture::ModeType& mode)
 /// the end of that frame. The request ends once with FAILED, the transmit FIFO is
 /// emptied and a packet submitted afterwards is sent normally. A stop that coincides
 /// with the missed frame ends the request once with ABORTED.
+/// 依赖模型的假设：中断挂起期间 DSTS 仍显示刚结束的那一帧（手册没有写 FNSOF 的更新时间，
+/// 见 fake_dwc2.hpp 的 ASSUMPTION）。
+/// Depends on a model ASSUMPTION: while the interrupt is pending DSTS still shows the frame
+/// that just ended (the manual does not say when FNSOF updates, see fake_dwc2.hpp).
 template <typename Fixture>
 void TestIsochronousMissedFrame(const typename Fixture::ModeType& mode)
 {
@@ -1125,6 +1133,9 @@ void TestIsochronousMissedFrame(const typename Fixture::ModeType& mode)
 /// Two isochronous IN streams: A misses its frame while B is already armed for the next
 /// one. At the end of the frame only A is aborted and ends with FAILED; the request of B
 /// stays and its data goes out in the next frame, ending with OK.
+/// 依赖的模型假设同 TestIsochronousMissedFrame（DSTS 在中断挂起期间的帧号）。
+/// Depends on the same model ASSUMPTION as TestIsochronousMissedFrame (the frame number
+/// DSTS shows while the interrupt is pending).
 template <typename Fixture>
 void TestTwoIsochronousStreams(const typename Fixture::ModeType& mode)
 {
@@ -1173,6 +1184,9 @@ inline constexpr uint8_t UAC_STREAMING_INTERFACE = 1;
 /// setting 1 selected, 3000 frames give 3000 packets of 32 bytes (16 kHz mono 16 bit,
 /// 16 samples per millisecond) instead of one packet and silence. Continuous streaming
 /// is also what was measured on an STM32H723 board.
+/// 依赖模型的假设：未到安排的帧时等时 IN 端点以零长包应答，见 TestIsochronousFrames。
+/// Depends on the model ASSUMPTION that an isochronous IN endpoint answers a zero-length
+/// packet before its scheduled frame, see TestIsochronousFrames.
 template <typename UacFixture>
 void TestUacStreams(const typename UacFixture::ModeType& mode)
 {

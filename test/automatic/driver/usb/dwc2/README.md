@@ -26,13 +26,14 @@ only.
 
 ## 控制器模型 / The controller model
 
-模型按参考手册的设备编程模型写，不参照驱动的期望。手册写明"必须"而驱动没有照做的操作
+模型按参考手册的设备编程模型写，不参照驱动的期望；手册没有写明的地方是模型的假设，在下面单列。手册写明"必须"而驱动没有照做的操作
 （对未使能的端点写 EPDIS、不经全局 OUT NAK 就禁用 OUT 端点、端点使能期间改写传输长度寄存器、
 发送 FIFO 溢出、接收 FIFO 为空时弹出、DMA 访问可达内存之外的地址）被记下来，每个用例结束时
 检查没有这样的记录。手册没有给出时间的地方是模型的参数：FIFO 冲刷位读回几次才清零、EPDIS 写入
 后过多久端点才禁用、DMA 模式下 SETUP 的事件何时出现；默认运行把这些取值都跑一遍。
 
-The model follows the device programming model of the reference manual, not what a driver expects.
+The model follows the device programming model of the reference manual, not what a driver expects;
+where the manual is silent the model makes an assumption, listed below.
 Operations the manual marks as mandatory and a driver does not follow (EPDIS on an endpoint that is
 not enabled, an OUT endpoint disabled without the global OUT NAK, a transfer size register written
 while the endpoint is enabled, a transmit FIFO overflow, a pop of the empty receive FIFO, a DMA
@@ -40,6 +41,28 @@ access outside the reachable memory) are recorded, and every case checks at its 
 was recorded. Where the manual gives no timing the model has a parameter: how many reads still see a
 FIFO flush bit set, how long EPDIS takes to disable the endpoint, when the SETUP event appears in DMA
 mode; the default run goes through these values.
+
+### 模型的假设 / Model assumptions
+
+下面的行为手册没有写明，是模型的选择，不是手册的结论；它们在 `fake_dwc2.hpp` 里标为 `ASSUMPTION`。
+真实控制器与此不同时，依赖它们的用例会给出错误的结论。
+
+The behaviour below is not stated in the reference manual. It is a choice of the model, not a
+conclusion of the manual, and is marked `ASSUMPTION` in `fake_dwc2.hpp`. Where a real controller
+differs, the cases that depend on it draw a wrong conclusion.
+
+| 行为 / Behaviour | 手册有什么 / What the manual has | 为什么这样选 / Why chosen | 依赖的用例 / Cases that depend on it |
+| --- | --- | --- | --- |
+| IISOIXFR 挂起期间 DSTS.FNSOF 仍是刚结束的那一帧 / DSTS.FNSOF still shows the frame that ended while IISOIXFR is pending | IISOIXFR 与 EOPF 一起置位；FNSOF 是"收到的 SOF 的帧号"，没有写更新时间 / IISOIXFR is raised with EOPF; FNSOF is "the frame number of the received SOF", no update time | 中断先于下一个 SOF 被处理时就是这样；驱动靠它判断哪个端点错过了帧 / what an interrupt serviced before the next SOF sees; the driver uses it to find the endpoint that missed its frame | `TestIsochronousMissedFrame`, `TestTwoIsochronousStreams` |
+| 等时 IN 端点在 EPENA 为 0 或奇偶不是 EONUM 的帧里收到 IN 令牌时回零长包 / an isochronous IN endpoint answers a zero-length packet when EPENA is clear or the frame has the other parity than EONUM | 只有 FIFO 里缺数据（零长包）和 NAKSTS 置位（零长包）两种情形 / only a FIFO lacking the data and NAKSTS set (zero-length packet) are stated | 主机每帧都看到一个包，和有数据的帧一致 / the host sees one packet per frame, as in a frame with data | `TestIsochronousFrames`, `TestUacStreams`（ESP 的 `isochronous_frames`、`uac_streams` 发现也用它 / the ESP findings `isochronous_frames` and `uac_streams` use it too） |
+| 3.00a 之后的核心在 DMA 模式收到 SETUP 包时置 XFRC\|STPKTRX / cores after 3.00a raise XFRC\|STPKTRX when the SETUP packet arrives in DMA mode | STPKTRX 只在 SETUP_COMPLETE 状态出现时（SETUP 阶段结束）置位 / STPKTRX is set only when the SETUP_COMPLETE status is seen (end of the SETUP stage) | 后端按核心版本分了支，两种时序都要跑（`early` 模式）/ the backend branches on the core revision, both timings run (the `early` modes) | 所有控制传输用例的 `DMA, early SETUP event` 模式 / the `DMA, early SETUP event` mode of every control case |
+| 3.10a 核心在非 DMA 模式弹出 SETUP 数据状态字时置 XFRC\|STPKTRX / a 3.10a core raises XFRC\|STPKTRX when the SETUP data status word is popped without DMA | RM0385 写明 STPKTRX 只用于缓冲 DMA 模式 / RM0385 says STPKTRX is for buffer DMA mode only | 后端对 3.10a 非 DMA 有单独的判断 / the backend tests for core 3.10a without DMA | 所有控制传输用例的 `FIFO mode, core 3.10a` 模式 / the `FIFO mode, core 3.10a` mode of every control case |
+
+时间参数（冲刷位读回几次才清零、EPDIS 生效前的寄存器访问次数）也是手册没有给出的，
+见上一节；默认运行把多个取值都跑一遍，所以不依赖某一个取值。
+The timing parameters (reads that still see a flush bit set, register accesses before EPDIS acts) are
+likewise not given by the manual, see the section above; the default run goes through several
+values, so no case depends on one of them.
 
 STM32 的测试跑 FIFO 模式和内部 DMA 两种方式、后端区分的三代核心（2.81a、3.10a、3.30a）、全速和
 高速；ESP 的后端只有 DMA 一种方式。

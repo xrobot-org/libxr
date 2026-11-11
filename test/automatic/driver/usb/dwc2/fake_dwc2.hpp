@@ -20,6 +20,8 @@
  * - 内部 DMA：核心直接从 DIEPDMA 取数据、往 DOEPDMA 写数据，不产生 RXFLVL；SETUP 写到
  *   DOEPDMA0，EP0 OUT 未使能时留在接收 FIFO 里，使能后再写出。
  * 手册写明"必须"而驱动没有做到的操作记入 violations，测试在每个用例结束时检查它为空。
+ * 手册没有写明的行为不是手册的结论：模型里这样的地方都标了"ASSUMPTION"，说明依据和选择
+ * 的理由，README 的"模型的假设"一节列出它们和依赖它们的用例。
  *
  * The model implements registers, FIFOs and interrupts from the device programming model
  * of the reference manual, not from what a driver expects:
@@ -47,6 +49,10 @@
  *   is disabled until it is enabled.
  * Operations the manual marks as mandatory and a driver does not follow are recorded in
  * violations; the tests check that it is empty at the end of every case.
+ * Behaviour the manual does not state is not a conclusion of the manual: every such place
+ * in the model is marked "ASSUMPTION" with what it rests on and why it was chosen, and
+ * the "Model assumptions" section of README.md lists them with the cases that depend on
+ * them.
  */
 
 #pragma once
@@ -209,12 +215,22 @@ class Controller : public MmioTrap::Device
   /// manual only asks to wait for the EPDISD interrupt and gives no time.
   unsigned disable_latency = 0;
 
-  /// 3.00a 之后的核心在 DMA 模式下收到 SETUP 包时就置 XFRC|STPKTRX，而不是等到 SETUP
-  /// 阶段结束和 STUP 一起置位 / Cores after 3.00a in DMA mode: raise XFRC|STPKTRX when
-  /// the SETUP packet arrives instead of together with STUP at the end of the SETUP stage
+  /// ASSUMPTION：手册只写了缓冲 DMA 模式下 STPKTRX 在 SETUP 阶段结束（第一个 IN/OUT 令牌
+  /// 之后的 SETUP_COMPLETE 状态）时置位；3.00a 之后的核心在收到 SETUP 包时就置 XFRC|STPKTRX
+  /// 手册里没有。选它是因为后端按核心版本分了这条分支（stm32_usb_otg.cpp 的 STPKTRX 判断），
+  /// 两种时序都要跑到。
+  /// ASSUMPTION: the manual only has STPKTRX set at the end of the SETUP stage in buffer
+  /// DMA mode (the SETUP_COMPLETE status after the first IN or OUT token). Cores after
+  /// 3.00a raising XFRC|STPKTRX when the SETUP packet arrives is not in the manual. It is
+  /// modelled because the backend branches on the core revision here (the STPKTRX test in
+  /// stm32_usb_otg.cpp) and both timings have to be run.
   bool setup_packet_event_early = false;
-  /// 3.10a 的核心在非 DMA 模式下弹出 SETUP 数据状态字时置 XFRC|STPKTRX / A 3.10a core
-  /// without DMA raises XFRC|STPKTRX when the SETUP data status word is popped
+  /// ASSUMPTION：RM0385 写明 STPKTRX 只用于缓冲 DMA 模式；3.10a 核心在非 DMA 模式弹出
+  /// SETUP 数据状态字时置 XFRC|STPKTRX 手册里没有。选它的理由同上（后端对 3.10a 的非 DMA
+  /// 模式有单独的判断）。
+  /// ASSUMPTION: the manual (RM0385) says STPKTRX is for buffer DMA mode only; a 3.10a
+  /// core raising XFRC|STPKTRX when the SETUP data status word is popped without DMA is not
+  /// in it. Chosen for the same reason (the backend tests for core 3.10a without DMA).
   bool slave_setup_event = false;
   /// STM32 OTG_HS 内嵌全速 PHY 上测得：每个 SOF 令牌 GINTSTS.SOF 被置位两次，间隔约
   /// 1.4 us，两次读到的 DSTS.FNSOF 相同。开启后，驱动清除某个 SOF 之后，模型对同一令牌
@@ -262,7 +278,19 @@ class Controller : public MmioTrap::Device
   bool Connected() const { return vbus_ && (dctl_ & DCTL_SDIS) == 0U; }
   bool DmaEnabled() const { return (gahbcfg_ & AHB_DMAEN) != 0U; }
   uint16_t Frame() const { return frame_; }
-  /// 驱动读 DSTS 看到的帧号 / The frame number the driver reads from DSTS
+  /// 驱动读 DSTS 看到的帧号。
+  /// ASSUMPTION：手册写 IISOIXFR 与 EOPF 一起置位（周期帧间隔到达，下一个 SOF 之前），
+  /// DSTS.FNSOF 是"收到的 SOF 的帧号"，但没有写 FNSOF 何时更新。模型认为中断在下一个 SOF
+  /// 之前被处理：IISOIXFR 挂起期间 FNSOF 仍是刚结束的那一帧，驱动清掉标志之后才是新帧。
+  /// 选它是因为驱动靠这个奇偶判断哪个等时端点错过了帧；中断处理慢于一帧时读到的是新帧。
+  /// The frame number the driver reads from DSTS.
+  /// ASSUMPTION: the manual has IISOIXFR raised together with EOPF (the periodic frame
+  /// interval is reached, before the next SOF) and DSTS.FNSOF is "the frame number of the
+  /// received SOF", but it does not say when FNSOF updates. The model takes the interrupt
+  /// to be serviced before the next SOF: while IISOIXFR is pending FNSOF still shows the
+  /// frame that just ended, and the new frame appears once the driver clears the flag.
+  /// Chosen because the driver uses this parity to find the isochronous endpoint that
+  /// missed its frame; a handler slower than a frame reads the new frame.
   uint16_t VisibleFrame() const
   {
     if ((latched_ & GINT_IISOIXFR) == 0U) return frame_;
@@ -503,6 +531,14 @@ class Controller : public MmioTrap::Device
       if ((in.ctl & CTL_EPENA) != 0U && (in.ctl & CTL_NAKSTS) == 0U && in.packets.empty())
         in.intr |= INT_ITTXFE;
       // An isochronous endpoint without data answers with a zero-length packet.
+      // The manual has that for an enabled endpoint whose FIFO lacks the data of the
+      // frame (RM0468 "IN data transfers", isochronous: "a zero data length packet would
+      // be transmitted") and for NAKSTS set (DIEPCTL.NAKSTS).
+      // ASSUMPTION: the manual does not say what an active isochronous IN endpoint does
+      // when EPENA is clear or when the token comes in a frame of the other parity than
+      // EONUM. The model answers a zero-length packet there as well, so that the host
+      // sees one packet per frame; TestIsochronousFrames and TestUacStreams rely on it for
+      // the frame before the scheduled one.
       result.resp = iso ? Resp::DATA : Resp::NAK;
       return result;
     }
