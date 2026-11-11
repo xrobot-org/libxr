@@ -95,7 +95,7 @@ class EKF
 
   /// NIS 失败环形缓冲容量，等于模板参数 WindowCapacity。
   /// Capacity of the NIS failure ring buffer, equal to the WindowCapacity argument.
-  static constexpr size_t kWindowCapacity = WindowCapacity;
+  static constexpr size_t WINDOW_CAPACITY = WindowCapacity;
 
   Scalar nis_threshold = static_cast<Scalar>(0.711);   ///< NIS 门限 NIS threshold
   Scalar nees_threshold = static_cast<Scalar>(0.711);  ///< NEES 门限 NEES threshold
@@ -281,11 +281,11 @@ class EKF
     last_nees = nees;
     last_residual = residual;
 
-    if constexpr (kWindowCapacity > 0)
+    if constexpr (WINDOW_CAPACITY > 0)
     {
       nis_window_[nis_window_head_] = nis > nis_threshold ? 1 : 0;
-      nis_window_head_ = (nis_window_head_ + 1) % kWindowCapacity;
-      if (nis_window_count_ < kWindowCapacity)
+      nis_window_head_ = (nis_window_head_ + 1) % WINDOW_CAPACITY;
+      if (nis_window_count_ < WINDOW_CAPACITY)
       {
         ++nis_window_count_;
       }
@@ -295,15 +295,15 @@ class EKF
   }
 
   /**
-   * @brief 设置活跃窗口长度，取值上限为 kWindowCapacity。
-   *        Set the active window length, capped at kWindowCapacity.
+   * @brief 设置活跃窗口长度，取值上限为 WINDOW_CAPACITY。
+   *        Set the active window length, capped at WINDOW_CAPACITY.
    *
    * @param size 期望的窗口长度，超过容量时按容量处理。
    *             Requested window length; values above the capacity are clamped.
    */
   void SetWindowSize(size_t size)
   {
-    window_size_ = size < kWindowCapacity ? size : kWindowCapacity;
+    window_size_ = size < WINDOW_CAPACITY ? size : WINDOW_CAPACITY;
   }
 
   /**
@@ -323,7 +323,7 @@ class EKF
     int failures = 0;
     for (size_t i = 0; i < length; ++i)
     {
-      const size_t index = (nis_window_head_ + kWindowCapacity - 1 - i) % kWindowCapacity;
+      const size_t index = (nis_window_head_ + WINDOW_CAPACITY - 1 - i) % WINDOW_CAPACITY;
       failures += nis_window_[index];
     }
     return failures;
@@ -350,10 +350,10 @@ class EKF
  private:
   StateCovariance I_;
   StateAddFunction x_add_;
-  std::array<int, kWindowCapacity> nis_window_{};
+  std::array<int, WINDOW_CAPACITY> nis_window_{};
   size_t nis_window_head_ = 0;
   size_t nis_window_count_ = 0;
-  size_t window_size_ = kWindowCapacity;
+  size_t window_size_ = WINDOW_CAPACITY;
   int nis_count_ = 0;
   int nees_count_ = 0;
   int total_count_ = 0;

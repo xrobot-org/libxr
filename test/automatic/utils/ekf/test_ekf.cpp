@@ -29,20 +29,20 @@
 
 namespace
 {
-constexpr double kEKF_TEST_PI = 3.14159265358979323846;
+constexpr double EKF_TEST_PI = 3.14159265358979323846;
 
 // 角度归一化放在文件级函数里：EKF 钩子必须捕获列表为空，不能捕获局部 lambda。
 // The angle normalization lives at file scope: an EKF hook must capture nothing, so it
 // cannot capture a local lambda.
 double WrapAngle(double angle)
 {
-  while (angle > kEKF_TEST_PI)
+  while (angle > EKF_TEST_PI)
   {
-    angle -= 2.0 * kEKF_TEST_PI;
+    angle -= 2.0 * EKF_TEST_PI;
   }
-  while (angle <= -kEKF_TEST_PI)
+  while (angle <= -EKF_TEST_PI)
   {
-    angle += 2.0 * kEKF_TEST_PI;
+    angle += 2.0 * EKF_TEST_PI;
   }
   return angle;
 }
@@ -143,7 +143,7 @@ void test_ekf()
     auto residual = [](const EkfMeasurement& a, const EkfMeasurement& b)
     {
       EkfMeasurement c = a - b;
-      c(0) = std::remainder(c(0), 2.0 * kEKF_TEST_PI);
+      c(0) = std::remainder(c(0), 2.0 * EKF_TEST_PI);
       return c;
     };
     ekf.Update(z, h, r, [](const EkfState& state) { return state; }, residual);
@@ -244,8 +244,8 @@ void test_ekf()
     TEST_ASSERT(ekf.NisFailCount() == 3);
     TEST_ASSERT(ekf.UpdateCount() == 3);
 
-    ekf.SetWindowSize(ekf.kWindowCapacity + 10U);
-    TEST_ASSERT(ekf.WindowSize() == ekf.kWindowCapacity);
+    ekf.SetWindowSize(ekf.WINDOW_CAPACITY + 10U);
+    TEST_ASSERT(ekf.WindowSize() == ekf.WINDOW_CAPACITY);
   }
 
   // 检查内容：多次更新后协方差保持对称，即 Joseph 形式生效。
