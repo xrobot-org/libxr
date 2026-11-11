@@ -332,30 +332,43 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
 
   # ESP32-S2/S3 USB backend against the same controller model: the real backend source
   # with fake ESP-IDF headers for an ESP32-S3. The register bit-fields are accessed as
-  # whole words, as ESP-IDF builds them.
-  set(_esp_usb_backend
-      "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp/esp_usb.cpp"
-      "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp/esp_usb_dev.cpp"
-      "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp/esp_usb_ep.cpp"
+  # whole words, as ESP-IDF builds them; that needs -fstrict-volatile-bitfields, which
+  # only GCC has. Without it the fake register accesses would be narrower or wider than
+  # on the chip, so the test is not built.
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag(
+    "-fstrict-volatile-bitfields" LIBXR_TEST_HAS_STRICT_VOLATILE_BITFIELDS
   )
-  set_source_files_properties(
-    ${_esp_usb_backend} PROPERTIES COMPILE_OPTIONS "-fstrict-volatile-bitfields"
-  )
-  add_executable(
-    test_esp_usb driver/usb/dwc2/esp/test_esp_usb.cpp driver/usb/dwc2/esp/fake_esp_idf.cpp
-                 ${_esp_usb_backend}
-  )
-  target_link_libraries(test_esp_usb PRIVATE xr)
-  target_include_directories(
-    test_esp_usb
-    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/dwc2"
-            "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/dwc2/esp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp"
-  )
-  add_test(NAME esp_usb COMMAND test_esp_usb)
-  # Same register traps as stm32_usb_otg.
-  set_tests_properties(esp_usb PROPERTIES TIMEOUT 120 ENVIRONMENT
-                                          "TSAN_OPTIONS=report_signal_unsafe=0")
+  if(LIBXR_TEST_HAS_STRICT_VOLATILE_BITFIELDS)
+    set(_esp_usb_backend
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp/esp_usb.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp/esp_usb_dev.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp/esp_usb_ep.cpp"
+    )
+    set_source_files_properties(
+      ${_esp_usb_backend} PROPERTIES COMPILE_OPTIONS "-fstrict-volatile-bitfields"
+    )
+    add_executable(
+      test_esp_usb driver/usb/dwc2/esp/test_esp_usb.cpp driver/usb/dwc2/esp/fake_esp_idf.cpp
+                   ${_esp_usb_backend}
+    )
+    target_link_libraries(test_esp_usb PRIVATE xr)
+    target_include_directories(
+      test_esp_usb
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/dwc2"
+              "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/dwc2/esp"
+              "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp"
+    )
+    add_test(NAME esp_usb COMMAND test_esp_usb)
+    # Same register traps as stm32_usb_otg.
+    set_tests_properties(esp_usb PROPERTIES TIMEOUT 120 ENVIRONMENT
+                                            "TSAN_OPTIONS=report_signal_unsafe=0")
+  else()
+    message(
+      STATUS
+      "test_esp_usb skipped: ${CMAKE_CXX_COMPILER_ID} has no -fstrict-volatile-bitfields"
+    )
+  endif()
 endif()
 
 # cdc_test classes: lease return, DTR-triggered packet and the read re-arm.
