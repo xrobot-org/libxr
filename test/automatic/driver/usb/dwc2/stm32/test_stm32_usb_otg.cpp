@@ -196,16 +196,19 @@ struct Probe : Rig
   STM32USBDeviceOtgHS device;
   uint16_t bulk = 64;
 
-  explicit Probe(const Mode& selected, bool bus_time = false, bool vbus_sensing = false)
+  explicit Probe(const Mode& selected, bool bus_time = false, bool vbus_sensing = false,
+                 bool second_iso = false)
       : Rig(selected),
         device((probe.bulk_packet = selected.high_speed ? 512U : 64U,
-                probe.wants_bus_time = bus_time, Hardware(vbus_sensing)),
+                probe.wants_bus_time = bus_time, probe.second_iso = second_iso,
+                Hardware(vbus_sensing)),
                selected.high_speed ? 2048U : 512U,
                {Mem(64), Mem(selected.high_speed ? 2048U : 512U), Mem(128)},
                {{Mem(64), 64},
                 {Mem(selected.high_speed ? 2048U : 512U),
                  selected.high_speed ? 1024U : 128U},
                 {Mem(128), 64},
+                {Mem(256), 128},
                 {Mem(256), 128}},
                DeviceDescriptor::PacketSize0::SIZE_64, 0x1209, 0x0051, 0x0100,
                {&LANGUAGE}, {{&probe}}),
@@ -473,6 +476,7 @@ void RunAll()
     TestFrameTicks<Probe>(mode);
     TestIsochronousFrames<Probe>(mode);
     TestIsochronousMissedFrame<Probe>(mode);
+    TestTwoIsochronousStreams<Probe>(mode);
     std::printf("stm32 otg: %s passed\n", mode.name);
     std::fflush(stdout);
   }

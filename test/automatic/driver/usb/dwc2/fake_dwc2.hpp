@@ -36,7 +36,9 @@
  *   INEPNE; EPDIS on an enabled endpoint sets EPDISD; TXFFLSH empties the transmit FIFO
  *   and clears itself a moment later.
  * - Isochronous IN sends data only in a frame whose parity equals EONUM; an endpoint
- *   that has not sent by the end of that frame raises IISOIXFR.
+ *   that has not sent by the end of that frame raises IISOIXFR. The interrupt belongs to
+ *   the frame that ended: until the driver clears it, DSTS still shows that frame, and
+ *   the next frame number appears with the SOF the same host step latches.
  * - A bus reset sets USBRST and clears USBAEP of the non-zero endpoints; the end of the
  *   reset sets ENUMDNE. Addresses are compared with DCFG.DAD, and the status stage of
  *   SET_ADDRESS is still answered at the old address.
@@ -259,6 +261,12 @@ class Controller : public MmioTrap::Device
   bool Connected() const { return vbus_ && (dctl_ & DCTL_SDIS) == 0U; }
   bool DmaEnabled() const { return (gahbcfg_ & AHB_DMAEN) != 0U; }
   uint16_t Frame() const { return frame_; }
+  /// 驱动读 DSTS 看到的帧号 / The frame number the driver reads from DSTS
+  uint16_t VisibleFrame() const
+  {
+    if ((latched_ & GINT_IISOIXFR) == 0U) return frame_;
+    return static_cast<uint16_t>((frame_ - 1U) & (HighSpeed() ? 0x3FFFU : 0x7FFU));
+  }
   bool HighSpeed() const { return enumspd_ == 0U; }
   uint8_t Address() const { return static_cast<uint8_t>((dcfg_ >> 4U) & 0x7FU); }
   size_t RxFifoWords() const { return rx_.size(); }
@@ -563,7 +571,7 @@ class Controller : public MmioTrap::Device
         return dctl_ | (gonak_ ? DCTL_GONSTS : 0U) | (ginak_ ? DCTL_GINSTS : 0U);
       case DSTS:
         return (suspended_ ? 1U : 0U) | (enumspd_ << 1U) |
-               (static_cast<uint32_t>(frame_) << 8U);
+               (static_cast<uint32_t>(VisibleFrame()) << 8U);
       case DIEPMSK:
         return diepmsk_;
       case DOEPMSK:

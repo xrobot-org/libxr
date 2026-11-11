@@ -218,7 +218,7 @@ class STM32OtgEndpoint : public USB::Endpoint
   void OnTransferComplete();
   void OnGlobalOutNak();
   void OnFlushDone();
-  void OnIsoIncomplete();
+  void OnIsoIncomplete(bool ended_odd);
   void PollStop();
   void ConfirmStop(bool in_isr);
   void ResetTransfer();

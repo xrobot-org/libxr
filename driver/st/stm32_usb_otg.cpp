@@ -553,9 +553,13 @@ void STM32USBOtgDevice::HandleGlobalOutNak()
 
 void STM32USBOtgDevice::HandleIsoIncomplete()
 {
+  // The frame number is read before the flag is cleared: the interrupt belongs to the
+  // frame that is current when it is raised.
+  const bool ended_odd =
+      (((Device()->DSTS & USB_OTG_DSTS_FNSOF) >> USB_OTG_DSTS_FNSOF_Pos) & 1U) != 0U;
   core_->GINTSTS = USB_OTG_GINTSTS_IISOIXFR;
   for (uint8_t i = 1; i < endpoint_count_; ++i)
-    if (in_[i] != nullptr) in_[i]->OnIsoIncomplete();
+    if (in_[i] != nullptr) in_[i]->OnIsoIncomplete(ended_odd);
 }
 
 void STM32USBOtgDevice::HandleSof()
@@ -1052,16 +1056,25 @@ void STM32OtgEndpoint::PollStop()
   }
 }
 
-// RM0090 "Incomplete isochronous IN transfer": an enabled isochronous IN endpoint did
-// not send in the frame just ended. Disable it with the IN stop sequence and end the
-// request with FAILED, so the class submits the next frame.
-void STM32OtgEndpoint::OnIsoIncomplete()
+// "Incomplete isochronous IN data transfers" (OTG section of the reference manual): the
+// interrupt says that at least one isochronous IN endpoint did not send in the frame
+// that ended, and the application reads the control register of every isochronous IN
+// endpoint to find which. An endpoint is incomplete when it is still enabled and its
+// even/odd frame bit (EONUM) equals the parity of the frame number read when the
+// interrupt came (ended_odd): it was armed for the frame that ended. An endpoint armed
+// for the next frame has the other parity and keeps its request. Disable the incomplete
+// one with the IN stop sequence and end its request with FAILED, so the class submits the
+// next frame.
+void STM32OtgEndpoint::OnIsoIncomplete(bool ended_odd)
 {
   if (hw_tag_ == 0U || stop_stage_ != StopStage::NONE) return;
   if (GetConfig().type != Type::ISOCHRONOUS) return;
   const uint8_t num = Num();
   auto* regs = device_.InEp(num);
-  if ((regs->DIEPCTL & USB_OTG_DIEPCTL_EPENA) == 0U) return;
+  const uint32_t control = regs->DIEPCTL;
+  if ((control & USB_OTG_DIEPCTL_EPENA) == 0U) return;
+  const bool armed_odd = (control & USB_OTG_DIEPCTL_EONUM_DPID) != 0U;
+  if (ended_odd != armed_odd) return;
   iso_abort_ = true;
   device_.Device()->DIEPEMPMSK &= ~(1UL << num);
   stop_stage_ = StopStage::IN_NAK;

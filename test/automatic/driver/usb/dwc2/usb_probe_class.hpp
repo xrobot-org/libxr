@@ -100,13 +100,16 @@ class ProbeClass : public DeviceClass
   uint16_t interrupt_packet = 16;
   uint16_t iso_packet = 96;
   bool wants_bus_time = false;
+  bool second_iso =
+      false;  ///< 再加一个等时 IN 端点（端点 4）/ A second isochronous IN (EP4)
 
   Endpoint* bulk_out = nullptr;
   Endpoint* bulk_in = nullptr;
   Endpoint* int_out = nullptr;
   Endpoint* int_in = nullptr;
   Endpoint* iso_in = nullptr;
-  Log bulk_out_log, bulk_in_log, int_out_log, int_in_log, iso_in_log;
+  Endpoint* iso_in2 = nullptr;
+  Log bulk_out_log, bulk_in_log, int_out_log, int_in_log, iso_in_log, iso_in2_log;
 
   // Control requests: 0x70 IN (response_size bytes of input), 0x71 OUT (into output),
   // 0x72 without data; anything else is refused.
@@ -133,7 +136,7 @@ class ProbeClass : public DeviceClass
   bool OwnsEndpoint(uint8_t address) const override
   {
     const uint8_t number = address & 0x0FU;
-    return bound_ && number >= 1U && number <= 3U;
+    return bound_ && number >= 1U && number <= (second_iso ? 4U : 3U);
   }
 
   void BindEndpoints(EndpointPool& pool, uint8_t number, bool in_isr) override
@@ -150,13 +153,19 @@ class ProbeClass : public DeviceClass
          Endpoint::Type::INTERRUPT, interrupt_packet, in_isr);
     Take(pool, iso_in, iso_in_log, Endpoint::Direction::IN, EP::EP3,
          Endpoint::Type::ISOCHRONOUS, iso_packet, in_isr);
-    block_.interface = {9, 4, number, 0, 5, 0xFF, 0, 0, 0};
+    iso_in2 = nullptr;
+    if (second_iso)
+      Take(pool, iso_in2, iso_in2_log, Endpoint::Direction::IN, EP::EP4,
+           Endpoint::Type::ISOCHRONOUS, iso_packet, in_isr);
+    block_.interface = {9,    4, number, 0, second_iso ? uint8_t{6} : uint8_t{5},
+                        0xFF, 0, 0,      0};
     block_.endpoints[0] = {7, 5, 0x01, 2, Packet(bulk_out), 0};
     block_.endpoints[1] = {7, 5, 0x81, 2, Packet(bulk_in), 0};
     block_.endpoints[2] = {7, 5, 0x02, 3, Packet(int_out), 1};
     block_.endpoints[3] = {7, 5, 0x82, 3, Packet(int_in), 1};
     block_.endpoints[4] = {7, 5, 0x83, 1, Packet(iso_in), 1};
-    SetData({&block_, sizeof(block_)});
+    block_.endpoints[5] = {7, 5, 0x84, 1, Packet(iso_in2), 1};
+    SetData({&block_, sizeof(block_) - (second_iso ? 0U : sizeof(EndpointDescriptor))});
     bound_ = !pool.IsPlanning();
   }
 
@@ -164,7 +173,8 @@ class ProbeClass : public DeviceClass
   {
     if (!pool.IsPlanning()) ++unbinds;
     bound_ = false;
-    for (Endpoint** endpoint : {&bulk_out, &bulk_in, &int_out, &int_in, &iso_in})
+    for (Endpoint** endpoint :
+         {&bulk_out, &bulk_in, &int_out, &int_in, &iso_in, &iso_in2})
     {
       if (*endpoint == nullptr) continue;
       (*endpoint)->Close(in_isr);
@@ -224,7 +234,7 @@ class ProbeClass : public DeviceClass
   struct Block
   {
     InterfaceDescriptor interface;
-    EndpointDescriptor endpoints[5];
+    EndpointDescriptor endpoints[6];
   };
   LIBXR_PACKED_END
   Block block_{};

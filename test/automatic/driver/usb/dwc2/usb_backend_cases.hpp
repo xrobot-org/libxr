@@ -1069,6 +1069,44 @@ void TestIsochronousMissedFrame(const typename Fixture::ModeType& mode)
   TEST_ASSERT(in.resp == Resp::DATA && in.data == bytes);
 }
 
+/// 两个等时 IN 流：A 错过了它的帧，B 已经为下一帧挂好请求。帧结束时只有 A 以 FAILED
+/// 结束，B 的请求保持，在下一帧发出数据并以 OK 结束。
+/// Two isochronous IN streams: A misses its frame while B is already armed for the next
+/// one. At the end of the frame only A is aborted and ends with FAILED; the request of B
+/// stays and its data goes out in the next frame, ending with OK.
+template <typename Fixture>
+void TestTwoIsochronousStreams(const typename Fixture::ModeType& mode)
+{
+  Fixture f(mode, true, false, true);
+  f.Up();
+  TEST_ASSERT(f.probe.iso_in != nullptr && f.probe.iso_in2 != nullptr);
+  Log& log_a = f.probe.iso_in_log;
+  Log& log_b = f.probe.iso_in2_log;
+  const auto bytes_a = Bytes(48, 1);
+  const auto bytes_b = Bytes(52, 2);
+  for (unsigned round = 0; round < 2U; ++round)
+  {
+    const size_t failed_a = log_a.Count(ErrorCode::FAILED);
+    const size_t ok_b = log_b.Count(ErrorCode::OK);
+    TEST_ASSERT(SubmitBytes(f.probe.iso_in, bytes_a) == ErrorCode::OK);
+    f.host.Sof();  // A 的帧开始 / The frame of A starts
+    TEST_ASSERT(SubmitBytes(f.probe.iso_in2, bytes_b) == ErrorCode::OK);
+    f.host.Sof();  // A 的帧结束，主机没有取 / It ends and the host took nothing of A
+    TEST_ASSERT(log_b.Count(ErrorCode::FAILED) == 0U);
+    TEST_ASSERT((f.hw.InCtl(4) & Dwc2::CTL_EPENA) != 0U);
+    const Dwc2::InResult in = f.hw.HostIn(7, 4);  // B 的帧 / The frame of B
+    f.Service();
+    TEST_ASSERT(in.resp == Resp::DATA && in.data == bytes_b);
+    TEST_ASSERT(log_b.Count(ErrorCode::OK) == ok_b + 1U);
+    TEST_ASSERT(log_b.Count(ErrorCode::FAILED) == 0U);
+    f.host.Sof(4);  // A 的禁用走完 / The disable of A runs to its end
+    TEST_ASSERT(log_a.Count(ErrorCode::FAILED) == failed_a + 1U);
+    TEST_ASSERT(log_a.Count(ErrorCode::OK) == 0U);
+    TEST_ASSERT(log_b.Count(ErrorCode::FAILED) == 0U);
+    if (round == 0U) f.host.Sof();  // 换一个奇偶 / Switch the parity
+  }
+}
+
 // ---------------------------------------------------------------------------
 // UAC1 microphone
 // ---------------------------------------------------------------------------
