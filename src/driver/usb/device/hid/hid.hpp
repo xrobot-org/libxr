@@ -111,8 +111,8 @@ class HID : public DeviceClass
                 "BOOT_PROTOCOL is 0 (none), 1 (keyboard) or 2 (mouse)");
 
  public:
-  // 暴露单接口的 HID 功能默认使用这个接口字符串。
-  // Default interface string for HID functions that expose one interface.
+  /// 暴露单接口的 HID 功能默认使用这个接口字符串。
+  /// Default interface string for HID functions that expose one interface.
   static constexpr const char* DEFAULT_INTERFACE_STRING = "XRUSB HID";
 
   /** @brief HID 描述符类型 / HID Descriptor Types */
@@ -215,6 +215,8 @@ class HID : public DeviceClass
   {
   }
 
+  /// 仅序号 0 有字符串（HID 只有一个接口），其余返回 nullptr / Only index 0 has a string
+  /// (HID has a single interface); others return nullptr
   const char* GetInterfaceString(size_t local_interface_index) const override
   {
     // HID 只暴露一个接口。
@@ -385,6 +387,9 @@ class HID : public DeviceClass
    */
   bool HasIAD() override { return false; }
 
+  /// 端点地址是否属于本 HID（IN 端点，启用时还包括 OUT 端点）；未绑定时为 false / Whether
+  /// the endpoint address belongs to this HID (the IN endpoint, plus the OUT endpoint
+  /// when enabled); false before binding
   bool OwnsEndpoint(uint8_t ep_addr) const override
   {
     if (!inited_)
@@ -459,6 +464,8 @@ class HID : public DeviceClass
    * @param bRequest 请求码 / Request code
    * @param wValue 请求值 / Request value
    * @param wLength 请求长度 / Request length
+   * @param wIndex 请求索引（接口号），当前未使用 / Request index (interface number);
+   * currently unused
    * @param result 返回结果 / Result
    * @return ErrorCode 错误码 / Error code
    */
@@ -664,6 +671,18 @@ class HID : public DeviceClass
     return ErrorCode::NOT_SUPPORT;
   }
 
+  /**
+   * @brief 处理自定义类请求的数据阶段（SET_REPORT 以外的请求码）
+   *        Handle the data stage of a custom class request (any code other than
+   *        SET_REPORT)
+   *
+   * 默认返回 NOT_SUPPORT。 / The default returns NOT_SUPPORT.
+   *
+   * @param in_isr 是否在中断中 / In ISR
+   * @param bRequest 请求码 / Request code
+   * @param data 数据阶段数据 / Data stage payload
+   * @return ErrorCode 错误码 / Error code
+   */
   virtual ErrorCode OnCustomClassData(bool in_isr, uint8_t bRequest, ConstRawData& data)
   {
     UNUSED(in_isr);
@@ -870,10 +889,14 @@ class HID : public DeviceClass
   bool HasOutEndpoint() const { return enable_out_endpoint_; }
 
  public:
+  /// 控制 OUT 数据阶段的接收容量：64 与最大报告长度中的较大者 / Control OUT data-stage
+  /// receive capacity: the larger of 64 and the biggest report length
   size_t GetControlReceiveCapacity() const override
   {
     return LibXR::max<size_t>(64U, LibXR::max<size_t>(TX_REPORT_LEN, RX_REPORT_LEN));
   }
+  /// OUT 端点从暂停恢复时重新挂一次接收 / Re-arm a receive when the OUT endpoint resumes
+  /// from a halt
   void OnDeviceEvent(bool in_isr, DeviceEvent event, uint8_t endpoint) override
   {
     if (event != DeviceEvent::ENDPOINT_RESUMED || ep_out_ == nullptr) return;

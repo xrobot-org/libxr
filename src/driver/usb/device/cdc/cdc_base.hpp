@@ -25,7 +25,10 @@ namespace LibXR::USB
 class CDCBase : public DeviceClass
 {
  public:
+  /// 通信（控制）接口的默认字符串 / Default string of the communication (control)
+  /// interface
   static constexpr const char* DEFAULT_CONTROL_INTERFACE_STRING = "XRUSB CDC Control";
+  /// 数据接口的默认字符串 / Default string of the data interface
   static constexpr const char* DEFAULT_DATA_INTERFACE_STRING = "XRUSB CDC Data";
 
  private:
@@ -625,6 +628,23 @@ class CDCBase : public DeviceClass
     return coding;
   }
 
+  /**
+   * @brief 处理发往本类的控制请求 / Handle a control request addressed to this class
+   *
+   * 非 Class 类型的请求交给基类；Class 请求要求方向与请求码匹配（仅
+   * GET_LINE_CODING 为 IN）、wIndex 为通信接口号，且 SEND_BREAK 与
+   * SET_CONTROL_LINE_STATE 不带数据阶段，否则返回 ARG_ERR，通过校验后转给
+   * OnClassRequest。
+   * Non-class requests go to the base class. A class request must have the direction
+   * matching its code (only GET_LINE_CODING is IN), wIndex equal to the communication
+   * interface number, and no data stage for SEND_BREAK and SET_CONTROL_LINE_STATE;
+   * otherwise ARG_ERR is returned. Validated requests are forwarded to OnClassRequest.
+   *
+   * @param in_isr 是否在 ISR 中 / Whether in ISR context
+   * @param setup  SETUP 包 / SETUP packet
+   * @param result 输出：控制传输结果 / Output: control transfer result
+   * @return 错误码 / Error code
+   */
   ErrorCode OnControlRequest(bool in_isr, const SetupPacket& setup,
                              ControlTransferResult& result) override
   {
@@ -664,7 +684,7 @@ class CDCBase : public DeviceClass
       DescriptorType bDescriptorType = DescriptorType::CS_INTERFACE;
       DescriptorSubtype bDescriptorSubtype = DescriptorSubtype::HEADER;
       uint16_t bcdCDC = 0x0110;  ///< CDC规范版本 / CDC specification version
-    } cdc_header;
+    } cdc_header;                ///< CDC 头功能描述符 / CDC header functional descriptor
 
     struct
     {
@@ -673,7 +693,8 @@ class CDCBase : public DeviceClass
       DescriptorSubtype bDescriptorSubtype = DescriptorSubtype::CALL_MANAGEMENT;
       uint8_t bmCapabilities = 0x00;  ///< 呼叫管理能力 / Call management capabilities
       uint8_t bDataInterface;         ///< 数据接口号 / Data interface number
-    } cdc_callmgmt;
+    } cdc_callmgmt;  ///< CDC 呼叫管理功能描述符 / CDC call management functional
+                     ///< descriptor
 
     struct
     {
@@ -681,7 +702,7 @@ class CDCBase : public DeviceClass
       DescriptorType bDescriptorType = DescriptorType::CS_INTERFACE;
       DescriptorSubtype bDescriptorSubtype = DescriptorSubtype::ACM;
       uint8_t bmCapabilities = 0x02;  ///< ACM能力 / ACM capabilities
-    } cdc_acm;
+    } cdc_acm;  ///< CDC ACM 功能描述符 / CDC ACM functional descriptor
 
     struct
     {
@@ -690,7 +711,7 @@ class CDCBase : public DeviceClass
       DescriptorSubtype bDescriptorSubtype = DescriptorSubtype::UNION;
       uint8_t bMasterInterface;  ///< 主接口号 / Master interface number
       uint8_t bSlaveInterface0;  ///< 从接口号 / Slave interface number
-    } cdc_union;
+    } cdc_union;                 ///< CDC 联合功能描述符 / CDC union functional descriptor
 
     EndpointDescriptor comm_ep;  ///< 通信端点描述符 / Communication endpoint descriptor
 
@@ -698,18 +719,26 @@ class CDCBase : public DeviceClass
 
     EndpointDescriptor data_ep_out;  ///< 数据OUT端点描述符 / Data OUT endpoint descriptor
     EndpointDescriptor data_ep_in;   ///< 数据IN端点描述符 / Data IN endpoint descriptor
-  } desc_block_;
+  } desc_block_;                     ///< 整个配置描述符块 / The whole descriptor block
   LIBXR_PACKED_END
 
  protected:
+  /// 当前线路编码，可被主机的 SET_LINE_CODING 修改 / Current line coding, which a host
+  /// SET_LINE_CODING request updates
   CDCLineCoding& GetLineCoding() { return line_coding_; }
 
+  /// 端点是否已绑定（BindEndpoints 之后、UnbindEndpoints 之前为真）/ Whether the
+  /// endpoints are bound (true between BindEndpoints and UnbindEndpoints)
   bool Inited() { return inited_; }
 
+  /// 数据 IN 端点，绑定前为空 / Data IN endpoint; null before binding
   Endpoint* GetDataInEndpoint() { return ep_data_in_; }
 
+  /// 数据 OUT 端点，绑定前为空 / Data OUT endpoint; null before binding
   Endpoint* GetDataOutEndpoint() { return ep_data_out_; }
 
+  /// 通信（通知）IN 端点，绑定前为空 / Communication (notification) IN endpoint; null
+  /// before binding
   Endpoint* GetCommInEndpoint() { return ep_comm_in_; }
 
  private:

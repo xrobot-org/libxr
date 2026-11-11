@@ -184,6 +184,8 @@ class CDCToUart : public CDCUart
     config = ToUartConfiguration(coding);
   }
 
+  /// 比较两份串口配置的波特率、校验、数据位与停止位是否都相同 / Whether two UART
+  /// configurations agree on baud rate, parity, data bits and stop bits
   static bool SameConfiguration(const UART::Configuration& a,
                                 const UART::Configuration& b)
   {

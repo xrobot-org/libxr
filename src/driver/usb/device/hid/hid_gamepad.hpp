@@ -93,6 +93,7 @@ class HIDGamepadT
    * @param z Z 轴 / Z axis
    * @param rx Rx 轴 / Rx axis
    * @param buttons 按钮位掩码 / Button bit mask
+   * @param in_isr 是否在中断中 / Whether in ISR
    * @return 错误码 / Error code
    * @note 轴值会被夹到 [LOG_MIN, LOG_MAX] / Axis values are clamped to [LOG_MIN, LOG_MAX]
    */

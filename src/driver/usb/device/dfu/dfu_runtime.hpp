@@ -14,13 +14,29 @@ namespace LibXR::USB
 class DfuRuntimeClass : public DfuInterfaceClassBase
 {
  public:
+  /// 跳转到 bootloader 的回调，参数为 jump_ctx / Callback that jumps to the bootloader;
+  /// its argument is jump_ctx
   using JumpCallback = void (*)(void*);
+  /// 默认接口字符串 / Default interface string
   static constexpr const char* DEFAULT_INTERFACE_STRING = "XRUSB DFU RT";
+  /// bmAttributes 中的 bitWillDetach：设备收到 DETACH 后自行分离 / bitWillDetach in
+  /// bmAttributes: the device detaches by itself after DETACH
   static constexpr uint8_t ATTR_WILL_DETACH = 0x08u;
 
   /**
    * @brief 构造 Runtime DFU 类
    *        Construct the runtime DFU class.
+   *
+   * @param jump_to_bootloader 跳转 bootloader 的回调；nullptr 时描述符不声明
+   * bitWillDetach / Bootloader jump callback; with nullptr the descriptor does not set
+   * bitWillDetach
+   * @param jump_ctx 传给回调的参数 / Argument passed to the callback
+   * @param detach_timeout_ms DETACH 到跳转之间的等待时间（毫秒）/ Delay between DETACH
+   * and the jump, in milliseconds
+   * @param interface_string 接口字符串 / Interface string
+   * @param webusb_landing_page_url WebUSB 落地页 URL；nullptr 表示不启用 / WebUSB landing
+   * page URL; nullptr disables WebUSB
+   * @param webusb_vendor_code WebUSB 厂商请求码 / WebUSB vendor request code
    */
   explicit DfuRuntimeClass(
       JumpCallback jump_to_bootloader, void* jump_ctx = nullptr,
@@ -67,12 +83,15 @@ class DfuRuntimeClass : public DfuInterfaceClassBase
    */
   struct FunctionalDescriptor
   {
-    uint8_t bLength = 9;
-    uint8_t bDescriptorType = 0x21;
-    uint8_t bmAttributes = 0u;
-    uint16_t wDetachTimeOut = 0;
-    uint16_t wTransferSize = 0;
-    uint16_t bcdDFUVersion = 0x0110u;
+    uint8_t bLength = 9;             ///< 描述符长度 / Descriptor length
+    uint8_t bDescriptorType = 0x21;  ///< DFU 功能描述符类型 / DFU functional descriptor
+                                     ///< type
+    uint8_t bmAttributes = 0u;       ///< 能力位图 / Capability bitmap
+    uint16_t wDetachTimeOut = 0;     ///< DETACH 后等待复位的毫秒数 / Milliseconds to wait
+                                     ///< for reset after DETACH
+    uint16_t wTransferSize = 0;  ///< 最大传输字节数，Runtime 下为 0 / Maximum transfer
+                                 ///< bytes; 0 in runtime mode
+    uint16_t bcdDFUVersion = 0x0110u;  ///< DFU 版本 1.1 / DFU version 1.1
   };
 
   /**
@@ -80,11 +99,15 @@ class DfuRuntimeClass : public DfuInterfaceClassBase
    */
   struct StatusResponse
   {
-    uint8_t bStatus = static_cast<uint8_t>(DFUStatusCode::OK);
-    uint8_t bwPollTimeout[3] = {0, 0, 0};
-    uint8_t bState = static_cast<uint8_t>(DFUState::APP_IDLE);
-    uint8_t iString = 0;
+    uint8_t bStatus = static_cast<uint8_t>(DFUStatusCode::OK);  ///< 状态码 / Status code
+    uint8_t bwPollTimeout[3] = {0, 0, 0};  ///< 轮询超时（毫秒，24 位小端）/ Poll timeout
+                                           ///< in milliseconds, 24-bit little-endian
+    uint8_t bState = static_cast<uint8_t>(DFUState::APP_IDLE);  ///< 当前 DFU 状态 /
+                                                                ///< Current DFU state
+    uint8_t iString = 0;  ///< 字符串索引，0 为无 / String index, 0 = none
 
+    /// 把毫秒值的低 24 位写入 bwPollTimeout / Store the low 24 bits of a millisecond
+    /// value into bwPollTimeout
     void SetPollTimeout(uint32_t timeout_ms)
     {
       bwPollTimeout[0] = static_cast<uint8_t>(timeout_ms & 0xFFu);
@@ -101,8 +124,9 @@ class DfuRuntimeClass : public DfuInterfaceClassBase
   {
     ConfigDescriptorItem::InterfaceDescriptor interface_desc = {
         9, static_cast<uint8_t>(DescriptorType::INTERFACE), 0, 0, 0, 0xFEu, 0x01u, 0x01u,
-        0};
-    FunctionalDescriptor func_desc = {};
+        0};  ///< DFU Runtime 接口描述符（类 0xFE、子类 1、协议 1）/ DFU runtime interface
+             ///< descriptor (class 0xFE, subclass 1, protocol 1)
+    FunctionalDescriptor func_desc = {};  ///< DFU 功能描述符 / DFU functional descriptor
   };
   LIBXR_PACKED_END
 
@@ -180,6 +204,8 @@ class DfuRuntimeClass : public DfuInterfaceClassBase
     return ErrorCode::OK;
   }
 
+  /// DETACH 的状态阶段完成后启动超时计时，随后由 Process() 在到期时跳转 / After the
+  /// DETACH status stage completes, start the timeout; Process() jumps once it expires
   void OnControlComplete(bool, const SetupPacket& setup) override
   {
     if ((setup.bmRequestType & REQ_TYPE_MASK) ==
@@ -191,6 +217,8 @@ class DfuRuntimeClass : public DfuInterfaceClassBase
       launch_phase_.store(WAITING, std::memory_order_release);
     }
   }
+  /// DETACH 被中止时取消待执行的跳转并回到 APP_IDLE / When DETACH is aborted, cancel
+  /// the pending jump and return to APP_IDLE
   void OnControlAbort(bool, const SetupPacket& setup) override
   {
     if (setup.bRequest == static_cast<uint8_t>(DFURequest::DETACH))

@@ -363,6 +363,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1, 1>
    * @brief 按下指定按键 / Press the specified key(s)
    * @param keys 按键列表（最多 6 个）/ List of keys (max 6)
    * @param mods 修饰键 / Modifiers
+   * @param in_isr 是否在中断中 / Whether in ISR
    * @note 标准 HID Boot 协议只支持最多 6 键。超过 6 个键时按 HID 规范报告幻影状态：六个
    *       键位全部填 ErrorRollOver（0x01），修饰键照常上报。
    *       Boot protocol supports up to 6 keys. With more than 6 keys the phantom state of

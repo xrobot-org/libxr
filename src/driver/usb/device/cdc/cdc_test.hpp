@@ -21,6 +21,15 @@ namespace LibXR::USB
 class CDCWriteTest : public CDCBase
 {
  public:
+  /**
+   * @brief 构造写测试设备 / Construct the write-test device
+   *
+   * @param data_in_ep_num 数据输入端点号 / Data IN endpoint number
+   * @param data_out_ep_num 数据输出端点号 / Data OUT endpoint number
+   * @param comm_ep_num 通信端点号 / Communication endpoint number
+   * @param control_interface_string 控制接口字符串 / Control interface string
+   * @param data_interface_string 数据接口字符串 / Data interface string
+   */
   CDCWriteTest(
       Endpoint::EPNumber data_in_ep_num, Endpoint::EPNumber data_out_ep_num,
       Endpoint::EPNumber comm_ep_num,
@@ -122,6 +131,15 @@ class CDCWriteTest : public CDCBase
 class CDCReadTest : public CDCBase
 {
  public:
+  /**
+   * @brief 构造读测试设备 / Construct the read-test device
+   *
+   * @param data_in_ep_num 数据输入端点号 / Data IN endpoint number
+   * @param data_out_ep_num 数据输出端点号 / Data OUT endpoint number
+   * @param comm_ep_num 通信端点号 / Communication endpoint number
+   * @param control_interface_string 控制接口字符串 / Control interface string
+   * @param data_interface_string 数据接口字符串 / Data interface string
+   */
   CDCReadTest(
       Endpoint::EPNumber data_in_ep_num, Endpoint::EPNumber data_out_ep_num,
       Endpoint::EPNumber comm_ep_num,
