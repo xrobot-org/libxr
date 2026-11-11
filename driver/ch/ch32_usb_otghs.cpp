@@ -109,26 +109,14 @@ static void HandleTransferOut(CH32EndpointOtgHs* ep_out, uint8_t ep_num, uint8_t
     return;
   }
 
-  if (!is_nak)
+  // NAK 的 OUT 没有收下数据，toggle 不动（INT_ST.IS_NAK，手册 V2.5 p.339-340）。板上
+  // 68 万个 OUT 事件里 IS_NAK 一次都没有出现。
+  // A NAKed OUT took no data and leaves the toggle alone (INT_ST.IS_NAK, manual V2.5
+  // p.339-340). IS_NAK never showed up in 684000 OUT events on the board.
+  if (is_nak)
   {
-    ep_out->TransferComplete(rx_len);
     return;
   }
-  if (!busy || rx_len == 0u)
-  {
-    // 不报出的零长包也推进了 toggle：它若是挂包期间完成的那个事务，下一个好包之后 toggle
-    // 会回到写之前的值，不能再当作丢了推进。
-    // An unreported zero-length packet also advanced the toggle: if it was the
-    // transaction that completed during the arm, the toggle is back at its earlier value
-    // after the next good packet, which must not count as a lost advance.
-    ep_out->tog_window_ = 0u;
-    return;
-  }
-
-  // 部分 non-EP0 OUT 路径在端点仍有在途请求时，仍可能给出可用的晚到长度快照；
-  // 这里只保留这条窄恢复路径。
-  // Some non-EP0 OUT paths may still expose a usable late length snapshot while a
-  // request is in flight. Keep that narrow recovery path here.
   ep_out->TransferComplete(rx_len);
 }
 

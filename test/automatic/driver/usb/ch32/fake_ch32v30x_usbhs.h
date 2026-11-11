@@ -183,6 +183,7 @@ inline USBHSD_TypeDef fake_usbhsd{};
 #define USBHS_UEP_R_RES_NAK 0x02
 #define USBHS_UEP_R_RES_STALL 0x03
 #define USBHS_UEP_R_TOG_AUTO 0x20
+#define USBHS_UEP_R_TOG_DATA0 0x00
 #define USBHS_UEP_R_TOG_DATA1 0x08
 #define USBHS_UEP_R_TOG_MDATA 0x18
 #define USBHS_UEP_R_TOG_MASK 0x18
