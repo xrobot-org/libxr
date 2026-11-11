@@ -335,6 +335,8 @@ class Controller : public MmioTrap::Device
     set_address_stage_ = false;
     setup_done_due_ = false;
     control_write_data_ = false;
+    reset_steps_due_ = true;
+    for (auto& done : snak_since_reset_) done = false;
   }
 
   /// 复位信号结束，速度确定 / End of the reset signalling, the speed is known
@@ -399,6 +401,7 @@ class Controller : public MmioTrap::Device
   {
     Tick("SETUP", packet[1]);
     if (!Listening(address)) return Resp::TIMEOUT;
+    CheckResetSteps();
     OutEp& out = out_[0];
     InEp& in = in_[0];
     const uint32_t count = (out.tsiz >> 29U) & 3U;
@@ -436,6 +439,7 @@ class Controller : public MmioTrap::Device
   {
     Tick("OUT", num);
     if (!Listening(address) || num >= config_.endpoints) return Resp::TIMEOUT;
+    CheckResetSteps();
     OutEp& out = out_[num];
     if ((out.ctl & CTL_USBAEP) == 0U) return Resp::TIMEOUT;
     if (num == 0U) Ep0Token(false);
@@ -513,6 +517,7 @@ class Controller : public MmioTrap::Device
     if ((!Listening(address) && !(old_address && Connected() && !suspended_)) ||
         num >= config_.endpoints)
       return result;
+    CheckResetSteps();
     InEp& in = in_[num];
     if ((in.ctl & CTL_USBAEP) == 0U && num != 0U) return result;
     if (num == 0U) Ep0Token(true);
@@ -926,6 +931,49 @@ class Controller : public MmioTrap::Device
     in.intr |= INT_INEPNE;
   }
 
+  /// 总线复位之后主机的第一个令牌到达时，检查驱动是否做完了手册的"USB 复位时的端点初始化"
+  /// （RM0468 62.15.6 Device programming model, Endpoint initialization on USB reset）：
+  /// 1. 所有 OUT 端点 SNAK = 1；2. 打开 DAINTMSK 的 INEP0 和 OUTEP0、DOEPMSK 的 STUPM 和
+  /// XFRCM、DIEPMSK 的 XFRCM 和 TOM；3. 接收 FIFO 至少 EP0 一个最大包加 2 个字（OUT 数据的
+  /// 状态）加 10 个字（SETUP 包），EP0 的发送 FIFO 至少一个最大包；4. DOEPTSIZ0.STUPCNT = 3；
+  /// 5. DMA 模式下 DOEPDMA0 是有效的内存地址。
+  /// When the first token after a bus reset arrives, check that the driver completed
+  /// "Endpoint initialization on USB reset" of the manual (RM0468 62.15.6 Device programming
+  /// model): 1. SNAK = 1 on all OUT endpoints; 2. INEP0 and OUTEP0 unmasked in DAINTMSK,
+  /// STUPM and XFRCM in DOEPMSK, XFRCM and TOM in DIEPMSK; 3. a receive FIFO of at least
+  /// one EP0 maximum packet plus 2 words (status of the OUT data) plus 10 words (SETUP
+  /// packets) and a transmit FIFO 0 of at least one maximum packet; 4. STUPCNT = 3 in
+  /// DOEPTSIZ0; 5. in DMA mode DOEPDMA0 holds a valid memory address.
+  void CheckResetSteps()
+  {
+    if (!reset_steps_due_) return;
+    reset_steps_due_ = false;
+    static constexpr char RULE[] = "RM0468 62.15.6 Endpoint initialization on USB reset";
+    for (uint8_t i = 0; i < config_.endpoints; ++i)
+    {
+      if (!snak_since_reset_[i])
+        Violation("OUT endpoint %u not NAKed after the USB reset (%s, step 1)", i, RULE);
+    }
+    constexpr uint32_t DAINT_EP0 = 0x10001U;
+    if ((daintmsk_ & DAINT_EP0) != DAINT_EP0)
+      Violation("EP0 interrupts not unmasked in DAINTMSK after the USB reset (%s, step 2)",
+                RULE);
+    if ((doepmsk_ & (INT_STUP | INT_XFRC)) != (INT_STUP | INT_XFRC))
+      Violation("STUPM/XFRCM not set in DOEPMSK after the USB reset (%s, step 2)", RULE);
+    if ((diepmsk_ & (INT_TOC | INT_XFRC)) != (INT_TOC | INT_XFRC))
+      Violation("TOM/XFRCM not set in DIEPMSK after the USB reset (%s, step 2)", RULE);
+    if ((grxfsiz_ & 0xFFFFU) < 16U + 2U + 10U)
+      Violation("receive FIFO smaller than 28 words after the USB reset (%s, step 3)",
+                RULE);
+    if ((txf_[0] >> 16U) < 16U)
+      Violation("transmit FIFO 0 smaller than one packet after the USB reset (%s, step 3)",
+                RULE);
+    if (((out_[0].tsiz >> 29U) & 3U) != 3U)
+      Violation("STUPCNT is not 3 in DOEPTSIZ0 after the USB reset (%s, step 4)", RULE);
+    if (DmaEnabled() && !DmaReachable(out_[0].dma, 8U))
+      Violation("DOEPDMA0 holds no valid address after the USB reset (%s, step 5)", RULE);
+  }
+
   /// SETUP 之后 EP0 上的第一个 IN/OUT 令牌结束 SETUP 阶段 / The first IN or OUT token on
   /// EP0 after a SETUP ends the SETUP stage
   void Ep0Token(bool in_token)
@@ -1121,7 +1169,11 @@ class Controller : public MmioTrap::Device
       out.ctl |= value & CTL_STALL;
     }
     if ((value & CTL_CNAK) != 0U) out.ctl &= ~CTL_NAKSTS;
-    if ((value & CTL_SNAK) != 0U) out.ctl |= CTL_NAKSTS;
+    if ((value & CTL_SNAK) != 0U)
+    {
+      out.ctl |= CTL_NAKSTS;
+      snak_since_reset_[num] = true;
+    }
     if ((value & CTL_EPDIS) != 0U && num != 0U)
     {
       if ((out.ctl & CTL_EPENA) != 0U)
@@ -1361,6 +1413,7 @@ class Controller : public MmioTrap::Device
     rx_.clear();
     dma_setups_.clear();
     in_reset_ = false;
+    reset_steps_due_ = false;
     setup_done_due_ = setup_done_held_ = false;
     set_address_stage_ = false;
     control_write_ = control_write_data_ = false;
@@ -1385,6 +1438,8 @@ class Controller : public MmioTrap::Device
 
   // Bus state.
   bool vbus_ = true, suspended_ = false, in_reset_ = false;
+  bool reset_steps_due_ = false;     // The first token after a reset checks the steps.
+  bool snak_since_reset_[16] = {};  // SNAK was written to the OUT endpoint after the reset.
   uint16_t frame_ = 0;
   bool setup_done_due_ = false, setup_done_held_ = false;
   bool set_address_stage_ = false;

@@ -28,7 +28,8 @@ only.
 
 模型按参考手册的设备编程模型写，不参照驱动的期望；手册没有写明的地方是模型的假设，在下面单列。手册写明"必须"而驱动没有照做的操作
 （对未使能的端点写 EPDIS、不经全局 OUT NAK 就禁用 OUT 端点、端点使能期间改写传输长度寄存器、
-发送 FIFO 溢出、接收 FIFO 为空时弹出、DMA 访问可达内存之外的地址）被记下来，每个用例结束时
+发送 FIFO 溢出、接收 FIFO 为空时弹出、DMA 访问可达内存之外的地址、总线复位后第一个令牌到来时
+还没做完"USB 复位时的端点初始化"的 5 步）被记下来，每个用例结束时
 检查没有这样的记录。手册没有给出时间的地方是模型的参数：FIFO 冲刷位读回几次才清零、EPDIS 写入
 后过多久端点才禁用、DMA 模式下 SETUP 的事件何时出现；默认运行把这些取值都跑一遍。
 
@@ -37,7 +38,8 @@ where the manual is silent the model makes an assumption, listed below.
 Operations the manual marks as mandatory and a driver does not follow (EPDIS on an endpoint that is
 not enabled, an OUT endpoint disabled without the global OUT NAK, a transfer size register written
 while the endpoint is enabled, a transmit FIFO overflow, a pop of the empty receive FIFO, a DMA
-access outside the reachable memory) are recorded, and every case checks at its end that nothing
+access outside the reachable memory, and the five steps of "Endpoint initialization on USB reset" not
+done when the first token after a bus reset arrives) are recorded, and every case checks at its end that nothing
 was recorded. Where the manual gives no timing the model has a parameter: how many reads still see a
 FIFO flush bit set, how long EPDIS takes to disable the endpoint, when the SETUP event appears in DMA
 mode; the default run goes through these values.
@@ -97,7 +99,7 @@ behaviour yet and the case is not in the default run (see the next section).
 | 停止时主机取走最后一个包 / the host takes the last packet during the stop | 同上 / the same | `TestStopInRace` | 默认 / default | 发现 / finding |
 | 停止在途的 OUT 请求 / stopping an OUT request in flight | CDC、gs_usb、HID、DAP v1、DAP v2 | `TestStopOut` | 默认 / default | 默认，不经全局 OUT NAK 是发现 / default; the missing global OUT NAK is a finding |
 | 重新配置 1 → 0 → 1 / reconfiguration 1 → 0 → 1 | 全部 / all | `TestReconfigure` | 默认 / default | 默认，关闭的端点仍应答 NAK 是发现 / default; a closed endpoint that still answers NAK is a finding |
-| 传输进行中总线复位 / bus reset in the middle of transfers | 全部 / all | `TestBusResetMidTransfer` | 默认 / default | 默认 / default |
+| 传输进行中总线复位；复位后端点不再 STALL、OUT 端点 NAK / bus reset in the middle of transfers; no STALL and NAKed OUT endpoints after a reset | 全部 / all | `TestBusResetMidTransfer`, `TestBusResetClearsHalt` | 默认 / default | 默认 / default |
 | 挂起与恢复 / suspend and resume | 全部 / all | `TestSuspendResume` | 默认 / default | 默认 / default |
 | 断开与重连、Stop()/Start() / disconnect and reconnect, Stop() and Start() | 全部；DFU（下载后重新枚举）/ all; DFU (enumeration after a download) | `TestDisconnectReconnect`（STM32）、`TestStopStart`（ESP） | 默认 / default | 默认 / default |
 | 端点的停止序列进行中调用 Stop() / Stop() during the stop sequence of an endpoint | 全部 / all | `TestStopDuringInStop`（STM32） | 默认；非 DMA 的 OUT 端点是发现 / default; an OUT endpoint without DMA is a finding | 未运行 / not run |

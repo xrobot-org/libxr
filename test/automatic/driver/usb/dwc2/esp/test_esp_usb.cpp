@@ -401,6 +401,7 @@ void RunAll()
     TestStopOut<Probe>(mode);
     TestReconfigure<Probe>(mode);
     TestBusResetMidTransfer<Probe>(mode);
+    TestBusResetClearsHalt<Probe>(mode);
     TestSuspendResume<Probe>(mode);
     TestStopStart(mode);
     TestFrameTicks<Probe>(mode);

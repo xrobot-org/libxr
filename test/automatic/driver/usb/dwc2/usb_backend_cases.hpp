@@ -909,6 +909,56 @@ void TestBusResetMidTransfer(const typename Fixture::ModeType& mode)
   TEST_ASSERT(f.host.GetDescriptor(1, 0, 18, data) == Result::OK && data.size() == 18U);
 }
 
+/// 总线复位之后端点不再处于 STALL：两个方向的 EP1 都被 SET_FEATURE(ENDPOINT_HALT) 置了
+/// STALL，复位后所有 OUT 端点处于 NAK（手册"USB 复位时的端点初始化"第 1 步；控制器模型在
+/// 复位后第一个令牌到来时检查全部 5 步）。重新枚举并配置后，两个方向的 EP1 都正常传数据，
+/// 不应答 STALL，类的端点也不再是 halted。手册没有要求复位清 STALL，这里检查的是主机在新
+/// 会话里看到的结果。
+/// After a bus reset the endpoints are no longer stalled: EP1 is halted in both directions
+/// with SET_FEATURE(ENDPOINT_HALT); after the reset every OUT endpoint is NAKed (step 1 of
+/// "Endpoint initialization on USB reset" in the manual; the controller model checks all
+/// five steps when the first token after the reset arrives). After enumerating and
+/// configuring again, EP1 moves data in both directions, answers no STALL and the class
+/// endpoints are not halted. The manual does not ask for the reset to clear STALL; what is
+/// checked is what the host sees in the new session.
+template <typename Fixture>
+void TestBusResetClearsHalt(const typename Fixture::ModeType& mode)
+{
+  Fixture f(mode);
+  f.Up();
+  const size_t packet = f.bulk;
+  std::vector<uint8_t> data;
+  TEST_ASSERT(f.host.SetHalt(0x81) == Result::OK);
+  TEST_ASSERT(f.host.SetHalt(0x01) == Result::OK);
+  const auto bytes = Bytes(10, 5);
+  TEST_ASSERT(f.hw.HostIn(7, 1).resp == Resp::STALL);
+  TEST_ASSERT(f.hw.HostOut(7, 1, 0, bytes.data(), bytes.size()) == Resp::STALL);
+  TEST_ASSERT((f.hw.InCtl(1) & Dwc2::CTL_STALL) != 0U);
+  TEST_ASSERT((f.hw.OutCtl(1) & Dwc2::CTL_STALL) != 0U);
+
+  f.hw.HostResetBegin();
+  f.Service();
+  f.hw.HostResetEnd();
+  f.Service();
+  f.host.address = 0;
+  f.host.ResetToggles();
+  f.host.Sof(4);
+  // 复位之后 OUT 端点都在 NAK / After the reset every OUT endpoint is NAKed
+  for (uint8_t i = 1; i < 4; ++i) TEST_ASSERT((f.hw.OutCtl(i) & Dwc2::CTL_NAKSTS) != 0U);
+
+  TEST_ASSERT(f.host.GetDescriptor(1, 0, 18, data) == Result::OK && data.size() == 18U);
+  TEST_ASSERT(f.host.SetAddress(9) == Result::OK);
+  TEST_ASSERT(f.host.SetConfiguration(1) == Result::OK);
+  TEST_ASSERT(f.probe.binds == 2U);
+  TEST_ASSERT(!f.probe.bulk_in->IsStalled() && !f.probe.bulk_out->IsStalled());
+  TEST_ASSERT(SubmitBytes(f.probe.bulk_in, bytes) == ErrorCode::OK);
+  TEST_ASSERT(f.host.Read(1, data) == Result::OK && data == bytes);
+  TEST_ASSERT(f.probe.bulk_out->Receive(packet, false) == ErrorCode::OK);
+  TEST_ASSERT(f.host.Write(1, bytes, packet) == Result::OK);
+  TEST_ASSERT(f.probe.bulk_out_log.items.back().result == ErrorCode::OK &&
+              f.probe.bulk_out_log.items.back().data == bytes);
+}
+
 /// 挂起与恢复：挂起期间提交的请求不启动硬件，恢复后发出；挂起中复位照常枚举。帧中断挂起
 /// 时关闭、恢复时打开，挂起中复位后也是开的。
 /// Suspend and resume: a request submitted while suspended does not start the hardware
