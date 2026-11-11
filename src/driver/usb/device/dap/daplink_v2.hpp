@@ -425,13 +425,12 @@ class DapLinkV2Class : public DeviceClass
    *        Vendor control port on EP0: the probe's own settings, apart from DAP commands.
    *
    * 主机对 DAP 接口发厂商请求：OUT 方向的数据阶段交给 OnVendorOut（USB 上下文，可能在中断
-   * 里，只应拷贝并通知应用线程）；IN 方向的数据阶段取 OnVendorIn 给出的数据。请求和应答分两
-   * 次传输，应用在两次之间自己处理。
-   * The host sends vendor requests to the DAP interface: the data stage of an OUT request is
-   * handed to OnVendorOut (USB context, possibly an interrupt: copy and notify the
-   * application thread only); an IN request's data stage carries what OnVendorIn returns.
-   * Request and answer are two transfers, and the application handles the request between
-   * them.
+   * 里，只应拷贝并通知应用线程）；IN 方向的数据阶段取 OnVendorIn
+   * 给出的数据。请求和应答分两 次传输，应用在两次之间自己处理。 The host sends vendor
+   * requests to the DAP interface: the data stage of an OUT request is handed to
+   * OnVendorOut (USB context, possibly an interrupt: copy and notify the application
+   * thread only); an IN request's data stage carries what OnVendorIn returns. Request and
+   * answer are two transfers, and the application handles the request between them.
    */
   class VendorPort
   {
@@ -454,7 +453,8 @@ class DapLinkV2Class : public DeviceClass
   ErrorCode OnControlRequest(bool in_isr, const SetupPacket& setup,
                              ControlTransferResult& result) override
   {
-    if ((setup.bmRequestType & REQ_TYPE_MASK) != static_cast<uint8_t>(RequestType::VENDOR) ||
+    if ((setup.bmRequestType & REQ_TYPE_MASK) !=
+            static_cast<uint8_t>(RequestType::VENDOR) ||
         vendor_port_ == nullptr)
     {
       return DeviceClass::OnControlRequest(in_isr, setup, result);
@@ -469,7 +469,8 @@ class DapLinkV2Class : public DeviceClass
   ErrorCode OnControlData(bool in_isr, const SetupPacket& setup,
                           ConstRawData& data) override
   {
-    if ((setup.bmRequestType & REQ_TYPE_MASK) != static_cast<uint8_t>(RequestType::VENDOR) ||
+    if ((setup.bmRequestType & REQ_TYPE_MASK) !=
+            static_cast<uint8_t>(RequestType::VENDOR) ||
         vendor_port_ == nullptr)
     {
       return DeviceClass::OnControlData(in_isr, setup, data);
@@ -4759,8 +4760,8 @@ class DapLinkV2Class : public DeviceClass
   Endpoint* ep_data_in_ = nullptr;   ///< Bulk IN endpoint
   Endpoint* ep_data_out_ = nullptr;  ///< Bulk OUT endpoint
 
-  std::atomic<bool> inited_{false};  ///< Initialized flag
-  uint8_t interface_num_ = 0;        ///< Interface number
+  std::atomic<bool> inited_{false};    ///< Initialized flag
+  uint8_t interface_num_ = 0;          ///< Interface number
   VendorPort* vendor_port_ = nullptr;  ///< EP0 vendor control port (nullable)
 
   LIBXR_PACKED_BEGIN

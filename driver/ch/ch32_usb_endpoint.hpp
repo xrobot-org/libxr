@@ -132,9 +132,9 @@ class CH32EndpointOtgHs : public USB::Endpoint
   // IN：挂包时 TX_CTRL 的 toggle 位（USBHS_UEP_T_TOG_MASK）。
   // IN: the TX_CTRL toggle bits (USBHS_UEP_T_TOG_MASK) when the packet was armed.
   uint8_t tx_tog_armed_ = 0;
-  // 另一方向挂包期间完成了一个事务时，本方向在那之前的 toggle 位（| TOG_WINDOW），否则 0。
-  // The toggle bits of this direction before the other direction's arm, during which a
-  // transaction completed (| TOG_WINDOW); 0 otherwise.
+  // 另一方向挂包期间完成了一个事务时，本方向在那之前的 toggle 位（| TOG_WINDOW），否则
+  // 0。 The toggle bits of this direction before the other direction's arm, during which
+  // a transaction completed (| TOG_WINDOW); 0 otherwise.
   uint8_t tog_window_ = 0;
   static constexpr uint8_t TOG_WINDOW = 0x80;
 

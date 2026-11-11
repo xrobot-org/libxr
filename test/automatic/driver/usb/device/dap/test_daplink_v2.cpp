@@ -112,10 +112,10 @@ class TestDap2 : public DapV2
 {
  public:
   using DapV2::BindEndpoints;
-  using DapV2::OnControlData;
-  using DapV2::OnControlRequest;
   using DapV2::ControlTransferResult;
   using DapV2::DapV2;
+  using DapV2::OnControlData;
+  using DapV2::OnControlRequest;
   using DapV2::OnService;
   using DapV2::UnbindEndpoints;
 };
@@ -670,8 +670,8 @@ class EchoPort final : public DapV2::VendorPort
 
 void TestVendorPort()
 {
-  // Vendor requests reach the port; without one they are NOT_SUPPORT; DAP commands are not
-  // affected.
+  // Vendor requests reach the port; without one they are NOT_SUPPORT; DAP commands are
+  // not affected.
   DapFixture f;
   f.dap.BindEndpoints(f.pool, 0, false);
   Run(f);
@@ -707,18 +707,14 @@ void TestWakeStep()
   TEST_ASSERT(f.dap.WaitForWork(0) == ErrorCode::TIMEOUT);
 
   std::atomic<bool> woke{false};
-  std::thread waiter(
-      [&]()
-      {
-        woke.store(f.dap.WaitForWork(2000) == ErrorCode::OK);
-      });
+  std::thread waiter([&]() { woke.store(f.dap.WaitForWork(2000) == ErrorCode::OK); });
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
   f.dap.WakeStep(false);
   waiter.join();
   TEST_ASSERT(woke.load());
   TEST_ASSERT(!f.in.active);
   TEST_ASSERT(f.dap.Step(0) == ErrorCode::OK);
-  TEST_ASSERT(!f.in.active);  // nothing was executed
+  TEST_ASSERT(!f.in.active);                                // nothing was executed
   TEST_ASSERT(f.dap.WaitForWork(0) == ErrorCode::TIMEOUT);  // the wake-up was absorbed
 
   // A command that arrives together with a wake-up is still executed by one Step(0).
