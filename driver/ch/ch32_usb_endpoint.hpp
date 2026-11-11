@@ -232,6 +232,21 @@ class CH32EndpointOtgHs : public USB::Endpoint
   static inline CH32EndpointOtgHs* map_otg_hs_[EP_OTG_HS_MAX_SIZE][2] = {};
 };
 
+/**
+ * @brief 把 SOF 令牌报给设备核心 / Report a SOF token to the device core
+ * @tparam Core 提供 OnSof(bool, uint16_t, uint8_t) 的设备核心 / Device core with
+ * OnSof(bool, uint16_t, uint8_t)
+ * @param core 设备核心 / Device core
+ * @param frame_no USBHSD->FRAME_NO 的值：低 11 位帧号，高 3 位微帧号 / Value of
+ * USBHSD->FRAME_NO: frame number in the low 11 bits, microframe in the top 3
+ */
+template <typename Core>
+inline void ReportSofToken(Core& core, uint16_t frame_no)
+{
+  core.OnSof(true, static_cast<uint16_t>(frame_no & USBHS_SOF_FRAME_NUM),
+             static_cast<uint8_t>((frame_no & USBHS_MICRO_FRAME_NUM) >> 13U));
+}
+
 #endif  // defined(USBHSD) || defined(__DOXYGEN__)
 
 }  // namespace LibXR

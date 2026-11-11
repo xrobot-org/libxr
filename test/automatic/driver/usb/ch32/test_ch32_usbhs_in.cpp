@@ -344,6 +344,37 @@ void TestArmWithoutCompletionRecordsNothing()
   TEST_ASSERT(in.tog_window_ == 0u);
 }
 
+// In device mode a SOF reaches the backend as a transfer event with the SOF token (manual
+// V2.5 p.339-340); FRAME_NO carries the frame number in its low 11 bits and the
+// microframe number in the top 3. The device core gets both.
+struct SofSink
+{
+  struct Call
+  {
+    bool in_isr;
+    uint16_t frame;
+    uint8_t microframe;
+  };
+  std::vector<Call> calls;
+  void OnSof(bool in_isr, uint16_t frame, uint8_t microframe)
+  {
+    calls.push_back({in_isr, frame, microframe});
+  }
+};
+
+void TestSofTokenReachesTheCoreWithFrameAndMicroframe()
+{
+  SofSink sink;
+  ReportSofToken(sink, 0x0000);
+  ReportSofToken(sink, static_cast<uint16_t>((5u << 13) | 0x123));
+  ReportSofToken(sink, 0xE7FF);
+  TEST_ASSERT(sink.calls.size() == 3);
+  TEST_ASSERT(sink.calls[0].in_isr && sink.calls[0].frame == 0 &&
+              sink.calls[0].microframe == 0);
+  TEST_ASSERT(sink.calls[1].frame == 0x123 && sink.calls[1].microframe == 5);
+  TEST_ASSERT(sink.calls[2].frame == 0x7FF && sink.calls[2].microframe == 7);
+}
+
 }  // namespace
 
 int main()
@@ -358,5 +389,6 @@ int main()
   TestResendKeepsAcceptedPackets();
   TestLostTxAdvanceRepaired();
   TestArmWithoutCompletionRecordsNothing();
+  TestSofTokenReachesTheCoreWithFrameAndMicroframe();
   std::puts("CH32 USBHS IN completions and lost toggle advances passed");
 }
