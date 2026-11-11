@@ -14,8 +14,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -719,6 +721,161 @@ void TestBootProtocol()
               g.in.Last().data == std::vector<uint8_t>({0x02, 0x07, 0xF8, 0x00}));
 }
 
+/// The sender runs in an interrupt or another thread while the owner answers GET_REPORT.
+/// The reply handed to the core must be one complete report that no later send changes,
+/// so the core reads the same bytes whenever it copies them out.
+void TestGetReportReplyIsASnapshot()
+{
+  auto reply_of = [](auto& hid)
+  {
+    typename std::remove_reference_t<decltype(hid)>::ControlTransferResult result;
+    TEST_ASSERT(hid.OnClassRequest(
+                    false, static_cast<uint8_t>(HIDKeyboard::ClassRequest::GET_REPORT),
+                    static_cast<uint16_t>(REPORT_INPUT << 8), 64, 0,
+                    result) == ErrorCode::OK);
+    return result.write_data;
+  };
+  auto bytes = [](const ConstRawData& data)
+  {
+    const auto* p = static_cast<const uint8_t*>(data.addr_);
+    return std::vector<uint8_t>(p, p + data.size_);
+  };
+
+  {
+    Fixture f;
+    TestKeyboard kbd(Number::EP1, Number::EP2, false);
+    kbd.BindEndpoints(f.pool, 0, false);
+    kbd.PressKey({HIDKeyboard::KeyCode::A}, HIDKeyboard::Modifier::LEFT_CTRL, false);
+    f.in.Complete();
+    const auto first =
+        std::vector<uint8_t>({HIDKeyboard::Modifier::LEFT_CTRL, 0, 4, 0, 0, 0, 0, 0});
+    const ConstRawData reply = reply_of(kbd);
+    // A send between the request and the moment the core copies the reply.
+    kbd.PressKey({HIDKeyboard::KeyCode::B}, HIDKeyboard::Modifier::LEFT_ALT, false);
+    f.in.Complete();
+    TEST_ASSERT(bytes(reply) == first);
+    TEST_ASSERT(
+        bytes(reply_of(kbd)) ==
+        std::vector<uint8_t>({HIDKeyboard::Modifier::LEFT_ALT, 0, 5, 0, 0, 0, 0, 0}));
+  }
+  {
+    Fixture f;
+    TestMouse mouse(Number::EP1);
+    mouse.BindEndpoints(f.pool, 0, false);
+    mouse.Move(HIDMouse::Button::LEFT, 5, -3, 1, false);
+    f.in.Complete();
+    const ConstRawData reply = reply_of(mouse);
+    mouse.Move(HIDMouse::Button::RIGHT, 7, 8, 9, false);
+    f.in.Complete();
+    TEST_ASSERT(bytes(reply) == std::vector<uint8_t>({0x01, 0x05, 0xFD, 0x01}));
+    TEST_ASSERT(bytes(reply_of(mouse)) == std::vector<uint8_t>({0x02, 7, 8, 9}));
+  }
+  {
+    Block<128> in_storage;
+    EndpointPool pool{2};
+    MockEndpoint in{Number::EP1, Direction::IN, in_storage.Raw()};
+    TEST_ASSERT(pool.Put(&in) == ErrorCode::OK);
+    TestGamepad pad(Number::EP1);
+    pad.BindEndpoints(pool, 0, false);
+    TEST_ASSERT(pad.Send(100, 200, 300, 400, 0x81, false) == ErrorCode::OK);
+    in.Complete();
+    const ConstRawData reply = reply_of(pad);
+    TEST_ASSERT(pad.Send(1, 2, 3, 4, 0x02, false) == ErrorCode::OK);
+    in.Complete();
+    TEST_ASSERT(bytes(reply) ==
+                std::vector<uint8_t>({100, 0, 200, 0, 0x2C, 0x01, 0x90, 0x01, 0x81}));
+    TEST_ASSERT(bytes(reply_of(pad)) ==
+                std::vector<uint8_t>({1, 0, 2, 0, 3, 0, 4, 0, 0x02}));
+  }
+}
+
+/// A sender thread keeps sending while GET_REPORT is answered: every reply is one report
+/// that was sent, never a mix of two (the bytes of a report are all equal to its number).
+/// Under ThreadSanitizer this is also the data race check.
+void TestGetReportWhileSending()
+{
+  constexpr int ROUNDS = 20000;
+  std::atomic<bool> done{false};
+  auto run = [&](auto& hid, auto&& send, auto&& complete, auto&& uniform)
+  {
+    std::thread sender(
+        [&]
+        {
+          for (int i = 0; i < ROUNDS; ++i)
+          {
+            send(static_cast<uint8_t>(i % 100 + 1));
+            complete();
+          }
+          done.store(true);
+        });
+    std::vector<uint8_t> data;
+    size_t replies = 0;
+    while (!done.load())
+    {
+      TEST_ASSERT(GetReport(hid, REPORT_INPUT, 0, data) == ErrorCode::OK);
+      TEST_ASSERT(uniform(data));
+      ++replies;
+    }
+    sender.join();
+    TEST_ASSERT(replies > 0);
+    done.store(false);
+  };
+
+  {
+    Fixture f;
+    TestKeyboard kbd(Number::EP1, Number::EP2, false);
+    kbd.BindEndpoints(f.pool, 0, false);
+    run(
+        kbd,
+        [&](uint8_t v)
+        {
+          const auto k = static_cast<HIDKeyboard::KeyCode>(v);
+          kbd.PressKey({k, k, k, k, k, k}, v, false);
+        },
+        [&] { f.in.Complete(false); },
+        [](const std::vector<uint8_t>& d)
+        {
+          if (d.size() != 8 || d[1] != 0) return false;
+          for (size_t i = 2; i < 8; ++i)
+            if (d[i] != d[0]) return false;
+          return true;
+        });
+  }
+  {
+    Fixture f;
+    TestMouse mouse(Number::EP1);
+    mouse.BindEndpoints(f.pool, 0, false);
+    run(
+        mouse,
+        [&](uint8_t v)
+        {
+          mouse.Move(v, static_cast<int8_t>(v), static_cast<int8_t>(v),
+                     static_cast<int8_t>(v), false);
+        },
+        [&] { f.in.Complete(false); }, [](const std::vector<uint8_t>& d)
+        { return d.size() == 4 && d[1] == d[0] && d[2] == d[0] && d[3] == d[0]; });
+  }
+  {
+    Block<128> in_storage;
+    EndpointPool pool{2};
+    MockEndpoint in{Number::EP1, Direction::IN, in_storage.Raw()};
+    TEST_ASSERT(pool.Put(&in) == ErrorCode::OK);
+    TestGamepad pad(Number::EP1);
+    pad.BindEndpoints(pool, 0, false);
+    run(
+        pad, [&](uint8_t v) { (void)pad.Send(v, v, v, v, v, false); },
+        [&] { in.Complete(false); },
+        [](const std::vector<uint8_t>& d)
+        {
+          if (d.size() != 9) return false;
+          if (d[0] == 0xFF && d[1] == 0x03) return d[8] == 0;  // The neutral state.
+          for (size_t i = 0; i < 8; i += 2)
+            if (d[i] != d[8] || d[i + 1] != 0) return false;
+          return true;
+        });
+  }
+}
+
 /// HID 1.11 7.2.6: SET_PROTOCOL carries 0 (boot) or 1 (report) in wValue. Any other
 /// value is refused and the protocol the interface is in stays. A class without a boot
 /// protocol keeps answering the request, with the same rule for the value.
@@ -917,6 +1074,8 @@ int main()
   TestClassCodes();
   TestBootProtocol();
   TestSetProtocolValue();
+  TestGetReportReplyIsASnapshot();
+  TestGetReportWhileSending();
   TestKeyboardReportDescriptorRange();
   TestGetReportThroughDeviceCore();
   std::puts("HID class: slot model, OUT lease, reset, idle rate and LED passed");

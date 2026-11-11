@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "hid.hpp"
+#include "latest_snapshot.hpp"
 
 namespace LibXR::USB
 {
@@ -111,11 +112,17 @@ class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0, 2>
   {
     if (SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr) == ErrorCode::OK)
     {
-      last_input_ = report;
+      last_input_.Store(report);
     }
   }
 
-  Report last_input_{};  ///< 最近发送的输入报告 / Last input report sent
+  /// 最近发送的输入报告。发送方（任何上下文）写，GET_REPORT（owner）读，所以用单生产者
+  /// 快照；发送方一次只能在一个上下文里调用 Move / Release。
+  /// Last input report sent. The sender (any context) writes it and GET_REPORT (the
+  /// owner) reads it, hence the single-producer snapshot; Move / Release must be called
+  /// from one context at a time.
+  LatestSnapshot<Report> last_input_{Report{}};
+  Report reply_{};  ///< GET_REPORT 的应答缓冲，只由 owner 写 / Reply buffer, owner only
 
  protected:
   /**
@@ -129,7 +136,8 @@ class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0, 2>
                              DeviceClass::ControlTransferResult& result) override
   {
     if (report_id != 0U) return ErrorCode::NOT_SUPPORT;
-    result.write_data = ConstRawData{&last_input_, sizeof(last_input_)};
+    (void)last_input_.LoadLatest(reply_);
+    result.write_data = ConstRawData{&reply_, sizeof(reply_)};
     return ErrorCode::OK;
   }
 

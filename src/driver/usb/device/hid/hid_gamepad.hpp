@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "hid.hpp"
+#include "latest_snapshot.hpp"
 
 namespace LibXR::USB
 {
@@ -49,12 +50,7 @@ class HIDGamepadT
   {
     // 初始化上一帧：轴置中，按钮清零 / Initialize last report: axes to mid, buttons
     // cleared
-    last_.x = Mid();
-    last_.y = Mid();
-    last_.z = Mid();
-    last_.rx = Mid();
-    last_.buttons = 0;
-    sent_ = last_;
+    last_ = Neutral();
   }
 
   /**
@@ -154,7 +150,11 @@ class HIDGamepadT
                              DeviceClass::ControlTransferResult& result) override
   {
     if (report_id != 0U) return ErrorCode::NOT_SUPPORT;
-    result.write_data = ConstRawData{&sent_, sizeof(sent_)};
+    // 发送方可能在中断或别的线程里：取一份完整的快照，再把它交给核心。
+    // The sender may be an interrupt or another thread: take one complete snapshot and
+    // hand that to the core.
+    (void)sent_.LoadLatest(reply_);
+    result.write_data = ConstRawData{&reply_, sizeof(reply_)};
     return ErrorCode::OK;
   }
 
@@ -245,6 +245,21 @@ class HIDGamepadT
   }
 
   /**
+   * @brief 构造时的中立状态：轴居中，无按钮 / The neutral state at construction: axes
+   *        centred, no button
+   */
+  static constexpr Report Neutral()
+  {
+    Report report{};
+    report.x = Mid();
+    report.y = Mid();
+    report.z = Mid();
+    report.rx = Mid();
+    report.buttons = 0;
+    return report;
+  }
+
+  /**
    * @brief 提交 last_；端点收下才记入 sent_（被拒绝的报告主机从未见过）
    * Submit last_; it is recorded in sent_ only when the endpoint took it (the host never
    * saw a refused report)
@@ -252,13 +267,21 @@ class HIDGamepadT
   ErrorCode Submit(bool in_isr)
   {
     const ErrorCode ans = SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
-    if (ans == ErrorCode::OK) sent_ = last_;
+    if (ans == ErrorCode::OK) sent_.Store(last_);
     return ans;
   }
 
   Report
       last_{};  ///< 当前状态（部分更新的基准）/ Current state (base of partial updates)
-  Report sent_{};  ///< 最近发送的输入报告 / Last input report sent
+  /// 最近发送的输入报告。发送方（任何上下文）写，GET_REPORT（owner）读，所以用单生产者
+  /// 快照；发送方一次只能在一个上下文里调用 Send / SendButtons / SendAxes（last_ 的部分
+  /// 更新本来就要求这样）。
+  /// Last input report sent. The sender (any context) writes it and GET_REPORT (the
+  /// owner) reads it, hence the single-producer snapshot; Send / SendButtons / SendAxes
+  /// must be called from one context at a time (the partial updates of last_ already
+  /// require that).
+  LatestSnapshot<Report> sent_{Neutral()};
+  Report reply_{};  ///< GET_REPORT 的应答缓冲，只由 owner 写 / Reply buffer, owner only
 };
 
 /**
