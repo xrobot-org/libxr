@@ -69,11 +69,24 @@ template <typename Scalar = DefaultScalar, size_t WindowCapacity = 100>
 class EKF
 {
  public:
+  /// 状态向量类型。 State vector type.
   using StateVector = Eigen::Matrix<Scalar, Eigen::Dynamic, 1>;
+
+  /// 状态协方差矩阵类型。 State covariance matrix type.
   using StateCovariance = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
+
+  /// 状态转移矩阵类型，与状态协方差同形。 State transition matrix type, same shape as
+  /// the state covariance.
   using TransitionMatrix = StateCovariance;
+
+  /// 观测向量类型。 Measurement vector type.
   using MeasurementVector = Eigen::Matrix<Scalar, Eigen::Dynamic, 1>;
+
+  /// 观测噪声协方差矩阵类型。 Measurement noise covariance matrix type.
   using MeasurementCovariance = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
+
+  /// 观测矩阵类型，行数为观测维度、列数为状态维度。 Observation matrix type, with one
+  /// row per measurement and one column per state component.
   using ObservationMatrix = Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic>;
 
   /**
