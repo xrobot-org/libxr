@@ -33,6 +33,7 @@ inline void STM32_CallDCacheByAddr(FunctionType function, void* addr, int32_t ds
   function(addr, dsize);
 }
 
+/// 函数只接受 volatile void* 时的重载 / Overload for functions that take volatile void*
 template <typename FunctionType>
   requires(!DCacheFunctionAcceptsVoidPtr<FunctionType> &&
            DCacheFunctionAcceptsVolatileVoidPtr<FunctionType>)
@@ -41,6 +42,8 @@ inline void STM32_CallDCacheByAddr(FunctionType function, void* addr, int32_t ds
   function(reinterpret_cast<volatile void*>(addr), dsize);
 }
 
+/// 其余情况（函数接受 uint32_t*）的重载 / Overload for the remaining case (functions
+/// taking uint32_t*)
 template <typename FunctionType>
   requires(!DCacheFunctionAcceptsVoidPtr<FunctionType> &&
            !DCacheFunctionAcceptsVolatileVoidPtr<FunctionType>)

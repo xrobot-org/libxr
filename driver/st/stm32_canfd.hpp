@@ -85,12 +85,19 @@ class STM32CANFD : public FDCAN
   {
   };
 
+  /// 句柄没有 MessageRAMOffset 字段时不做检查 / No check when the handle has no
+  /// MessageRAMOffset field
   template <typename T>
   typename std::enable_if<!HasMessageRAMOffset<T>::value, void>::type
   CheckMessageRAMOffset(T&, uint32_t = FDCAN_MESSAGE_RAM_WORDS_MAX)
   {
   }
 
+  /// 断言本实例的消息 RAM 区间不越界，且与已登记的其他 FDCAN 实例不重叠 / Assert that
+  /// this instance's message RAM range is in bounds and does not overlap any other
+  /// registered FDCAN instance
+  /// @param fdcan_handle FDCAN 句柄 / FDCAN handle
+  /// @param max_words 消息 RAM 总字数 / Total message RAM size in words
   template <typename T>
   typename std::enable_if<HasMessageRAMOffset<T>::value, void>::type
   CheckMessageRAMOffset(T& fdcan_handle, uint32_t max_words = FDCAN_MESSAGE_RAM_WORDS_MAX)
@@ -252,16 +259,27 @@ class STM32CANFD : public FDCAN
     return free;
   }
 
+  /// 把经典帧转换为 HAL 发送头 / Convert a classic frame to a HAL TX header
   static inline void BuildTxHeader(const ClassicPack& p, FDCAN_TxHeaderTypeDef& h);
+  /// 把 FD 帧转换为 HAL 发送头 / Convert an FD frame to a HAL TX header
   static inline void BuildTxHeader(const FDPack& p, FDCAN_TxHeaderTypeDef& h);
 
+  /// 发送服务：持锁，把队列（及待重试帧）填入硬件发送 FIFO；可在任意上下文调用 / TX
+  /// service: takes the lock and fills the hardware TX FIFO from the queues (and retry
+  /// frames); may be called from any context
   void TxService();
 
+  /// 发送服务锁：1 表示某个上下文正在执行 TxService / TX service lock: 1 while a
+  /// context is running TxService
   std::atomic<uint32_t> tx_lock_{0};
+  /// 发送服务请求标记：1 表示有新的发送需求待处理 / TX service request flag: 1 when new
+  /// TX work is pending
   std::atomic<uint32_t> tx_pend_{0};
 
+  /// HAL FDCAN 句柄 / HAL FDCAN handle
   FDCAN_HandleTypeDef* hcan_;
 
+  /// 外设编号，同时是 map 的下标 / Peripheral ID, also the index into map
   stm32_fdcan_id_t id_;
   /// Classic 发送槽池 / Classic TX slot pool.
   SlotPool<ClassicPack> tx_queue_;
@@ -276,8 +294,12 @@ class STM32CANFD : public FDCAN
   /// 待重试 FD 帧 / Pending FD retry frame.
   FDPack tx_fd_retry_pack_{};
 
+  /// 外设编号到实例的映射，供 HAL 回调找回对象 / Instance table by peripheral ID, used
+  /// by HAL callbacks to find the object
   static STM32CANFD* map[STM32_FDCAN_NUMBER];  // NOLINT
 
+  /// 接收中断里读取 HAL 报文的暂存区 / Staging area for the frame read from the HAL in
+  /// the RX interrupt
   struct
   {
     FDCAN_RxHeaderTypeDef header;
@@ -285,6 +307,8 @@ class STM32CANFD : public FDCAN
     FDPack pack_fd;
   } rx_buff_;
 
+  /// 保留的发送暂存区，当前发送路径不使用 / Reserved TX staging area, not used by the
+  /// current TX path
   struct
   {
     FDCAN_TxHeaderTypeDef header;
@@ -292,6 +316,7 @@ class STM32CANFD : public FDCAN
     FDPack pack_fd;
   } tx_buff_;
 
+  /// 保留的邮箱号，当前未被写入 / Reserved mailbox number, not written at present
   uint32_t txMailbox;
 };
 }  // namespace LibXR

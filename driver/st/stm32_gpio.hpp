@@ -233,6 +233,8 @@ class STM32GPIO final : public GPIO
     return ErrorCode::OK;
   }
 
+  /// 按 EXTI 线号（0-15）索引的实例表，供 EXTI 回调找回对象 / Instance table indexed by
+  /// EXTI line (0-15), used by the EXTI callback to find the object
   static STM32GPIO* map[16];  // NOLINT
 
  private:

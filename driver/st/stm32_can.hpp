@@ -83,24 +83,35 @@ class STM32CAN : public CAN
    */
   void ProcessErrorInterrupt();
 
+  /// HAL CAN 句柄 / HAL CAN handle
   CAN_HandleTypeDef* hcan_;
 
+  /// 外设编号，同时是 map 的下标 / Peripheral ID, also the index into map
   stm32_can_id_t id_;
+  /// 本实例使用的接收 FIFO（CAN_RX_FIFO0 或 CAN_RX_FIFO1）/ RX FIFO used by this instance
+  /// (CAN_RX_FIFO0 or CAN_RX_FIFO1)
   uint32_t fifo_;
+  /// 外设编号到实例的映射，供 HAL 回调找回对象 / Instance table by peripheral ID, used
+  /// by HAL callbacks to find the object
   static STM32CAN* map[STM32_CAN_NUMBER];  // NOLINT
 
+  /// 接收中断里读取 HAL 报文的暂存区 / Staging area for the frame read from the HAL in
+  /// the RX interrupt
   struct
   {
     CAN_RxHeaderTypeDef header;
     ClassicPack pack;
   } rx_buff_;
 
+  /// 保留的发送暂存区，当前发送路径不使用 / Reserved TX staging area, not used by the
+  /// current TX path
   struct
   {
     CAN_TxHeaderTypeDef header;
     ClassicPack pack;
   } tx_buff_;
 
+  /// 最近一次交给 HAL 的发送邮箱号 / Mailbox of the frame most recently handed to the HAL
   uint32_t txMailbox;
 
   /// 发送槽池 / TX slot pool.
@@ -110,11 +121,20 @@ class STM32CAN : public CAN
   /// 待重试帧 / Pending retry frame.
   ClassicPack tx_retry_pack_{};
 
+  /// 发送服务锁：1 表示某个上下文正在执行 TxService / TX service lock: 1 while a
+  /// context is running TxService
   std::atomic<uint32_t> tx_lock_{0};
+  /// 发送服务请求标记：1 表示有新的发送需求待处理 / TX service request flag: 1 when new
+  /// TX work is pending
   std::atomic<uint32_t> tx_pend_{0};
 
+  /// 把经典帧转换为 HAL 发送头（长度限制为 8，标准/扩展 ID 与远程帧标志）/ Convert a
+  /// classic frame to a HAL TX header (DLC capped at 8, standard/extended ID, RTR flag)
   static inline void BuildTxHeader(const ClassicPack& p, CAN_TxHeaderTypeDef& h);
 
+  /// 发送服务：持锁，把队列（及待重试帧）填入空闲邮箱；可在任意上下文调用 / TX service:
+  /// takes the lock and fills free mailboxes from the queue (and the retry frame); may be
+  /// called from any context
   void TxService();
 };
 }  // namespace LibXR

@@ -190,13 +190,17 @@ class STM32UART : public UART
   /// 上次已处理的 DMA 接收位置 / Last processed RX DMA position.
   size_t last_rx_pos_ = 0;
 
+  /// HAL UART 句柄 / HAL UART handle
   UART_HandleTypeDef* uart_handle_;
 
   /// 发送半区是否在使用，仅后端处理器访问 / TX half in use; service-only access.
   Flag::Plain tx_busy_;
 
+  /// 外设编号，同时是 map 的下标 / Peripheral ID, also the index into map
   stm32_uart_id_t id_ = STM32_UART_ID_ERROR;
 
+  /// 外设编号到实例的映射，供 HAL 回调找回对象 / Instance table by peripheral ID, used
+  /// by HAL callbacks to find the object
   static STM32UART* map[STM32_UART_NUMBER];  // NOLINT
 
  private:

@@ -40,7 +40,10 @@ namespace LibXR
 class STM32GpdmaUartAdapter
 {
  public:
+  /// 接收循环链表的节点数；接收缓冲区总长必须是它的整数倍 / Number of nodes in the RX
+  /// ring; the RX buffer length must be a multiple of it
   static constexpr size_t RX_NODE_COUNT = 4U;
+  /// DMA 中止完成回调的类型 / Type of the DMA abort-complete callback
   using AbortCallback = void (*)(DMA_HandleTypeDef*);
 
   /// 绑定已初始化的 UART 句柄 / Bind an initialized UART handle.

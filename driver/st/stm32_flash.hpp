@@ -29,9 +29,11 @@ inline uint32_t STM32FlashBankOf(uint32_t addr)
   return (addr >= FLASH_BANK2_BASE) ? FLASH_BANK_2 : FLASH_BANK_1;
 }
 #elif defined(FLASH_BANK_1)
+/// 单 Bank 器件：恒返回 FLASH_BANK_1 / Single-bank device: always FLASH_BANK_1
 // NOLINTNEXTLINE
 inline uint32_t STM32FlashBankOf(uint32_t) { return FLASH_BANK_1; }
 #else
+/// 没有 Bank 宏的器件：恒返回 1 / Device without bank macros: always 1
 // NOLINTNEXTLINE
 inline uint32_t STM32FlashBankOf(uint32_t) { return 1; }
 #endif
