@@ -325,7 +325,10 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
             "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/st"
   )
   add_test(NAME stm32_usb_otg COMMAND test_stm32_usb_otg)
-  set_tests_properties(stm32_usb_otg PROPERTIES TIMEOUT 120)
+  # The register traps run the controller model inside the SIGSEGV handler, which
+  # allocates; ThreadSanitizer would report every trapped access as a signal-unsafe call.
+  set_tests_properties(stm32_usb_otg PROPERTIES TIMEOUT 120 ENVIRONMENT
+                                                "TSAN_OPTIONS=report_signal_unsafe=0")
 
   # ESP32-S2/S3 USB backend against the same controller model: the real backend source
   # with fake ESP-IDF headers for an ESP32-S3. The register bit-fields are accessed as
@@ -350,7 +353,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
             "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp"
   )
   add_test(NAME esp_usb COMMAND test_esp_usb)
-  set_tests_properties(esp_usb PROPERTIES TIMEOUT 120)
+  # Same register traps as stm32_usb_otg.
+  set_tests_properties(esp_usb PROPERTIES TIMEOUT 120 ENVIRONMENT
+                                          "TSAN_OPTIONS=report_signal_unsafe=0")
 endif()
 
 # cdc_test classes: lease return, DTR-triggered packet and the read re-arm.
