@@ -85,9 +85,9 @@ class GsUsbClass : public DeviceClass
   // Per-channel error-frame queue capacity.
   static constexpr std::size_t ERR_QUEUE_SIZE = 8;
 
-  // 每通道暂存队列的默认容量：Linux gs_usb 驱动每通道最多 10 帧在途（GS_MAX_TX_URBS）。
-  // Default per-channel staging capacity: the Linux gs_usb driver keeps at most 10
-  // frames in flight per channel (GS_MAX_TX_URBS).
+  /// 每通道暂存队列的默认容量：Linux gs_usb 驱动每通道最多 10 帧在途（GS_MAX_TX_URBS）。
+  /// Default per-channel staging capacity: the Linux gs_usb driver keeps at most 10
+  /// frames in flight per channel (GS_MAX_TX_URBS).
   static constexpr std::size_t DEFAULT_TX_STAGE_SIZE = 10;
 
  private:

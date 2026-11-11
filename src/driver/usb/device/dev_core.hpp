@@ -36,7 +36,16 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   DeviceCore(const DeviceCore&) = delete;
   DeviceCore& operator=(const DeviceCore&) = delete;
 
+  /**
+   * @brief 请求初始化设备 / Request device initialization
+   * @param in_isr 是否在 ISR / Whether in ISR context
+   */
   virtual void Init(bool in_isr) { RequestLifecycle(in_isr, INIT_EVENT, true); }
+
+  /**
+   * @brief 请求反初始化设备 / Request device deinitialization
+   * @param in_isr 是否在 ISR / Whether in ISR context
+   */
   virtual void Deinit(bool in_isr) { RequestLifecycle(in_isr, DEINIT_EVENT, false); }
   virtual void Start(bool in_isr) = 0;
   virtual void Stop(bool in_isr) = 0;
