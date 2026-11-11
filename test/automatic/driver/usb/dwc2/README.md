@@ -78,7 +78,7 @@ behaviour yet and the case is not in the default run (see the next section).
 | 挂起与恢复 / suspend and resume | 全部 / all | `TestSuspendResume` | 默认 / default | 默认 / default |
 | 断开与重连、Stop()/Start() / disconnect and reconnect, Stop() and Start() | 全部；DFU（下载后重新枚举）/ all; DFU (enumeration after a download) | `TestDisconnectReconnect`（STM32）、`TestStopStart`（ESP） | 默认 / default | 默认 / default |
 | 端点的停止序列进行中调用 Stop() / Stop() during the stop sequence of an endpoint | 全部 / all | `TestStopDuringInStop`（STM32） | 默认；非 DMA 的 OUT 端点是发现 / default; an OUT endpoint without DMA is a finding | 未运行 / not run |
-| 帧节拍：每个 SOF 一次 OnBusTime，帧中断跟随 WantsBusTime() / frame ticks: one OnBusTime per SOF, the frame interrupt follows WantsBusTime() | UAC | `TestFrameTicks`, `TestUacFrameInterruptFollowsConfiguration` | 默认 / default | 默认 / default |
+| 帧节拍：枚举后帧中断就是开的，需要总线时间的类每个 SOF 收到一次 OnBusTime，不需要的类收不到；帧中断不随配置变化，挂起关、恢复开 / frame ticks: the frame interrupt is on after enumeration, a class that needs bus time gets one OnBusTime per SOF and one that does not gets none; the frame interrupt ignores the configuration, off at suspend, on at resume | UAC | `TestFrameTicks`, `TestUacFrameInterruptIgnoresConfiguration`, `TestSuspendResume` | 默认 / default | 默认 / default |
 | 等时 IN：每帧一个包、奇偶帧 / isochronous IN: one packet per frame, even and odd frames | UAC | `TestIsochronousFrames`, `TestUacStreams` | 默认 / default | 发现 / finding |
 | 等时 IN 错过了它的帧，以 FAILED 结束 / isochronous IN that missed its frame ends with FAILED | UAC | `TestIsochronousMissedFrame` | 默认 / default | 发现 / finding |
 | 帧中断被关掉时流停止 / the stream stops with the frame interrupt off | UAC | `TestUacStopsWithoutFrameInterrupt` | 默认 / default | 未运行（依赖等时出流）/ not run (needs the isochronous stream) |
@@ -116,21 +116,10 @@ returns 0 and the case belongs among the regular ones.
 
 运行 / Run: `build/test/test_esp_usb --finding uac_streams`
 
-## 帧中断的诊断输出 / Diagnostic output for the frame interrupt
+## 诊断输出 / Diagnostic output
 
-`test_stm32_usb_otg --trace-frame-interrupt [N [R [P]]]`（`test_esp_usb` 相同）让 UAC1 麦克风从上电走到
-取消配置，每次写中断屏蔽寄存器时打印阶段、帧中断屏蔽位的新旧值和写寄存器的指令及其调用者的地址
-（可执行文件内的偏移，用 `addr2line -f -C -e <程序> <偏移>` 解析）。N 是冲刷位写 1 之后仍读到 1 的
-次数，R 为 1 时复位的开始和结束在同一次中断里被看到，P 为 1 时主机在开流之前先选中备用设置 1 再选回 0
-且不取数据。设置环境变量 `DWC2_LOG` 时，任何用例都会把每次寄存器写和总线事件写到标准错误。
+设置环境变量 `DWC2_LOG` 时，任何用例都会把每次寄存器写和总线事件写到标准错误。
 
-`test_stm32_usb_otg --trace-frame-interrupt [N [R [P]]]` (and the same for `test_esp_usb`) takes a UAC1
-microphone from power-up to the deconfiguration and prints, at every write of the interrupt mask
-register, the phase, the old and new value of the frame interrupt mask and the addresses of the
-writing instruction and its callers (offsets into the executable, resolved with
-`addr2line -f -C -e <program> <offset>`). N is how many reads still see a flush bit set after it was
-written, R = 1 makes one interrupt see both the start and the end of the reset, and P = 1 makes the
-host select alternate setting 1 and then 0 again, without taking data, before it starts the stream.
 With the environment variable `DWC2_LOG` set, any case writes every register write and bus event to
 standard error.
 

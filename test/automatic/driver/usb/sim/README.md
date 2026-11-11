@@ -23,57 +23,35 @@ reference implementation of the contract and a real backend that differs from it
 
 ## 帧中断 / The frame interrupt
 
-真实后端只在自己的重估点看 `WantsBusTime()`：`Start()`、`OnStopsSettled()`，以及类的需要变化时
-`DeviceCore` 调用的 `OnBusTimeNeedChanged()`。仿真照做，由 `Profile::sof_policy` 选择：
+所有后端的帧中断（SOF）策略相同：设备在总线上且没有挂起时打开（`Start()`，总线复位或枚举完成，恢复），
+挂起、断开、`Stop()` 和停止超时后关闭。除此之外没有别的条件：它不看 `WantsBusTime()`，也不看有没有
+待决停止。仿真照此建模：`Start()`、`BusReset()` 和 `Resume()` 打开，`Suspend()`、`Disconnect()`、
+`Stop()` 和停止超时关闭；关闭时主机的 SOF 到不了 `DeviceCore`。`DeviceCore::OnSof` 照常计停止帧数，
+只有 `WantsBusTime()` 为真的类才收到 `OnBusTime`，需求变化立刻生效。
 
-A real backend looks at `WantsBusTime()` only at its own re-evaluation points: `Start()`,
-`OnStopsSettled()`, and `OnBusTimeNeedChanged()`, which `DeviceCore` calls when a class's need
-changes. The simulation does the same, selected by `Profile::sof_policy`:
+在 STM32H723 上测到：没有任何类需要帧时间时，常开帧中断的代价约 0.2 % CPU（550 MHz）。
 
-| 策略 / Policy | 后端 / Backends | 重估点 / Re-evaluation points |
-| --- | --- | --- |
-| `AT_STOPS` (默认 / default) | STM32 OTG、ESP32 DWC2、FSDEV | `Start()`、`OnStopsSettled()`、`OnBusTimeNeedChanged()`；有待决停止时一直开 / while a stop is pending |
-| `AT_CONTROL_READY` | CH32 OTG FS/HS | `OnControlReady()` 里打开；`OnBusTimeNeedChanged()` 里随需要开关 / turned on there; on or off with the need in `OnBusTimeNeedChanged()` |
-| `ALWAYS` | 无（理想控制器）/ none (ideal controller) | 每帧都送，只用来把设备类和策略隔开 / every frame, to separate a class from the policy |
+用例：`TestFrameInterruptFollowsTheBus`（枚举后打开、取消配置不变、挂起和断开后关闭、恢复和复位后
+打开，没有类需要时类收不到节拍）、`TestFrameTicksReachAClassOnlyWhileItNeedsThem`（需求变化立刻生效）、
+`test_usb_sim_profiles.cpp` 里的 UAC 用例（枚举后主机直接选备用设置 1 即连续出流，停止再开始，挂起
+恢复后流继续）。
 
-真实后端重估帧中断开关的地方（读代码）：STM32 OTG 是 `Connect()`（`Start()`）、`OnStopsSettled()`、
-启动待决停止时（`StopHardware` 里端点仍在使能）、TX FIFO 清空完成时（`PollTxFlush`，总线复位和端点
-停止都会清空；`RequestTxFlush` 先无条件打开 SOFM），以及 `OnBusTimeNeedChanged()`；ESP32 是复位处理、
-`OnStopsSettled()`、启动待决停止时和 `OnBusTimeNeedChanged()`。仿真的 `AT_STOPS` 只建模了
-`Start()`、待决停止开始、`OnStopsSettled()` 和 `OnBusTimeNeedChanged()`，没有建模复位时的 TX FIFO 清空，
-EP0 的停止也总是立即完成。
+All backends use the same frame interrupt (SOF) policy: it is on while the device is on the bus and not
+suspended (`Start()`, bus reset or enumeration done, resume) and off after a suspend, a disconnect,
+`Stop()` and a stop timeout. There is no other condition: it does not look at `WantsBusTime()` or at
+pending stops. The simulation models exactly that: `Start()`, `BusReset()` and `Resume()` turn it on,
+`Suspend()`, `Disconnect()`, `Stop()` and a stop timeout turn it off, and while it is off the host's SOF
+does not reach `DeviceCore`. `DeviceCore::OnSof` counts stop frames as before, and only a class whose
+`WantsBusTime()` is true gets `OnBusTime`; a change of need takes effect at once.
 
-在 STM32H723（OTG_HS）上的测量是：没有 `OnBusTimeNeedChanged()` 时枚举之后帧中断已经打开，取消配置后
-仍然开着，UAC 麦克风连续出流；有它时取消配置后关闭、重新配置后打开，出流相同。读代码解释了后两点：
-取消配置时端点上没有待决停止，后端没有别的重估点，所以开关不变。枚举之后是什么让它打开没有确定：读代码
-只能列出候选（绑定之后的某个待决停止，或者总线复位时 TX FIFO 清空在类还处于绑定状态时完成），没有寄存器
-跟踪。因此仿真的 STM32 OTG、ESP32 档位在没有 `OnBusTimeNeedChanged()` 时枚举之后帧中断是关的，这一点与
-测量不符，不能用来推断真实后端上 UAC 会在一个包之后停下。用例检查的是通知带来的变化：配置后打开、
-取消配置后关闭（`TestFrameInterruptFollowsTheConfiguration`），运行中才需要帧时间的类得到 SOF
-（`test_usb_sim_contract.cpp` 的 `TestFrameInterruptFollowsARuntimeNeed`）。
+Measured on an STM32H723: with no class needing bus time, keeping the frame interrupt on costs about
+0.2 % CPU at 550 MHz.
 
-Where the real backends re-evaluate the frame interrupt enable (from reading the code): on STM32 OTG
-`Connect()` (`Start()`), `OnStopsSettled()`, when a pending stop starts (`StopHardware` with the endpoint
-still enabled), when a TX FIFO flush completes (`PollTxFlush`; a bus reset and an endpoint stop both
-flush, and `RequestTxFlush` turns SOFM on unconditionally first) and `OnBusTimeNeedChanged()`; on ESP32
-the reset handling, `OnStopsSettled()`, when a pending stop starts and `OnBusTimeNeedChanged()`. The
-simulated `AT_STOPS` models only `Start()`, the start of a pending stop, `OnStopsSettled()` and
-`OnBusTimeNeedChanged()`; it does not model the TX FIFO flush at a bus reset, and an EP0 stop always
-completes at once.
-
-Measured on an STM32H723 (OTG_HS): without `OnBusTimeNeedChanged()` the frame interrupt is already on
-after enumeration and stays on after the deconfiguration, and the UAC microphone streams continuously;
-with it, the deconfiguration turns it off, configuring turns it on again, and streaming is the same.
-Reading the code explains the last two points: at the deconfiguration no stop is pending on the
-endpoints, the backend has no other re-evaluation point, and the enable stays as it was. What turns it on
-after enumeration was not determined: the code only gives candidates (a pending stop after the binding,
-or the TX FIFO flush of a bus reset completing while the class is still bound), and there is no register
-trace. So without `OnBusTimeNeedChanged()` the simulated STM32 OTG and ESP32 profiles have the frame
-interrupt off after enumeration, which differs from the measurement, and the simulation must not be read
-as saying that a UAC stops after one packet on a real backend. The cases check what the notification
-changes: on once configured and off after the deconfiguration
-(`TestFrameInterruptFollowsTheConfiguration`), and a class that needs bus time only at run time gets
-SOFs (`TestFrameInterruptFollowsARuntimeNeed` in `test_usb_sim_contract.cpp`).
+Cases: `TestFrameInterruptFollowsTheBus` (on after enumeration, unchanged by a deconfiguration, off after
+a suspend and a disconnect, on after the resume and a reset, and a class that does not need ticks gets
+none), `TestFrameTicksReachAClassOnlyWhileItNeedsThem` (a change of need takes effect at once), and the
+UAC cases in `test_usb_sim_profiles.cpp` (the stream is continuous when the host selects alternate
+setting 1 directly after enumeration, after a stop and restart, and after a suspend and resume).
 
 ## 经 USB/IP 交给内核 / Handing the device to the kernel over USB/IP
 
@@ -93,7 +71,7 @@ real device with the same ids (a real gs_usb adapter, say). The scripts run as t
 
 | 环境变量 / Variable | 作用 / Effect |
 | --- | --- |
-| `USBIP_SOF=stops\|control\|always` | 仿真控制器的帧中断策略（上表），默认 `stops` / frame interrupt policy of the simulated controller, `stops` by default |
+|control\|always` | 仿真控制器的帧中断策略（上表），默认 `stops` / frame interrupt policy of the simulated controller, `stops` by default |
 | `USBIP_BULK_PER_MS=N` | 每毫秒最多完成 N 个批量/中断事务（全速总线一帧的容量），0 为不限 / at most N bulk or interrupt transactions per millisecond, 0 is unlimited |
 | `USBIP_TRACE=1`, `USBIP_RECORD=<file>`, `USBIP_BIND=<addr>` | URB 跟踪、录制、监听地址 / URB trace, recording, listen address |
 | `GS_BUS_RATE=N` | `gsusb2` 的总线每毫秒送出的帧数，默认 8 / frames per millisecond of the `gsusb2` bus, 8 by default |

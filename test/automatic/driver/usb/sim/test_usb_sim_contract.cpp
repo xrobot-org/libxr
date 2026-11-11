@@ -490,66 +490,67 @@ void TestStaleSlotHandles()
   TEST_ASSERT(b.probe.out->ReturnSlot(lease, false) == ErrorCode::STATE_ERR);
 }
 
-/// 帧中断只在后端打开它时才送到 DeviceCore：没有类需要帧时间、也没有待决停止时，主机的
-/// SOF 到不了核心；有待决停止时到；停止确认后（OnStopsSettled）重新关闭。
-/// The frame interrupt reaches DeviceCore only while the backend has it on: with no class
-/// wanting bus time and no pending stop the host's SOF does not reach the core, with a
-/// pending stop it does, and it is off again once the stops settled (OnStopsSettled).
-void TestFrameInterruptFollowsTheBackend()
+/// 帧中断在设备上总线且没有挂起时打开，和有没有类需要帧时间无关：枚举之后 SOF 到达核心，
+/// 挂起和断开后关闭，恢复和下一次总线复位后重新打开。没有类需要帧时间时，类收不到节拍。
+/// The frame interrupt is on while the device is on the bus and not suspended, whether or
+/// not a class needs bus time: after enumeration SOFs reach the core, it is off after a
+/// suspend and a disconnect, and on again after a resume and the next bus reset. With no
+/// class needing bus time the class gets no tick.
+void TestFrameInterruptFollowsTheBus()
 {
-  Profile profile;
-  profile.stop_mode = StopMode::FRAMES;
-  profile.stop_frames = 2;
-  Bench b(profile);
-  b.device.Sof();
-  b.device.Sof();
-  TEST_ASSERT(b.device.SofDelivered() == 0U && !b.device.FrameInterruptOn());
-
-  b.SubmitIn(Bytes(200, 3));
-  TEST_ASSERT(b.device.InToken(1).data.size() == 64);
-  b.device.Setup(MakeSetup(0x00, 9, 0, 0, 0));
-  TEST_ASSERT(b.device.In(1)->StopPending());
+  Bench b;
   TEST_ASSERT(b.device.FrameInterruptOn());
   b.device.Sof();
-  TEST_ASSERT(b.device.SofDelivered() == 1U);
-  b.device.Sof();  // 第二帧确认停止，这一帧也送到核心 / the second frame confirms the
-                   // stop and still reaches the core
-  TEST_ASSERT(!b.device.In(1)->StopPending());
-  TEST_ASSERT(b.device.SofDelivered() == 2U && !b.device.FrameInterruptOn());
   b.device.Sof();
   TEST_ASSERT(b.device.SofDelivered() == 2U);
+  TEST_ASSERT(b.probe.bus_times.load() == 0U);
+
+  // SET_CONFIGURATION 0 不改变它 / SET_CONFIGURATION 0 does not change it.
+  TEST_ASSERT(b.Reconfigure(0));
+  TEST_ASSERT(b.device.FrameInterruptOn());
+  b.device.Sof();
+  TEST_ASSERT(b.device.SofDelivered() == 3U);
+  TEST_ASSERT(b.Reconfigure(1));
+
+  b.device.Suspend();
+  TEST_ASSERT(!b.device.FrameInterruptOn());
+  b.device.Resume();
+  TEST_ASSERT(b.device.FrameInterruptOn());
+  b.device.Sof();
+  TEST_ASSERT(b.device.SofDelivered() == 4U);
+
+  b.device.Disconnect();
+  TEST_ASSERT(!b.device.FrameInterruptOn());
+  b.device.Attach();
+  b.device.BusReset();
+  TEST_ASSERT(b.device.FrameInterruptOn());
+  TEST_ASSERT(b.host.Enumerate());
+  b.device.Sof();
+  TEST_ASSERT(b.device.SofDelivered() == 5U);
+  TEST_ASSERT(b.probe.bus_times.load() == 0U);
 }
 
-/// 类在运行中才需要帧时间、端点上没有任何活动（没有待决停止）：DeviceCore 在处理完下一个
-/// 事件后通过 OnBusTimeNeedChanged() 通知后端，帧中断才打开；需求消失后同样关闭。没有这个
-/// 通知，后端没有别的重估点，SOF 一直到不了核心（STM32 OTG、ESP32 的 UpdateTick 只在
-/// 启动、停止开始、停止确认时运行，STM32 OTG 还在 TX FIFO 清空完成时运行）。
-/// A class that comes to need bus time at run time with no endpoint activity (no pending
-/// stop): after the next event DeviceCore reports it through OnBusTimeNeedChanged() and
-/// only then does the frame interrupt turn on; it turns off again when the need goes.
-/// Without that report the backend has no other re-evaluation point and the SOFs never
-/// reach the core (UpdateTick on STM32 OTG and ESP32 runs only at start, at the start of
-/// a stop and when stops are confirmed; on STM32 OTG also when a TX FIFO flush finishes).
-void TestFrameInterruptFollowsARuntimeNeed()
+/// 类只在需要帧时间时收到节拍，需求变化立刻生效，不依赖控制传输或停止：开始需要后的
+/// 下一个 SOF 就送到类，不再需要后核心仍收到 SOF 但类收不到节拍。
+/// A class gets the tick only while it needs bus time, and a change of need takes effect
+/// at once without a control transfer or a stop: the first SOF after it starts to need
+/// ticks reaches it, and after it stops needing them the core still receives SOFs but the
+/// class gets no tick.
+void TestFrameTicksReachAClassOnlyWhileItNeedsThem()
 {
   Bench b;
   b.device.Sof();
-  TEST_ASSERT(b.device.SofDelivered() == 0U && !b.device.FrameInterruptOn());
+  TEST_ASSERT(b.device.SofDelivered() == 1U && b.probe.bus_times.load() == 0U);
 
   b.probe.SetWantsBusTime(true);
-  bool ok = false;
-  (void)b.host.ControlIn(MakeSetup(0x80, 8, 0, 0, 1), ok);  // GET_CONFIGURATION
-  TEST_ASSERT(ok && b.device.FrameInterruptOn());
-  const unsigned bus_times = b.probe.bus_times.load();
   for (int i = 0; i < 3; ++i) b.device.Sof();
-  TEST_ASSERT(b.device.SofDelivered() == 3U);
-  TEST_ASSERT(b.probe.bus_times.load() == bus_times + 3U);
+  TEST_ASSERT(b.device.SofDelivered() == 4U);
+  TEST_ASSERT(b.probe.bus_times.load() == 3U);
 
   b.probe.SetWantsBusTime(false);
-  (void)b.host.ControlIn(MakeSetup(0x80, 8, 0, 0, 1), ok);
-  TEST_ASSERT(ok && !b.device.FrameInterruptOn());
-  b.device.Sof();
-  TEST_ASSERT(b.device.SofDelivered() == 3U);
+  for (int i = 0; i < 3; ++i) b.device.Sof();
+  TEST_ASSERT(b.device.SofDelivered() == 7U);
+  TEST_ASSERT(b.probe.bus_times.load() == 3U);
 }
 
 /// 守卫内发起的中断挂起到释放时执行：每次启动硬件时主机立刻取走数据，完成在启动返回后
@@ -633,8 +634,8 @@ int main()
   TestDisconnectWhileSuspendedWithPendingStop();
   TestEndpointHalt();
   TestStaleSlotHandles();
-  TestFrameInterruptFollowsTheBackend();
-  TestFrameInterruptFollowsARuntimeNeed();
+  TestFrameInterruptFollowsTheBus();
+  TestFrameTicksReachAClassOnlyWhileItNeedsThem();
   TestInterruptPendedInsideGuard();
   TestSubmitFromAnotherThread();
   std::puts("usb sim: backend contract");

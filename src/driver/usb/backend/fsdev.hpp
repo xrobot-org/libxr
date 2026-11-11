@@ -334,18 +334,8 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     UNUSED(in_isr);
     {
       EndpointPool::HardwareScope hardware(this);
-      connected_ = true;
-      uint16_t cntr = HW::ReadCntr();
-      cntr |= HW::kCntrRunMask;
-      if (WantsBusTime())
-      {
-        cntr |= HW::kCntrSofm;
-      }
-      else
-      {
-        cntr &= static_cast<uint16_t>(~HW::kCntrSofm);
-      }
-      HW::WriteCntr(cntr);
+      HW::WriteCntr(
+          static_cast<uint16_t>(HW::ReadCntr() | HW::kCntrRunMask | HW::kCntrSofm));
       // 上拉最后接通：前面的初始化不产生主机可见的变化。
       // The pull-up comes on last: the initialization before it changes nothing the host
       // can see.
@@ -358,7 +348,6 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     UNUSED(in_isr);
     {
       EndpointPool::HardwareScope hardware(this);
-      connected_ = false;
       HW::Connect(false);
       HW::WriteCntr(
           static_cast<uint16_t>(HW::ReadCntr() & ~(HW::kCntrRunMask | HW::kCntrSofm)));
@@ -382,38 +371,6 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
   }
 
   void OnControllerReset() override { discard_ = false; }
-
-  /// WantsBusTime() 变化：按新的需求重估 SOFM / WantsBusTime() changed: re-evaluate SOFM
-  /// from the new need
-  void OnBusTimeNeedChanged() override { OnStopsSettled(); }
-
-  void OnStopsSettled() override
-  {
-    if (!connected_)
-    {
-      // 已 Stop（上拉拉低）之后不会再有 SOF；不重开 SOFM，避免未连接状态下
-      // 出现"中断使能开着却没有事务"的困惑。
-      // After Stop() (pull-up off) no SOF comes; SOFM is not unmasked again, so a
-      // disconnected device never shows an enabled interrupt without traffic.
-      return;
-    }
-    EndpointPool::HardwareScope hardware(this);
-    // 配置切换后重估 SOFM（与 OTG 的 UpdateTick 对齐）：WantsBusTime() 为真时开，
-    // 否则关。SOFM 只是中断使能，设备未 Start 时写它无副作用。
-    // Re-evaluate SOFM after a configuration change (as UpdateTick in OTG): on while
-    // WantsBusTime() is true, off otherwise. SOFM is only an interrupt enable; writing it
-    // before Start() has no side effect.
-    uint16_t cntr = HW::ReadCntr();
-    if (WantsBusTime())
-    {
-      cntr |= HW::kCntrSofm;
-    }
-    else
-    {
-      cntr &= static_cast<uint16_t>(~HW::kCntrSofm);
-    }
-    HW::WriteCntr(cntr);
-  }
 
   Speed ReadBusSpeed() const override { return Speed::FULL; }
 
@@ -445,9 +402,7 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
   FSDevEndpoint<HW>* in_[kMaxEps] = {};
   FSDevEndpoint<HW>* out_[kMaxEps] = {};
   uint8_t endpoint_count_ = 1;
-  bool connected_ = false;  ///< Start/Stop：设备是否属于总线 / Whether the device
-                            ///< belongs on the bus
-  bool discard_ = false;    ///< 复位已见、owner 未应用 / Reset seen, not yet applied
+  bool discard_ = false;  ///< 复位已见、owner 未应用 / Reset seen, not yet applied
   alignas(4) uint8_t setup_[8] = {};
 
   static inline FSDevDevice* self_ = nullptr;
@@ -841,6 +796,7 @@ void FSDevDevice<HW>::HandleInterrupt()
     // SuspendClocked 为空。
     // Enter suspend first, then clear the flags, then gate the clocks (the HAL DRD
     // order); SuspendClocked is empty on the classic type.
+    HW::WriteCntr(static_cast<uint16_t>(HW::ReadCntr() & ~HW::kCntrSofm));
     HW::SuspendRegs();
     HW::ClearIstr(HW::kIstrSusp);
     HW::SuspendClocked();
@@ -849,6 +805,7 @@ void FSDevDevice<HW>::HandleInterrupt()
   if ((istr & HW::kIstrWkup) != 0U)
   {
     HW::ResumeRegs();
+    HW::WriteCntr(static_cast<uint16_t>(HW::ReadCntr() | HW::kCntrSofm));
     HW::ClearIstr(HW::kIstrWkup);
     OnResume(true);
   }
@@ -940,6 +897,9 @@ void FSDevDevice<HW>::OnBusResetRegs()
     HW::SetRxCountEncoded(0U, static_cast<uint16_t>(out_[0]->MaxPacketSize()));
     out_[0]->SetStat(false, kFsDevStatRxNak);  // EP0 OUT NAK：SETUP 照常接收
   }
+  // 复位把总线从挂起中唤醒，帧中断随之打开。
+  // A reset wakes the bus from suspend, so the frame interrupt is on again.
+  HW::WriteCntr(static_cast<uint16_t>(HW::ReadCntr() | HW::kCntrSofm));
   OnBusReset(true);
 }
 

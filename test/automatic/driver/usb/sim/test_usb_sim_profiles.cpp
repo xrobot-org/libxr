@@ -6,10 +6,9 @@
  * 枚举、描述符里的包长不超过 FIFO/PMA、数据双向通过。再跑该档位的限制：FSDEV 不支持
  * 等时、同号 IN/OUT 类型冲突，OTG FS 的小 IN FIFO，ESP32-S3 的 TX FIFO 个数。超出限制时
  * 端点配置失败，SET_CONFIGURATION 回 STALL，设备留在地址状态，换一个合法配置仍能用。
- * 最后是帧中断：UAC 麦克风靠每帧的 OnBusTime 出数据。后端只在自己的重估点（Start、
- * OnStopsSettled、DeviceCore 的 OnBusTimeNeedChanged，CH32 还有 OnControlReady）看
- * WantsBusTime()。用例检查：枚举和停止再开始之后 UAC 每帧一个包；帧中断随配置开关，
- * 即配置后打开、取消配置后关闭、重新配置后又打开。
+ * 最后是帧中断：UAC 麦克风靠每帧的 OnBusTime 出数据。帧中断在设备上总线且没有挂起时
+ * 一直打开，所有后端相同。用例检查：枚举之后（主机直接选备用设置 1）和停止再开始之后
+ * UAC 每帧一个包；帧中断不随配置变化，挂起后关闭、恢复后打开，流继续。
  * Each profile first runs the composition of the BSP that uses it (CDC on F103 and DevC,
  * DAP v2 + CDC on XR-DAP-S3): enumeration, descriptor packet sizes within the FIFO or
  * PMA, data in both directions. Then the profile's limits: no isochronous and IN/OUT
@@ -17,12 +16,11 @@
  * a limit the endpoint configuration fails, SET_CONFIGURATION is stalled, the device
  * stays addressed, and a legal configuration still works.
  * Last the frame interrupt: the UAC microphone produces data from the per-frame
- * OnBusTime. A backend looks at WantsBusTime() only at its own re-evaluation points
- * (Start, OnStopsSettled, the DeviceCore hook OnBusTimeNeedChanged, and OnControlReady on
- * CH32). The cases check that the UAC sends one packet per frame after enumeration and
- * after a stream stop and restart, and that the frame interrupt follows the
- * configuration: on once configured, off after the deconfiguration, on again after
- * configuring again.
+ * OnBusTime. The frame interrupt is on whenever the device is on the bus and not
+ * suspended, the same for every backend. The cases check that the UAC sends one packet
+ * per frame after enumeration (the host selects alternate setting 1 directly) and after a
+ * stream stop and restart, and that the frame interrupt does not follow the
+ * configuration, goes off at a suspend, comes back at the resume and the stream goes on.
  */
 
 #include <atomic>
@@ -446,28 +444,18 @@ void SetInterface(SimDevice& device, uint8_t alternate)
   TEST_ASSERT(status.handshake == Handshake::ACK && status.data.empty());
 }
 
-/// UAC 枚举后选中备用设置 1，每帧一个包，包长 32 B（16 kHz 单声道 16 bit 每毫秒
-/// 16 个采样）。理想控制器、STM32 OTG 与 ESP32 风格、CH32 风格各跑一遍。这是流本身的
-/// 回归用例，是否通过取决于档位在枚举之后是否让帧中断到达核心。在这个仿真里去掉
-/// OnBusTimeNeedChanged() 后，理想控制器和 CH32 风格仍通过，STM32 OTG 与 ESP32 风格
-/// 不通过（见 README 的"帧中断"一节：仿真在枚举之后没有这两种后端的重估点，而真实
-/// STM32H723 没有这个通知也能出流；是哪个重估点让它出流没有确定）。
-/// After enumeration the UAC selects alternate setting 1 and sends one packet of 32 B
-/// per frame (16 samples of 16 kHz mono 16 bit per millisecond). The ideal controller,
-/// the STM32 OTG and ESP32 style and the CH32 style each run it. This is a regression
-/// case for the stream itself; whether it passes depends on whether the profile lets
-/// the frame interrupt reach the core after enumeration. In this simulation, with
-/// OnBusTimeNeedChanged() removed, the ideal controller and the CH32 style still pass
-/// and the STM32 OTG and ESP32 styles fail (see "The frame interrupt" in the README:
-/// the simulation has no re-evaluation point of those two backends after enumeration,
-/// while a real STM32H723 streamed without the notification; which re-evaluation point
-/// made it stream was not determined).
+/// UAC 枚举后主机直接选中备用设置 1（不先选 0），每帧一个包，包长 32 B（16 kHz 单声道
+/// 16 bit 每毫秒 16 个采样）。理想控制器和三个后端档位各跑一遍。这是流本身的回归用例：
+/// 帧中断在枚举之后就是开的，不依赖主机怎样走备用设置。
+/// After enumeration the host selects alternate setting 1 directly (without selecting 0
+/// first) and the UAC sends one packet of 32 B per frame (16 samples of 16 kHz mono 16
+/// bit per millisecond). A plain profile and the three backend profiles each run it. It
+/// is a regression case for the stream itself: the frame interrupt is on after
+/// enumeration whatever alternate-setting sequence the host uses.
 void TestUacStreamsAfterEnumeration()
 {
-  Profile ideal;
-  ideal.sof_policy = SofPolicy::ALWAYS;
   for (const Profile& profile :
-       {ideal, OtgFsDevCProfile(), Esp32S3Profile(), Ch32OtgFsProfile()})
+       {Profile{}, OtgFsDevCProfile(), Esp32S3Profile(), Ch32OtgFsProfile()})
   {
     const auto sizes = UacOnProfile(profile, 12);
     TEST_ASSERT(sizes.size() == 12);
@@ -475,23 +463,17 @@ void TestUacStreamsAfterEnumeration()
   }
 }
 
-/// 停止再开始流：备用设置 1、0、1。停止一个还有请求的等时端点是待决停止，STM32 OTG
-/// 和 ESP32 在启动停止和停止确认时（UpdateTick、OnStopsSettled）重估帧中断，此时 UAC
-/// 已经绑定，帧中断打开。第二次开始之后每帧一个包，有没有 OnBusTimeNeedChanged() 都
-/// 一样；第一次开始的结果不检查。
-/// Stopping and restarting the stream: alternate setting 1, 0, 1. Stopping an
-/// isochronous endpoint that still has a request is a pending stop; STM32 OTG and
-/// ESP32 re-evaluate the frame interrupt when a stop starts and when stops are
-/// confirmed (UpdateTick, OnStopsSettled), the UAC is bound by then, and the frame
-/// interrupt is on. After the second start there is one packet per frame, with or
-/// without OnBusTimeNeedChanged(); the result of the first start is not checked.
+/// 停止再开始流：备用设置 1、0、1。停止一个还有请求的等时端点是待决停止，靠帧确认，
+/// 帧中断一直开着。第二次开始之后每帧一个包；第一次开始的结果不检查。
+/// Stopping and restarting the stream: alternate setting 1, 0, 1. Stopping an isochronous
+/// endpoint that still has a request is a pending stop confirmed by frames, and the frame
+/// interrupt is on throughout. After the second start there is one packet per frame; the
+/// result of the first start is not checked.
 void TestUacStreamsAfterARestart()
 {
-  Profile ideal;
-  ideal.sof_policy = SofPolicy::ALWAYS;
   uint16_t pid = 0x0044;
   for (const Profile& profile :
-       {ideal, OtgFsDevCProfile(), Esp32S3Profile(), Ch32OtgFsProfile()})
+       {Profile{}, OtgFsDevCProfile(), Esp32S3Profile(), Ch32OtgFsProfile()})
   {
     UAC1MicrophoneQ<1, 16> mic(EP::EP1, 16000);
     SimDevice device(profile, DeviceDescriptor::PacketSize0::SIZE_64, 0x1209, pid++,
@@ -512,30 +494,22 @@ void TestUacStreamsAfterARestart()
   }
 }
 
-/// 帧中断跟随配置：配置完成（UAC 绑定）后 DeviceCore 通过 OnBusTimeNeedChanged() 通知
-/// 后端，帧中断打开，SOF 到达核心；取消配置（UAC 解除绑定）后关闭，SOF 不再到达；
-/// 重新配置后又打开。取消配置时端点上没有待决停止，后端没有别的重估点，没有这个通知
-/// 帧中断会一直开着（STM32H723 上测到的行为）；CH32 风格的后端只靠这个通知关闭。
-/// The frame interrupt follows the configuration: once configured (the UAC is bound)
-/// DeviceCore reports the need through OnBusTimeNeedChanged(), the frame interrupt
-/// turns on and SOFs reach the core; after the deconfiguration (the UAC is unbound) it
-/// turns off and SOFs no longer arrive; after configuring again it is on once more. At
-/// the deconfiguration no stop is pending on the endpoints and the backend has no other
-/// re-evaluation point, so without the notification the frame interrupt would stay on
-/// (the behaviour measured on an STM32H723); a CH32 style backend turns it off only
-/// through this notification.
-void TestFrameInterruptFollowsTheConfiguration()
+/// 帧中断只跟总线状态走：枚举后打开，取消配置和重新配置都不改变它，挂起后关闭，恢复后
+/// 打开，恢复后流继续每帧一个包。
+/// The frame interrupt follows the bus state only: on after enumeration, unchanged by a
+/// deconfiguration and a new configuration, off after a suspend and on after the resume,
+/// and the stream goes on with one packet per frame after the resume.
+void TestFrameInterruptFollowsTheBusWithAUac()
 {
   uint16_t pid = 0x0041;
   for (const Profile& profile :
-       {OtgFsDevCProfile(), Esp32S3Profile(), Ch32OtgFsProfile()})
+       {Profile{}, OtgFsDevCProfile(), Esp32S3Profile(), Ch32OtgFsProfile()})
   {
     UAC1MicrophoneQ<1, 16> mic(EP::EP1, 16000);
     SimDevice device(profile, DeviceDescriptor::PacketSize0::SIZE_64, 0x1209, pid++,
                      0x0100, {&LANGUAGE}, {{&mic}});
     SimHost host(device);
     PowerUp(device);
-    TEST_ASSERT(!device.FrameInterruptOn());
     TEST_ASSERT(host.Enumerate());
     TEST_ASSERT(device.FrameInterruptOn());
     unsigned before = device.SofDelivered();
@@ -543,16 +517,36 @@ void TestFrameInterruptFollowsTheConfiguration()
     TEST_ASSERT(device.SofDelivered() == before + 3);
 
     SetConfiguration(device, 0);
-    TEST_ASSERT(!device.FrameInterruptOn());
-    before = device.SofDelivered();
-    for (int i = 0; i < 3; ++i) device.Sof();
-    TEST_ASSERT(device.SofDelivered() == before);
-
-    SetConfiguration(device, 1);
     TEST_ASSERT(device.FrameInterruptOn());
     before = device.SofDelivered();
     for (int i = 0; i < 3; ++i) device.Sof();
     TEST_ASSERT(device.SofDelivered() == before + 3);
+
+    SetConfiguration(device, 1);
+    TEST_ASSERT(device.FrameInterruptOn());
+    const auto first = StreamPackets(device, host, mic, 6);
+    TEST_ASSERT(first.size() == 6);
+
+    device.Suspend();
+    TEST_ASSERT(!device.FrameInterruptOn());
+    device.Resume();
+    TEST_ASSERT(device.FrameInterruptOn());
+    before = device.SofDelivered();
+    const std::vector<uint8_t> pcm(32U * 16U, 0x5A);
+    TEST_ASSERT(mic.WritePcm(pcm.data(), pcm.size()) == ErrorCode::OK);
+    unsigned packets = 0;
+    for (int i = 0; i < 8; ++i)
+    {
+      const InResult in = device.InToken(1);
+      if (in.handshake == Handshake::ACK)
+      {
+        TEST_ASSERT(in.data.size() == 32U);
+        ++packets;
+      }
+      device.Sof();
+    }
+    TEST_ASSERT(device.SofDelivered() == before + 8);
+    TEST_ASSERT(packets >= 6U);
   }
 }
 
@@ -567,7 +561,7 @@ void RegularCases()
   TestEsp32S3InEndpointLimit();
   TestUacStreamsAfterEnumeration();
   TestUacStreamsAfterARestart();
-  TestFrameInterruptFollowsTheConfiguration();
+  TestFrameInterruptFollowsTheBusWithAUac();
   std::puts("usb sim profiles: FSDEV, OTG FS and ESP32-S3 limits");
 }
 }  // namespace

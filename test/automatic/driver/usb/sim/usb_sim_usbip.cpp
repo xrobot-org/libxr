@@ -36,7 +36,6 @@ int main(int argc, char** argv)
               1024,
               8};
   Sim::Profile profile;
-  profile.sof_policy = Sim::SofPolicyFromEnvironment();
   Sim::Device<FullSpeedCapabilities> device(
       profile, DeviceDescriptor::PacketSize0::SIZE_64, 0x1209, 0x0001, 0x0100,
       {&LANGUAGE}, {{&cdc}});

@@ -193,8 +193,6 @@ class Controller : public MmioTrap::Device
     before_read = nullptr;
     before_write = nullptr;
     after_write = nullptr;
-    on_sof_mask = nullptr;
-    report_every_mask_write = false;
     log = std::getenv("DWC2_LOG") != nullptr ? stderr : nullptr;
   }
 
@@ -230,10 +228,6 @@ class Controller : public MmioTrap::Device
   /// 写生效之前/之后调用一次（一次性钩子自己清掉）/ Called before / after a write lands
   std::function<void(uint32_t offset, uint32_t value)> before_write;
   std::function<void(uint32_t offset, uint32_t value)> after_write;
-  /// GINTMSK.SOFM 改变时调用：旧值、新值、指令地址 / Called when GINTMSK.SOFM changes
-  std::function<void(uint32_t before, uint32_t after, uintptr_t pc)> on_sof_mask;
-  /// 每次写 GINTMSK 都调用 on_sof_mask / Call on_sof_mask for every write of GINTMSK
-  bool report_every_mask_write = false;
   /// 非空时把每次寄存器写和总线事件写到这里 / When set, every register write and bus
   /// event is written here
   FILE* log = nullptr;
@@ -1159,14 +1153,8 @@ class Controller : public MmioTrap::Device
         latched_ &= ~(value & GINT_W1C);
         return;
       case GINTMSK:
-      {
-        const uint32_t before = gintmsk_;
         gintmsk_ = value;
-        if ((((before ^ value) & GINT_SOF) != 0U || report_every_mask_write) &&
-            on_sof_mask)
-          on_sof_mask(before, value, MmioTrap::LastPc());
         return;
-      }
       case GRXFSIZ:
         grxfsiz_ = value;
         return;

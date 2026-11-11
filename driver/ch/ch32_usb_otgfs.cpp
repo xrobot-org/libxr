@@ -92,6 +92,9 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
       USBFSD->DEV_ADDR = 0;
 
       usb->OnBusReset(true);
+#if defined(USBFS_UIE_DEV_SOF)
+      USBFSD->INT_EN |= USBFS_UIE_DEV_SOF;
+#endif
 
       // 复位后首个 IN/OUT 均从 DATA1 开始（HS 已上板方案）。
       out0->tog_ = true;
@@ -108,9 +111,19 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
     if (PENDING & USBFS_UIF_SUSPEND)
     {
       if (USBFSD->MIS_ST & USBFS_UMS_SUSPEND)
+      {
+#if defined(USBFS_UIE_DEV_SOF)
+        USBFSD->INT_EN &= static_cast<uint8_t>(~USBFS_UIE_DEV_SOF);
+#endif
         usb->OnSuspend(true);
+      }
       else
+      {
+#if defined(USBFS_UIE_DEV_SOF)
+        USBFSD->INT_EN |= USBFS_UIE_DEV_SOF;
+#endif
         usb->OnResume(true);
+      }
       clear_mask |= USBFS_UIF_SUSPEND;
     }
 
@@ -266,24 +279,7 @@ LibXR::ErrorCode CH32USBOtgFS::SetAddress(uint8_t address, USB::ControlContext c
   return LibXR::ErrorCode::OK;
 }
 
-void CH32USBOtgFS::OnControlReady()
-{
-  USBFSD->UEP0_RX_CTRL = USBFS_UEP_R_RES_ACK;
-#if defined(USBFS_UIE_DEV_SOF)
-  if (WantsBusTime()) USBFSD->INT_EN |= USBFS_UIE_DEV_SOF;
-#endif
-}
-
-void CH32USBOtgFS::OnBusTimeNeedChanged()
-{
-#if defined(USBFS_UIE_DEV_SOF)
-  USB::EndpointPool::HardwareScope hardware(this);
-  if (WantsBusTime())
-    USBFSD->INT_EN |= USBFS_UIE_DEV_SOF;
-  else
-    USBFSD->INT_EN &= static_cast<uint8_t>(~USBFS_UIE_DEV_SOF);
-#endif
-}
+void CH32USBOtgFS::OnControlReady() { USBFSD->UEP0_RX_CTRL = USBFS_UEP_R_RES_ACK; }
 
 void CH32USBOtgFS::Start(bool)
 {
@@ -301,6 +297,9 @@ void CH32USBOtgFS::Start(bool)
   USBFSH->BASE_CTRL = USBFS_UC_RESET_SIE | USBFS_UC_CLR_ALL;
   USBFSH->BASE_CTRL = 0x00;
   USBFSD->INT_EN = USBFS_UIE_SUSPEND | USBFS_UIE_BUS_RST | USBFS_UIE_TRANSFER;
+#if defined(USBFS_UIE_DEV_SOF)
+  USBFSD->INT_EN |= USBFS_UIE_DEV_SOF;
+#endif
   USBFSD->BASE_CTRL = USBFS_UC_DEV_PU_EN | USBFS_UC_INT_BUSY | USBFS_UC_DMA_EN;
   USBFSD->UDEV_CTRL = USBFS_UD_PD_DIS | USBFS_UD_PORT_EN;
   NVIC_EnableIRQ(USBFS_IRQn);
@@ -309,6 +308,9 @@ void CH32USBOtgFS::Start(bool)
 
 void CH32USBOtgFS::Stop(bool)
 {
+#if defined(USBFS_UIE_DEV_SOF)
+  USBFSD->INT_EN &= static_cast<uint8_t>(~USBFS_UIE_DEV_SOF);
+#endif
   USBFSH->BASE_CTRL = USBFS_UC_RESET_SIE | USBFS_UC_CLR_ALL;
   USBFSD->BASE_CTRL = 0x00;
   NVIC_DisableIRQ(USBFS_IRQn);

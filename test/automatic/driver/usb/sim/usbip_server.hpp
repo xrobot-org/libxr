@@ -53,20 +53,6 @@
 namespace LibXR::USB::Sim
 {
 
-/// 帧中断策略取自环境变量 USBIP_SOF（stops、control 或 always），默认 stops，对应
-/// STM32 OTG、ESP32、FSDEV 一类后端；见 SofPolicy。
-/// The frame interrupt policy comes from the environment variable USBIP_SOF (stops,
-/// control or always), stops by default, which is the STM32 OTG, ESP32 and FSDEV kind of
-/// backend; see SofPolicy.
-inline SofPolicy SofPolicyFromEnvironment()
-{
-  const char* value = std::getenv("USBIP_SOF");
-  if (value != nullptr && std::strcmp(value, "control") == 0)
-    return SofPolicy::AT_CONTROL_READY;
-  if (value != nullptr && std::strcmp(value, "always") == 0) return SofPolicy::ALWAYS;
-  return SofPolicy::AT_STOPS;
-}
-
 template <typename Caps>
 class UsbIpServer
 {

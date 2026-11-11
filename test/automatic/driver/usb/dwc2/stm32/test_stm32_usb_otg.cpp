@@ -247,10 +247,10 @@ struct Probe : Rig
 // ---------------------------------------------------------------------------
 
 /// 构造后控制器不在总线上，FIFO 按配置划分且互不重叠；Start 之后连上总线，只打开驱动
-/// 处理的中断，帧中断关闭。Start 之前到来的中断被挡在总中断开关之外。
+/// 处理的中断，包括帧中断。Start 之前到来的中断被挡在总中断开关之外。
 /// After construction the controller is off the bus and the FIFO RAM is divided as
 /// configured without overlap; Start connects it and unmasks only the interrupts the
-/// driver handles, with the frame interrupt off. An interrupt before Start is gated at
+/// driver handles, the frame interrupt included. An interrupt before Start is gated at
 /// the global interrupt enable.
 void TestConstructionAndStart(const Mode& mode)
 {
@@ -281,7 +281,7 @@ void TestConstructionAndStart(const Mode& mode)
   TEST_ASSERT(rig.hw.Connected());
   uint32_t expected = Dwc2::GINT_USBRST | Dwc2::GINT_ENUMDNE | Dwc2::GINT_USBSUSP |
                       Dwc2::GINT_WKUP | Dwc2::GINT_IEPINT | Dwc2::GINT_OEPINT |
-                      Dwc2::GINT_IISOIXFR;
+                      Dwc2::GINT_IISOIXFR | Dwc2::GINT_SOF;
   if (!mode.dma) expected |= Dwc2::GINT_RXFLVL;
   TEST_ASSERT(rig.hw.Peek(Dwc2::GINTMSK) == expected);
   TEST_ASSERT((rig.hw.Peek(Dwc2::GAHBCFG) & Dwc2::AHB_GINT) != 0U);
@@ -309,6 +309,7 @@ void TestDisconnectReconnect(const Mode& mode)
 
   f.hw.HostVbus(false);
   f.Service();
+  TEST_ASSERT(f.hw.SofMasked());
   // 没有总线，停止由下一次上电后的帧或 Stop() 结束；这里先重新上电
   // Off the bus the stops end with frames after power returns
   f.hw.HostVbus(true);
@@ -321,6 +322,7 @@ void TestDisconnectReconnect(const Mode& mode)
   TEST_ASSERT(f.probe.bulk_out_log.items.size() == 1U &&
               f.probe.bulk_out_log.items[0].result == ErrorCode::ABORTED);
   TEST_ASSERT(f.host.Enumerate(4, 1) == Result::OK);
+  TEST_ASSERT(!f.hw.SofMasked());
   const auto bytes = Bytes(9, 2);
   TEST_ASSERT(SubmitBytes(f.probe.bulk_in, bytes) == ErrorCode::OK);
   TEST_ASSERT(f.host.Read(1, data) == Result::OK && data == bytes);
@@ -483,7 +485,7 @@ void RunAll()
   for (const Mode& mode : FULL_SPEED_MODES)
   {
     TestUacStreams<Uac>(mode);
-    TestUacFrameInterruptFollowsConfiguration<Uac>(mode);
+    TestUacFrameInterruptIgnoresConfiguration<Uac>(mode);
     TestUacStopsWithoutFrameInterrupt<Uac>(mode);
   }
   TestFullSpeedCore();
@@ -554,14 +556,6 @@ void FindingStopLeavesOutEndpointEnabled()
 
 int main(int argc, char** argv)
 {
-  if (argc >= 2 && std::strcmp(argv[1], "--trace-frame-interrupt") == 0)
-  {
-    Mode mode = SLAVE;
-    mode.flush_reads = argc >= 3 ? static_cast<unsigned>(std::atoi(argv[2])) : 1U;
-    Uac f(mode, false);
-    return TraceFrameInterrupt(f, argc >= 4 && std::atoi(argv[3]) != 0,
-                               argc >= 5 && std::atoi(argv[4]) != 0);
-  }
   const int handled = TestFindings::Run(
       argc, argv,
       {{"dma_data_with_status_phase", "XFRC read together with STSPHSRX is dropped",

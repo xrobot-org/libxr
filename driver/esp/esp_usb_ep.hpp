@@ -44,9 +44,6 @@ class ESP32USBEndpoint : public USB::Endpoint
   /// 由 IN/OUT 中断调用，推进停止时序 / Called from the IN/OUT interrupts to
   /// advance the stop sequence
   void AdvanceStop(bool in_isr);
-  /// 有停止在等硬件确认（设备据此打开 SOF，核心靠帧数判停止超时）/ A stop is waiting for
-  /// the hardware (the device keeps SOF on for it; the core counts frames to time it out)
-  bool StopPending() const { return stop_phase_ != StopPhase::NONE; }
 
   /// 控制器复位升级路径：收掉软件状态并确认停止（不再碰寄存器）/ Controller-reset
   /// escalation: drop the software state and confirm the stop (no register access)

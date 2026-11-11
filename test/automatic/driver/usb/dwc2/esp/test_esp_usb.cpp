@@ -311,12 +311,12 @@ struct Uac : Rig
 // ---------------------------------------------------------------------------
 
 /// Start：ROM 的 USB 被清掉一次、PHY 建一次、中断注册到 USB 中断源并使能；控制器处于
-/// 设备模式、DMA 打开、连上总线，只打开驱动处理的中断，帧中断和接收 FIFO 中断关闭。
-/// 枚举后发送 FIFO 接在接收 FIFO 之后依次排开，互不重叠，总量不超过 FIFO RAM。
+/// 设备模式、DMA 打开、连上总线，只打开驱动处理的中断，帧中断包括在内，接收 FIFO
+/// 中断关闭。 枚举后发送 FIFO 接在接收 FIFO 之后依次排开，互不重叠，总量不超过 FIFO RAM。
 /// Start: the ROM USB is torn down once, the PHY is created once and the interrupt is
 /// registered on the USB source and enabled; the controller is in device mode with DMA
-/// on and connected, and only the interrupts the driver handles are unmasked, with the
-/// frame interrupt and the receive FIFO interrupt off. After enumeration the transmit
+/// on and connected, and only the interrupts the driver handles are unmasked, the frame
+/// interrupt included and the receive FIFO interrupt off. After enumeration the transmit
 /// FIFOs follow the receive FIFO one after another without overlap, within the FIFO RAM.
 void TestStart(const Mode& mode)
 {
@@ -327,7 +327,8 @@ void TestStart(const Mode& mode)
   TEST_ASSERT((f.hw.Peek(Dwc2::GAHBCFG) & Dwc2::AHB_GINT) != 0U);
   TEST_ASSERT(f.hw.Peek(Dwc2::GINTMSK) ==
               (Dwc2::GINT_USBRST | Dwc2::GINT_ENUMDNE | Dwc2::GINT_USBSUSP |
-               Dwc2::GINT_WKUP | Dwc2::GINT_IEPINT | Dwc2::GINT_OEPINT | Dwc2::GINT_OTG));
+               Dwc2::GINT_WKUP | Dwc2::GINT_IEPINT | Dwc2::GINT_OEPINT | Dwc2::GINT_OTG |
+               Dwc2::GINT_SOF));
   TEST_ASSERT(!f.hw.IrqLine());
   // Start 是幂等的 / Start is idempotent
   f.device.Start(false);
@@ -403,7 +404,7 @@ void RunAll()
     TestSuspendResume<Probe>(mode);
     TestStopStart(mode);
     TestFrameTicks<Probe>(mode);
-    TestUacFrameInterruptFollowsConfiguration<Uac>(mode);
+    TestUacFrameInterruptIgnoresConfiguration<Uac>(mode);
     std::printf("esp usb: %s passed\n", mode.name);
     std::fflush(stdout);
   }
@@ -475,14 +476,6 @@ void FindingOutDisableWithoutGlobalNak()
 
 int main(int argc, char** argv)
 {
-  if (argc >= 2 && std::strcmp(argv[1], "--trace-frame-interrupt") == 0)
-  {
-    Mode mode = NORMAL;
-    mode.flush_reads = argc >= 3 ? static_cast<unsigned>(std::atoi(argv[2])) : 1U;
-    Uac f(mode, false);
-    return TraceFrameInterrupt(f, argc >= 4 && std::atoi(argv[3]) != 0,
-                               argc >= 5 && std::atoi(argv[4]) != 0);
-  }
   const int handled = TestFindings::Run(
       argc, argv,
       {{"control_stall_out_data",

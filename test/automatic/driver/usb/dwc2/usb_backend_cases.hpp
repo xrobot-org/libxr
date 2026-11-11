@@ -21,9 +21,6 @@
 
 #pragma once
 
-#include <dlfcn.h>
-#include <execinfo.h>
-
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -662,8 +659,8 @@ void TestStopIn(const typename Fixture::ModeType& mode)
   TEST_ASSERT(f.hw.TxFifoWords(1) == 0U);
   TEST_ASSERT(f.hw.HostIn(7, 1).resp == Resp::NAK);
   f.Service();
-  // 停止完成后帧中断关闭 / The frame interrupt is off again once the stop is done
-  TEST_ASSERT(f.hw.SofMasked());
+  // 帧中断一直开着 / The frame interrupt stays on
+  TEST_ASSERT(!f.hw.SofMasked());
 
   auto fresh = Bytes(packet + 3U, 3);
   TEST_ASSERT(SubmitBytes(f.probe.bulk_in, fresh) == ErrorCode::OK);
@@ -747,7 +744,7 @@ void TestStopOut(const typename Fixture::ModeType& mode)
   TEST_ASSERT(f.hw.HostOut(7, 1, 0, bytes.data(), bytes.size()) == Resp::NAK);
   f.Service();
   TEST_ASSERT((f.hw.Peek(Dwc2::DCTL) & Dwc2::DCTL_GONSTS) == 0U);
-  TEST_ASSERT(f.hw.SofMasked());
+  TEST_ASSERT(!f.hw.SofMasked());
   // 别的 OUT 端点照常 / Another OUT endpoint works as before
   TEST_ASSERT(f.host.Write(2, Bytes(16, 2), 16) == Result::OK);
   TEST_ASSERT(f.probe.int_out_log.items.size() == 1U);
@@ -828,7 +825,7 @@ void TestReconfigure(const typename Fixture::ModeType& mode)
     TEST_ASSERT(f.hw.HostIn(7, 1).resp != Resp::DATA);
     TEST_ASSERT(f.hw.HostOut(7, 1, 0, nullptr, 0) != Resp::ACK);
   }
-  TEST_ASSERT(f.hw.SofMasked());
+  TEST_ASSERT(!f.hw.SofMasked());
   TEST_ASSERT(f.host.ControlRead(Dwc2::Host::Setup(0x80, 8, 0, 0, 1), data) ==
               Result::OK);
   TEST_ASSERT(data[0] == 0U);
@@ -912,29 +909,37 @@ void TestBusResetMidTransfer(const typename Fixture::ModeType& mode)
   TEST_ASSERT(f.host.GetDescriptor(1, 0, 18, data) == Result::OK && data.size() == 18U);
 }
 
-/// 挂起与恢复：挂起期间提交的请求不启动硬件，恢复后发出；挂起中复位照常枚举。
+/// 挂起与恢复：挂起期间提交的请求不启动硬件，恢复后发出；挂起中复位照常枚举。帧中断挂起
+/// 时关闭、恢复时打开，挂起中复位后也是开的。
 /// Suspend and resume: a request submitted while suspended does not start the hardware
-/// and goes out after the resume; a reset during suspend enumerates as usual.
+/// and goes out after the resume; a reset during suspend enumerates as usual. The frame
+/// interrupt is off while suspended, on after the resume and on after a reset during
+/// suspend.
 template <typename Fixture>
 void TestSuspendResume(const typename Fixture::ModeType& mode)
 {
   Fixture f(mode);
   f.Up();
+  TEST_ASSERT(!f.hw.SofMasked());
   std::vector<uint8_t> data;
   f.hw.HostSuspend();
   f.Service();
+  TEST_ASSERT(f.hw.SofMasked());
   const auto bytes = Bytes(12, 1);
   TEST_ASSERT(SubmitBytes(f.probe.bulk_in, bytes) == ErrorCode::OK);
   TEST_ASSERT((f.hw.InCtl(1) & Dwc2::CTL_EPENA) == 0U);
   f.hw.HostResume();
   f.Service();
+  TEST_ASSERT(!f.hw.SofMasked());
   TEST_ASSERT((f.hw.InCtl(1) & Dwc2::CTL_EPENA) != 0U);
   TEST_ASSERT(f.host.Read(1, data) == Result::OK && data == bytes);
   TEST_ASSERT(f.device.IsConfigured());
 
   f.hw.HostSuspend();
   f.Service();
+  TEST_ASSERT(f.hw.SofMasked());
   TEST_ASSERT(f.host.Enumerate(3, 1) == Result::OK);
+  TEST_ASSERT(!f.hw.SofMasked());
   TEST_ASSERT(f.probe.binds == 2U);
   TEST_ASSERT(SubmitBytes(f.probe.bulk_in, bytes) == ErrorCode::OK);
   TEST_ASSERT(f.host.Read(1, data) == Result::OK && data == bytes);
@@ -944,12 +949,13 @@ void TestSuspendResume(const typename Fixture::ModeType& mode)
 // Frame interrupt and isochronous data
 // ---------------------------------------------------------------------------
 
-/// 帧节拍：设备类需要总线时间时帧中断打开，每个 SOF 恰好送一次 OnBusTime，间隔为 1；
-/// 高速时每个微帧一次。没有设备类需要时帧中断关闭，SOF 不产生中断。
-/// Frame ticks: while a class wants bus time the frame interrupt is on and every SOF
-/// delivers exactly one OnBusTime with an interval of one, once per microframe at high
-/// speed. With no class wanting it the frame interrupt is off and a SOF raises no
-/// interrupt.
+/// 帧节拍：帧中断枚举后就是开的。设备类需要总线时间时，每个 SOF 恰好送一次 OnBusTime，
+/// 间隔为 1，高速时每个微帧一次；没有设备类需要时 SOF 照常中断，但类收不到节拍；需求
+/// 变化立刻生效。
+/// Frame ticks: the frame interrupt is on after enumeration. While a class wants bus time
+/// every SOF delivers exactly one OnBusTime with an interval of one, once per microframe
+/// at high speed; with no class wanting it a SOF still interrupts but the class gets no
+/// tick; a change of need takes effect at once.
 template <typename Fixture>
 void TestFrameTicks(const typename Fixture::ModeType& mode)
 {
@@ -979,10 +985,16 @@ void TestFrameTicks(const typename Fixture::ModeType& mode)
   {
     Fixture f(mode, false);
     f.Up();
-    TEST_ASSERT(f.hw.SofMasked());
+    TEST_ASSERT(!f.hw.SofMasked());
     const unsigned before = f.interrupts;
     f.host.Sof(10);
-    TEST_ASSERT(f.interrupts == before && f.probe.ticks.empty());
+    TEST_ASSERT(f.interrupts > before && f.probe.ticks.empty());
+    f.probe.wants_bus_time = true;
+    f.host.Sof(5);
+    TEST_ASSERT(f.probe.ticks.size() == 5U);
+    f.probe.wants_bus_time = false;
+    f.host.Sof(5);
+    TEST_ASSERT(f.probe.ticks.size() == 5U);
   }
 }
 
@@ -1152,13 +1164,11 @@ void TestUacStreams(const typename UacFixture::ModeType& mode)
   TEST_ASSERT(f.Stream(100) == 100U);
 }
 
-/// 帧中断跟随配置：SET_CONFIGURATION 1 之后打开，SET_CONFIGURATION 0 之后关闭，再配置
-/// 又打开；在 STM32H723 板上测到的相同。
-/// The frame interrupt follows the configuration: on after SET_CONFIGURATION 1, off
-/// after SET_CONFIGURATION 0 and on again when configured again, as measured on an
-/// STM32H723 board.
+/// 帧中断不随配置变化：枚举、SET_CONFIGURATION 0 和再配置之后都是开的。
+/// The frame interrupt does not follow the configuration: it is on after enumeration,
+/// after SET_CONFIGURATION 0 and after configuring again.
 template <typename UacFixture>
-void TestUacFrameInterruptFollowsConfiguration(const typename UacFixture::ModeType& mode)
+void TestUacFrameInterruptIgnoresConfiguration(const typename UacFixture::ModeType& mode)
 {
   UacFixture f(mode);
   f.host.Reset();
@@ -1172,7 +1182,7 @@ void TestUacFrameInterruptFollowsConfiguration(const typename UacFixture::ModeTy
   f.host.Sof(4);
   TEST_ASSERT(f.host.StatusIn() == Result::OK);
   f.host.Sof(2);
-  TEST_ASSERT(f.hw.SofMasked());
+  TEST_ASSERT(!f.hw.SofMasked());
   TEST_ASSERT(f.host.SetConfiguration(1) == Result::OK);
   f.host.Sof(2);
   TEST_ASSERT(!f.hw.SofMasked());
@@ -1193,130 +1203,6 @@ void TestUacStopsWithoutFrameInterrupt(const typename UacFixture::ModeType& mode
   TEST_ASSERT(f.Stream(20) == 20U);
   f.MaskFrameInterrupt();
   TEST_ASSERT(f.Stream(20) <= 1U);
-}
-
-// ---------------------------------------------------------------------------
-// Trace of the frame interrupt mask (diagnostic, not a test)
-// ---------------------------------------------------------------------------
-
-/// 测试程序的 `--trace-frame-interrupt [N [R [P]]]`：UAC1 麦克风从上电到取消配置的过程
-/// 中，每次写 GINTMSK 时打印阶段、SOFM 的新旧值和写寄存器的指令及其调用者的地址（相对
-/// 可执行文件的偏移，可用 addr2line 解析）。N 是冲刷位写 1 之后仍读到 1 的次数（默认
-/// 1）；R 为 1 时复位开始和复位结束在同一次中断里被看到；P 为 1 时主机在开流之前先选中
-/// 备用设置 1 再选回 0，期间不取等时数据（主机音频驱动探测设备时的做法）。夹具尚未
-/// Init/Start。
-/// `--trace-frame-interrupt [N [R [P]]]` of a test program: for a UAC1 microphone from
-/// power-up to the deconfiguration, prints the phase, the old and new value of SOFM and
-/// the addresses of the writing instruction and its callers (offsets into the
-/// executable, for addr2line) each time GINTMSK is written. N is how many reads still
-/// see a flush bit set after it was written (1 by default); R = 1 makes the start and
-/// the end of the reset visible to the same interrupt; P = 1 makes the host select
-/// alternate setting 1 and then 0 again before it starts the stream, without taking
-/// isochronous data (what a host audio driver does when it probes the device). The
-/// fixture is not yet initialized or started.
-template <typename UacFixture>
-int TraceFrameInterrupt(UacFixture& f, bool reset_in_one_interrupt, bool probe_alternates)
-{
-  static const char* phase = "";
-  std::setvbuf(stdout, nullptr, _IONBF, 0);
-  f.hw.report_every_mask_write = true;
-  f.hw.on_sof_mask = [](uint32_t before, uint32_t after, uintptr_t pc)
-  {
-    // 写寄存器的指令和它的调用链 / The writing instruction and its callers
-    void* frames[48];
-    const int depth = backtrace(frames, 48);
-    int first = 0;
-    // 单步之后被打断的位置是下一条指令 / After the single step the interrupted
-    // location is the next instruction
-    while (first < depth && (reinterpret_cast<uintptr_t>(frames[first]) < pc ||
-                             reinterpret_cast<uintptr_t>(frames[first]) > pc + 16U))
-      ++first;
-    Dl_info info = {};
-    const uintptr_t base = dladdr(reinterpret_cast<void*>(pc), &info) != 0
-                               ? reinterpret_cast<uintptr_t>(info.dli_fbase)
-                               : 0U;
-    std::printf("  [%s] SOFM %u -> %u (GINTMSK 0x%08X -> 0x%08X) at", phase,
-                (before >> 3U) & 1U, (after >> 3U) & 1U, before, after);
-    if (first == depth) std::printf(" +0x%zx", static_cast<size_t>(pc - base));
-    for (int i = first; i < depth && i < first + 7; ++i)
-      std::printf(
-          " +0x%zx",
-          static_cast<size_t>(
-              (i == first ? pc : reinterpret_cast<uintptr_t>(frames[i]) - 1U) - base));
-    std::printf("\n");
-  };
-  auto step = [&](const char* name)
-  {
-    phase = name;
-    std::printf("%s: SOFM=%u\n", name, f.hw.SofMasked() ? 0U : 1U);
-  };
-  step("Init");
-  f.device.Init(false);
-  step("Start");
-  f.device.Start(false);
-  step("bus reset begins");
-  f.hw.HostResetBegin();
-  if (!reset_in_one_interrupt) f.Service();
-  step("bus reset ends (enumeration done)");
-  f.hw.HostResetEnd();
-  f.Service();
-  step("first SOFs");
-  f.host.Sof(3);
-  std::vector<uint8_t> data;
-  step("GET_DESCRIPTOR(device)");
-  TEST_ASSERT(f.host.GetDescriptor(1, 0, 18, data) == Result::OK);
-  step("SET_ADDRESS");
-  TEST_ASSERT(f.host.SetAddress(7) == Result::OK);
-  step("GET_DESCRIPTOR(configuration)");
-  TEST_ASSERT(f.host.GetDescriptor(2, 0, 255, data) == Result::OK);
-  step("SET_CONFIGURATION 1");
-  TEST_ASSERT(f.host.SetConfiguration(1) == Result::OK);
-  step("SOFs after SET_CONFIGURATION 1");
-  f.host.Sof(3);
-  auto set_interface = [&](uint8_t alternate)
-  {
-    TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x01, 11, alternate, 1, 0)) ==
-                Result::OK);
-    f.host.Sof(4);
-    const Result status = f.host.StatusIn();
-    if (status != Result::OK) f.hw.Dump(stdout);
-    TEST_ASSERT(status == Result::OK);
-  };
-  if (probe_alternates)
-  {
-    // 主机的音频驱动在探测时选中备用设置 1 再选回 0，期间不取等时数据 / A host audio
-    // driver selects alternate setting 1 and then 0 again while probing, without taking
-    // isochronous data
-    step("probe: SET_INTERFACE alternate 1");
-    set_interface(1);
-    f.host.Sof(3);
-    step("probe: SET_INTERFACE alternate 0");
-    set_interface(0);
-    step("SOFs after the probe");
-    f.host.Sof(3);
-  }
-  step("SET_INTERFACE alternate 1");
-  set_interface(1);
-  step("20 frames of isochronous IN");
-  const unsigned packets = f.Stream(20);
-  std::printf("  packets in 20 frames: %u\n", packets);
-  step("SET_INTERFACE alternate 0");
-  set_interface(0);
-  step("SET_CONFIGURATION 0");
-  TEST_ASSERT(f.host.SendSetup(Dwc2::Host::Setup(0x00, 9, 0, 0, 0)) == Result::OK);
-  f.host.Sof(6);
-  const Result deconfigured = f.host.StatusIn();
-  step("SOFs after SET_CONFIGURATION 0");
-  f.host.Sof(3);
-  std::printf("  SET_CONFIGURATION 0 status %s\n",
-              deconfigured == Result::OK ? "OK" : "not OK");
-  step("SET_CONFIGURATION 1 again");
-  const Result again = f.host.SetConfiguration(1);
-  f.host.Sof(3);
-  step("end");
-  std::printf("  SET_CONFIGURATION 1 status %s\n", again == Result::OK ? "OK" : "not OK");
-  f.check_on_exit = false;
-  return 0;
 }
 
 }  // namespace UsbBackendCases

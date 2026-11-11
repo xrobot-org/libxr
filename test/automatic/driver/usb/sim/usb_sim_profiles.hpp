@@ -31,7 +31,6 @@ namespace LibXR::USB::Sim
 inline Profile FsdevF103Profile()
 {
   Profile profile;
-  profile.sof_policy = SofPolicy::AT_STOPS;
   profile.endpoints = {{1, Endpoint::Direction::BOTH, 128, 0, 64},
                        {2, Endpoint::Direction::IN, 128, 0, 16}};
   profile.ep0_buffer = 64;
@@ -49,7 +48,6 @@ inline Profile FsdevF103Profile()
 inline Profile OtgFsDevCProfile()
 {
   Profile profile;
-  profile.sof_policy = SofPolicy::AT_STOPS;
   profile.endpoints = {{1, Endpoint::Direction::OUT, 128, 0, 256},
                        {1, Endpoint::Direction::IN, 128, 0, 128},
                        {2, Endpoint::Direction::IN, 128, 0, 16}};
@@ -69,7 +67,6 @@ inline Profile OtgFsDevCProfile()
 inline Profile Esp32S3Profile()
 {
   Profile profile;
-  profile.sof_policy = SofPolicy::AT_STOPS;
   profile.endpoints = {{1, Endpoint::Direction::BOTH, 4096, 0},
                        {2, Endpoint::Direction::BOTH, 1024, 0},
                        {3, Endpoint::Direction::IN, 128, 0}};
@@ -80,13 +77,9 @@ inline Profile Esp32S3Profile()
   return profile;
 }
 
-/// CH32 OTG FS（CH32V30x）：EP1–EP4 双向，包长上限 64；停止立即完成；帧中断在
-/// OnControlReady 里打开，之后随类的需要在 OnBusTimeNeedChanged 里开关。这个档位照 CH32
-/// OTG FS 后端的行为建模。
+/// CH32 OTG FS（CH32V30x）：EP1–EP4 双向，包长上限 64；停止立即完成。
 /// CH32 OTG FS (CH32V30x): EP1 to EP4 in both directions, packet limit 64; a stop
-/// completes at once; the frame interrupt is turned on in OnControlReady and afterwards
-/// follows the class's need in OnBusTimeNeedChanged. This profile models the behaviour
-/// of the CH32 OTG FS backend.
+/// completes at once.
 inline Profile Ch32OtgFsProfile()
 {
   Profile profile;
@@ -96,7 +89,6 @@ inline Profile Ch32OtgFsProfile()
                        {4, Endpoint::Direction::BOTH, 128, 0, 64}};
   profile.ep0_buffer = 64;
   profile.stop_mode = StopMode::IMMEDIATE;
-  profile.sof_policy = SofPolicy::AT_CONTROL_READY;
   return profile;
 }
 

@@ -101,8 +101,6 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   void OnControllerReset() override;
   void OnControlReady() override;
   void OnStopTimeout(bool in_isr) override;
-  void OnStopsSettled() override;
-  void OnBusTimeNeedChanged() override { OnStopsSettled(); }
   USB::Speed ReadBusSpeed() const override;
 
  private:
@@ -139,8 +137,6 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   // TX FIFO flushes: one at a time in GRSTCTL, never waited for.
   void RequestTxFlush(uint8_t fifo);
   void PollTxFlush();
-  // The bus tick (SOF) runs while a stop or a flush waits, or bus time is wanted.
-  void UpdateTick();
   void ForceStopAll(bool in_isr);
 
   void Connect();

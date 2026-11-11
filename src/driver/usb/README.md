@@ -132,6 +132,14 @@ buffer. Old code fails to compile and no compatibility shims are provided.
   `ControlContext`. The device core reads the bus speed once, at the bus reset; a controller that
   reports the reset before speed negotiation ends has to report the reset again once the speed is
   known.
+- 后端的帧中断（SOF）在设备上总线且没有挂起时一直打开：启动或总线复位、枚举完成时打开，挂起、断开和
+  停止时关闭，恢复时重新打开，不看设备类是否需要帧时间。停止超时计帧、FIFO 冲刷轮询、逐帧检查停止都
+  依赖它。`DeviceCore::OnSof` 只在有设备类的 `WantsBusTime()` 为真时才向它发节拍事件 / A backend keeps
+  its frame interrupt (SOF) on while the device is on the bus and not suspended: on at start or at the bus
+  reset and enumeration done, off at a suspend, a disconnect and a stop, on again at the resume,
+  whatever the classes need. The stop timeout frame count, the FIFO flush polling and the per-frame stop
+  check depend on it. `DeviceCore::OnSof` posts the tick event only while some class's `WantsBusTime()`
+  is true.
 - 端点完成回调的签名是 `Callback<const Endpoint::Completion&>`，经 `Endpoint::SetOnComplete()` 设置，
   `Completion` 带结果、实际字节数和 OUT 租约的槽。IN 数据用 `AcquireSlot()` 借槽、写入后 `Submit()`；OUT
   数据用 `Receive()` 挂接收，完成时借出的槽用 `ReturnSlot()` 归还并重新挂接收，或用 `ReleaseSlot()` 只

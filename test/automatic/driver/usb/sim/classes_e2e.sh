@@ -2,11 +2,9 @@
 # classes_e2e.sh <build-dir>: HID, gs_usb, DFU and UAC device classes through the kernel
 # drivers. Starts usb_sim_classes for each class, attaches it through vhci and checks it
 # from the host side (hidraw, SocketCAN, dfu-util, arecord). Needs vhci-hcd, usbip,
-# dfu-util and arecord; USBIP_SOF=stops|control|always selects the frame interrupt policy
-# of the simulated controller (default stops, see SofPolicy).
+# dfu-util and arecord.
 # 经内核驱动检查 HID、gs_usb、DFU 和 UAC 设备类：每个类启动一个 usb_sim_classes，经 vhci
-# 挂接，从主机侧检查（hidraw、SocketCAN、dfu-util、arecord）。USBIP_SOF 选择仿真控制器的
-# 帧中断策略。
+# 挂接，从主机侧检查（hidraw、SocketCAN、dfu-util、arecord）。
 #
 # Privileges: the script runs as the calling user, and sudo -n is used for the usbip tool
 # and for ip link on the simulated adapter's CAN interface only (usbip_lib.sh,
@@ -134,7 +132,7 @@ if want uac && start uac; then
   fi
 fi
 
-echo "---- summary (USBIP_SOF=${USBIP_SOF:-stops})"
+echo "---- summary"
 printf '%s\n' "${summary[@]}"
 [ "$fail" -ne 0 ] && exit 1
 [ "$skipped" -ne 0 ] && exit 3

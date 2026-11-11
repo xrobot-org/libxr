@@ -59,7 +59,6 @@ int main(int argc, char** argv)
                                     engine);
 
   Sim::Profile profile;
-  profile.sof_policy = Sim::SofPolicyFromEnvironment();
   profile.endpoints = {{1, Endpoint::Direction::IN, 2048, 0},
                        {2, Endpoint::Direction::OUT, 2048, 0}};
   static Sim::Device<FullSpeedCapabilities> device(

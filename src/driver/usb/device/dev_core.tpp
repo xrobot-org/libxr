@@ -34,7 +34,7 @@ DeviceCore<C>::DeviceCore(
   pool_.SetSpeed(speed);
   pool_.SetControlHandler(
       Callback<uint32_t>::Create([](bool context, DeviceCore* self, uint32_t events)
-                                 { self->ProcessEvents(context, events); }, this));
+                                 { self->DispatchEvents(context, events); }, this));
 }
 
 template <typename C>
@@ -82,33 +82,11 @@ void DeviceCore<C>::Deinitialize(bool in_isr)
 }
 
 template <typename C>
-void DeviceCore<C>::ProcessEvents(bool in_isr, uint32_t events)
-{
-  DispatchEvents(in_isr, events);
-  ReconcileBusTime();
-}
-
-/// Binding, unbinding and class requests change WantsBusTime(); the backend enables its
-/// frame interrupt only from this report, so it follows every owner pass.
-template <typename C>
-void DeviceCore<C>::ReconcileBusTime()
-{
-  if constexpr (C::BUS_TIME)
-  {
-    const bool wanted = composition_.WantsBusTime();
-    if (wanted == bus_time_wanted_) return;
-    bus_time_wanted_ = wanted;
-    OnBusTimeNeedChanged();
-  }
-}
-
-template <typename C>
 void DeviceCore<C>::DispatchEvents(bool in_isr, uint32_t events)
 {
   // While an endpoint stop is unconfirmed nothing else proceeds; the confirmation
   // posts STOP_DONE_EVENT and the held events run then.
   if ((events & STOP_TIMEOUT_EVENT) && pool_.AnyStopping()) OnStopTimeout(in_isr);
-  if ((events & STOP_DONE_EVENT) && !pool_.AnyStopping()) OnStopsSettled();
   events = (events | deferred_events_) & ~(STOP_DONE_EVENT | STOP_TIMEOUT_EVENT);
   deferred_events_ = 0;
   // A held-back lifecycle event also holds every endpoint start.

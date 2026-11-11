@@ -24,23 +24,13 @@
  * Time is frames only: the test advances SOF, and stop confirmation and the stop timeout
  * count frames.
  *
- * 帧中断和真实控制器一样只在后端打开它时才送到 DeviceCore：有待决停止时，或者后端按
- * `SofPolicy` 在自己的重估点（Start、OnStopsSettled、DeviceCore 的
- * `OnBusTimeNeedChanged()`，CH32 还有 OnControlReady）看到 `WantsBusTime()` 为真。这是
- * 按读代码得到的模型，只有这几个重估点：真实的 STM32 OTG 后端还会在总线复位的 TX FIFO
- * 清空完成时重估（PollTxFlush 里的 UpdateTick），仿真没有建模；真实板子上哪个重估点在
- * 枚举之后让帧中断保持打开没有确定，所以在没有 `OnBusTimeNeedChanged()` 的情况下，仿真
- * 的 STM32 OTG、ESP32 档位在枚举之后帧中断是关的，这一点和 STM32H723 上的测量不符。
- * As on a real controller, the frame interrupt reaches DeviceCore only while the backend
- * has it on: while a stop is pending, or after the backend saw `WantsBusTime()` true at
- * one of its own re-evaluation points (Start, OnStopsSettled, the DeviceCore hook
- * `OnBusTimeNeedChanged()`, and OnControlReady on CH32) as `SofPolicy` selects. This is a
- * model made from reading the code and has only these points: the real STM32 OTG backend
- * also re-evaluates when the TX FIFO flush after a bus reset completes (UpdateTick in
- * PollTxFlush), which is not modelled; which re-evaluation point keeps the frame
- * interrupt on after enumeration on a real board was not determined, so without
- * `OnBusTimeNeedChanged()` the simulated STM32 OTG and ESP32 profiles have the frame
- * interrupt off after enumeration, which differs from what was measured on an STM32H723.
+ * 帧中断按所有后端共同的策略建模：设备在总线上且没有挂起时打开（Start、总线复位、恢复），
+ * 挂起、断开、Stop 和停止超时时关闭；关闭时 SOF 到不了 DeviceCore。是否把节拍交给类，
+ * 仍由类的 `WantsBusTime()` 决定。
+ * The frame interrupt is modelled with the policy every backend shares: on while the
+ * device is on the bus and not suspended (Start, bus reset, resume), off on suspend,
+ * disconnect, Stop and a stop timeout; while it is off a SOF does not reach DeviceCore.
+ * Whether a class gets the tick is still decided by its `WantsBusTime()`.
  */
 
 #pragma once
@@ -90,24 +80,6 @@ enum class StopMode : uint8_t
               ///< a disconnect or the stop timeout
 };
 
-/// 后端何时重估帧中断开关 / When the backend re-evaluates its frame interrupt enable
-enum class SofPolicy : uint8_t
-{
-  /// STM32 OTG、ESP32 DWC2、FSDEV：Start、OnStopsSettled 和 OnBusTimeNeedChanged
-  /// （直接调用 OnStopsSettled）里重估，开关随 `WantsBusTime()` 开或关 / STM32 OTG,
-  /// ESP32 DWC2, FSDEV: re-evaluated in Start, OnStopsSettled and OnBusTimeNeedChanged
-  /// (which calls OnStopsSettled), on or off with `WantsBusTime()`
-  AT_STOPS,
-  /// CH32 OTG：OnControlReady 里 `WantsBusTime()` 为真就打开，OnBusTimeNeedChanged 里
-  /// 随 `WantsBusTime()` 开或关 / CH32 OTG: OnControlReady turns it on when
-  /// `WantsBusTime()` is true, OnBusTimeNeedChanged sets it on or off with
-  /// `WantsBusTime()`
-  AT_CONTROL_READY,
-  /// 理想控制器：每帧都送（隔离测试用，不对应任何真实后端）/ Ideal controller, every
-  /// frame is delivered (to isolate a class from the policy; no real backend)
-  ALWAYS
-};
-
 /// 一个数据端点的硬件规格 / Hardware specification of one data endpoint
 struct EndpointSpec
 {
@@ -142,7 +114,6 @@ struct Profile
   uint8_t in_endpoint_limit = 0;
   StopMode stop_mode = StopMode::IMMEDIATE;
   uint32_t stop_frames = 2;  ///< FRAMES 模式下的帧数 / Frames for StopMode::FRAMES
-  SofPolicy sof_policy = SofPolicy::AT_STOPS;
   /// 调度注入：每次 StartHardware（守卫内）调用，可在此发起仿真中断，中断挂起到守卫
   /// 释放时执行 / Schedule injection: called on every StartHardware (inside the guard);
   /// an interrupt raised here is pended until the guard is released
@@ -332,10 +303,6 @@ class SimEndpoint : public Endpoint
     // 停止过程中端点不再接受事务 / No transaction is taken while the stop runs.
     stop_pending_ = true;
     frames_left_ = device_.profile_.stop_frames;
-    // 待决停止需要帧来计超时：真实后端在启动停止时打开帧中断（STM32 OTG 的 UpdateTick）。
-    // A pending stop needs frames for its timeout: real backends turn the frame interrupt
-    // on when a stop starts (UpdateTick on STM32 OTG).
-    device_.sof_on_ = true;
     return StopResult::PENDING;
   }
 
@@ -529,10 +496,7 @@ class Device : public EndpointPool, public DeviceCore<Caps>
     UNUSED(in_isr);
     EndpointPool::HardwareScope hardware(this);
     pulled_up_ = true;
-    // STM32 OTG（Connect）、ESP32、FSDEV 在 Start 里按 WantsBusTime() 设置帧中断。
-    // STM32 OTG (Connect), ESP32 and FSDEV set the frame interrupt from WantsBusTime()
-    // in Start.
-    if (profile_.sof_policy == SofPolicy::AT_STOPS) sof_on_ = this->WantsBusTime();
+    sof_on_ = true;
   }
 
   void Stop(bool in_isr) override
@@ -561,6 +525,7 @@ class Device : public EndpointPool, public DeviceCore<Caps>
           address_ = 0;
           discard_ = true;
           tx_fifos_ = 0;
+          sof_on_ = true;
           // 契约（ep.hpp / dev_core.hpp）：复位时确认所有待决停止 / Contract: a bus reset
           // confirms every pending stop.
           ConfirmAllStops();
@@ -575,6 +540,7 @@ class Device : public EndpointPool, public DeviceCore<Caps>
         {
           attached_ = false;
           tx_fifos_ = 0;
+          sof_on_ = false;
           // 契约（ep.hpp / dev_core.hpp）：断开时确认所有待决停止 / Contract: a
           // disconnect confirms every pending stop.
           ConfirmAllStops();
@@ -593,6 +559,7 @@ class Device : public EndpointPool, public DeviceCore<Caps>
         [this]
         {
           suspended_ = true;
+          sof_on_ = false;
           this->OnSuspend(true);
         });
   }
@@ -603,6 +570,7 @@ class Device : public EndpointPool, public DeviceCore<Caps>
         [this]
         {
           suspended_ = false;
+          sof_on_ = true;
           this->OnResume(true);
         });
   }
@@ -618,14 +586,10 @@ class Device : public EndpointPool, public DeviceCore<Caps>
         {
           ++frame_;
           ForEachEndpoint([](Ep& ep) { ep.OnFrame(); });
-          // 和真实控制器一样，帧中断只在后端打开它（见 SofPolicy）或有待决停止时才送到
-          // DeviceCore。
-          // As on a real controller, the frame interrupt reaches DeviceCore only while
-          // the backend has it on (see SofPolicy) or a stop is pending.
-          bool stopping = false;
-          ForEachEndpoint([&stopping](Ep& ep)
-                          { stopping = stopping || ep.StopPending(); });
-          if (sof_on_ || stopping || profile_.sof_policy == SofPolicy::ALWAYS)
+          // 和真实控制器一样，帧中断关闭时 SOF 到不了 DeviceCore。
+          // As on a real controller, a SOF does not reach DeviceCore while the frame
+          // interrupt is off.
+          if (sof_on_)
           {
             ++sof_delivered_;
             this->OnSof(true, static_cast<uint16_t>(frame_ & 0x7FFU));
@@ -724,46 +688,6 @@ class Device : public EndpointPool, public DeviceCore<Caps>
 
   void OnControllerReset() override { discard_ = false; }
 
-  /// 所有待决停止确认后重估帧中断（STM32 OTG 的 UpdateTick，ESP32，FSDEV）；设备已 Stop
-  /// 时不重开（FSDEV）。
-  /// Re-evaluate the frame interrupt once every stop is confirmed (UpdateTick on STM32
-  /// OTG, ESP32, FSDEV); not turned on again after Stop (FSDEV).
-  void OnStopsSettled() override
-  {
-    if (profile_.sof_policy != SofPolicy::AT_STOPS || !pulled_up_) return;
-    EndpointPool::HardwareScope hardware(this);
-    sof_on_ = this->WantsBusTime();
-  }
-
-  /// CH32 在控制传输就绪时（每次控制传输结束，含
-  /// SET_CONFIGURATION）打开帧中断，不再关闭。 CH32 turns the frame interrupt on when the
-  /// control endpoint is ready (after every control transfer, SET_CONFIGURATION included)
-  /// and never turns it off.
-  void OnControlReady() override
-  {
-    if (profile_.sof_policy != SofPolicy::AT_CONTROL_READY) return;
-    EndpointPool::HardwareScope hardware(this);
-    if (this->WantsBusTime()) sof_on_ = true;
-  }
-
-  /// WantsBusTime() 变化：和真实后端一样重估帧中断。STM32 OTG、ESP32、FSDEV 直接调用
-  /// OnStopsSettled；CH32 按需求开或关。
-  /// WantsBusTime() changed: re-evaluate the frame interrupt as the real backends do.
-  /// STM32 OTG, ESP32 and FSDEV call OnStopsSettled; CH32 sets it on or off with the
-  /// need.
-  void OnBusTimeNeedChanged() override
-  {
-    if (profile_.sof_policy == SofPolicy::AT_STOPS)
-    {
-      OnStopsSettled();
-    }
-    else if (profile_.sof_policy == SofPolicy::AT_CONTROL_READY)
-    {
-      EndpointPool::HardwareScope hardware(this);
-      sof_on_ = this->WantsBusTime();
-    }
-  }
-
  public:
   /// 后端的帧中断是否打开、送到 DeviceCore 的 SOF 数 / Whether the backend has its frame
   /// interrupt on, and the SOFs delivered to DeviceCore
@@ -780,6 +704,7 @@ class Device : public EndpointPool, public DeviceCore<Caps>
     {
       EndpointPool::HardwareScope hardware(this);
       attached_ = false;
+      sof_on_ = false;
       ConfirmAllStops();
     }
     this->OnDisconnect(in_isr);

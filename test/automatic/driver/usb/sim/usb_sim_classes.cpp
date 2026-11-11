@@ -272,7 +272,6 @@ template <typename Class>
 int Serve(Class& klass, uint16_t vid, uint16_t pid, const char* product, uint16_t port,
           Sim::Profile profile)
 {
-  profile.sof_policy = Sim::SofPolicyFromEnvironment();
   static auto language = DescriptorStrings::MakeLanguagePack(
       DescriptorStrings::Language::EN_US, "LibXR", "USB sim device", "0004");
   (void)product;

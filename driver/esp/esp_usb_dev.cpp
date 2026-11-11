@@ -355,35 +355,8 @@ bool ESP32USBDevice::RebuildCoreRegisters()
   dev->gintmsk_reg.oepintmsk = 1;
   dev->gintmsk_reg.iepintmsk = 1;
   dev->gintmsk_reg.otgintmsk = 1;
-  UpdateTick();
+  dev->gintmsk_reg.sofmsk = 1;
   return flushed;
-}
-
-void ESP32USBDevice::OnStopsSettled()
-{
-  EndpointPool::HardwareScope hardware(this);
-  UpdateTick();
-}
-
-void ESP32USBDevice::UpdateTick()
-{
-  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
-  bool needed = WantsBusTime();
-  for (size_t i = 0U; i < ENDPOINT_COUNT && !needed; ++i)
-  {
-    needed = (endpoint_map_.in[i] != nullptr &&
-              static_cast<ESP32USBEndpoint*>(endpoint_map_.in[i])->StopPending()) ||
-             (endpoint_map_.out[i] != nullptr &&
-              static_cast<ESP32USBEndpoint*>(endpoint_map_.out[i])->StopPending());
-  }
-  if (needed)
-  {
-    dev->gintmsk_reg.val |= 1U << 3U;
-  }
-  else
-  {
-    dev->gintmsk_reg.val &= ~(1U << 3U);
-  }
 }
 
 void ESP32USBDevice::OnStopTimeout(bool in_isr)
@@ -658,12 +631,14 @@ void ESP32USBDevice::HandleInterrupt()
     if (pending.usbsusp)
     {
       dev->gintsts_reg.usbsusp = 1;
+      dev->gintmsk_reg.sofmsk = 0;
       OnSuspend(true);
     }
 
     if (pending.wkupint)
     {
       dev->gintsts_reg.wkupint = 1;
+      dev->gintmsk_reg.sofmsk = 1;
       OnResume(true);
     }
 
@@ -783,7 +758,7 @@ void ESP32USBDevice::HandleBusReset(bool in_isr)
       static_cast<ESP32USBEndpoint*>(endpoint_map_.out[i])->ConfirmStopAfterReset(in_isr);
     }
   }
-  UpdateTick();
+  dev->gintmsk_reg.sofmsk = 1;
 
   dev->dcfg_reg.devaddr = 0U;
 
