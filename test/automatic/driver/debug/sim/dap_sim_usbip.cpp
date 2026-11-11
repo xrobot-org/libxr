@@ -18,9 +18,11 @@
  * variables SWD_WAIT_EVERY / SWD_WAIT_BURST inject periodic WAITs on the target.
  */
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <thread>
 
 #include "automatic/driver/usb/sim/usbip_server.hpp"
@@ -64,27 +66,43 @@ int main(int argc, char** argv)
       profile, DeviceDescriptor::PacketSize0::SIZE_64, 0x1209, 0x0002, 0x0100,
       {&LANGUAGE}, {{&dap}});
 
+  // 目标侧的统计：DAP 线程在每次 Step 之后拷一份，打印线程只读这份拷贝 / Target-side
+  // counters: the DAP thread copies them after every Step and the printing thread only
+  // reads the copy, so no target field is read while the DAP thread may write it.
+  static std::mutex statistics_lock;
+  static std::array<unsigned, 5> statistics{};
+
   // DAP 线程：SWD 操作只在这里发生 / The DAP thread: all SWD work happens here.
   std::thread(
       []
       {
-        while (true) (void)dap.Step();
+        while (true)
+        {
+          (void)dap.Step();
+          const std::array<unsigned, 5> now = {
+              target.wire.line_resets, target.wire.protocol_errors,
+              target.wire.contention, target.memory.resets, target.dp.CtrlStat()};
+          std::lock_guard<std::mutex> guard(statistics_lock);
+          statistics = now;
+        }
       })
       .detach();
 
-  // 目标侧的统计有变化时打印 / Print the target-side counters when they change.
+  // 统计有变化时打印 / Print the counters when they change.
   std::thread(
       []
       {
-        unsigned last[5] = {~0u, ~0u, ~0u, ~0u, ~0u};
+        std::array<unsigned, 5> last = {~0u, ~0u, ~0u, ~0u, ~0u};
         while (true)
         {
           std::this_thread::sleep_for(std::chrono::seconds(1));
-          const unsigned now[5] = {target.wire.line_resets, target.wire.protocol_errors,
-                                   target.wire.contention, target.memory.resets,
-                                   target.dp.CtrlStat()};
-          if (std::equal(now, now + 5, last)) continue;
-          std::copy(now, now + 5, last);
+          std::array<unsigned, 5> now;
+          {
+            std::lock_guard<std::mutex> guard(statistics_lock);
+            now = statistics;
+          }
+          if (now == last) continue;
+          last = now;
           std::printf(
               "target: line_resets=%u protocol_errors=%u contention=%u resets=%u "
               "ctrl_stat=0x%08X\n",
