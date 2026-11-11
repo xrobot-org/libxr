@@ -12,6 +12,7 @@
  *    A consistent nonlinear update stays inside the gate, an outlier trips it.
  * 6. NIS 失败滑窗不超过窗口长度。 The NIS failure window never exceeds its length.
  * 7. Joseph 形式更新保持协方差对称。 The Joseph-form update keeps P symmetric.
+ * 8. 运行期替换状态增量叠加函数。 Runtime replacement of the state addition hook.
  *
  * 测试原理 / Test principles:
  * 1. 所有场景使用可手推的期望值，不依赖随机数据。 Every scenario uses hand-derivable
@@ -177,6 +178,36 @@ void test_ekf()
 
     TEST_ASSERT(std::abs(ekf.x(0) - WrapAngle(3.10 + (3.20 - 3.10) * (1.0 / 1.5))) <
                 1e-9);
+    TEST_ASSERT(ekf.x(0) < 0.0);
+  }
+
+  // 检查内容：运行期替换状态增量叠加函数后，下一次更新即按新逻辑回绕 yaw。
+  // Check: after replacing the state addition hook at runtime, the next update wraps yaw
+  // with the new logic.
+  {
+    EkfState x0(1);
+    x0 << 3.10;
+    EkfStateCov p0(1, 1);
+    p0 << 1.0;
+    Ekf ekf(x0, p0);
+
+    EkfObservation h = EkfObservation::Identity(1, 1);
+    EkfMeasurementCov r(1, 1);
+    r << 0.5;
+    EkfMeasurement z(1);
+    z << 3.20;
+
+    ekf.Update(z, h, r);
+    TEST_ASSERT(std::abs(ekf.x(0) - (3.10 + (3.20 - 3.10) * (1.0 / 1.5))) < 1e-9);
+
+    ekf.SetStateAdd(
+        [](const EkfState& a, const EkfState& b)
+        {
+          EkfState c = a + b;
+          c(0) = WrapAngle(c(0));
+          return c;
+        });
+    ekf.Update(z, h, r);
     TEST_ASSERT(ekf.x(0) < 0.0);
   }
 

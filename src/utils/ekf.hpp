@@ -150,6 +150,24 @@ class EKF
   }
 
   /**
+   * @brief 运行期替换状态增量叠加函数，只接受捕获列表为空的可调用对象。
+   *        Replace the state increment application at runtime; the callable captures
+   *        nothing.
+   *
+   * 下一次更新开始使用新的叠加逻辑，已估计的状态与协方差保持不变。
+   * The next update uses the new application; the estimated state and covariance are
+   * kept as they are.
+   *
+   * @param x_add 新的状态增量叠加函数，不能为空。
+   *               New state increment application, must not be null.
+   */
+  void SetStateAdd(StateAddFunction x_add)
+  {
+    ASSERT(x_add != nullptr);
+    x_add_ = x_add;
+  }
+
+  /**
    * @brief 使用线性状态转移矩阵预测一步。
    *        Predict one step with a linear transition matrix.
    *
