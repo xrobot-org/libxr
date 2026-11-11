@@ -1328,12 +1328,13 @@ void TestTwoSendersAgainstGetReport()
         });
     std::vector<uint8_t> data;
     size_t replies = 0;
-    while (senders_done.load() < 2)
+    // At least one GET_REPORT, even when both senders finish before this thread runs.
+    do
     {
       TEST_ASSERT(GetReport(hid, REPORT_INPUT, 0, data) == ErrorCode::OK);
       TEST_ASSERT(uniform(data));
       ++replies;
-    }
+    } while (senders_done.load() < 2);
     for (auto& t : senders) t.join();
     stop_host.store(true);
     host.join();
