@@ -19,7 +19,6 @@ namespace LibXR::USB
  */
 template <typename Capabilities = FullSpeedCapabilities>
 class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
-                   private Detail::BusTimeFeature<Capabilities::BUS_TIME>,
                    private Detail::HighSpeedFeature<(Capabilities::SPEEDS &
                                                      SpeedBit(Speed::HIGH)) != 0U>
 {
@@ -63,11 +62,6 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   void OnSuspend(bool in_isr) { RequestPower(in_isr, true); }
   void OnResume(bool in_isr) { RequestPower(in_isr, false); }
   void OnSof(bool in_isr, uint16_t frame, uint8_t microframe = 0xff);
-  bool WantsBusTime() const
-  {
-    if constexpr (Capabilities::BUS_TIME) return composition_.WantsBusTime();
-    return false;
-  }
 
  protected:
   virtual ErrorCode SetAddress(uint8_t address, Context context) = 0;
@@ -90,7 +84,7 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   static constexpr uint32_t DISCONNECT_EVENT = EndpointPool::DISCONNECT_EVENT;
   static constexpr uint32_t SETUP_EVENT = EndpointPool::SETUP_EVENT;
   static constexpr uint32_t POWER_EVENT = EndpointPool::POWER_EVENT;
-  static constexpr uint32_t TIME_EVENT = EndpointPool::TIME_EVENT;
+  static constexpr uint32_t FRAME_TICK_EVENT = EndpointPool::FRAME_TICK_EVENT;
   static constexpr uint32_t CLASS_EVENT = EndpointPool::CLASS_EVENT;
   static constexpr uint32_t STOP_DONE_EVENT = EndpointPool::STOP_DONE_EVENT;
   static constexpr uint32_t STOP_TIMEOUT_EVENT = EndpointPool::STOP_TIMEOUT_EVENT;
@@ -155,7 +149,7 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   void Finish(bool in_isr);
   void Abort(bool in_isr);
   void Stall(bool in_isr);
-  void DeliverBusTime(bool in_isr);
+  void DeliverFrameTick(bool in_isr);
   bool TakeCapturedSetup(SetupPacket& setup);
   bool Superseded();
 
@@ -184,6 +178,13 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   bool replacing_setup_ = false;
   uint8_t pending_address_ = 0xff;
   uint32_t deferred_events_ = 0;  ///< Events held back while an endpoint stops.
+  /// Frame number (low 16 bits) and microframe (bits 16 to 23) of the latest SOF, and
+  /// the millisecond tick it was seen at; 0xffffffff before the first SOF of a session.
+  std::atomic<uint32_t> observed_frame_{0xffffffffU};
+  std::atomic<uint32_t> observed_frame_ms_{0};
+  /// The SOF position and time of the previous frame tick delivered to the classes.
+  uint32_t previous_frame_ = 0xffffffffU;
+  uint32_t previous_frame_ms_ = 0;
   Continuation continuation_ = Continuation::NONE;
   uint16_t pending_config_ = 0;
   Callback<const Endpoint::Completion&> in_callback_ =

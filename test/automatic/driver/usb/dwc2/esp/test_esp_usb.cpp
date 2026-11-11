@@ -211,17 +211,17 @@ struct Probe : Rig
   ESP32USBDevice& device;
   uint16_t bulk = 64;
 
-  explicit Probe(const Mode& selected, bool bus_time = false)
-      : Rig(selected), device(*Make(bus_time))
+  explicit Probe(const Mode& selected, bool needs_tick = false)
+      : Rig(selected), device(*Make(needs_tick))
   {
     device.Init(false);
     device.Start(false);
   }
   ~Probe() { device.Stop(false); }
 
-  ESP32USBDevice* Make(bool bus_time)
+  ESP32USBDevice* Make(bool needs_tick)
   {
-    probe.wants_bus_time = bus_time;
+    probe.needs_frame_tick = needs_tick;
     return Create(
         std::initializer_list<EpConfig>{EpConfig(Mem(128)), EpConfig(Mem(1024)),
                                         EpConfig(Mem(256)), EpConfig(Mem(256), true)},

@@ -189,7 +189,7 @@ class EndpointPool
   static constexpr uint32_t DISCONNECT_EVENT = 8U;
   static constexpr uint32_t SETUP_EVENT = 16U;
   static constexpr uint32_t POWER_EVENT = 32U;
-  static constexpr uint32_t TIME_EVENT = 64U;
+  static constexpr uint32_t FRAME_TICK_EVENT = 64U;
   static constexpr uint32_t CLASS_EVENT = 128U;
   static constexpr uint32_t ENDPOINT_EVENT = 256U;
   static constexpr uint32_t STOP_DONE_EVENT = 512U;

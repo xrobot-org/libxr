@@ -417,7 +417,6 @@ constexpr auto TEST_LANGUAGE = DescriptorStrings::MakeLanguagePack(
 struct BasicCapabilities : FullSpeedCapabilities
 {
   static constexpr bool BOS = false;
-  static constexpr bool BUS_TIME = false;
 };
 
 class ControlClass : public DeviceClass

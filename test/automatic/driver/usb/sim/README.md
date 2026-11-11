@@ -24,12 +24,12 @@ reference implementation of the contract and a real backend that differs from it
 ## 帧中断 / The frame interrupt
 
 所有后端的帧中断（SOF）策略相同：设备在总线上且没有挂起时打开（`Start()`，总线复位或枚举完成，恢复），
-挂起、断开、`Stop()` 和停止超时后关闭。除此之外没有别的条件：它不看 `WantsBusTime()`，也不看有没有
+挂起、断开、`Stop()` 和停止超时后关闭。除此之外没有别的条件：它不看 `NeedsFrameTick()`，也不看有没有
 待决停止。仿真照此建模：`Start()`、`BusReset()` 和 `Resume()` 打开，`Suspend()`、`Disconnect()`、
 `Stop()` 和停止超时关闭；关闭时主机的 SOF 到不了 `DeviceCore`。`DeviceCore::OnSof` 照常计停止帧数，
-只有 `WantsBusTime()` 为真的类才收到 `OnBusTime`，需求变化立刻生效。
+只有 `NeedsFrameTick()` 为真的类才收到 `OnFrameTick`，需求变化立刻生效。
 
-在 STM32H723 上测到：没有任何类需要帧时间时，常开帧中断的代价约 0.2 % CPU（550 MHz）。
+在 STM32H723 上测到：没有任何类需要帧节拍时，常开帧中断的代价约 0.2 % CPU（550 MHz）。
 
 用例：`TestFrameInterruptFollowsTheBus`（枚举后打开、取消配置不变、挂起和断开后关闭、恢复和复位后
 打开，没有类需要时类收不到节拍）、`TestFrameTicksReachAClassOnlyWhileItNeedsThem`（需求变化立刻生效）、
@@ -38,13 +38,13 @@ reference implementation of the contract and a real backend that differs from it
 
 All backends use the same frame interrupt (SOF) policy: it is on while the device is on the bus and not
 suspended (`Start()`, bus reset or enumeration done, resume) and off after a suspend, a disconnect,
-`Stop()` and a stop timeout. There is no other condition: it does not look at `WantsBusTime()` or at
+`Stop()` and a stop timeout. There is no other condition: it does not look at `NeedsFrameTick()` or at
 pending stops. The simulation models exactly that: `Start()`, `BusReset()` and `Resume()` turn it on,
 `Suspend()`, `Disconnect()`, `Stop()` and a stop timeout turn it off, and while it is off the host's SOF
 does not reach `DeviceCore`. `DeviceCore::OnSof` counts stop frames as before, and only a class whose
-`WantsBusTime()` is true gets `OnBusTime`; a change of need takes effect at once.
+`NeedsFrameTick()` is true gets `OnFrameTick`; a change of need takes effect at once.
 
-Measured on an STM32H723: with no class needing bus time, keeping the frame interrupt on costs about
+Measured on an STM32H723: with no class needing frame ticks, keeping the frame interrupt on costs about
 0.2 % CPU at 550 MHz.
 
 Cases: `TestFrameInterruptFollowsTheBus` (on after enumeration, unchanged by a deconfiguration, off after

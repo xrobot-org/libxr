@@ -101,8 +101,8 @@ class DeviceComposition
   BosCapability* WinUsbBosCapability() const { return winusb_cap_; }
   DeviceClass* ClassAt(size_t index) const { return classes_[index]; }
   void Notify(bool in_isr, DeviceEvent event, uint8_t endpoint = 0);
-  void NotifyBusTime(bool in_isr, const BusTime& time);
-  bool WantsBusTime() const;
+  void NotifyFrameTick(bool in_isr, const FrameTick& time);
+  bool NeedsFrameTick() const;
 
   /**
    * @brief 获取当前 configuration 描述符缓存

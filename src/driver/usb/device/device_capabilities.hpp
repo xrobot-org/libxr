@@ -9,7 +9,6 @@ struct FullSpeedCapabilities
 {
   static constexpr uint32_t SPEEDS = SpeedBit(Speed::FULL);
   static constexpr bool BOS = true;
-  static constexpr bool BUS_TIME = true;
 };
 struct HighSpeedCapabilities : FullSpeedCapabilities
 {

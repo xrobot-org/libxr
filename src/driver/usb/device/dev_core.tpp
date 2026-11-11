@@ -126,7 +126,7 @@ void DeviceCore<C>::DispatchEvents(bool in_isr, uint32_t events)
       if (speed_ok)
       {
         pool_.SetSuspended(false, in_isr);
-        if constexpr (C::BUS_TIME) this->previous = 0xffffffffU;
+        previous_frame_ = 0xffffffffU;
         Initialize(in_isr);
         if ((events & RESET_EVENT) && IsInited())
           composition_.Notify(in_isr, DeviceEvent::RESET);
@@ -163,8 +163,7 @@ void DeviceCore<C>::DispatchEvents(bool in_isr, uint32_t events)
     SetupPacket setup;
     if (TakeCapturedSetup(setup)) HandleSetup(in_isr, setup);
   }
-  if constexpr (C::BUS_TIME)
-    if (events & TIME_EVENT) DeliverBusTime(in_isr);
+  if (events & FRAME_TICK_EVENT) DeliverFrameTick(in_isr);
 }
 
 template <typename C>
@@ -779,24 +778,21 @@ ErrorCode DeviceCore<C>::HandleStandardRequest(bool in_isr)
       return ErrorCode::OK;
     }
     case StandardRequest::SYNCH_FRAME:
-      if constexpr (C::BUS_TIME)
-      {
-        if (!input || recipient != Recipient::ENDPOINT || setup_.wValue ||
-            setup_.wLength != 2U || (setup_.wIndex & 0xff70U))
-          return ErrorCode::ARG_ERR;
-        Endpoint* ep = nullptr;
-        if (pool_.FindEndpoint(static_cast<uint8_t>(setup_.wIndex), ep) !=
-                ErrorCode::OK ||
-            ep->GetType() != Endpoint::Type::ISOCHRONOUS)
-          return ErrorCode::NOT_SUPPORT;
-        const uint16_t frame = static_cast<uint16_t>(
-            this->observed.load(std::memory_order_acquire) & 0x7ffU);
-        const uint8_t bytes[] = {static_cast<uint8_t>(frame),
-                                 static_cast<uint8_t>(frame >> 8U)};
-        WriteControl(in_isr, {bytes, 2});
-        return ErrorCode::OK;
-      }
-      return ErrorCode::NOT_SUPPORT;
+    {
+      if (!input || recipient != Recipient::ENDPOINT || setup_.wValue ||
+          setup_.wLength != 2U || (setup_.wIndex & 0xff70U))
+        return ErrorCode::ARG_ERR;
+      Endpoint* ep = nullptr;
+      if (pool_.FindEndpoint(static_cast<uint8_t>(setup_.wIndex), ep) != ErrorCode::OK ||
+          ep->GetType() != Endpoint::Type::ISOCHRONOUS)
+        return ErrorCode::NOT_SUPPORT;
+      const uint16_t frame =
+          static_cast<uint16_t>(observed_frame_.load(std::memory_order_acquire) & 0x7ffU);
+      const uint8_t bytes[] = {static_cast<uint8_t>(frame),
+                               static_cast<uint8_t>(frame >> 8U)};
+      WriteControl(in_isr, {bytes, 2});
+      return ErrorCode::OK;
+    }
     default:
       return ErrorCode::NOT_SUPPORT;
   }
@@ -806,52 +802,40 @@ template <typename C>
 void DeviceCore<C>::OnSof(bool in_isr, uint16_t frame, uint8_t microframe)
 {
   if (pool_.CountStopFrame(frame)) pool_.PostControl(STOP_TIMEOUT_EVENT, in_isr);
-  if constexpr (C::BUS_TIME)
-  {
-    this->observed_ms.store(static_cast<uint32_t>(Timebase::GetMilliseconds()),
-                            std::memory_order_relaxed);
-    this->observed.store((frame == 0xffffU ? 0xffffU : (frame & 0x7ffU)) |
-                             (static_cast<uint32_t>(microframe) << 16U),
-                         std::memory_order_release);
-    if (composition_.WantsBusTime()) pool_.PostControl(TIME_EVENT, in_isr);
-  }
-  else
-  {
-    UNUSED(in_isr);
-    UNUSED(frame);
-    UNUSED(microframe);
-  }
+  observed_frame_ms_.store(static_cast<uint32_t>(Timebase::GetMilliseconds()),
+                           std::memory_order_relaxed);
+  observed_frame_.store((frame == 0xffffU ? 0xffffU : (frame & 0x7ffU)) |
+                            (static_cast<uint32_t>(microframe) << 16U),
+                        std::memory_order_release);
+  if (composition_.NeedsFrameTick()) pool_.PostControl(FRAME_TICK_EVENT, in_isr);
 }
 
 template <typename C>
-void DeviceCore<C>::DeliverBusTime(bool in_isr)
+void DeviceCore<C>::DeliverFrameTick(bool in_isr)
 {
-  if constexpr (C::BUS_TIME)
+  const uint32_t now = observed_frame_.load(std::memory_order_acquire);
+  const uint32_t ms = observed_frame_ms_.load(std::memory_order_relaxed);
+  FrameTick tick;
+  const uint16_t frame = static_cast<uint16_t>(now & 0xffffU);
+  tick.microframe = static_cast<uint8_t>(now >> 16U);
+  if (previous_frame_ != 0xffffffffU && frame != 0xffffU &&
+      (previous_frame_ & 0xffffU) != 0xffffU && ms - previous_frame_ms_ < 2048U)
   {
-    const uint32_t now = this->observed.load(std::memory_order_acquire);
-    const uint32_t ms = this->observed_ms.load(std::memory_order_relaxed);
-    BusTime time;
-    const uint16_t frame = static_cast<uint16_t>(now & 0xffffU);
-    time.microframe = static_cast<uint8_t>(now >> 16U);
-    if (this->previous != 0xffffffffU && frame != 0xffffU &&
-        (this->previous & 0xffffU) != 0xffffU && ms - this->previous_ms < 2048U)
+    const uint8_t previous_micro = static_cast<uint8_t>(previous_frame_ >> 16U);
+    if ((previous_micro == 0xffU) == (tick.microframe == 0xffU))
     {
-      const uint8_t previous_micro = static_cast<uint8_t>(this->previous >> 16U);
-      if ((previous_micro == 0xffU) == (time.microframe == 0xffU))
+      if (tick.microframe == 0xffU)
+        tick.elapsed_intervals = (frame - (previous_frame_ & 0x7ffU)) & 0x7ffU;
+      else
       {
-        if (time.microframe == 0xffU)
-          time.elapsed_intervals = (frame - (this->previous & 0x7ffU)) & 0x7ffU;
-        else
-        {
-          const uint32_t current = frame * 8U + time.microframe;
-          const uint32_t previous = (this->previous & 0x7ffU) * 8U + previous_micro;
-          time.elapsed_intervals = (current - previous) & 0x3fffU;
-        }
+        const uint32_t current = frame * 8U + tick.microframe;
+        const uint32_t previous = (previous_frame_ & 0x7ffU) * 8U + previous_micro;
+        tick.elapsed_intervals = (current - previous) & 0x3fffU;
       }
     }
-    this->previous = now;
-    this->previous_ms = ms;
-    composition_.NotifyBusTime(in_isr, time);
   }
+  previous_frame_ = now;
+  previous_frame_ms_ = ms;
+  composition_.NotifyFrameTick(in_isr, tick);
 }
 }  // namespace LibXR::USB

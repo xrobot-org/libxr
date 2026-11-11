@@ -196,11 +196,11 @@ struct Probe : Rig
   STM32USBDeviceOtgHS device;
   uint16_t bulk = 64;
 
-  explicit Probe(const Mode& selected, bool bus_time = false, bool vbus_sensing = false,
+  explicit Probe(const Mode& selected, bool needs_tick = false, bool vbus_sensing = false,
                  bool second_iso = false)
       : Rig(selected),
         device((probe.bulk_packet = selected.high_speed ? 512U : 64U,
-                probe.wants_bus_time = bus_time, probe.second_iso = second_iso,
+                probe.needs_frame_tick = needs_tick, probe.second_iso = second_iso,
                 Hardware(vbus_sensing)),
                selected.high_speed ? 2048U : 512U,
                {Mem(64), Mem(selected.high_speed ? 2048U : 512U), Mem(128)},

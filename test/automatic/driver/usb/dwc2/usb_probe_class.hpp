@@ -99,7 +99,7 @@ class ProbeClass : public DeviceClass
   uint16_t bulk_packet = 64;
   uint16_t interrupt_packet = 16;
   uint16_t iso_packet = 96;
-  bool wants_bus_time = false;
+  bool needs_frame_tick = false;
   bool second_iso =
       false;  ///< 再加一个等时 IN 端点（端点 4）/ A second isochronous IN (EP4)
 
@@ -120,14 +120,14 @@ class ProbeClass : public DeviceClass
   uint16_t last_value = 0;  ///< 最近一个请求的 wValue / wValue of the latest request
   unsigned binds = 0, unbinds = 0, resets = 0;
   std::vector<uint8_t> resumed;  ///< ENDPOINT_RESUMED 的端点地址 / Endpoint addresses
-  std::vector<BusTime> ticks;
+  std::vector<FrameTick> ticks;
 
   size_t GetControlReceiveCapacity() const override { return output.size(); }
   size_t GetInterfaceCount() override { return 1; }
   size_t GetMaxConfigSize() override { return sizeof(block_); }
   bool HasIAD() override { return false; }
-  bool WantsBusTime() const override { return wants_bus_time; }
-  void OnBusTime(bool, const BusTime& time) override { ticks.push_back(time); }
+  bool NeedsFrameTick() const override { return needs_frame_tick; }
+  void OnFrameTick(bool, const FrameTick& time) override { ticks.push_back(time); }
   void OnDeviceEvent(bool, DeviceEvent event, uint8_t endpoint) override
   {
     if (event == DeviceEvent::RESET) ++resets;

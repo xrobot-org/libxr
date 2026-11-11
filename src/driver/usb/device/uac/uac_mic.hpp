@@ -18,13 +18,13 @@ namespace LibXR::USB
  * @brief UAC1 队列式麦克风设备类实现（槽模型）
  *        UAC1 queue-driven microphone device class (slot model)
  *
- * 数据路径：SOF 节拍（OnBusTime）每个服务区间调用 KickOneFrame：取槽 → 从 PCM 队列
+ * 数据路径：SOF 节拍（OnFrameTick）每个服务区间调用 KickOneFrame：取槽 → 从 PCM 队列
  * PopBatch 取整数个音频帧、不足补零 → 提交。没有空闲槽时本帧丢弃并计数。等时请求以
  * FAILED 结束时结束待决请求、重新 Configure 后由下一拍继续。alt 0/1 切换走
  * SET_INTERFACE 流程：Close 结束本接口端点的待决请求，端点停止未
  * 确认时激活挂起，等停止确认或下一拍继续。
  *
- * Data path: the SOF tick (OnBusTime) calls KickOneFrame once per service interval:
+ * Data path: the SOF tick (OnFrameTick) calls KickOneFrame once per service interval:
  * acquire a slot, PopBatch whole audio frames from the PCM queue, zero-fill the
  * remainder, then submit. A frame with no free slot is dropped and counted. An
  * isochronous request that ends with FAILED ends the pending requests and re-Configures
@@ -813,9 +813,9 @@ class UAC1MicrophoneQ : public DeviceClass
   // 绑定后即需要 SOF（帧节奏、挂起激活推进都靠它）；未绑定不再空转。
   // SOF is needed while bound (frame pacing and deferred activation rely on it);
   // an unbound device no longer wakes the owner.
-  bool WantsBusTime() const override { return inited_; }
+  bool NeedsFrameTick() const override { return inited_; }
 
-  void OnBusTime(bool in_isr, const BusTime& time) override
+  void OnFrameTick(bool in_isr, const FrameTick& time) override
   {
     // 节拍语义：FULL 每帧（1 ms）一个服务区间，一次节拍踢一帧；
     // HIGH 的服务区间为 2^(interval-1) 微帧，微帧差累积到一整个区间才踢。漏掉的区间

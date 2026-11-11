@@ -44,19 +44,19 @@ using SimHost = Sim::Host<Caps>;
 class Probe : public DeviceClass
 {
  public:
-  explicit Probe(uint8_t number, bool arm_out = true, bool wants_time = false)
-      : number_(number), arm_out_(arm_out), wants_time_(wants_time)
+  explicit Probe(uint8_t number, bool arm_out = true, bool needs_tick = false)
+      : number_(number), arm_out_(arm_out), needs_tick_(needs_tick)
   {
   }
 
-  /// 要帧时间的类：每个到达核心的 SOF 都在 owner 里调用 OnBusTime
-  /// A class that wants bus time: every SOF that reaches the core calls OnBusTime in the
-  /// owner
-  bool WantsBusTime() const override { return wants_time_.load(); }
+  /// 要帧节拍的类：每个到达核心的 SOF 都在 owner 里调用 OnFrameTick
+  /// A class that needs frame ticks: every SOF that reaches the core calls OnFrameTick in
+  /// the owner
+  bool NeedsFrameTick() const override { return needs_tick_.load(); }
   /// 运行时改变需求 / Change the need at run time
-  void SetWantsBusTime(bool wanted) { wants_time_.store(wanted); }
-  void OnBusTime(bool, const BusTime&) override { ++bus_times; }
-  std::atomic<unsigned> bus_times{0};
+  void SetNeedsFrameTick(bool wanted) { needs_tick_.store(wanted); }
+  void OnFrameTick(bool, const FrameTick&) override { ++frame_ticks; }
+  std::atomic<unsigned> frame_ticks{0};
 
   Endpoint* in = nullptr;
   Endpoint* out = nullptr;
@@ -161,7 +161,7 @@ class Probe : public DeviceClass
   LIBXR_PACKED_END
   uint8_t number_;
   bool arm_out_;
-  std::atomic<bool> wants_time_;
+  std::atomic<bool> needs_tick_;
 };
 
 /// 仿真设备加探针类，已上电、复位并完成枚举 / Simulated device with the probe class,
@@ -173,8 +173,8 @@ struct Bench
   SimHost host;
 
   explicit Bench(const Profile& profile = {}, bool arm_out = true,
-                 bool wants_time = false)
-      : probe(1, arm_out, wants_time),
+                 bool needs_tick = false)
+      : probe(1, arm_out, needs_tick),
         device(profile, DeviceDescriptor::PacketSize0::SIZE_64, 0x1209, 0x0001, 0x0100,
                {&TEST_LANGUAGE}, {{&probe}}),
         host(device)
@@ -346,9 +346,9 @@ void TestReconfigureWaitsForPendingStop()
   Profile profile;
   profile.stop_mode = StopMode::FRAMES;
   profile.stop_frames = 3;
-  // 类要帧时间：待决停止期间每一帧都让 owner 处理一次事件，重新绑定不能趁机提前发生。
-  // The class wants bus time: every frame during the pending stop makes the owner handle
-  // an event, and the new binding must not happen early because of it.
+  // 类要帧节拍：待决停止期间每一帧都让 owner 处理一次事件，重新绑定不能趁机提前发生。
+  // The class needs frame ticks: every frame during the pending stop makes the owner
+  // handle an event, and the new binding must not happen early because of it.
   Bench b(profile, true, true);
   b.SubmitIn(Bytes(200, 3));
   TEST_ASSERT(b.device.InToken(1).data.size() == 64);
@@ -490,12 +490,12 @@ void TestStaleSlotHandles()
   TEST_ASSERT(b.probe.out->ReturnSlot(lease, false) == ErrorCode::STATE_ERR);
 }
 
-/// 帧中断在设备上总线且没有挂起时打开，和有没有类需要帧时间无关：枚举之后 SOF 到达核心，
-/// 挂起和断开后关闭，恢复和下一次总线复位后重新打开。没有类需要帧时间时，类收不到节拍。
+/// 帧中断在设备上总线且没有挂起时打开，和有没有类需要帧节拍无关：枚举之后 SOF 到达核心，
+/// 挂起和断开后关闭，恢复和下一次总线复位后重新打开。没有类需要帧节拍时，类收不到节拍。
 /// The frame interrupt is on while the device is on the bus and not suspended, whether or
-/// not a class needs bus time: after enumeration SOFs reach the core, it is off after a
-/// suspend and a disconnect, and on again after a resume and the next bus reset. With no
-/// class needing bus time the class gets no tick.
+/// not a class needs frame ticks: after enumeration SOFs reach the core, it is off after
+/// a suspend and a disconnect, and on again after a resume and the next bus reset. With
+/// no class needing frame ticks the class gets no tick.
 void TestFrameInterruptFollowsTheBus()
 {
   Bench b;
@@ -503,7 +503,7 @@ void TestFrameInterruptFollowsTheBus()
   b.device.Sof();
   b.device.Sof();
   TEST_ASSERT(b.device.SofDelivered() == 2U);
-  TEST_ASSERT(b.probe.bus_times.load() == 0U);
+  TEST_ASSERT(b.probe.frame_ticks.load() == 0U);
 
   // SET_CONFIGURATION 0 不改变它 / SET_CONFIGURATION 0 does not change it.
   TEST_ASSERT(b.Reconfigure(0));
@@ -527,30 +527,30 @@ void TestFrameInterruptFollowsTheBus()
   TEST_ASSERT(b.host.Enumerate());
   b.device.Sof();
   TEST_ASSERT(b.device.SofDelivered() == 5U);
-  TEST_ASSERT(b.probe.bus_times.load() == 0U);
+  TEST_ASSERT(b.probe.frame_ticks.load() == 0U);
 }
 
-/// 类只在需要帧时间时收到节拍，需求变化立刻生效，不依赖控制传输或停止：开始需要后的
+/// 类只在需要帧节拍时收到节拍，需求变化立刻生效，不依赖控制传输或停止：开始需要后的
 /// 下一个 SOF 就送到类，不再需要后核心仍收到 SOF 但类收不到节拍。
-/// A class gets the tick only while it needs bus time, and a change of need takes effect
-/// at once without a control transfer or a stop: the first SOF after it starts to need
-/// ticks reaches it, and after it stops needing them the core still receives SOFs but the
-/// class gets no tick.
+/// A class gets the tick only while it needs frame ticks, and a change of need takes
+/// effect at once without a control transfer or a stop: the first SOF after it starts to
+/// need ticks reaches it, and after it stops needing them the core still receives SOFs
+/// but the class gets no tick.
 void TestFrameTicksReachAClassOnlyWhileItNeedsThem()
 {
   Bench b;
   b.device.Sof();
-  TEST_ASSERT(b.device.SofDelivered() == 1U && b.probe.bus_times.load() == 0U);
+  TEST_ASSERT(b.device.SofDelivered() == 1U && b.probe.frame_ticks.load() == 0U);
 
-  b.probe.SetWantsBusTime(true);
+  b.probe.SetNeedsFrameTick(true);
   for (int i = 0; i < 3; ++i) b.device.Sof();
   TEST_ASSERT(b.device.SofDelivered() == 4U);
-  TEST_ASSERT(b.probe.bus_times.load() == 3U);
+  TEST_ASSERT(b.probe.frame_ticks.load() == 3U);
 
-  b.probe.SetWantsBusTime(false);
+  b.probe.SetNeedsFrameTick(false);
   for (int i = 0; i < 3; ++i) b.device.Sof();
   TEST_ASSERT(b.device.SofDelivered() == 7U);
-  TEST_ASSERT(b.probe.bus_times.load() == 3U);
+  TEST_ASSERT(b.probe.frame_ticks.load() == 3U);
 }
 
 /// 守卫内发起的中断挂起到释放时执行：每次启动硬件时主机立刻取走数据，完成在启动返回后

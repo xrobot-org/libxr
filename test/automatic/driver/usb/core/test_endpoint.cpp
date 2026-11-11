@@ -1185,7 +1185,6 @@ void TestCDCRebind()
 struct BasicCapabilities : FullSpeedCapabilities
 {
   static constexpr bool BOS = false;
-  static constexpr bool BUS_TIME = false;
 };
 
 class ControlClass : public DeviceClass
@@ -1437,7 +1436,6 @@ void TestControlTransactions()
 struct HighSpeedBasicCapabilities : HighSpeedCapabilities
 {
   static constexpr bool BOS = false;
-  static constexpr bool BUS_TIME = false;
 };
 
 /// High-speed capable device whose controller reports a test-chosen bus speed.

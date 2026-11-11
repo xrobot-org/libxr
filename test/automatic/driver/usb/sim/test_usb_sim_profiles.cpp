@@ -6,7 +6,7 @@
  * 枚举、描述符里的包长不超过 FIFO/PMA、数据双向通过。再跑该档位的限制：FSDEV 不支持
  * 等时、同号 IN/OUT 类型冲突，OTG FS 的小 IN FIFO，ESP32-S3 的 TX FIFO 个数。超出限制时
  * 端点配置失败，SET_CONFIGURATION 回 STALL，设备留在地址状态，换一个合法配置仍能用。
- * 最后是帧中断：UAC 麦克风靠每帧的 OnBusTime 出数据。帧中断在设备上总线且没有挂起时
+ * 最后是帧中断：UAC 麦克风靠每帧的 OnFrameTick 出数据。帧中断在设备上总线且没有挂起时
  * 一直打开，所有后端相同。用例检查：枚举之后（主机直接选备用设置 1）和停止再开始之后
  * UAC 每帧一个包；帧中断不随配置变化，挂起后关闭、恢复后打开，流继续。
  * Each profile first runs the composition of the BSP that uses it (CDC on F103 and DevC,
@@ -16,7 +16,7 @@
  * a limit the endpoint configuration fails, SET_CONFIGURATION is stalled, the device
  * stays addressed, and a legal configuration still works.
  * Last the frame interrupt: the UAC microphone produces data from the per-frame
- * OnBusTime. The frame interrupt is on whenever the device is on the bus and not
+ * OnFrameTick. The frame interrupt is on whenever the device is on the bus and not
  * suspended, the same for every backend. The cases check that the UAC sends one packet
  * per frame after enumeration (the host selects alternate setting 1 directly) and after a
  * stream stop and restart, and that the frame interrupt does not follow the
@@ -401,10 +401,11 @@ void TestEsp32S3InEndpointLimit()
 constexpr uint8_t UAC_AS_INTERFACE = 1;
 
 /// 选中备用设置 1 后，每帧取一个等时 IN 包，返回取到的包长。UAC 的数据来自每帧的
-/// OnBusTime：帧中断没有到核心，只有 SET_INTERFACE 时提交的那一个包。
+/// OnFrameTick：帧中断没有到核心，只有 SET_INTERFACE 时提交的那一个包。
 /// After selecting alternate setting 1, take one isochronous IN packet per frame and
-/// return the packet sizes. The UAC data comes from the per-frame OnBusTime: if the frame
-/// interrupt does not reach the core, only the packet submitted by SET_INTERFACE exists.
+/// return the packet sizes. The UAC data comes from the per-frame OnFrameTick: if the
+/// frame interrupt does not reach the core, only the packet submitted by SET_INTERFACE
+/// exists.
 std::vector<size_t> StreamPackets(SimDevice& device, SimHost& host,
                                   UAC1MicrophoneQ<1, 16>& mic, unsigned frames)
 {

@@ -949,13 +949,13 @@ void TestSuspendResume(const typename Fixture::ModeType& mode)
 // Frame interrupt and isochronous data
 // ---------------------------------------------------------------------------
 
-/// 帧节拍：帧中断枚举后就是开的。设备类需要总线时间时，每个 SOF 恰好送一次 OnBusTime，
+/// 帧节拍：帧中断枚举后就是开的。设备类需要帧节拍时，每个 SOF 恰好送一次 OnFrameTick，
 /// 间隔为 1，高速时每个微帧一次；没有设备类需要时 SOF 照常中断，但类收不到节拍；需求
 /// 变化立刻生效。
-/// Frame ticks: the frame interrupt is on after enumeration. While a class wants bus time
-/// every SOF delivers exactly one OnBusTime with an interval of one, once per microframe
-/// at high speed; with no class wanting it a SOF still interrupts but the class gets no
-/// tick; a change of need takes effect at once.
+/// Frame ticks: the frame interrupt is on after enumeration. While a class needs frame
+/// ticks every SOF delivers exactly one OnFrameTick with an interval of one, once per
+/// microframe at high speed; with no class wanting it a SOF still interrupts but the
+/// class gets no tick; a change of need takes effect at once.
 template <typename Fixture>
 void TestFrameTicks(const typename Fixture::ModeType& mode)
 {
@@ -989,10 +989,10 @@ void TestFrameTicks(const typename Fixture::ModeType& mode)
     const unsigned before = f.interrupts;
     f.host.Sof(10);
     TEST_ASSERT(f.interrupts > before && f.probe.ticks.empty());
-    f.probe.wants_bus_time = true;
+    f.probe.needs_frame_tick = true;
     f.host.Sof(5);
     TEST_ASSERT(f.probe.ticks.size() == 5U);
-    f.probe.wants_bus_time = false;
+    f.probe.needs_frame_tick = false;
     f.host.Sof(5);
     TEST_ASSERT(f.probe.ticks.size() == 5U);
   }

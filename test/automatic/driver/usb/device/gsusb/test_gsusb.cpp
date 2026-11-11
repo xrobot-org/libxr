@@ -847,12 +847,12 @@ void HostReadsIn(Fixture& f)
   if (f.in.active) f.in.Complete();
 }
 
-/// One SOF tick: the bus-time callback the device core delivers only while the class
+/// One SOF tick: the frame-tick callback the device core delivers only while the class
 /// wants it.
 template <typename Fixture>
 void SofTick(Fixture& f)
 {
-  if (f.gs.WantsBusTime()) f.gs.OnBusTime(false, BusTime{});
+  if (f.gs.NeedsFrameTick()) f.gs.OnFrameTick(false, FrameTick{});
 }
 
 /// A host frame with one data byte on channel `ch`: the CAN id is `echo_id & 0x7FF`.
@@ -877,7 +877,7 @@ void TestFullCanQueueStagesTheFrames()
   f.can0.queue.capacity = 3;
   f.gs.BindEndpoints(f.pool, 0, false);
   Configure(f);
-  TEST_ASSERT(!f.gs.WantsBusTime());
+  TEST_ASSERT(!f.gs.NeedsFrameTick());
 
   constexpr unsigned FRAMES = 100, WINDOW = 10;
   unsigned sent = 0, staged_ticks = 0;
@@ -901,7 +901,7 @@ void TestFullCanQueueStagesTheFrames()
       done = true;
       break;
     }
-    if (f.gs.WantsBusTime()) ++staged_ticks;
+    if (f.gs.NeedsFrameTick()) ++staged_ticks;
     f.can0.queue.Drain(1);  // one frame leaves on the bus
     SofTick(f);
   }
@@ -917,7 +917,7 @@ void TestFullCanQueueStagesTheFrames()
                 f.can0.tx[i].data[0] == static_cast<uint8_t>(0x1000u + i));
   }
   TEST_ASSERT(f.out.active);
-  TEST_ASSERT(!f.gs.WantsBusTime());
+  TEST_ASSERT(!f.gs.NeedsFrameTick());
   TEST_ASSERT(f.can1.tx.empty());
 }
 
@@ -935,21 +935,21 @@ void TestNewFrameQueuesBehindStagedFrames()
   f.out.HostSends(HostFrame(0x10u, 0));  // A: accepted
   f.out.HostSends(HostFrame(0x11u, 0));  // B: the driver is full, staged
   TEST_ASSERT(f.out.active);
-  TEST_ASSERT(f.can0.tx.size() == 1 && f.gs.WantsBusTime());
+  TEST_ASSERT(f.can0.tx.size() == 1 && f.gs.NeedsFrameTick());
 
   f.can0.queue.Drain(1);                 // room for exactly one frame, no service yet
   f.out.HostSends(HostFrame(0x12u, 0));  // C arrives behind B
   TEST_ASSERT(f.out.active);
   // B (not C) took the room, C waits behind it.
   TEST_ASSERT(f.can0.tx.size() == 2 && f.can0.tx[1].id == 0x11u);
-  TEST_ASSERT(f.gs.WantsBusTime());
+  TEST_ASSERT(f.gs.NeedsFrameTick());
 
   f.can0.queue.Drain(1);
   SofTick(f);
   while (f.in.active) f.in.Complete();
   TEST_ASSERT(f.can0.tx.size() == 3 && f.can0.tx[2].id == 0x12u);
   TEST_ASSERT((EchoIds(f) == std::vector<uint32_t>{0x10u, 0x11u, 0x12u}));
-  TEST_ASSERT(!f.gs.WantsBusTime());
+  TEST_ASSERT(!f.gs.NeedsFrameTick());
 }
 
 /// 重试不只靠 SOF 节拍：收到总线帧、IN 完成而请求的类服务也会重试。
@@ -965,13 +965,13 @@ void TestStagedFrameIsRetriedByTheService()
 
   f.out.HostSends(HostFrame(0x10u, 0));
   f.out.HostSends(HostFrame(0x11u, 0));
-  TEST_ASSERT(f.out.active && f.gs.WantsBusTime());
+  TEST_ASSERT(f.out.active && f.gs.NeedsFrameTick());
   TEST_ASSERT(f.can0.tx.size() == 1);
 
   f.can0.queue.Drain(1);
   f.can1.Inject(0x7FFu, {0x00});  // a frame from the bus requests the service
   TEST_ASSERT(f.can0.tx.size() == 2 && f.can0.tx[1].id == 0x11u);
-  TEST_ASSERT(!f.gs.WantsBusTime());
+  TEST_ASSERT(!f.gs.NeedsFrameTick());
   while (f.in.active) f.in.Complete();
   TEST_ASSERT((EchoIds(f) == std::vector<uint32_t>{0x10u, 0x11u}));
 }
@@ -997,7 +997,7 @@ void TestStuckChannelDoesNotBlockTheOtherChannel()
     f.out.HostSends(HostFrame(0x1000u + i, 0));
   }
   TEST_ASSERT(f.out.active);
-  TEST_ASSERT(f.can0.tx.empty() && f.gs.WantsBusTime());
+  TEST_ASSERT(f.can0.tx.empty() && f.gs.NeedsFrameTick());
 
   for (unsigned i = 0; i < 200; ++i)
   {
@@ -1012,7 +1012,7 @@ void TestStuckChannelDoesNotBlockTheOtherChannel()
   TEST_ASSERT(EchoIdsIn(f, 0x2000u, 0x3000u) == Run(0x2000u, 200));
   TEST_ASSERT(f.can0.tx.empty());
   TEST_ASSERT(EchoIdsIn(f, 0x1000u, 0x2000u).empty());  // exactly WINDOW unechoed
-  TEST_ASSERT(f.gs.WantsBusTime());
+  TEST_ASSERT(f.gs.NeedsFrameTick());
   TEST_ASSERT(f.out.active);
 
   f.can0.queue.capacity = SIZE_MAX;  // the fault is gone
@@ -1024,7 +1024,7 @@ void TestStuckChannelDoesNotBlockTheOtherChannel()
     TEST_ASSERT(f.can0.tx[i].id == ((0x1000u + i) & 0x7FFu));
   }
   TEST_ASSERT(EchoIdsIn(f, 0x1000u, 0x2000u) == Run(0x1000u, WINDOW));
-  TEST_ASSERT(!f.gs.WantsBusTime());
+  TEST_ASSERT(!f.gs.NeedsFrameTick());
 }
 
 /// 暂存队列满（主机不遵守每通道在途上限）：多出的帧被丢弃，仍然回 echo，
@@ -1062,7 +1062,7 @@ void TestStagingOverflowDropsAndEchoes()
   }
   TEST_ASSERT((EchoIds(f) == std::vector<uint32_t>{0x1004u, 0x1005u, 0x1006u, 0x1000u,
                                                    0x1001u, 0x1002u, 0x1003u}));
-  TEST_ASSERT(!f.gs.WantsBusTime());
+  TEST_ASSERT(!f.gs.NeedsFrameTick());
 
   // Channel 1 has its own staging queue: channel 0's overflow did not touch it.
   f.can1.queue.capacity = 0;
@@ -1094,19 +1094,19 @@ void TestChannelStopDropsItsStagedFrames()
       f.out.HostSends(HostFrame(0x1000u + i, 0));
       f.out.HostSends(HostFrame(0x2000u + i, 1));
     }
-    TEST_ASSERT(f.out.active && f.gs.WantsBusTime());
+    TEST_ASSERT(f.out.active && f.gs.NeedsFrameTick());
 
     if (how == 0) SetMode(f, 1, 0);
     if (how == 1) SetMode(f, 1, 1);
     if (how == 2)
     {
       f.gs.UnbindEndpoints(f.pool, false);
-      TEST_ASSERT(!f.gs.WantsBusTime());
+      TEST_ASSERT(!f.gs.NeedsFrameTick());
       f.gs.BindEndpoints(f.pool, 0, false);
       Configure(f);
     }
     TEST_ASSERT(f.out.active);
-    TEST_ASSERT(f.gs.WantsBusTime() == (how != 2));
+    TEST_ASSERT(f.gs.NeedsFrameTick() == (how != 2));
 
     // Both queues free up: only channel 0's frames of a surviving binding go out.
     f.can0.queue.capacity = SIZE_MAX;
@@ -1125,7 +1125,7 @@ void TestChannelStopDropsItsStagedFrames()
       TEST_ASSERT(f.can0.tx.size() == 3);
       TEST_ASSERT(EchoIds(f) == Run(0x1000u, 3));
     }
-    TEST_ASSERT(!f.gs.WantsBusTime());
+    TEST_ASSERT(!f.gs.NeedsFrameTick());
 
     // The channel works again after the stop (for MODE RESET, once it is started).
     if (how == 0) SetMode(f, 1, 1);
@@ -1168,13 +1168,13 @@ void TestEchoQueueFullWhileStagedFramesAreAccepted()
     const size_t accepted = f.can0.tx.size();
     TEST_ASSERT(accepted > 0 && accepted < FRAMES);
     TEST_ASSERT(accepted > EchoIds(f).size());
-    TEST_ASSERT(f.gs.WantsBusTime());
+    TEST_ASSERT(f.gs.NeedsFrameTick());
     TEST_ASSERT(f.out.active);
 
     if (reset)
     {
       SetMode(f, 0, 0);  // the staged frames, accepted head included, are dropped
-      TEST_ASSERT(!f.gs.WantsBusTime());
+      TEST_ASSERT(!f.gs.NeedsFrameTick());
       for (unsigned i = 0; i < 64 && f.in.active; ++i) f.in.Complete();
       for (unsigned i = 0; i < 5; ++i) SofTick(f);
       TEST_ASSERT(f.can0.tx.size() == accepted);  // nothing more was submitted
@@ -1183,7 +1183,7 @@ void TestEchoQueueFullWhileStagedFramesAreAccepted()
       continue;
     }
 
-    for (unsigned guard = 0; guard < 200 && f.gs.WantsBusTime(); ++guard)
+    for (unsigned guard = 0; guard < 200 && f.gs.NeedsFrameTick(); ++guard)
     {
       HostReadsIn(f);
       SofTick(f);
@@ -1196,7 +1196,7 @@ void TestEchoQueueFullWhileStagedFramesAreAccepted()
       TEST_ASSERT(f.can0.tx[i].id == ((0x1000u + i) & 0x7FFu));
     }
     TEST_ASSERT(EchoIds(f) == Run(0x1000u, FRAMES));  // one echo each, in order
-    TEST_ASSERT(!f.gs.WantsBusTime());
+    TEST_ASSERT(!f.gs.NeedsFrameTick());
   }
 }
 
@@ -1226,14 +1226,14 @@ void TestStagedFdFrameAndFrameWithoutEcho()
 
   f.out.HostSends(fd_frame(0x5001u, 0x301u, 0xA1));
   f.out.HostSends(fd_frame(0x5002u, 0x302u, 0xB2));  // refused: staged
-  TEST_ASSERT(f.out.active && f.gs.WantsBusTime());
+  TEST_ASSERT(f.out.active && f.gs.NeedsFrameTick());
   TEST_ASSERT(f.can0.tx.size() == 1);
   HostReadsIn(f);
   TEST_ASSERT((EchoIds(f) == std::vector<uint32_t>{0x5001u}));
 
   f.can0.queue.Drain(1);
   SofTick(f);
-  TEST_ASSERT(!f.gs.WantsBusTime());
+  TEST_ASSERT(!f.gs.NeedsFrameTick());
   TEST_ASSERT(f.can0.tx.size() == 2 && f.can0.tx[1].id == 0x302u &&
               f.can0.tx[1].first == 0xB2);
   while (f.in.active) f.in.Complete();
@@ -1241,11 +1241,11 @@ void TestStagedFdFrameAndFrameWithoutEcho()
 
   // A frame that wants no echo (echo_id = ECHO_ID_RX): staged, sent, never echoed.
   f.out.HostSends(fd_frame(0xFFFFFFFFu, 0x303u, 0xC3));  // queue full again: staged
-  TEST_ASSERT(f.out.active && f.gs.WantsBusTime());
+  TEST_ASSERT(f.out.active && f.gs.NeedsFrameTick());
   f.can0.queue.Drain(1);
   SofTick(f);
   TEST_ASSERT(f.can0.tx.size() == 3 && f.can0.tx[2].id == 0x303u);
-  TEST_ASSERT(!f.gs.WantsBusTime());
+  TEST_ASSERT(!f.gs.NeedsFrameTick());
   while (f.in.active) f.in.Complete();
   TEST_ASSERT((EchoIds(f) == std::vector<uint32_t>{0x5001u, 0x5002u}));
 }

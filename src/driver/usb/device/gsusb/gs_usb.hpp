@@ -342,12 +342,12 @@ class GsUsbClass : public DeviceClass
    * polled for. While frames are staged the retry runs once per SOF (1 ms at full
    * speed, 125 us at high speed); with nothing staged the class costs no SOF interrupt.
    */
-  bool WantsBusTime() const override
+  bool NeedsFrameTick() const override
   {
     return stage_pending_.load(std::memory_order_relaxed);
   }
 
-  void OnBusTime(bool in_isr, const BusTime& time) override
+  void OnFrameTick(bool in_isr, const FrameTick& time) override
   {
     UNUSED(time);
     // 直接走服务：重试成功后要推 echo，并把 echo 发给主机。
@@ -1209,8 +1209,8 @@ class GsUsbClass : public DeviceClass
   // missing (it is never submitted again); stage_ts_ is the time it was accepted.
   bool stage_accepted_[CanChNum]{};
   uint32_t stage_ts_[CanChNum]{};
-  /// 有帧在暂存队列里（给 SOF 中断里的 WantsBusTime 读）/ Some frame is staged (read from
-  /// the SOF interrupt path by WantsBusTime)
+  /// 有帧在暂存队列里（给 SOF 中断里的 NeedsFrameTick 读）/ Some frame is staged (read
+  /// from the SOF interrupt path by NeedsFrameTick)
   std::atomic<bool> stage_pending_{false};
 
   // 发往主机的调度状态，只在 owner（完成回调与服务）上下文访问。

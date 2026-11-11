@@ -9,7 +9,7 @@ enum class DeviceEvent : uint8_t
   ENDPOINT_RESUMED
 };
 
-struct BusTime
+struct FrameTick
 {
   uint8_t microframe = 0xff;  ///< 0xff when the controller only reports full frames.
   uint32_t elapsed_intervals = 0;

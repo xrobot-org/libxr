@@ -26,11 +26,11 @@
  *
  * 帧中断按所有后端共同的策略建模：设备在总线上且没有挂起时打开（Start、总线复位、恢复），
  * 挂起、断开、Stop 和停止超时时关闭；关闭时 SOF 到不了 DeviceCore。是否把节拍交给类，
- * 仍由类的 `WantsBusTime()` 决定。
+ * 仍由类的 `NeedsFrameTick()` 决定。
  * The frame interrupt is modelled with the policy every backend shares: on while the
  * device is on the bus and not suspended (Start, bus reset, resume), off on suspend,
  * disconnect, Stop and a stop timeout; while it is off a SOF does not reach DeviceCore.
- * Whether a class gets the tick is still decided by its `WantsBusTime()`.
+ * Whether a class gets the tick is still decided by its `NeedsFrameTick()`.
  */
 
 #pragma once

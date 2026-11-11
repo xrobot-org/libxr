@@ -1,6 +1,4 @@
 #pragma once
-#include <atomic>
-
 #include "device_composition.hpp"
 
 namespace LibXR::USB::Detail
@@ -56,18 +54,5 @@ struct HighSpeedFeature<true>
 {
   uint8_t qualifier[10]{};
   bool other_speed_descriptor = false;
-};
-
-template <bool Enabled>
-struct BusTimeFeature
-{
-};
-template <>
-struct BusTimeFeature<true>
-{
-  std::atomic<uint32_t> observed{0xffffffffU};
-  std::atomic<uint32_t> observed_ms{0};
-  uint32_t previous = 0xffffffffU;
-  uint32_t previous_ms = 0;
 };
 }  // namespace LibXR::USB::Detail

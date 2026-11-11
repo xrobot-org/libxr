@@ -125,20 +125,20 @@ buffer. Old code fails to compile and no compatibility shims are provided.
   (`CONFIG_USB_ALIGN_SIZE`, or the L1 cache line); the constructor checks it. The EP0 buffer is split in
   halves for OUT and IN, so it is at least twice the EP0 packet size (128 bytes for 64-byte packets).
 - 后端从 `DeviceCore<Capabilities>` 派生：`FullSpeedCapabilities` 或 `HighSpeedCapabilities` 给出支持的
-  速度和 BOS、总线时间两项功能。原来的 `DeviceCore::Context` 改名为 `ControlContext`。设备核心在总线复位
+  速度和 BOS 功能。原来的 `DeviceCore::Context` 改名为 `ControlContext`。设备核心在总线复位
   时读一次总线速度；控制器在速度协商结束前就报告复位时，后端要在速度确定后再报告一次复位 / Backends
   derive from `DeviceCore<Capabilities>`: `FullSpeedCapabilities` or `HighSpeedCapabilities` names the
-  supported speeds and the BOS and bus-time features. The former `DeviceCore::Context` is now
+  supported speeds and the BOS feature. The former `DeviceCore::Context` is now
   `ControlContext`. The device core reads the bus speed once, at the bus reset; a controller that
   reports the reset before speed negotiation ends has to report the reset again once the speed is
   known.
 - 后端的帧中断（SOF）在设备上总线且没有挂起时一直打开：启动或总线复位、枚举完成时打开，挂起、断开和
-  停止时关闭，恢复时重新打开，不看设备类是否需要帧时间。停止超时计帧、FIFO 冲刷轮询、逐帧检查停止都
-  依赖它。`DeviceCore::OnSof` 只在有设备类的 `WantsBusTime()` 为真时才向它发节拍事件 / A backend keeps
+  停止时关闭，恢复时重新打开，不看设备类是否需要帧节拍。停止超时计帧、FIFO 冲刷轮询、逐帧检查停止都
+  依赖它。`DeviceCore::OnSof` 只在有设备类的 `NeedsFrameTick()` 为真时才向它发节拍事件 / A backend keeps
   its frame interrupt (SOF) on while the device is on the bus and not suspended: on at start or at the bus
   reset and enumeration done, off at a suspend, a disconnect and a stop, on again at the resume,
   whatever the classes need. The stop timeout frame count, the FIFO flush polling and the per-frame stop
-  check depend on it. `DeviceCore::OnSof` posts the tick event only while some class's `WantsBusTime()`
+  check depend on it. `DeviceCore::OnSof` posts the tick event only while some class's `NeedsFrameTick()`
   is true.
 - 端点完成回调的签名是 `Callback<const Endpoint::Completion&>`，经 `Endpoint::SetOnComplete()` 设置，
   `Completion` 带结果、实际字节数和 OUT 租约的槽。IN 数据用 `AcquireSlot()` 借槽、写入后 `Submit()`；OUT
@@ -154,12 +154,12 @@ buffer. Old code fails to compile and no compatibility shims are provided.
   `ReturnSlot()` 时得到 `ABORTED`，槽回到空闲 / Requests ended by an unbind, a flush or a STALL complete
   with `ErrorCode::ABORTED`; a slot lent before an unbind gets `ABORTED` from `Submit()` or
   `ReturnSlot()` and becomes free.
-- 类回调（BindEndpoints/UnbindEndpoints、OnDeviceEvent、控制请求、OnService、OnBusTime、端点完成）都在
+- 类回调（BindEndpoints/UnbindEndpoints、OnDeviceEvent、控制请求、OnService、OnFrameTick、端点完成）都在
   设备的 owner 中执行。owner 由赢得 `SerializedService::Invoke` 的调用者执行：控制器中断，或者任何调用
   Submit/Receive/ReturnSlot/RequestClassService/Init 的应用线程，所以每个回调都可能在中断里
   （`in_isr=true`）或任意应用线程里（`in_isr=false`）运行，必须不阻塞。线程持有 owner 时，中断只发布工作，
   要等这个线程处理 / Class callbacks (BindEndpoints/UnbindEndpoints, OnDeviceEvent, control requests,
-  OnService, OnBusTime, endpoint completions) all run in the device's owner. The owner pass runs in
+  OnService, OnFrameTick, endpoint completions) all run in the device's owner. The owner pass runs in
   whichever caller wins `SerializedService::Invoke`: the controller interrupt, or any application
   thread that calls Submit/Receive/ReturnSlot/RequestClassService/Init. Every callback can therefore run
   in an interrupt (`in_isr=true`) or in an arbitrary application thread (`in_isr=false`), and must not

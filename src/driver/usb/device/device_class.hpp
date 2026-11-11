@@ -22,7 +22,7 @@ class DeviceCore;
  * All custom USB classes (HID/CDC/MSC, etc.) should derive from this class.
  *
  * 执行上下文：BindEndpoints/UnbindEndpoints、OnDeviceEvent、控制请求回调
- * （OnGetDescriptor、OnControl*、OnClass*、OnVendorRequest）、OnService、OnBusTime 和
+ * （OnGetDescriptor、OnControl*、OnClass*、OnVendorRequest）、OnService、OnFrameTick 和
  * 端点完成回调都在设备的 owner 中执行。owner 由赢得 `SerializedService::Invoke` 的调用者
  * 执行：控制器中断，或者任何调用 Submit/Receive/ReturnSlot/RequestClassService/Init 的
  * 应用线程。所以每个回调都可能在中断里（in_isr=true）运行，也可能在任意应用线程里
@@ -30,7 +30,7 @@ class DeviceCore;
  * 工作，要等这个线程处理。
  * Execution context: BindEndpoints/UnbindEndpoints, OnDeviceEvent, the control request
  * callbacks (OnGetDescriptor, OnControl*, OnClass*, OnVendorRequest), OnService,
- * OnBusTime and the endpoint completions all run in the device's owner. The owner pass
+ * OnFrameTick and the endpoint completions all run in the device's owner. The owner pass
  * runs in whichever caller wins `SerializedService::Invoke`: the controller interrupt,
  * or any application thread that calls Submit/Receive/ReturnSlot/RequestClassService/
  * Init. Every callback can therefore run in an interrupt (in_isr=true) or in an
@@ -91,10 +91,10 @@ class DeviceClass : public ConfigDescriptorItem
   /// block
   virtual void OnService(bool in_isr) { UNUSED(in_isr); }
   virtual size_t GetControlReceiveCapacity() const { return 64U; }
-  virtual bool WantsBusTime() const { return false; }
+  virtual bool NeedsFrameTick() const { return false; }
   /// 在 owner 中执行（中断或应用线程），不得阻塞 / Runs in the owner (an interrupt or an
   /// application thread); must not block
-  virtual void OnBusTime(bool in_isr, const BusTime& time)
+  virtual void OnFrameTick(bool in_isr, const FrameTick& time)
   {
     UNUSED(in_isr);
     UNUSED(time);
