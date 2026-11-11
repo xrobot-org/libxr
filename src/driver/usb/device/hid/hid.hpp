@@ -449,7 +449,16 @@ class HID : public DeviceClass
         return ErrorCode::OK;
 
       case ClassRequest::SET_PROTOCOL:
-        protocol_ = static_cast<Protocol>(wValue & 0xFF);
+        // HID 1.11 7.2.6: wValue 0 selects the boot protocol, 1 the report protocol;
+        // any other value is a request error (STALL) and the protocol stays as it is.
+        // The request is required only for boot interfaces (7.2.5, 7.2.6); the other
+        // classes keep answering it, so a host that sends it still gets an answer.
+        if (wValue != static_cast<uint16_t>(Protocol::BOOT) &&
+            wValue != static_cast<uint16_t>(Protocol::REPORT))
+        {
+          return ErrorCode::ARG_ERR;
+        }
+        protocol_ = static_cast<Protocol>(wValue);
         return ErrorCode::OK;
 
       default:

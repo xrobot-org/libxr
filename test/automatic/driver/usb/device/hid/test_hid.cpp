@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <type_traits>
 #include <vector>
 
 #include "../../mock_endpoint.hpp"
@@ -718,6 +719,74 @@ void TestBootProtocol()
               g.in.Last().data == std::vector<uint8_t>({0x02, 0x07, 0xF8, 0x00}));
 }
 
+/// HID 1.11 7.2.6: SET_PROTOCOL carries 0 (boot) or 1 (report) in wValue. Any other
+/// value is refused and the protocol the interface is in stays. A class without a boot
+/// protocol keeps answering the request, with the same rule for the value.
+void TestSetProtocolValue()
+{
+  constexpr uint8_t GET_PROTOCOL = 0x03, SET_PROTOCOL = 0x0B;
+  Fixture f;
+  TestKeyboard kbd(Number::EP1, Number::EP2, false);
+  kbd.BindEndpoints(f.pool, 0, false);
+  Block<128> in_storage;
+  EndpointPool pool{2};
+  MockEndpoint in{Number::EP1, Direction::IN, in_storage.Raw()};
+  TEST_ASSERT(pool.Put(&in) == ErrorCode::OK);
+  TestGamepad pad(Number::EP1);
+  pad.BindEndpoints(pool, 0, false);
+
+  auto check = [&](auto& hid)
+  {
+    typename std::remove_reference_t<decltype(hid)>::ControlTransferResult result;
+    auto protocol = [&]()
+    {
+      result.write_data = {};
+      TEST_ASSERT(hid.OnClassRequest(false, GET_PROTOCOL, 0, 1, 0, result) ==
+                  ErrorCode::OK);
+      TEST_ASSERT(result.write_data.size_ == 1U);
+      return static_cast<const uint8_t*>(result.write_data.addr_)[0];
+    };
+    TEST_ASSERT(protocol() == 1U);
+    for (uint16_t bad : {2, 3, 0x0100, 0x0101, 0x8000, 0xFFFF})
+    {
+      TEST_ASSERT(hid.OnClassRequest(false, SET_PROTOCOL, bad, 0, 0, result) !=
+                  ErrorCode::OK);
+      TEST_ASSERT(protocol() == 1U);
+    }
+    TEST_ASSERT(hid.OnClassRequest(false, SET_PROTOCOL, 0, 0, 0, result) ==
+                ErrorCode::OK);
+    TEST_ASSERT(protocol() == 0U);
+    for (uint16_t bad : {2, 0x0100, 0x0101, 0xFFFF})
+    {
+      TEST_ASSERT(hid.OnClassRequest(false, SET_PROTOCOL, bad, 0, 0, result) !=
+                  ErrorCode::OK);
+      TEST_ASSERT(protocol() == 0U);  // A refused value does not reset it either.
+    }
+    TEST_ASSERT(hid.OnClassRequest(false, SET_PROTOCOL, 1, 0, 0, result) ==
+                ErrorCode::OK);
+    TEST_ASSERT(protocol() == 1U);
+  };
+  check(kbd);
+  check(pad);
+
+  // End to end: the control pipe stalls for the bad value and answers the good one.
+  HidDeviceFixture d;
+  TestKeyboard dev_kbd(Number::EP1, Number::EP2, false);
+  HidDevice device(d.pool, &dev_kbd);
+  device.Init(false);
+  (void)d.Control(device, 0x00, 9, 1, 0);  // SET_CONFIGURATION 1
+  (void)d.Control(device, 0x21, SET_PROTOCOL, 2, 0, 0);
+  TEST_ASSERT(d.stalled);
+  (void)d.Control(device, 0x21, SET_PROTOCOL, 0, 0, 0);
+  TEST_ASSERT(!d.stalled);
+  auto data = d.Control(device, 0xA1, GET_PROTOCOL, 0, 1, 0);
+  TEST_ASSERT(!d.stalled && data == std::vector<uint8_t>({0}));
+  (void)d.Control(device, 0x21, SET_PROTOCOL, 0x0100, 0, 0);
+  TEST_ASSERT(d.stalled);
+  data = d.Control(device, 0xA1, GET_PROTOCOL, 0, 1, 0);
+  TEST_ASSERT(!d.stalled && data == std::vector<uint8_t>({0}));
+}
+
 /// One Input main item of a report descriptor with the globals and locals in effect.
 struct InputItem
 {
@@ -847,6 +916,7 @@ int main()
   TestGetReport();
   TestClassCodes();
   TestBootProtocol();
+  TestSetProtocolValue();
   TestKeyboardReportDescriptorRange();
   TestGetReportThroughDeviceCore();
   std::puts("HID class: slot model, OUT lease, reset, idle rate and LED passed");
