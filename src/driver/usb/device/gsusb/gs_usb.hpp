@@ -51,7 +51,9 @@ namespace LibXR::USB
  * 节拍（只在有暂存帧时请求）按顺序重试，驱动接受一帧才回它的 echo。每通道的流控靠
  * 主机每通道的在途帧上限（Linux gs_usb 驱动为 10 帧，等于默认的暂存容量）：主机收到
  * echo 才继续发，所以暂存队列不会溢出。超过容量时（主机不遵守该上限）这一帧被丢弃，
- * 仍然回 echo。通道复位、重新启动或端点解绑时，该通道的暂存帧被丢弃，不发送、不回 echo。
+ * 仍然回 echo。通道复位、重新启动或端点解绑时，该通道的暂存帧被丢弃：还没交给 CAN
+ * 驱动的帧不会发送，也不回 echo；队头那一帧如果驱动已经接受（只差 echo 队列腾位），
+ * 已经交给了驱动，仍可能发到总线上，只是它的 echo 不再回。
  *
  * Transmit path: an echo means "the device's CAN driver accepted this frame". An OUT
  * frame goes to the CAN driver; when the driver's transmit queue is full (FULL) the
@@ -64,8 +66,10 @@ namespace LibXR::USB
  * equal to the default staging capacity): the host sends on only after an echo, so the
  * staging queue does not overflow. Beyond the capacity (a host that ignores that limit)
  * the frame is dropped and still echoed. A channel reset, a restart of the channel or
- * an endpoint unbind drops the channel's staged frames: they are never sent and get no
- * echo.
+ * an endpoint unbind drops the channel's staged frames: a frame not yet handed to the
+ * CAN driver is never sent and gets no echo; the head frame, if the driver already
+ * accepted it (only room in the echo queue is missing), has been handed over and may
+ * still go out on the bus, only its echo is not sent.
  */
 template <std::size_t CanChNum>
 class GsUsbClass : public DeviceClass
@@ -91,6 +95,15 @@ class GsUsbClass : public DeviceClass
   static constexpr std::size_t DEFAULT_TX_STAGE_SIZE = 10;
 
  private:
+  /// 暂存容量至少为 1：0 在构造时被拒绝（release 构建里同样检查）。
+  /// The staging capacity is at least 1: 0 is rejected at construction (checked in
+  /// release builds too).
+  static std::size_t CheckedStageSize(std::size_t tx_stage_size)
+  {
+    REQUIRE(tx_stage_size >= 1U);
+    return tx_stage_size;
+  }
+
   // ===== Linux gs_usb 线缆格式（固定 12 字节头） / Linux gs_usb wire format
   // (fixed 12-byte header) =====
   LIBXR_PACKED_BEGIN
@@ -166,7 +179,7 @@ class GsUsbClass : public DeviceClass
         echo_queue_(echo_queue_size),
         rx_queues_(rx_queue_size),
         err_queues_(ERR_QUEUE_SIZE),
-        stage_queues_(tx_stage_size)
+        stage_queues_(CheckedStageSize(tx_stage_size))
   {
     ASSERT(cans.size() == CAN_CH_NUM);
     std::size_t i = 0;
@@ -229,7 +242,7 @@ class GsUsbClass : public DeviceClass
         echo_queue_(echo_queue_size),
         rx_queues_(rx_queue_size),
         err_queues_(ERR_QUEUE_SIZE),
-        stage_queues_(tx_stage_size)
+        stage_queues_(CheckedStageSize(tx_stage_size))
   {
     ASSERT(fd_cans.size() == CAN_CH_NUM);
     std::size_t i = 0;
@@ -472,9 +485,11 @@ class GsUsbClass : public DeviceClass
     }
     out_armed_ = false;
 
-    // 暂存的主机帧同样属于这次绑定：不再发送，也不回 echo。
-    // The staged host frames belong to this binding too: they are never sent and get
-    // no echo.
+    // 暂存的主机帧同样属于这次绑定：没交给 CAN 驱动的不再发送也不回 echo；驱动已接受
+    // 的队头已经交出，仍可能上总线，只是不回它的 echo。
+    // The staged host frames belong to this binding too: those not yet handed to the CAN
+    // driver are never sent and get no echo; an accepted head frame has been handed over
+    // and may still go out on the bus, only its echo is not sent.
     for (uint8_t i = 0; i < can_count_; ++i)
     {
       DropStagedFrames(i);
@@ -1755,8 +1770,16 @@ class GsUsbClass : public DeviceClass
   }
 
   /**
-   * @brief 丢弃该通道暂存的主机帧：不发送，不回 echo / Drop the host frames staged for
-   *        this channel: they are never sent and get no echo
+   * @brief 丢弃该通道暂存的主机帧，一律不回 echo / Drop the host frames staged for this
+   *        channel; none of them is echoed
+   *
+   * 还没交给 CAN 驱动的帧因此不会发送。队头如果已被驱动接受（stage_accepted_，只差
+   * echo 队列腾位），它已经交给了驱动，不会被撤回，仍可能发到总线上，只是不再回它的
+   * echo。
+   * A frame not yet handed to the CAN driver is therefore never sent. A head frame the
+   * driver already accepted (stage_accepted_, only room in the echo queue is missing)
+   * has been handed over and is not withdrawn: it may still go out on the bus, only its
+   * echo is not sent.
    *
    * 只在 owner 中调用，owner 是暂存队列唯一的生产者和消费者。
    * Owner only: the owner is the only producer and consumer of the staging queues.
@@ -1845,6 +1868,14 @@ class GsUsbClass : public DeviceClass
    *        stay, in order. Runs in the owner, which consumes the receive and error
    *        queues and is the only producer and consumer of the echo queue. Frames
    *        already handed to the IN endpoint are not touched here.
+   *
+   *        这个通道暂存的主机帧也在这里丢弃（DropStagedFrames）：还没交给 CAN 驱动的
+   *        不发送、不回 echo；驱动已接受的队头已经交出，可能仍会上总线，只是不回它的
+   *        echo。
+   *        The host frames staged for this channel are dropped here too
+   *        (DropStagedFrames): those not yet handed to the CAN driver are never sent and
+   *        get no echo; an accepted head frame has been handed over and may still go out
+   *        on the bus, only its echo is not sent.
    */
   void DropStaleFrames(uint8_t ch)
   {
@@ -1878,9 +1909,11 @@ class GsUsbClass : public DeviceClass
       case GsUsb::CanMode::RESET:
         can_enabled_[ch] = false;
         fd_enabled_[ch] = false;
-        // 这个通道暂存的主机帧属于要结束的会话：丢弃，不发送，不回 echo。
+        // 这个通道暂存的主机帧属于要结束的会话：丢弃，都不回 echo；没交给 CAN 驱动的
+        // 不发送，驱动已接受的队头已经交出，仍可能上总线。
         // The host frames staged for this channel belong to the session that ends: drop
-        // them, they are never sent and get no echo.
+        // them, none is echoed; those not yet handed to the CAN driver are never sent, an
+        // accepted head frame has been handed over and may still go out on the bus.
         DropStagedFrames(ch);
         break;
 

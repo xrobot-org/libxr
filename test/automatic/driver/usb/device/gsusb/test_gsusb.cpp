@@ -16,10 +16,14 @@
  * pending flag with the 100 ms Timer task writing the Database.
  */
 
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -37,6 +41,20 @@
 using namespace LibXR;
 using namespace LibXR::USB;
 using namespace LibXR::USB::Test;
+
+/// When a test expects a fatal error in a forked child, the file that reported it goes
+/// into this pipe and the child exits; otherwise the process aborts.
+static int g_fatal_report_fd = -1;
+extern "C" void libxr_fatal_error(const char* file, uint32_t line, bool)
+{
+  if (g_fatal_report_fd >= 0)
+  {
+    (void)!write(g_fatal_report_fd, file, std::strlen(file));
+    _exit(42);
+  }
+  std::fprintf(stderr, "%s:%u: gs_usb test assertion failed\n", file, line);
+  std::abort();
+}
 
 namespace
 {
@@ -1249,6 +1267,47 @@ void TestStagedFdFrameAndFrameWithoutEcho()
   while (f.in.active) f.in.Complete();
   TEST_ASSERT((EchoIds(f) == std::vector<uint32_t>{0x5001u, 0x5002u}));
 }
+/// 暂存容量 0 在类的构造函数里被明确拒绝（报告的位置是 gs_usb.hpp，而不是队列内部的
+/// 断言）；1 可以构造。构造在 fork 出的子进程里做，因为致命错误会结束进程。
+/// A staging capacity of 0 is rejected explicitly by the class constructor (the report
+/// names gs_usb.hpp, not an assertion inside the queue); 1 constructs. The construction
+/// runs in a forked child because a fatal error ends the process.
+void TestStagingSizeOfZeroIsRejected()
+{
+  for (unsigned size = 0; size < 2; ++size)
+  {
+    int fds[2];
+    TEST_ASSERT(pipe(fds) == 0);
+    const pid_t pid = fork();
+    TEST_ASSERT(pid >= 0);
+    if (pid == 0)
+    {
+      close(fds[0]);
+      g_fatal_report_fd = fds[1];
+      FreshTimerList();
+      GsFixture f(32, 32, nullptr, size);
+      _exit(0);  // constructed
+    }
+    close(fds[1]);
+    char reported[256] = {};
+    const ssize_t got = read(fds[0], reported, sizeof(reported) - 1);
+    close(fds[0]);
+    int status = 0;
+    TEST_ASSERT(waitpid(pid, &status, 0) == pid);
+    TEST_ASSERT(WIFEXITED(status));
+    if (size == 0)
+    {
+      TEST_ASSERT(WEXITSTATUS(status) == 42 && got > 0);
+      const std::string where(reported, static_cast<size_t>(got));
+      TEST_ASSERT(where.find("gs_usb.hpp") != std::string::npos);
+    }
+    else
+    {
+      TEST_ASSERT(WEXITSTATUS(status) == 0 && got == 0);
+    }
+  }
+}
+
 }  // namespace
 
 int main()
@@ -1275,6 +1334,7 @@ int main()
   TestChannelStopDropsItsStagedFrames();
   TestEchoQueueFullWhileStagedFramesAreAccepted();
   TestStagedFdFrameAndFrameWithoutEcho();
+  TestStagingSizeOfZeroIsRejected();
   std::puts(
       "gs_usb class: queues, echo and RX alternation, burst, backpressure, overflow, "
       "USER_ID, round-robin, error queue and CAN transmit queue staging passed");
