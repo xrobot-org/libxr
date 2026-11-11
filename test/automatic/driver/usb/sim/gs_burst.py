@@ -171,7 +171,7 @@ def main():
             prev = seq
         runs.append((run_start, prev))
         print(f"missing sequence ranges (first 10): {runs[:10]}")
-    print(f"RESULT rx_over_errors={delta1["rx_over_errors"]} missing={len(missing)} "
+    print(f"RESULT rx_over_errors={delta1['rx_over_errors']} missing={len(missing)} "
           f"received={len(received)} sent={sent}")
     return 0
 

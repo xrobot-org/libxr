@@ -5,7 +5,6 @@ the stream started or the host dropped data.
 usage: uac_check.py <capture.wav>
 """
 
-import itertools
 import struct
 import sys
 import wave
@@ -18,7 +17,7 @@ samples = struct.unpack(f"<{len(frames) // 2}h", frames)
 # Skip leading silence before the stream started.
 start = next((i for i, s in enumerate(samples) if s != 0), len(samples))
 body = samples[start:]
-steps = [((b - a) & 0xFFFF) for a, b in itertools.pairwise(body)]
+steps = [((b - a) & 0xFFFF) for a, b in zip(body, body[1:])]
 good = sum(1 for d in steps if d == 1)
 breaks = [i for i, d in enumerate(steps) if d != 1]
 seconds = len(samples) / rate if rate else 0

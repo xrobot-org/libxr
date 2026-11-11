@@ -69,6 +69,11 @@ whose sysfs path lies under vhci, never the port number or VID:PID alone, becaus
 real device with the same ids (a real gs_usb adapter, say). The scripts run as the calling user;
 `sudo -n` is for `usbip` and for `ip link` on the simulated adapter's interface only.
 
+Python 脚本（`acm_echo.py`、`class_checks.py`、`uac_check.py`、`gs_burst.py`）只用标准库，3.8 及以上都能运行。
+
+The Python scripts (`acm_echo.py`, `class_checks.py`, `uac_check.py`, `gs_burst.py`) use the standard
+library only and run on Python 3.8 or newer.
+
 | 环境变量 / Variable | 作用 / Effect |
 | --- | --- |
 |control\|always` | 仿真控制器的帧中断策略（上表），默认 `stops` / frame interrupt policy of the simulated controller, `stops` by default |

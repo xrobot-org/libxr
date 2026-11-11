@@ -134,7 +134,7 @@ def check_gsusb(count):
         s.send(struct.pack(fmt, can_id | flags, dlc, data.ljust(8, b"\x00")))
         try:
             frame = s.recv(16)
-        except TimeoutError:
+        except (TimeoutError, socket.timeout):
             print(f"FAIL gsusb: no frame back for #{i}")
             ok = False
             break
