@@ -1191,13 +1191,17 @@ void TestEchoQueueFullWhileStagedFramesAreAccepted()
 
     if (reset)
     {
+      const size_t echoed = EchoIds(f).size();
       SetMode(f, 0, 0);  // the staged frames, accepted head included, are dropped
       TEST_ASSERT(!f.gs.NeedsFrameTick());
       for (unsigned i = 0; i < 64 && f.in.active; ++i) f.in.Complete();
       for (unsigned i = 0; i < 5; ++i) SofTick(f);
       TEST_ASSERT(f.can0.tx.size() == accepted);  // nothing more was submitted
-      // The head frame was accepted but its echo was never queued.
-      TEST_ASSERT(EchoIds(f).size() == accepted - 1);
+      // The echoes of the reset channel that waited in the class are dropped with the
+      // session (the host freed its tx contexts); the head frame's echo was never
+      // queued. Only what was already in the two IN slots reaches the host.
+      TEST_ASSERT(EchoIds(f).size() <= echoed + 2);
+      TEST_ASSERT(EchoIds(f).size() < accepted - 1);
       continue;
     }
 
@@ -1310,6 +1314,147 @@ void TestStagingSizeOfZeroIsRejected()
 
 }  // namespace
 
+/// 没有启动的通道的帧不会交给 IN 端点：复位之后入队的错误帧不发，复位那一刻被 echo 队列
+/// 压住的 echo 丢弃并归还 OUT 租约；另一个通道不受影响。
+/// The frames of a channel that is not started are never handed to the IN endpoint: an
+/// error frame queued after the reset is not sent, an echo held by echo-queue
+/// back-pressure at the reset is dropped and the OUT lease goes back; the other channel
+/// is not affected.
+void TestStoppedChannelFramesNeverReachTheEndpoint()
+{
+  FreshTimerList();
+  GsFixture f(32, 2);  // two echo slots: the third echo is held
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f);
+  SetMode(f, 0, 1u, GsUsb::GSCAN_MODE_BERR_REPORTING);
+
+  // Fill the IN slots with channel 1 frames so that channel 0 echoes queue up.
+  f.can1.Inject(0x200u, {0x20});
+  f.can1.Inject(0x201u, {0x21});
+  unsigned accepted = 0;
+  while (f.out.active && accepted < 8)
+  {
+    f.out.HostSends(ClassicFrame(0x3000u + accepted, 0x300u + accepted, 1, 0, 0, {0x5A}));
+    ++accepted;
+  }
+  TEST_ASSERT(!f.out.active);  // the echo of the last frame is held, the lease with it
+
+  // The host stops channel 0: the held echo is dropped and the OUT receive is armed.
+  SetMode(f, 0, 0u);
+  TEST_ASSERT(f.out.active);
+
+  // An error frame of the stopped channel is queued by the CAN callback but never sent.
+  f.can0.Inject(LibXR::CAN::FromErrorID(LibXR::CAN::ErrorID::CAN_ERROR_ID_BUS_OFF), {},
+                LibXR::CAN::Type::ERROR);
+  f.can1.Inject(0x202u, {0x22});
+  for (unsigned i = 0; i < 32 && f.in.active; ++i) f.in.Complete();
+
+  unsigned ch0_frames = 0, ch0_errors = 0;
+  std::vector<uint32_t> rx1;
+  for (const auto& frame : f.in.sent)
+  {
+    if (frame[9] == 0) ++ch0_frames;
+    if (frame[9] == 0 && (ReadU32(frame, 4) & GsUsb::CAN_ERR_FLAG) != 0U) ++ch0_errors;
+    if (frame[9] == 1 && ReadU32(frame, 0) == 0xFFFFFFFFu)
+      rx1.push_back(ReadU32(frame, 4));
+  }
+  // Only the echoes that were already in the IN slots before the reset (at most two).
+  TEST_ASSERT(ch0_frames <= 2);
+  TEST_ASSERT(ch0_errors == 0);
+  TEST_ASSERT(rx1 == std::vector<uint32_t>({0x200u, 0x201u, 0x202u}));
+}
+
+/// 只复位一个通道时共享 IN 端点不动：另一个通道已经打包的帧、排队的帧和 echo 都照常按
+/// 顺序发出。
+/// Resetting one channel leaves the shared IN endpoint alone: the other channel's frames
+/// already packed, its queued frames and its echoes all go out, in order.
+void TestOneChannelResetKeepsTheOtherChannelsFramesAndEchoes()
+{
+  FreshTimerList();
+  GsFixture f;
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f);
+
+  for (uint32_t i = 0; i < 6; ++i) f.can1.Inject(0x200u + i, {static_cast<uint8_t>(i)});
+  for (uint32_t i = 0; i < 4; ++i) f.can0.Inject(0x100u + i, {static_cast<uint8_t>(i)});
+  for (uint32_t i = 0; i < 2; ++i)
+    f.out.HostSends(ClassicFrame(0x4000u + i, 0x400u + i, 1, 1, 0, {0x5B}));
+
+  SetMode(f, 0, 0u);  // channel 1 is still started
+  for (unsigned i = 0; i < 64 && f.in.active; ++i) f.in.Complete();
+  std::vector<uint32_t> rx1, echo1;
+  for (const auto& frame : f.in.sent)
+  {
+    if (frame[9] != 1) continue;
+    if (ReadU32(frame, 0) == 0xFFFFFFFFu)
+      rx1.push_back(ReadU32(frame, 4));
+    else
+      echo1.push_back(ReadU32(frame, 0));
+  }
+  TEST_ASSERT(rx1 ==
+              std::vector<uint32_t>({0x200u, 0x201u, 0x202u, 0x203u, 0x204u, 0x205u}));
+  TEST_ASSERT(echo1 == std::vector<uint32_t>({0x4000u, 0x4001u}));
+}
+
+/// 一帧被接受就恰好回一个 echo（通道在运行时）；通道复位后，它的 echo 不再回，重新启动
+/// 之后又恢复一帧一个 echo。
+/// A frame accepted while the channel is started is echoed exactly once; after the
+/// channel is reset its echoes are no longer sent, and after the restart it is one echo
+/// per accepted frame again.
+void TestEchoCountMatchesAcceptedFrames()
+{
+  FreshTimerList();
+  GsFixture f;
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f);
+
+  auto pump = [&](unsigned frames, uint8_t ch, uint32_t base)
+  {
+    for (unsigned i = 0; i < frames; ++i)
+    {
+      for (unsigned guard = 0; guard < 64 && !f.out.active; ++guard) f.in.Complete();
+      TEST_ASSERT(f.out.active);
+      f.out.HostSends(ClassicFrame(base + i, 0x300u + i, 1, ch, 0, {0x5A}));
+    }
+    for (unsigned guard = 0; guard < 64 && f.in.active; ++guard) f.in.Complete();
+  };
+
+  auto echoes = [&](uint8_t ch)
+  {
+    unsigned n = 0;
+    for (const auto& frame : f.in.sent)
+      if (frame[9] == ch && ReadU32(frame, 0) != 0xFFFFFFFFu) ++n;
+    return n;
+  };
+
+  pump(40, 0, 0x1000u);
+  pump(40, 1, 0x2000u);
+  TEST_ASSERT(f.can0.tx.size() == 40 && echoes(0) == 40);
+  TEST_ASSERT(f.can1.tx.size() == 40 && echoes(1) == 40);
+
+  // Channel 0 is reset with echoes pending: the accepted frames are on the bus side, the
+  // echoes of the old session are not sent; channel 1 keeps its one-to-one count.
+  for (unsigned i = 0; i < 3; ++i)
+    f.out.HostSends(ClassicFrame(0x1100u + i, 0x310u + i, 1, 0, 0, {0x5A}));
+  SetMode(f, 0, 0u);
+  const unsigned accepted0 = static_cast<unsigned>(f.can0.tx.size());
+  for (unsigned guard = 0; guard < 64 && f.in.active; ++guard) f.in.Complete();
+  TEST_ASSERT(accepted0 == 43);
+  TEST_ASSERT(echoes(0) <= 43 && echoes(0) >= 40);
+
+  // A frame for the stopped channel is not accepted, so it is not echoed either.
+  for (unsigned guard = 0; guard < 64 && !f.out.active; ++guard) f.in.Complete();
+  f.out.HostSends(ClassicFrame(0x1200u, 0x320u, 1, 0, 0, {0x5A}));
+  TEST_ASSERT(f.can0.tx.size() == accepted0);
+
+  SetMode(f, 0, 1u);
+  const unsigned before = echoes(0);
+  pump(25, 0, 0x1300u);
+  TEST_ASSERT(f.can0.tx.size() == accepted0 + 25);
+  TEST_ASSERT(echoes(0) - before == 25);
+  TEST_ASSERT(f.can1.tx.size() == 40 && echoes(1) == 40);
+}
+
 int main()
 {
   TestBindAndConfiguration();
@@ -1335,6 +1480,9 @@ int main()
   TestEchoQueueFullWhileStagedFramesAreAccepted();
   TestStagedFdFrameAndFrameWithoutEcho();
   TestStagingSizeOfZeroIsRejected();
+  TestStoppedChannelFramesNeverReachTheEndpoint();
+  TestOneChannelResetKeepsTheOtherChannelsFramesAndEchoes();
+  TestEchoCountMatchesAcceptedFrames();
   std::puts(
       "gs_usb class: queues, echo and RX alternation, burst, backpressure, overflow, "
       "USER_ID, round-robin, error queue and CAN transmit queue staging passed");

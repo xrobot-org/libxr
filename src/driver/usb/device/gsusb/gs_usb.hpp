@@ -45,6 +45,17 @@ namespace LibXR::USB
  * counts it per channel, and the overflow flag rides on that channel's next frame to
  * the host (RX, error or echo).
  *
+ * 会话边界：主机在通道停止时释放这个通道的 tx 上下文，所以通道复位（MODE RESET）丢弃
+ * 它排着队的接收帧、错误帧、echo 和被 echo 队列压住的 echo，没有启动的通道的帧不再交给
+ * IN 端点。通道启动（MODE START）再清理一次，覆盖总线复位后重新绑定、没有收到 MODE
+ * RESET 的情况，以及 CAN 回调在复位清理之后才入队的竞争。
+ * Session boundary: the host frees a channel's tx contexts when it stops the channel,
+ * so a channel reset (MODE RESET) drops the channel's queued receive frames, error
+ * frames, echoes and the echo held by echo-queue back-pressure, and the frames of a
+ * channel that is not started are never handed to the IN endpoint. A channel start
+ * (MODE START) cleans up once more, for a rebind after a bus reset that got no MODE
+ * RESET and for a CAN callback that enqueued only after the reset cleanup.
+ *
  * 发送路径：echo 的含义是“设备的 CAN 驱动已接受这一帧”。OUT 帧交给 CAN 驱动；驱动的
  * 发送队列满（FULL）时，帧进入该通道自己的暂存队列，不回 echo，OUT 租约立即归还，
  * 另一个通道不受影响。暂存队列非空期间，该通道的新帧排在队尾，保持顺序。服务和 SOF
@@ -292,7 +303,15 @@ class GsUsbClass : public DeviceClass
     // OUT lease back (the host resumes).
     if (out_hold_)
     {
-      if (echo_queue_.Push(out_hold_item_) == ErrorCode::OK)
+      const uint8_t hold_ch = out_hold_item_.hdr.channel;
+      if (hold_ch >= can_count_ || !can_enabled_[hold_ch].load(std::memory_order_relaxed))
+      {
+        // 通道已经停止（复位清理没碰到它的话）：不回 echo，只归还租约。
+        // The channel is not started any more: no echo, just give the lease back.
+        out_hold_ = false;
+        ReturnLease(in_isr, out_hold_slot_);
+      }
+      else if (echo_queue_.Push(out_hold_item_) == ErrorCode::OK)
       {
         out_hold_ = false;
         ReturnLease(in_isr, out_hold_slot_);
@@ -828,8 +847,6 @@ class GsUsbClass : public DeviceClass
    */
   ErrorCode OnClassData(bool in_isr, uint8_t bRequest, LibXR::ConstRawData& data) override
   {
-    UNUSED(in_isr);
-
     auto req = static_cast<GsUsb::BReq>(bRequest);
 
     switch (req)
@@ -868,7 +885,7 @@ class GsUsbClass : public DeviceClass
           return ErrorCode::ARG_ERR;
         }
         Memory::FastCopy(&ctrl_buf_.mode, data.addr_, sizeof(GsUsb::DeviceMode));
-        return HandleMode(ctrl_target_channel_, ctrl_buf_.mode);
+        return HandleMode(in_isr, ctrl_target_channel_, ctrl_buf_.mode);
 
       case GsUsb::BReq::BERR:
         if (data.size_ != sizeof(uint32_t))
@@ -1430,14 +1447,37 @@ class GsUsbClass : public DeviceClass
         rx_turn_ = false;
         return true;
       }
-      return echo_queue_.Pop(item) == ErrorCode::OK;
+      return PickEcho(item);
     }
-    if (echo_queue_.Pop(item) == ErrorCode::OK)
+    if (PickEcho(item))
     {
       rx_turn_ = true;
       return true;
     }
     return PickReceived(item);
+  }
+
+  /**
+   * @brief 取下一个 echo；没有启动的通道的 echo 丢弃，不交给端点 /
+   *        Take the next echo; the echo of a channel that is not started is dropped
+   *        and never handed to the endpoint
+   *
+   * 主机在通道停止时已经释放了这个通道的 tx 上下文，这样的 echo 它只会报
+   * “Unexpected unused echo id”。
+   * The host freed the channel's tx contexts when it stopped the channel, so it could
+   * only report such an echo as "Unexpected unused echo id".
+   */
+  bool PickEcho(QueueItem& item)
+  {
+    while (echo_queue_.Pop(item) == ErrorCode::OK)
+    {
+      if (item.hdr.channel < can_count_ &&
+          can_enabled_[item.hdr.channel].load(std::memory_order_relaxed))
+      {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// 通道间轮流取一帧接收帧（错误帧先于同通道的数据帧）/ Take one received frame,
@@ -1447,6 +1487,10 @@ class GsUsbClass : public DeviceClass
     for (std::size_t k = 0; k < can_count_; ++k)
     {
       const uint8_t ch = static_cast<uint8_t>((rr_ + k) % can_count_);
+      // 没有启动的通道不发：它的帧属于已经结束的会话（错误帧不看通道是否启动入队）。
+      // A channel that is not started sends nothing: its frames belong to a session
+      // that ended (error frames are queued whether or not the channel is started).
+      if (!can_enabled_[ch].load(std::memory_order_relaxed)) continue;
       if (err_queues_[ch].Pop(item) == ErrorCode::OK ||
           rx_queues_[ch].Pop(item) == ErrorCode::OK)
       {
@@ -1859,28 +1903,25 @@ class GsUsbClass : public DeviceClass
   }
 
   /**
-   * @brief 通道启动：丢弃上一次会话留下、还没发给主机的接收帧、错误帧和这个通道的回显。
-   *        CAN 帧有时效性，回显 ID 属于上一个主机会话；其他通道的回显保留，顺序不变。
-   *        在 owner 里执行：owner 是接收队列和错误队列的消费者，也是回显队列唯一的生产者
-   *        和消费者。已经交给 IN 端点的帧不在这里处理。
-   *        Channel start: drop the receive frames, the error frames and this channel's
-   *        echoes that the previous session left unsent. CAN frames are time-bound and
-   *        echo IDs belong to the previous host session; the echoes of other channels
-   *        stay, in order. Runs in the owner, which consumes the receive and error
-   *        queues and is the only producer and consumer of the echo queue. Frames
-   *        already handed to the IN endpoint are not touched here.
+   * @brief 丢弃一个通道排着队、还没交给端点的帧：接收帧、错误帧、它的 echo，以及被
+   *        echo 队列满压住的它的那个 echo /
+   *        Drop the frames of one channel that wait in the class and are not yet handed
+   *        to the endpoint: its receive frames, error frames and echoes, and its echo
+   *        held by echo-queue back-pressure
    *
-   *        这个通道暂存的主机帧也在这里丢弃（DropStagedFrames）：还没交给 CAN 驱动的
-   *        不发送、不回 echo；驱动已接受的队头已经交出，可能仍会上总线，只是不回它的
-   *        echo。
-   *        The host frames staged for this channel are dropped here too
-   *        (DropStagedFrames): those not yet handed to the CAN driver are never sent and
-   *        get no echo; an accepted head frame has been handed over and may still go out
-   *        on the bus, only its echo is not sent.
+   * 其他通道的 echo 保留，顺序不变。被压住的 echo 属于结束的会话：丢弃它，归还 OUT
+   * 租约，主机恢复收发；帧本身已经交给了 CAN 驱动，仍可能上总线。在 owner 里执行：
+   * owner 是接收队列和错误队列的消费者，也是回显队列唯一的生产者和消费者。已经交给
+   * IN 端点的帧不在这里处理。
+   * The echoes of other channels stay, in order. A held echo belongs to the session
+   * that ends: it is dropped and the OUT lease goes back, so the host resumes; the frame
+   * itself was handed to the CAN driver and may still go out on the bus. Runs in the
+   * owner, which consumes the receive and error queues and is the only producer and
+   * consumer of the echo queue. Frames already handed to the IN endpoint are not
+   * handled here.
    */
-  void DropStaleFrames(uint8_t ch)
+  void DropChannelFrames(bool in_isr, uint8_t ch)
   {
-    DropStagedFrames(ch);
     QueueItem item;
     while (rx_queues_[ch].Pop(item) == ErrorCode::OK)
     {
@@ -1893,12 +1934,42 @@ class GsUsbClass : public DeviceClass
       if (echo_queue_.Pop(item) != ErrorCode::OK) break;
       if (item.hdr.channel != ch) (void)echo_queue_.Push(item);
     }
+    if (out_hold_ && out_hold_item_.hdr.channel == ch)
+    {
+      out_hold_ = false;
+      ReturnLease(in_isr, out_hold_slot_);
+    }
+  }
+
+  /**
+   * @brief 通道启动：丢弃上一次会话留下的帧（见 DropChannelFrames）和这个通道暂存的
+   *        主机帧 /
+   *        Channel start: drop what the previous session left (see DropChannelFrames)
+   *        and the host frames staged for this channel
+   *
+   *        通道复位时已经做过同样的清理，这里是兜底：CAN 回调在另一个上下文里检查完
+   *        可用标志后，可能在复位清理之后才入队。
+   *        The channel reset did the same cleanup; this is the safety net for a CAN
+   *        callback that checked the enable flag in its own context and enqueued only
+   *        after the reset cleanup.
+   *
+   *        暂存的主机帧也在这里丢弃（DropStagedFrames）：还没交给 CAN 驱动的不发送、
+   *        不回 echo；驱动已接受的队头已经交出，可能仍会上总线，只是不回它的 echo。
+   *        The host frames staged for this channel are dropped here too
+   *        (DropStagedFrames): those not yet handed to the CAN driver are never sent and
+   *        get no echo; an accepted head frame has been handed over and may still go out
+   *        on the bus, only its echo is not sent.
+   */
+  void DropStaleFrames(bool in_isr, uint8_t ch)
+  {
+    DropStagedFrames(ch);
+    DropChannelFrames(in_isr, ch);
   }
 
   /**
    * @brief 处理 MODE（启动/复位 + 标志位） / Handle MODE (start/reset + flags)
    */
-  ErrorCode HandleMode(uint8_t ch, const GsUsb::DeviceMode& mode)
+  ErrorCode HandleMode(bool in_isr, uint8_t ch, const GsUsb::DeviceMode& mode)
   {
     if (!host_format_ok_ || ch >= can_count_ || !cans_[ch])
     {
@@ -1916,10 +1987,15 @@ class GsUsbClass : public DeviceClass
         // them, none is echoed; those not yet handed to the CAN driver are never sent, an
         // accepted head frame has been handed over and may still go out on the bus.
         DropStagedFrames(ch);
+        // 这个通道排着队的帧和它的 echo 也属于结束的会话（主机在关闭时已经释放了
+        // tx 上下文）。
+        // The channel's queued frames and its echoes belong to the session that ends
+        // too (the host freed its tx contexts at close).
+        DropChannelFrames(in_isr, ch);
         break;
 
       case GsUsb::CanMode::START:
-        DropStaleFrames(ch);
+        DropStaleFrames(in_isr, ch);
         can_enabled_[ch] = true;
         if (fd_supported_ && fdcans_[ch] && (mode.flags & GsUsb::GSCAN_MODE_FD))
         {
