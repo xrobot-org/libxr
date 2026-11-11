@@ -1208,6 +1208,12 @@ class TapMouse : public HIDMouse
   using HIDMouse::UnbindEndpoints;
   std::function<void()> after_publish;
 
+  /// A second sender, straight to SendInputReport / A second sender
+  ErrorCode RawSend(const std::vector<uint8_t>& bytes)
+  {
+    return SendInputReport({bytes.data(), bytes.size()}, false);
+  }
+
  protected:
   void PublishInputReport(ConstRawData report, uint32_t session) override
   {
@@ -1259,6 +1265,37 @@ void TestRefusedReportIsWithdrawn()
   TEST_ASSERT(GetReport(mouse, REPORT_INPUT, 0, data) == ErrorCode::OK);
   TEST_ASSERT(data == std::vector<uint8_t>({0x02, 7, 8, 9}));
   f.in.Complete();
+}
+
+/// A sender stopped inside the publish step while the interface is unbound and bound
+/// again (which clears the in-flight flag): a second sender must not publish at the same
+/// time and gets BUSY. Once the first sender has returned the guard is free again and
+/// the new session sends as usual.
+void TestRebindDuringPublish()
+{
+  Fixture f;
+  TapMouse mouse(Number::EP1);
+  mouse.BindEndpoints(f.pool, 0, false);
+  std::vector<uint8_t> data;
+  ErrorCode inner = ErrorCode::OK;
+  mouse.after_publish = [&]
+  {
+    mouse.UnbindEndpoints(f.pool, false);
+    mouse.BindEndpoints(f.pool, 0, false);
+    inner = mouse.RawSend({0x02, 7, 8, 9});
+  };
+  mouse.Move(HIDMouse::Button::LEFT, 5, -3, 1, false);
+  TEST_ASSERT(inner == ErrorCode::BUSY);
+  TEST_ASSERT(f.in.starts.empty());
+  TEST_ASSERT(GetReport(mouse, REPORT_INPUT, 0, data) == ErrorCode::OK);
+  TEST_ASSERT(data == std::vector<uint8_t>(4, 0));
+
+  TEST_ASSERT(mouse.RawSend({0x02, 7, 8, 9}) == ErrorCode::OK);
+  TEST_ASSERT(f.in.starts.size() == 1);
+  TEST_ASSERT(GetReport(mouse, REPORT_INPUT, 0, data) == ErrorCode::OK);
+  TEST_ASSERT(data == std::vector<uint8_t>({0x02, 7, 8, 9}));
+  f.in.Complete();
+  TEST_ASSERT(mouse.RawSend({0x01, 1, 2, 3}) == ErrorCode::OK);
 }
 
 /// Two sender threads send at full speed, a third plays the host and takes every report,
@@ -1461,6 +1498,7 @@ int main()
   TestGetReportThroughDeviceCore();
   TestInterleavedSendersKeepSendOrder();
   TestRefusedReportIsWithdrawn();
+  TestRebindDuringPublish();
   TestTwoSendersAgainstGetReport();
   TestSessionStartsClean();
   std::puts("HID class: slot model, OUT lease, reset, idle rate and LED passed");

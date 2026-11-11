@@ -757,10 +757,24 @@ class HID : public DeviceClass
     }
     Memory::FastCopy(slot.data.addr_, report.addr_, report.size_);
 
-    // 在独占窗口里、Submit 之前发布：Submit 之后 IN 完成随时会放开窗口。
+    // 在独占窗口里、Submit 之前发布：Submit 之后 IN 完成随时会放开窗口。发布另有一把只有
+    // 发送方拿放的写者锁：绑定/解绑会清在途标志，暂停在发布里的旧发送方不能因此与新
+    // 发送方同时写快照；拿不到时和在途一样返回 BUSY。
     // Publish inside the exclusive window and before Submit: after Submit the IN
-    // completion can open the window at any moment.
-    PublishInputReport(report, session);
+    // completion can open the window at any moment. Publishing also takes a writer guard
+    // that only senders take and release: bind and unbind clear the in-flight flag, and a
+    // sender paused inside the publish must not overlap a new sender writing the
+    // snapshot. A sender that cannot take it gets BUSY, as for a report in flight.
+    {
+      PublishGuard guard(publishing_);
+      if (!guard.Held())
+      {
+        ep->ReleaseSlot(slot, in_isr);
+        input_in_flight_.store(0U, std::memory_order_release);
+        return ErrorCode::BUSY;
+      }
+      PublishInputReport(report, session);
+    }
 
     ans = ep->Submit(slot, report.size_, false, in_isr);
     if (ans != ErrorCode::OK)
@@ -778,7 +792,15 @@ class HID : public DeviceClass
       // 本来就不会采用它，不再碰快照。
       // The report was not sent: take it back. After a rebind the report belongs to the
       // old session and readers ignore it, so the snapshot is left alone.
-      if (session_.load(std::memory_order_acquire) == session) WithdrawInputReport();
+      if (session_.load(std::memory_order_acquire) == session)
+      {
+        // 拿不到写者锁说明另一个发送方正在发布（重新绑定之后），那时这份报告已属于旧
+        // 会话，不用撤回。
+        // Without the writer guard another sender is publishing (after a rebind), and
+        // this report belongs to an old session: nothing to take back.
+        PublishGuard guard(publishing_);
+        if (guard.Held()) WithdrawInputReport();
+      }
       input_in_flight_.store(0U, std::memory_order_release);
       return ErrorCode::FAILED;
     }
@@ -922,8 +944,33 @@ class HID : public DeviceClass
     self->OnDataInComplete(in_isr, completion);
   }
 
+  /// 发布窗口的写者锁：只有发送方拿放，绑定、解绑和完成回调不碰它 / Writer guard of the
+  /// publish step: taken and released by senders only; bind, unbind and completions never
+  /// touch it
+  class PublishGuard
+  {
+   public:
+    explicit PublishGuard(std::atomic<uint32_t>& flag) : flag_(flag)
+    {
+      uint32_t expected = 0U;
+      held_ = flag_.compare_exchange_strong(expected, 1U, std::memory_order_acq_rel);
+    }
+    ~PublishGuard()
+    {
+      if (held_) flag_.store(0U, std::memory_order_release);
+    }
+    PublishGuard(const PublishGuard&) = delete;
+    PublishGuard& operator=(const PublishGuard&) = delete;
+    bool Held() const { return held_; }
+
+   private:
+    std::atomic<uint32_t>& flag_;
+    bool held_ = false;
+  };
+
   std::atomic<uint32_t> input_in_flight_{
-      0};  ///< 单条在途标志 / One input report in flight
+      0};                                ///< 单条在途标志 / One input report in flight
+  std::atomic<uint32_t> publishing_{0};  ///< 发布写者锁 / Publish writer guard
   std::atomic<Endpoint*> in_ep_ref_{
       nullptr};  ///< SendInputReport 的 IN 端点 / IN endpoint doorbell
   std::atomic<uint32_t> session_{
