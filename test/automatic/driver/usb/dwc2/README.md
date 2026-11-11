@@ -149,6 +149,18 @@ returns 0 and the case belongs among the regular ones.
 
 运行 / Run: `build/test/test_esp_usb --finding uac_streams`
 
+`ctest` 里的 `stm32_usb_otg_findings` 和 `esp_usb_findings`（标签 `findings`，`ctest -L findings` 单独运行）
+对每个程序执行 `--check-findings`：在子进程里逐个运行上表的用例，要求每个仍然在断言失败处中止，且断言
+文字含有用例登记的片段（`test_findings.hpp` 的 `fails_with`）。某个发现开始通过，或因别的原因失败，这个
+测试就失败；后端修好之后，把用例移进常规用例并从列表里删掉。
+
+The ctests `stm32_usb_otg_findings` and `esp_usb_findings` (label `findings`; `ctest -L findings` runs
+only them) execute `--check-findings` of each program: every case of the table above runs in a child
+process and must still abort at a failed assertion whose text contains the fragment registered with the
+case (`fails_with` in `test_findings.hpp`). The test fails when a finding starts to pass or fails for
+another reason; once the backend is fixed, move the case among the regular ones and delete it from the
+list.
+
 ## 内存检查 / Memory checking
 
 两个测试在 AddressSanitizer 的默认设置下（含 LeakSanitizer）通过。后端和 `DeviceCore` 在构造和初始化时

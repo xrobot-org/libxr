@@ -329,6 +329,14 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
   # allocates; ThreadSanitizer would report every trapped access as a signal-unsafe call.
   set_tests_properties(stm32_usb_otg PROPERTIES TIMEOUT 120 ENVIRONMENT
                                                 "TSAN_OPTIONS=report_signal_unsafe=0")
+  # The cases that check behaviour the backend does not have yet stay out of the run
+  # above (usb/dwc2/README.md, "Findings"). This test runs each of them in a child
+  # process and fails when one starts to pass or fails for another reason.
+  add_test(NAME stm32_usb_otg_findings COMMAND test_stm32_usb_otg --check-findings)
+  set_tests_properties(
+    stm32_usb_otg_findings PROPERTIES TIMEOUT 120 LABELS findings ENVIRONMENT
+                                                                  "TSAN_OPTIONS=report_signal_unsafe=0"
+  )
 
   # ESP32-S2/S3 USB backend against the same controller model: the real backend source
   # with fake ESP-IDF headers for an ESP32-S3. The register bit-fields are accessed as
@@ -363,6 +371,12 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     # Same register traps as stm32_usb_otg.
     set_tests_properties(esp_usb PROPERTIES TIMEOUT 120 ENVIRONMENT
                                             "TSAN_OPTIONS=report_signal_unsafe=0")
+    # The findings of the ESP backend, as for stm32_usb_otg_findings.
+    add_test(NAME esp_usb_findings COMMAND test_esp_usb --check-findings)
+    set_tests_properties(
+      esp_usb_findings PROPERTIES TIMEOUT 120 LABELS findings ENVIRONMENT
+                                                              "TSAN_OPTIONS=report_signal_unsafe=0"
+    )
   else()
     message(
       STATUS

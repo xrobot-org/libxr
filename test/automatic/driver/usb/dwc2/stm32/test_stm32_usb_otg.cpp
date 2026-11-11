@@ -563,10 +563,11 @@ int main(int argc, char** argv)
   const int handled = TestFindings::Run(
       argc, argv,
       {{"dma_data_with_status_phase", "XFRC read together with STSPHSRX is dropped",
-        FindingDmaDataWithStatusPhase},
+        FindingDmaDataWithStatusPhase, "f.probe.data_count == 1U"},
        {"stop_leaves_out_endpoint_enabled",
         "Stop() while an OUT endpoint stop waits for the global OUT NAK",
-        FindingStopLeavesOutEndpointEnabled}});
+        FindingStopLeavesOutEndpointEnabled,
+        "(f.hw.OutCtl(1) & Dwc2::CTL_EPENA) == 0U"}});
   if (handled >= 0) return handled;
   RunAll();
   std::printf("stm32 otg: all tests passed\n");
