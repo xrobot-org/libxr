@@ -11,7 +11,7 @@
 # 注入的 WAIT。服务端用空闲的 TCP 端口和随机 busid，脚本确认它就是自己启动的那个之后才挂接
 # （usbip_lib.sh），不会连到系统 usbipd 的默认端口。
 #
-# The host has real CMSIS-DAP probes, so the simulated one is selected in several ways at
+# The host may have real CMSIS-DAP probes, so the simulated one is selected in several ways at
 # once: its VID:PID 1209:0002 must belong to exactly one device on the host and that
 # device must lie under vhci (usbip_lib.sh, checked before every tool starts), OpenOCD
 # gets its serial string and its bus-port location, and the vhci port is found from the

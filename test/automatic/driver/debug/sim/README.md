@@ -20,11 +20,21 @@ the model). On top of it sit the real DAP v2 class and the USB simulation backen
 | `swd_target.hpp` | 目标模型和三种接法 / target model and its connections |
 | `test_swd_target.cpp` | 目标模型和 `SwdGeneralGPIO` 的单元测试（ctest `swd_target`）/ unit tests of the model and of `SwdGeneralGPIO` |
 | `test_dap_fuzz.cpp` | DAP v2 随机测试，经 USB 仿真后端到 SWD 目标（ctest `dap_fuzz`）/ randomised DAP v2 test through the USB simulation to the SWD target |
-| `test_dap_replay.cpp`, `replay/*.txt` | 回放 OpenOCD、pyOCD、probe-rs 录下的会话（ctest `dap_replay`）/ replay of sessions recorded from OpenOCD, pyOCD and probe-rs |
+| `test_dap_replay.cpp`, `replay/*.txt` | 回归基准：回放 OpenOCD、pyOCD、probe-rs 录下的会话，应答与录制逐字节比较（ctest `dap_replay`）/ regression baseline: replay of sessions recorded from OpenOCD, pyOCD and probe-rs, the responses compared byte for byte with the recording |
 | `dap_sim_usbip.cpp` | 仿真探针经 USB/IP 交给内核，真实调试器可以连 / the simulated probe over USB/IP, for a real debugger |
 | `dap_e2e.sh`, `dap_record.sh`, `openocd_dap_sim.cfg` | 端到端会话与录制 / end-to-end sessions and recording |
 | `swd_target_bitbang.cpp`, `openocd_calibrate.sh`, `pyocd_calibrate.sh`, `openocd_sim.cfg` | 用真实 OpenOCD / pyOCD 校准目标模型 / calibrating the model with real OpenOCD / pyOCD |
 | `keil_sim.ini` | Keil uVision 的调试初始化脚本，只在 Windows 上用，Linux 上没有跑过 / Keil uVision debug init script, Windows only, not run on Linux |
+
+## 回放是回归基准 / The replay is a regression baseline
+
+`replay/*.txt` 里的应答是录制那天本实现自己的输出，真实工具只证明当时的会话跑通了（镜像对得上）。
+回放能发现命令层、流水线或 SWD 引擎的行为变了，发现不了录制时就已经错的应答，它不是一致性测试。
+
+The responses in `replay/*.txt` are the output of this implementation on the day of the recording; the
+real tool only showed that the session completed (the memory image matched). The replay finds a change in
+the command layer, the pipelining or the SWD engine; it cannot find a response that was already wrong when
+it was recorded, and it is not a conformance test.
 
 ## 原子命令组与录制的会话 / Atomic command groups and the recorded sessions
 
