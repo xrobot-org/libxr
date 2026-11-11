@@ -19,17 +19,38 @@ namespace LibXR::Debug
 class JtagDp final
 {
  public:
+  /**
+   * @brief 构造 JTAG-DP 封装 / Construct a JTAG-DP wrapper
+   * @param jtag 底层 JTAG 驱动，须在本对象生命周期内有效 / Underlying JTAG driver, must
+   * outlive this object
+   * @param chain 扫描链配置（IR 长度与器件位置），可为空，此时按单器件 4 位 IR 处理 /
+   * Scan chain configuration (IR lengths and device position); may be null, in which
+   * case a single device with a 4-bit IR is assumed
+   */
   explicit JtagDp(Jtag& jtag, JtagProtocol::ChainConfig* chain = nullptr)
       : jtag_(jtag), chain_(chain)
   {
   }
 
+  /**
+   * @brief 更换扫描链配置并使当前 IR 缓存失效 / Replace the scan chain configuration and
+   * invalidate the cached IR
+   * @param chain 新的扫描链配置，可为空 / New chain configuration, may be null
+   */
   void SetChainConfig(JtagProtocol::ChainConfig* chain)
   {
     chain_ = chain;
     current_ir_valid_ = false;
   }
 
+  /**
+   * @brief 单次 DPACC 读（不取回结果）/ Single DPACC read without fetching the result
+   * @param addr2b DP 寄存器地址（A[3:2]）/ DP register address (A[3:2])
+   * @param val 本次扫描移出的数据，管线化读时为上一笔结果 / Data shifted out by this
+   * scan; with pipelined reads it belongs to the previous access
+   * @param ack 本次扫描返回的 ACK / ACK returned by this scan
+   * @return 扫描链传输结果 / Result of the scan chain transfer
+   */
   ErrorCode DpRead(uint8_t addr2b, uint32_t& val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
@@ -39,6 +60,13 @@ class JtagDp final
     return EC;
   }
 
+  /**
+   * @brief 单次 DPACC 写 / Single DPACC write
+   * @param addr2b DP 寄存器地址（A[3:2]）/ DP register address (A[3:2])
+   * @param val 写入的 32 位数据 / 32-bit data to write
+   * @param ack 本次扫描返回的 ACK / ACK returned by this scan
+   * @return 扫描链传输结果 / Result of the scan chain transfer
+   */
   ErrorCode DpWrite(uint8_t addr2b, uint32_t val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
@@ -47,6 +75,16 @@ class JtagDp final
     return EC;
   }
 
+  /**
+   * @brief DP 读事务：发起读后再读 RDBUFF 取回数据 / DP read transaction: issue the read,
+   * then read RDBUFF to fetch the data
+   * @param addr2b DP 寄存器地址（A[3:2]）；地址 0 读到 0 时改用 IDCODE 指令重读 /
+   * DP register address (A[3:2]); a zero read of address 0 is retried via the IDCODE IR
+   * @param val 读到的数据（仅 ACK 为 OK 时有效）/ Data read (valid only when ACK is OK)
+   * @param ack 最后一次扫描的 ACK / ACK of the last scan
+   * @return 扫描链传输结果；目标非 OK 应答时仍返回 OK，由 ack 反映 / Transfer result;
+   * a non-OK target ACK still returns OK and is reported through ack
+   */
   ErrorCode DpReadTxn(uint8_t addr2b, uint32_t& val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
@@ -82,6 +120,14 @@ class JtagDp final
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief DP 写事务；地址 0 映射为 ABORT 写 / DP write transaction; address 0 maps to
+   * an ABORT write
+   * @param addr2b DP 寄存器地址（A[3:2]）/ DP register address (A[3:2])
+   * @param val 写入的 32 位数据 / 32-bit data to write
+   * @param ack 扫描返回的 ACK / ACK returned by the scan
+   * @return 扫描链传输结果 / Result of the scan chain transfer
+   */
   ErrorCode DpWriteTxn(uint8_t addr2b, uint32_t val, JtagProtocol::Ack& ack)
   {
     if ((addr2b & 0x03u) == 0u)
@@ -92,6 +138,15 @@ class JtagDp final
     return DpWrite(addr2b, val, ack);
   }
 
+  /**
+   * @brief AP 读事务：发起 APACC 读后再读 DP RDBUFF 取回数据 / AP read transaction:
+   * issue the APACC read, then read DP RDBUFF to fetch the data
+   * @param addr2b AP 寄存器地址（A[3:2]）/ AP register address (A[3:2])
+   * @param val 读到的数据（仅 ACK 为 OK 时有效）/ Data read (valid only when ACK is OK)
+   * @param ack 最后一次扫描的 ACK / ACK of the last scan
+   * @return 扫描链传输结果；目标非 OK 应答时仍返回 OK，由 ack 反映 / Transfer result;
+   * a non-OK target ACK still returns OK and is reported through ack
+   */
   ErrorCode ApReadTxn(uint8_t addr2b, uint32_t& val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
@@ -116,6 +171,13 @@ class JtagDp final
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief AP 写事务 / AP write transaction
+   * @param addr2b AP 寄存器地址（A[3:2]）/ AP register address (A[3:2])
+   * @param val 写入的 32 位数据 / 32-bit data to write
+   * @param ack 扫描返回的 ACK / ACK returned by the scan
+   * @return 扫描链传输结果 / Result of the scan chain transfer
+   */
   ErrorCode ApWriteTxn(uint8_t addr2b, uint32_t val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
@@ -124,11 +186,24 @@ class JtagDp final
     return EC;
   }
 
+  /**
+   * @brief 用标准 IDCODE 指令读取 32 位 IDCODE / Read the 32-bit IDCODE using the
+   * standard IDCODE instruction
+   * @param idcode 读到的 IDCODE / IDCODE read
+   * @return 扫描链传输结果 / Result of the scan chain transfer
+   */
   ErrorCode ReadIdCode(uint32_t& idcode)
   {
     return ReadIdCodeWithIr(JtagProtocol::JTAG_IR_IDCODE, idcode);
   }
 
+  /**
+   * @brief 选择指定 IR 后移出 32 位 DR 作为 IDCODE / Select the given IR, then shift out
+   * a 32-bit DR as the IDCODE
+   * @param ir 要选择的 IR 值 / IR value to select
+   * @param idcode 读到的 32 位数据 / 32-bit value read
+   * @return 扫描链传输结果 / Result of the scan chain transfer
+   */
   ErrorCode ReadIdCodeWithIr(uint32_t ir, uint32_t& idcode)
   {
     const ErrorCode EC = SelectIr(ir);
@@ -147,6 +222,14 @@ class JtagDp final
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief 经 ABORT 指令写 DP ABORT 寄存器 / Write the DP ABORT register via the ABORT
+   * instruction
+   * @param data ABORT 寄存器值 / ABORT register value
+   * @param ack 扫描完成时为 OK，扫描失败时为 PROTOCOL（ABORT 链没有 ACK 字段）/ OK when
+   * the scan completes, PROTOCOL when it fails (the ABORT chain has no ACK field)
+   * @return 扫描链传输结果 / Result of the scan chain transfer
+   */
   ErrorCode WriteAbort(uint32_t data, JtagProtocol::Ack& ack)
   {
     const ErrorCode EC = SelectIr(JtagProtocol::JTAG_IR_ABORT);
@@ -173,6 +256,13 @@ class JtagDp final
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief 执行一次 DPACC/APACC 扫描 / Perform one DPACC/APACC scan
+   * @param req 请求（端口、读写、地址、数据）/ Request (port, direction, address, data)
+   * @param resp 解包后的响应；传输失败时 ack 置为 PROTOCOL / Unpacked response; ack is
+   * set to PROTOCOL when the transfer fails
+   * @return 扫描链传输结果 / Result of the scan chain transfer
+   */
   ErrorCode Transfer(const JtagProtocol::Request& req, JtagProtocol::Response& resp)
   {
     const ErrorCode EC =

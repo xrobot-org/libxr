@@ -267,6 +267,13 @@ class SwdGeneralGPIO final : public Swd
     }
   }
 
+  /**
+   * @brief 以 GPIO 位拆分方式输出位序列 / Send a bit sequence by bit-banging GPIO
+   * @param cycles 位数；0 时仅将 SWCLK 置低 / Number of bits; 0 only drives SWCLK low
+   * @param data_lsb_first 待输出数据（LSB-first）/ Data to send (LSB-first)
+   * @retval ErrorCode::ARG_ERR cycles 非 0 且数据指针为空 / cycles is non-zero and the
+   * data pointer is null
+   */
   ErrorCode SeqWriteBits(uint32_t cycles, const uint8_t* data_lsb_first) override
   {
     if (cycles == 0u)
@@ -290,6 +297,14 @@ class SwdGeneralGPIO final : public Swd
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief 以 GPIO 位拆分方式采样位序列 / Sample a bit sequence by bit-banging GPIO
+   * @param cycles 位数；0 时仅将 SWCLK 置低 / Number of bits; 0 only drives SWCLK low
+   * @param out_lsb_first 输出缓冲区（LSB-first），先清零 (cycles+7)/8 字节 / Output
+   * buffer (LSB-first); (cycles+7)/8 bytes are zeroed first
+   * @retval ErrorCode::ARG_ERR cycles 非 0 且缓冲区指针为空 / cycles is non-zero and the
+   * buffer pointer is null
+   */
   ErrorCode SeqReadBits(uint32_t cycles, uint8_t* out_lsb_first) override
   {
     if (cycles == 0u)

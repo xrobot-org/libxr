@@ -499,12 +499,24 @@ class Swd
    */
   virtual void IdleClocks(uint32_t cycles) = 0;
 
-  // 输出：在 SWDIO 上按 LSB-first 输出 data，并产生 SWCLK 脉冲。
-  // cycles: 位数（例如 1..256）；data_lsb_first 长度 >= (cycles+7)/8
+  /**
+   * @brief 在 SWDIO 上按 LSB-first 输出位序列并产生 SWCLK 脉冲 / Drive a bit sequence
+   * on SWDIO LSB-first while pulsing SWCLK
+   * @param cycles 位数（例如 1..256）/ Number of bits (e.g. 1..256)
+   * @param data_lsb_first 待输出数据，长度不小于 (cycles+7)/8 字节 / Data to send, at
+   * least (cycles+7)/8 bytes
+   * @return 操作结果 / Operation result
+   */
   virtual ErrorCode SeqWriteBits(uint32_t cycles, const uint8_t* data_lsb_first) = 0;
 
-  // 输入：产生 SWCLK 脉冲并采样 SWDIO，按 LSB-first 写入 out_lsb_first。
-  // out_lsb_first 长度 >= (cycles+7)/8
+  /**
+   * @brief 产生 SWCLK 脉冲并采样 SWDIO，按 LSB-first 存入缓冲区 / Pulse SWCLK and sample
+   * SWDIO, storing the bits LSB-first
+   * @param cycles 位数 / Number of bits
+   * @param out_lsb_first 输出缓冲区，长度不小于 (cycles+7)/8 字节 / Output buffer, at
+   * least (cycles+7)/8 bytes
+   * @return 操作结果 / Operation result
+   */
   virtual ErrorCode SeqReadBits(uint32_t cycles, uint8_t* out_lsb_first) = 0;
 
  private:
