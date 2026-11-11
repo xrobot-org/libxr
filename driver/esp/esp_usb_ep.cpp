@@ -239,6 +239,16 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
       // 错过帧的禁用序列已经在跑：它改为以这次停止结束。
       // A missed-frame disable is already running; it now ends as this stop.
       iso_abort_ = false;
+      // 端点已经自己禁用（传输先完成了），没有 EPDISD 会来：这里直接结束。
+      // The endpoint has disabled itself (the transfer completed first), no EPDISD will
+      // come: end the stop here.
+      if (ep_num != 0U && dev->in_eps[ep_num - 1U].diepctl_reg.epena == 0U)
+      {
+        ESPUSBDetail::FlushTxFifo(dev, ep_num);
+        stop_phase_ = StopPhase::NONE;
+        transfer_active_ = false;
+        return StopResult::DONE;
+      }
       return StopResult::PENDING;
     }
     bool enabled = false;
@@ -379,10 +389,43 @@ void ESP32USBEndpoint::AdvanceStop(bool in_isr)
     }
     if (stop_phase_ == StopPhase::DIS_WAIT)
     {
+      // EPENA is read first: an EPDISD that arrives between the two reads is then seen as
+      // the interrupt, not mistaken for a missing one.
+      const bool enabled = (ep_num == 0U)
+                               ? (dev->diepctl0_reg.epena != 0U)
+                               : (dev->in_eps[ep_num - 1U].diepctl_reg.epena != 0U);
       const bool disabled = (ep_num == 0U)
                                 ? (dev->diepint0_reg.epdisbld != 0U)
                                 : (dev->in_eps[ep_num - 1U].diepint_reg.epdisbld != 0U);
-      if (!disabled) return;
+      if (!disabled)
+      {
+        // Only a transfer-complete flag shows that the transfer ended first: EPENA alone
+        // may clear a moment before the EPDISD flag of an ordinary disable is raised.
+        const bool completed =
+            (ep_num == 0U) ? (dev->diepint0_reg.xfercompl != 0U)
+                           : (dev->in_eps[ep_num - 1U].diepint_reg.xfercompl != 0U);
+        if (enabled || !completed) return;
+        // 端点没有等到 EPDIS 生效就先把传输发完了（主机的令牌排在 EPDIS 前面）：核心在
+        // 传输完成时自己清 EPENA，EPDIS 写到一个已禁用的端点上，EPDISD 不会再来。等它只
+        // 会一直等到超时。传输已经完成，XFRC 照常报告结果；等待中的错过帧中止作废（数据
+        // 其实发出去了），等待中的停止在这里结束。
+        // The endpoint finished its transfer before the EPDIS took effect (the host's
+        // token came ahead of it): the core clears EPENA itself at the end of a transfer,
+        // EPDIS lands on an endpoint that is already disabled, and no EPDISD follows.
+        // Waiting for it would only end in the timeout. The transfer is complete and XFRC
+        // reports it as usual; a missed-frame abort that was waiting is void (the data
+        // went out) and a waiting stop ends here.
+        stop_phase_ = StopPhase::NONE;
+        if (iso_abort_)
+        {
+          iso_abort_ = false;
+          return;
+        }
+        ESPUSBDetail::FlushTxFifo(dev, ep_num);
+        transfer_active_ = false;
+        OnHardwareStopped(in_isr);
+        return;
+      }
       if (ep_num == 0U)
       {
         dev->diepint0_reg.val = USB_DWC_EPDISD_MSK;

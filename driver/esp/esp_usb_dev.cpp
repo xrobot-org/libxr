@@ -729,10 +729,16 @@ void ESP32USBDevice::HandleInterrupt()
 
     if (pending.incompisoin)
     {
-      // 帧号在清标志之前读一次：这个中断属于它产生时的那一帧。
-      // The frame number is read once, before the flag is cleared: the interrupt belongs
-      // to the frame that is current when it is raised.
-      const bool ended_odd = (dev->dsts_reg.soffn & 1U) != 0U;
+      // 帧号在清标志之前读一次。ESP32-S3 在新一帧的 SOF 到达时才报这个中断，此时 DSTS
+      // 里已经是新一帧的帧号（板上实测：中断总是在同一帧的 SOF 之后几微秒到达，读到的
+      // 帧号等于那个 SOF 的帧号），刚结束的是前一帧，所以结束帧的奇偶与读到的相反。
+      // The frame number is read once, before the flag is cleared. The ESP32-S3 raises
+      // this interrupt when the SOF of the new frame arrives, and DSTS already holds the
+      // number of the new frame (measured on the board: the interrupt always comes a few
+      // microseconds after the SOF of the same frame, and the number read equals that
+      // SOF's number). The frame that ended is the previous one, so its parity is the
+      // opposite of the one read.
+      const bool ended_odd = (dev->dsts_reg.soffn & 1U) == 0U;
       dev->gintsts_reg.val = GINTSTS_INCOMPISOIN;
       for (uint8_t i = 1; i < ENDPOINT_COUNT; ++i)
       {

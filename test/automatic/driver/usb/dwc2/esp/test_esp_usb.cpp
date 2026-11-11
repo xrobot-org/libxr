@@ -134,6 +134,7 @@ struct Rig
     hw.ahbidl_follows_flush = selected.flush_reads > 1U;
     hw.disable_latency = selected.disable_latency;
     hw.gonak_latency = selected.gonak_latency;
+    hw.iso_incomplete_new_frame = true;  // measured on the ESP32-S3
   }
   ~Rig()
   {
@@ -468,6 +469,8 @@ void RunAll()
     TestIsochronousFrames<Probe>(mode);
     TestIsochronousMissedFrame<Probe>(mode);
     TestTwoIsochronousStreams<Probe>(mode);
+    TestIsochronousFalseIncomplete<Probe>(mode);
+    TestIsochronousCompletesDuringAbort<Probe>(mode);
     TestUacStreams<Uac>(mode);
     TestUacStopsWithoutFrameInterrupt<Uac>(mode);
     TestUacFrameInterruptIgnoresConfiguration<Uac>(mode);

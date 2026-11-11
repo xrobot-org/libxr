@@ -1224,6 +1224,88 @@ void TestTwoIsochronousStreams(const typename Fixture::ModeType& mode)
   }
 }
 
+/// 控制器在一帧开始时为已经安排给这一帧的端点报告"未完成的等时 IN 传输"（ESP32-S3 板上实
+/// 测）。端点不是错过了帧，请求不能被中止：数据照常发出，请求以 OK 结束，之后停止端点能
+/// 在几帧内完成。
+/// The controller reports an incomplete isochronous IN transfer at the start of a frame
+/// for an endpoint that is armed for that very frame (measured on the ESP32-S3 board).
+/// The endpoint did not miss its frame, so the request must not be aborted: the data goes
+/// out as usual, the request ends with OK, and stopping the endpoint afterwards completes
+/// within a few frames.
+template <typename Fixture>
+void TestIsochronousFalseIncomplete(const typename Fixture::ModeType& mode)
+{
+  Fixture f(mode, true);
+  f.Up();
+  f.hw.in_nak_latency = 40;
+  Log& log = f.probe.iso_in_log;
+  const auto bytes = Bytes(48, 1);
+  TEST_ASSERT(SubmitBytes(f.probe.iso_in, bytes) == ErrorCode::OK);
+  f.host.Sof();  // 安排的帧开始 / The scheduled frame starts
+  f.hw.RaiseIsoIncomplete();
+  f.Service();
+  Dwc2::InResult in = f.hw.HostIn(7, 3);
+  f.Service();
+  TEST_ASSERT(in.resp == Resp::DATA && in.data == bytes);
+  TEST_ASSERT(log.items.size() == 1U && log.items[0].result == ErrorCode::OK);
+
+  // 停止不会一直等一个不会来的事件 / A stop does not wait for an event that never comes
+  TEST_ASSERT(SubmitBytes(f.probe.iso_in, bytes) == ErrorCode::OK);
+  f.host.Sof();
+  f.probe.iso_in->Flush(false);
+  f.host.Sof(4);
+  TEST_ASSERT(!f.probe.iso_in->IsStopping());
+  TEST_ASSERT(log.items.size() == 2U);
+  TEST_ASSERT(f.hw.TxFifoWords(3) == 0U);
+  TEST_ASSERT(f.hw.InCtl(3) >> 31 == 0U);
+}
+
+/// 错过帧的中止写下 SNAK 和 EPDIS 之后，主机的令牌仍然取走了数据：端点自己清掉 EPENA，
+/// EPDIS 落在已禁用的端点上，不再有 EPDISD（ESP32-S3 板上实测：59 us 之后传输完成，
+/// 只有 XFRC 和 INEPNE）。请求以 OK 结束，随后的停止不会一直等 EPDISD。
+/// The host's token still takes the data after the missed-frame abort wrote SNAK and
+/// EPDIS: the endpoint clears EPENA by itself, EPDIS lands on a disabled endpoint, and no
+/// EPDISD follows (measured on the ESP32-S3 board: the transfer completed 59 us later
+/// with XFRC and INEPNE only). The request ends with OK and the stop afterwards does not
+/// wait for an EPDISD.
+template <typename Fixture>
+void TestIsochronousCompletesDuringAbort(const typename Fixture::ModeType& mode)
+{
+  // Without a delay between the EPDIS write and its effect no token can come in between.
+  if (mode.disable_latency == 0U) return;
+  Fixture f(mode, true);
+  f.Up();
+  f.hw.in_nak_latency = 40;
+  Log& log = f.probe.iso_in_log;
+  const auto bytes = Bytes(48, 2);
+  TEST_ASSERT(SubmitBytes(f.probe.iso_in, bytes) == ErrorCode::OK);
+  f.host.Sof();  // 安排的帧开始 / The scheduled frame starts
+  Dwc2::InResult taken;
+  // 钩子是一次性的：没轮到 EPDIS 写入就重新挂上 / The hook is one-shot: hung up again
+  // until the write of EPDIS comes
+  std::function<void(uint32_t, uint32_t)> watch;
+  watch = [&](uint32_t offset, uint32_t value)
+  {
+    if (offset == Dwc2::DIEP + 0x20U * 3U && (value & Dwc2::CTL_EPDIS) != 0U)
+      taken = f.hw.HostInRacing(7, 3);
+    else
+      f.hw.after_write = watch;
+  };
+  f.hw.after_write = watch;
+  f.host.Sof();  // 帧结束，主机没有取：中止开始 / It ends untaken: the abort starts
+  f.host.Sof(4);
+  TEST_ASSERT(taken.resp == Resp::DATA && taken.data == bytes);
+  TEST_ASSERT(log.items.size() == 1U && log.items[0].result == ErrorCode::OK);
+
+  TEST_ASSERT(SubmitBytes(f.probe.iso_in, bytes) == ErrorCode::OK);
+  f.host.Sof();
+  f.probe.iso_in->Flush(false);
+  f.host.Sof(4);
+  TEST_ASSERT(!f.probe.iso_in->IsStopping());
+  TEST_ASSERT(log.items.size() == 2U);
+  TEST_ASSERT(f.hw.InCtl(3) >> 31 == 0U);
+}
+
 // ---------------------------------------------------------------------------
 // UAC1 microphone
 // ---------------------------------------------------------------------------

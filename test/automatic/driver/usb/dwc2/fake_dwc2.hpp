@@ -229,6 +229,24 @@ class Controller : public MmioTrap::Device
   /// manual only asks to wait for the EPDISD interrupt and gives no time.
   unsigned disable_latency = 0;
 
+  /// SNAK 写入 IN 端点之后，再过多少次寄存器访问 NAKSTS 才置位并报 INEPNE（0 表示立即）。
+  /// 在此之前到达的令牌照常收到数据；数据包发完后端点自己清 EPENA。手册："INEPNE 不保证
+  /// 总线上已经发过 NAK 握手"。
+  /// How many further register accesses pass before a written SNAK sets NAKSTS and
+  /// INEPNE on an IN endpoint (0 = at once). A token that arrives before that still gets
+  /// the data, and the endpoint clears EPENA by itself when the packet is out. The manual
+  /// says INEPNE does not guarantee that a NAK handshake has gone out on the bus.
+  unsigned in_nak_latency = 0;
+
+  /// IISOIXFR 到来时 DSTS 里已经是新一帧的帧号（ESP32-S3 板上实测：中断总在同一帧的 SOF
+  /// 之后几微秒到达，读到的帧号等于那个 SOF 的）。false 时（STM32 的假设）DSTS 仍是刚
+  /// 结束的那一帧。
+  /// When IISOIXFR is raised DSTS already holds the number of the new frame (measured on
+  /// the ESP32-S3 board: the interrupt always arrives a few microseconds after the SOF of
+  /// the same frame and the number read equals that SOF's). With false (the STM32
+  /// assumption) DSTS still shows the frame that just ended.
+  bool iso_incomplete_new_frame = false;
+
   /// DMA 模式下 SGONAK 写入之后，再过多少次寄存器访问全局 OUT NAK 才生效（0 表示立即）；
   /// 总线上再发生任何事时也已经生效。非 DMA 模式下它在应用弹出接收 FIFO 里的状态字时
   /// 生效。手册只要求等待 GONAKEFF，没有给出时间。
@@ -317,7 +335,7 @@ class Controller : public MmioTrap::Device
   /// missed its frame; a handler slower than a frame reads the new frame.
   uint16_t VisibleFrame() const
   {
-    if ((latched_ & GINT_IISOIXFR) == 0U) return frame_;
+    if ((latched_ & GINT_IISOIXFR) == 0U || iso_incomplete_new_frame) return frame_;
     return static_cast<uint16_t>((frame_ - 1U) & (HighSpeed() ? 0x3FFFU : 0x7FFU));
   }
   bool HighSpeed() const { return enumspd_ == 0U; }
@@ -535,6 +553,29 @@ class Controller : public MmioTrap::Device
   InResult HostIn(uint8_t address, uint8_t num)
   {
     Tick("IN", num);
+    return ServeIn(address, num, false);
+  }
+
+  /// 令牌紧跟在应用的寄存器写之后到达：不让待生效的 SNAK/EPDIS 提前生效，等时端点也不看
+  /// 帧奇偶（板上实测：错过帧中止写下 SNAK+EPDIS 之后 59 us，包仍然发出，传输完成）/ A
+  /// token that arrives right behind a register write of the application: a SNAK or EPDIS
+  /// still due does not take effect first, and an isochronous endpoint ignores the frame
+  /// parity (measured on the board: the packet still went out 59 us after the
+  /// missed-frame abort wrote SNAK and EPDIS, and the transfer completed)
+  InResult HostInRacing(uint8_t address, uint8_t num)
+  {
+    return ServeIn(address, num, true);
+  }
+
+  /// 核心在一帧开始时报告未完成的等时 IN 传输（板上实测：不止错过的帧，为刚开始的那一帧
+  /// 安排好的端点也会被报，原因不明）/ The core reports an incomplete isochronous IN
+  /// transfer when a frame begins (measured on the board: not only for a missed frame,
+  /// also while the endpoint armed for the frame that just began is waiting; the cause is
+  /// unknown)
+  void RaiseIsoIncomplete() { latched_ |= GINT_IISOIXFR; }
+
+  InResult ServeIn(uint8_t address, uint8_t num, bool racing)
+  {
     InResult result;
     // The status stage of SET_ADDRESS is still answered at the old address.
     const bool old_address = num == 0U && set_address_stage_ && address == old_address_;
@@ -552,9 +593,10 @@ class Controller : public MmioTrap::Device
       result.resp = Resp::STALL;
       return result;
     }
-    const bool ready = (in.ctl & CTL_EPENA) != 0U && (in.ctl & CTL_NAKSTS) == 0U &&
-                       !in.packets.empty() && (iso || !ginak_) &&
-                       (!iso || ((in.ctl & CTL_DPID) != 0U) == ((frame_ & 1U) != 0U));
+    const bool ready =
+        (in.ctl & CTL_EPENA) != 0U && (in.ctl & CTL_NAKSTS) == 0U &&
+        !in.packets.empty() && (iso || !ginak_) &&
+        (!iso || racing || ((in.ctl & CTL_DPID) != 0U) == ((frame_ & 1U) != 0U));
     if (!ready)
     {
       if ((in.ctl & CTL_EPENA) != 0U && (in.ctl & CTL_NAKSTS) == 0U && in.packets.empty())
@@ -797,6 +839,7 @@ class Controller : public MmioTrap::Device
     bool reprogrammed = false;  // DIEPTSIZ was written while the endpoint was enabled.
     bool stuck_disable = false;
     unsigned disable_due = 0;  // Register accesses left until a written EPDIS acts.
+    unsigned nak_due = 0;      // Register accesses left until a written SNAK acts.
   };
   struct OutEp
   {
@@ -937,11 +980,23 @@ class Controller : public MmioTrap::Device
     for (uint8_t i = 0; i < config_.endpoints; ++i)
     {
       InEp& in = in_[i];
+      if (in.nak_due != 0U && (all || --in.nak_due == 0U))
+      {
+        in.nak_due = 0;
+        SetInNak(in);
+      }
       if (in.disable_due != 0U && (all || --in.disable_due == 0U))
       {
         in.disable_due = 0;
-        in.ctl &= ~CTL_EPENA;
-        in.intr |= INT_EPDISD;
+        // An endpoint that finished its transfer first is disabled already and raises
+        // no EPDISD (ASSUMPTION from the ESP32-S3 board: the disable written for an
+        // isochronous IN endpoint whose packet then went out ended with XFRC|INEPNE
+        // only; the manual says only that EPDISD reports a requested disable).
+        if ((in.ctl & CTL_EPENA) != 0U)
+        {
+          in.ctl &= ~CTL_EPENA;
+          in.intr |= INT_EPDISD;
+        }
       }
       OutEp& out = out_[i];
       if (out.disable_due != 0U && (all || --out.disable_due == 0U))
@@ -1190,8 +1245,15 @@ class Controller : public MmioTrap::Device
     {
       in.ctl &= ~CTL_NAKSTS;
       in.intr &= ~INT_INEPNE;
+      in.nak_due = 0;
     }
-    if ((value & CTL_SNAK) != 0U) SetInNak(in);
+    if ((value & CTL_SNAK) != 0U)
+    {
+      if (in_nak_latency == 0U)
+        SetInNak(in);
+      else if (in.nak_due == 0U && (in.ctl & CTL_NAKSTS) == 0U)
+        in.nak_due = in_nak_latency + 1U;
+    }
     if ((value & CTL_EPDIS) != 0U)
     {
       if ((in.ctl & CTL_EPENA) != 0U)
