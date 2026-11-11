@@ -729,8 +729,8 @@ class SwdGeneralGPIO final : public Swd
       500'000u;  ///< 默认 SWCLK 频率（Hz） / Default SWCLK frequency (Hz).
   static constexpr uint32_t LINE_RESET_CYCLES =
       64u;  ///< 线复位时钟周期数 / Line reset clock cycles.
-  static constexpr uint32_t BYTE_BITS = 8u;  ///< 每字节比特数 / Bits per byte.
-  static constexpr uint32_t ACK_BITS = 3u;   ///< ACK 比特数 / ACK bits.
+  static constexpr uint32_t BYTE_BITS = 8u;   ///< 每字节比特数 / Bits per byte.
+  static constexpr uint32_t ACK_BITS = 3u;    ///< ACK 比特数 / ACK bits.
   static constexpr uint32_t DATA_BITS = 32u;  ///< 数据比特数 / Data bits.
   static constexpr uint32_t WRITE_TRAILING_IDLE_CLOCKS =
       3u;  ///< 写数据相后的空闲时钟数 / Idle clocks after a write data phase.

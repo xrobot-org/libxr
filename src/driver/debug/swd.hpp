@@ -39,8 +39,8 @@ class Swd
     uint8_t idle_cycles = 0;    ///< 空闲周期数 / Idle cycles.
     uint16_t wait_retry = 100;  ///< WAIT 最大重试次数 / Maximum WAIT retries.
     bool clear_sticky_on_fault =
-        true;  ///< FAULT 时清除 sticky 错误 / Clear sticky errors on FAULT.
-    uint8_t turnaround = 1;   ///< 转向周期数 / Turnaround cycles.
+        true;                ///< FAULT 时清除 sticky 错误 / Clear sticky errors on FAULT.
+    uint8_t turnaround = 1;  ///< 转向周期数 / Turnaround cycles.
     bool data_phase = false;  ///< WAIT/FAULT 后的数据阶段 / Data phase after WAIT/FAULT.
   };
 
