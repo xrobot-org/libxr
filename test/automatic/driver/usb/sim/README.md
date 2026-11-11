@@ -2,14 +2,17 @@
 
 `usb_sim.hpp` 是一个仿真的 USB 设备控制器：它只实现 `Endpoint`、`DeviceCore` 和 `EndpointPool`
 对后端声明的契约，上面是真实的端点核心、DeviceCore 和设备类。主机侧按包驱动（SETUP、OUT、IN 令牌、
-SOF、总线复位、挂起、恢复、断开）。违反契约的调用直接断言，所以仿真是契约的参考实现；和它不一致的
-真实后端有 bug。
+SOF、总线复位、挂起、恢复、断开）。违反契约的调用直接断言。仿真只由它自己的契约测试
+（`test_usb_sim_contract.cpp`）验证；`usb/dwc2` 里的后端用例是另一份用例，没有同一份用例同时跑在仿真
+和真实后端上，所以仿真是契约的一种实现，不是真实后端的参考实现。
 
 `usb_sim.hpp` is a simulated USB device controller. It implements only the backend contract that
 `Endpoint`, `DeviceCore` and `EndpointPool` declare; everything above it is the real endpoint core,
 DeviceCore and device classes. The host side works per packet (SETUP, OUT and IN tokens, SOF, bus reset,
-suspend, resume, disconnect). A call that breaks the contract asserts, so the simulation is the
-reference implementation of the contract and a real backend that differs from it has a bug.
+suspend, resume, disconnect). A call that breaks the contract asserts. The simulation is validated only
+by its own contract tests (`test_usb_sim_contract.cpp`); the backend cases in `usb/dwc2` are a separate
+list, and no case list runs against both the simulation and a real backend, so the simulation is one
+implementation of the contract, not a reference implementation that real backends are compared with.
 
 | 文件 / File | 内容 / Content |
 | --- | --- |
@@ -85,7 +88,6 @@ library only and run on Python 3.8 or newer.
 
 | 环境变量 / Variable | 作用 / Effect |
 | --- | --- |
-|control\|always` | 仿真控制器的帧中断策略（上表），默认 `stops` / frame interrupt policy of the simulated controller, `stops` by default |
 | `USBIP_BULK_PER_MS=N` | 每毫秒最多完成 N 个批量/中断事务（全速总线一帧的容量），0 为不限 / at most N bulk or interrupt transactions per millisecond, 0 is unlimited |
 | `USBIP_TRACE=1`, `USBIP_RECORD=<file>`, `USBIP_BIND=<addr>` | URB 跟踪、录制、监听地址 / URB trace, recording, listen address |
 | `USBIP_BUSID=<id>` | 服务端导出的 busid，默认 `sim-1`；脚本给每次运行一个随机值 / busid the server exports, `sim-1` by default; the scripts set a random one per run |

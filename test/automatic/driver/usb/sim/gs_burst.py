@@ -7,7 +7,7 @@ the missing sequence numbers, rx_over_errors and the overflow error frames.
 
 usage: gs_burst.py [frames] [seconds to wait after the burst]
 
-The host has a real gs_usb adapter with the same VID:PID; only interfaces whose sysfs
+The host may have a real gs_usb adapter with the same VID:PID; only interfaces whose sysfs
 path lies under the vhci host controller are used. sudo -n is used for `ip link` on those
 two interfaces only.
 """

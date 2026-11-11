@@ -4,8 +4,8 @@ hid:   write output reports to the hidraw node and expect them back bitwise inve
 gsusb: bring the simulated adapter's CAN interface up through SocketCAN, send frames and
        expect each back with ID+1.
 
-The host also has real USB devices, among them a gs_usb adapter with the same VID:PID as
-the simulated one. A device or interface is therefore only ever accepted when its sysfs
+The host may also have real USB devices, among them a gs_usb adapter with the same VID:PID
+as the simulated one. A device or interface is therefore only ever accepted when its sysfs
 path lies under the vhci host controller, and nothing else is opened or reconfigured.
 The script runs as the calling user; `sudo -n` is used for `ip link` on the simulated
 adapter's interface only. A node the user cannot open (hidraw is root-only), a missing
