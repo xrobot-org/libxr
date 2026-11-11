@@ -42,7 +42,9 @@ class UAC1MicrophoneQ : public DeviceClass
                 "BITS_PER_SAMPLE must be 8/16/24");
   // AC / AS 接口对的默认字符串。
   // Default interface strings for the AC / AS pair.
+  /// AC 接口的默认字符串 / Default string of the AC interface
   static constexpr const char* DEFAULT_CONTROL_INTERFACE_STRING = "XRUSB UAC1 Control";
+  /// AS 接口的默认字符串 / Default string of the AS interface
   static constexpr const char* DEFAULT_STREAMING_INTERFACE_STRING =
       "XRUSB UAC1 Streaming";
 
@@ -209,6 +211,25 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct CSACHeader
   {
+    /**
+     * @var bLength
+     * 描述符长度，9 / Descriptor length, 9
+     * @var bDescriptorType
+     * CS_INTERFACE
+     * @var bDescriptorSubtype
+     * AC_HEADER
+     * @var bcdADC
+     * 音频类规范版本（BCD），0x0100 = 1.00 / Audio class specification release in BCD,
+     * 0x0100 = 1.00
+     * @var wTotalLength
+     * 全部 AC 类特定描述符的总字节数，绑定时填写 / Total bytes of all AC class-specific
+     * descriptors, filled at bind
+     * @var bInCollection
+     * 隶属本 AC 接口的 AS 接口数，1 / Number of AS interfaces belonging to this AC
+     * interface, 1
+     * @var baInterfaceNr
+     * AS 接口的接口号，绑定时填写 / Interface number of the AS interface, filled at bind
+     */
     uint8_t bLength = 9, bDescriptorType = CS_INTERFACE, bDescriptorSubtype = AC_HEADER;
     uint16_t bcdADC = 0x0100, wTotalLength = 0;
     uint8_t bInCollection = 1, baInterfaceNr = 0;
@@ -220,6 +241,29 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct ACInputTerminal
   {
+    /**
+     * @var bLength
+     * 描述符长度，12 / Descriptor length, 12
+     * @var bDescriptorType
+     * CS_INTERFACE
+     * @var bDescriptorSubtype
+     * AC_INPUT_TERMINAL
+     * @var bTerminalID
+     * 端子 ID（ID_IT_MIC）/ Terminal ID (ID_IT_MIC)
+     * @var wTerminalType
+     * 端子类型，0x0201 = 麦克风 / Terminal type, 0x0201 = microphone
+     * @var bAssocTerminal
+     * 关联的输出端子，0 表示无 / Associated output terminal, 0 for none
+     * @var bNrChannels
+     * 通道数（CHANNELS）/ Number of channels (CHANNELS)
+     * @var wChannelConfig
+     * 空间通道位图，绑定时按通道数设定 / Spatial channel bitmap, set at bind from the
+     * channel count
+     * @var iChannelNames
+     * 通道名字符串索引，0 表示无 / Channel-name string index, 0 for none
+     * @var iTerminal
+     * 端子字符串索引，0 表示无 / Terminal string index, 0 for none
+     */
     uint8_t bLength = 12, bDescriptorType = CS_INTERFACE,
             bDescriptorSubtype = AC_INPUT_TERMINAL;
     uint8_t bTerminalID = ID_IT_MIC;
@@ -235,6 +279,28 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct ACFeatureUnit
   {
+    /**
+     * @var bLength
+     * 描述符长度，7 + (CHANNELS + 1) / Descriptor length, 7 + (CHANNELS + 1)
+     * @var bDescriptorType
+     * CS_INTERFACE
+     * @var bDescriptorSubtype
+     * AC_FEATURE_UNIT
+     * @var bUnitID
+     * 单元 ID（ID_FU）/ Unit ID (ID_FU)
+     * @var bSourceID
+     * 输入来源实体（ID_IT_MIC）/ Source entity (ID_IT_MIC)
+     * @var bControlSize
+     * 每个 bmaControls 项的字节数，1 / Bytes per bmaControls entry, 1
+     * @var bmaControlsMaster
+     * 主通道控制位图，0x03 = 静音 + 音量 / Master channel control bitmap, 0x03 = mute +
+     * volume
+     * @var bmaControlsCh
+     * 各通道控制位图，0x03 = 静音 + 音量 / Per-channel control bitmaps, 0x03 = mute +
+     * volume
+     * @var iFeature
+     * 单元字符串索引，0 表示无 / Unit string index, 0 for none
+     */
     uint8_t bLength = static_cast<uint8_t>(7 + (CHANNELS + 1) * 1);
     uint8_t bDescriptorType = CS_INTERFACE, bDescriptorSubtype = AC_FEATURE_UNIT;
     uint8_t bUnitID = ID_FU, bSourceID = ID_IT_MIC, bControlSize = 1;
@@ -249,6 +315,24 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct ACOutputTerminal
   {
+    /**
+     * @var bLength
+     * 描述符长度，9 / Descriptor length, 9
+     * @var bDescriptorType
+     * CS_INTERFACE
+     * @var bDescriptorSubtype
+     * AC_OUTPUT_TERMINAL
+     * @var bTerminalID
+     * 端子 ID（ID_OT_USB）/ Terminal ID (ID_OT_USB)
+     * @var wTerminalType
+     * 端子类型，0x0101 = USB 流 / Terminal type, 0x0101 = USB streaming
+     * @var bAssocTerminal
+     * 关联的输入端子，0 表示无 / Associated input terminal, 0 for none
+     * @var bSourceID
+     * 输入来源实体（ID_FU）/ Source entity (ID_FU)
+     * @var iTerminal
+     * 端子字符串索引，0 表示无 / Terminal string index, 0 for none
+     */
     uint8_t bLength = 9, bDescriptorType = CS_INTERFACE,
             bDescriptorSubtype = AC_OUTPUT_TERMINAL;
     uint8_t bTerminalID = ID_OT_USB;
@@ -262,6 +346,21 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct ASGeneral
   {
+    /**
+     * @var bLength
+     * 描述符长度，7 / Descriptor length, 7
+     * @var bDescriptorType
+     * CS_INTERFACE
+     * @var bDescriptorSubtype
+     * AS_GENERAL
+     * @var bTerminalLink
+     * 该 AS 接口连接的端子（ID_OT_USB）/ Terminal this AS interface is linked to
+     * (ID_OT_USB)
+     * @var bDelay
+     * 接口内部延迟，以帧计，1 / Delay inside the interface in frames, 1
+     * @var wFormatTag
+     * 音频数据格式，WFORMAT_PCM / Audio data format, WFORMAT_PCM
+     */
     uint8_t bLength = 7, bDescriptorType = CS_INTERFACE, bDescriptorSubtype = AS_GENERAL;
     uint8_t bTerminalLink = ID_OT_USB, bDelay = 1;
     uint16_t wFormatTag = WFORMAT_PCM;
@@ -273,6 +372,27 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct TypeIFormat1
   {
+    /**
+     * @var bLength
+     * 描述符长度，11 / Descriptor length, 11
+     * @var bDescriptorType
+     * CS_INTERFACE
+     * @var bDescriptorSubtype
+     * AS_FORMAT_TYPE
+     * @var bFormatType
+     * 格式类型，FORMAT_TYPE_I / Format type, FORMAT_TYPE_I
+     * @var bNrChannels
+     * 通道数（CHANNELS）/ Number of channels (CHANNELS)
+     * @var bSubframeSize
+     * 每个子帧字节数（K_SUBFRAME_SIZE）/ Bytes per subframe (K_SUBFRAME_SIZE)
+     * @var bBitResolution
+     * 每个子帧有效位数（BITS_PER_SAMPLE）/ Valid bits per subframe (BITS_PER_SAMPLE)
+     * @var bSamFreqType
+     * 离散采样率个数，1 / Number of discrete sampling frequencies, 1
+     * @var tSamFreq
+     * 采样率（Hz，3 字节小端），绑定时填写 / Sampling frequency in Hz (3 bytes,
+     * little-endian), filled at bind
+     */
     uint8_t bLength = 11, bDescriptorType = CS_INTERFACE,
             bDescriptorSubtype = AS_FORMAT_TYPE;
     uint8_t bFormatType = FORMAT_TYPE_I, bNrChannels = CHANNELS;
@@ -287,6 +407,21 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct CSEndpointGeneral
   {
+    /**
+     * @var bLength
+     * 描述符长度，7 / Descriptor length, 7
+     * @var bDescriptorType
+     * CS_ENDPOINT
+     * @var bDescriptorSubtype
+     * EP_GENERAL
+     * @var bmAttributes
+     * 端点控制位图，0 表示无采样率、音高和包填充控制 / Endpoint control bitmap, 0 means
+     * no sampling-frequency, pitch or packet-padding control
+     * @var bLockDelayUnits
+     * 锁定延迟单位，0 表示未定义 / Lock delay units, 0 means undefined
+     * @var wLockDelay
+     * 锁定延迟，0 / Lock delay, 0
+     */
     uint8_t bLength = 7, bDescriptorType = CS_ENDPOINT, bDescriptorSubtype = EP_GENERAL;
     uint8_t bmAttributes = 0x00;
     uint8_t bLockDelayUnits = 0;
@@ -299,6 +434,27 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct EndpointDescriptorIso9
   {
+    /**
+     * @var bLength
+     * 描述符长度，9 / Descriptor length, 9
+     * @var bDescriptorType
+     * ENDPOINT
+     * @var bEndpointAddress
+     * 端点地址（含方向位），绑定时填写 / Endpoint address with direction bit, filled at
+     * bind
+     * @var bmAttributes
+     * 传输属性，0x05 = 等时 + 异步 + 数据端点 / Transfer attributes, 0x05 = isochronous +
+     * asynchronous + data endpoint
+     * @var wMaxPacketSize
+     * 最大包长，绑定时填写 / Maximum packet size, filled at bind
+     * @var bInterval
+     * 轮询间隔，1 = 每帧 / Polling interval, 1 = every frame
+     * @var bRefresh
+     * 反馈刷新周期，仅反馈端点使用，0 / Feedback refresh rate, used by feedback endpoints
+     * only, 0
+     * @var bSynchAddress
+     * 伴随同步端点地址，0 表示没有 / Associated sync endpoint address, 0 means none
+     */
     uint8_t bLength = 9;
     uint8_t bDescriptorType = static_cast<uint8_t>(DescriptorType::ENDPOINT);
     uint8_t bEndpointAddress = 0;  // 含方向位 / includes direction bit
@@ -847,9 +1003,9 @@ class UAC1MicrophoneQ : public DeviceClass
   }
 
  protected:
-  // 解绑后 speed_ 的占位值：UAC 只在 FULL/HIGH 下工作，2.0.2 的能力位不会出现 SUPER。
-  // Placeholder speed_ while unbound: UAC works on FULL/HIGH only, and the 2.0.2
-  // capability bits never yield SUPER.
+  /// 解绑后 speed_ 的占位值：UAC 只在 FULL/HIGH 下工作，2.0.2 的能力位不会出现 SUPER。
+  /// Placeholder speed_ while unbound: UAC works on FULL/HIGH only, and the 2.0.2
+  /// capability bits never yield SUPER.
   static constexpr Speed K_SPEED_UNBOUND = Speed::SUPER;
 
   // ===== 诊断计数 / Diagnostics counters =====

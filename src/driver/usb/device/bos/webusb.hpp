@@ -34,14 +34,18 @@ LIBXR_PACKED_BEGIN
  */
 struct WebUsbPlatformCapability
 {
-  uint8_t bLength = 0x18u;
-  uint8_t bDescriptorType = 0x10u;
-  uint8_t bDevCapabilityType = 0x05u;
-  uint8_t bReserved = 0x00u;
-  uint8_t PlatformCapabilityUUID[16] = {};
-  uint16_t bcdVersion = 0x0100u;
-  uint8_t bVendorCode = WEBUSB_VENDOR_CODE_DEFAULT;
-  uint8_t iLandingPage = 0u;
+  uint8_t bLength = 0x18u;  ///< 描述符长度，固定 24 / Descriptor length, always 24
+  uint8_t bDescriptorType = 0x10u;          ///< DEVICE_CAPABILITY
+  uint8_t bDevCapabilityType = 0x05u;       ///< PLATFORM
+  uint8_t bReserved = 0x00u;                ///< 保留，置 0 / Reserved, zero
+  uint8_t PlatformCapabilityUUID[16] = {};  ///< WebUSB 平台能力 UUID / WebUSB platform
+                                            ///< capability UUID
+  uint16_t bcdVersion = 0x0100u;  ///< WebUSB 版本，BCD，0x0100 = 1.0 / WebUSB version in
+                                  ///< BCD, 0x0100 = 1.0
+  uint8_t bVendorCode = WEBUSB_VENDOR_CODE_DEFAULT;  ///< GET_URL 请求所用的 bRequest /
+                                                     ///< bRequest of the GET_URL request
+  uint8_t iLandingPage = 0u;  ///< landing page 的 URL 描述符索引，0 表示没有 / URL
+                              ///< descriptor index of the landing page, 0 means none
 };
 LIBXR_PACKED_END
 

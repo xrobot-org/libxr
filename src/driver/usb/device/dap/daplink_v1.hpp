@@ -45,28 +45,52 @@ static constexpr uint8_t DAPLINK_V1_REPORT_DESC[] = {
     0xC0               // End Collection
 };
 
+/**
+ * @brief CMSIS-DAP v1（HID）USB 类，支持 SWD 和 JTAG，可选 nRESET 控制 / CMSIS-DAP v1
+ *        (HID) USB class with SWD and JTAG and optional nRESET control
+ *
+ * 报告长度为 64 字节（DapLinkV1Def::MAX_REQUEST_SIZE / MAX_RESPONSE_SIZE），命令由应用
+ * 线程循环调用 Step() 执行。
+ * Reports are 64 bytes (DapLinkV1Def::MAX_REQUEST_SIZE / MAX_RESPONSE_SIZE); commands run
+ * when the application thread calls Step() in a loop.
+ *
+ * @tparam SwdPort SWD 链路类型 / SWD link type
+ */
 template <typename SwdPort>
 class DapLinkV1Class
     : public HID<sizeof(DAPLINK_V1_REPORT_DESC), DapLinkV1Def::MAX_REQUEST_SIZE,
                  DapLinkV1Def::MAX_RESPONSE_SIZE>
 {
  public:
+  /// 编译期是否包含 JTAG 支持 / Whether JTAG support is compiled in
   static constexpr bool JTAG_ENABLED = DapLinkV1BuildConfig::kEnableJtag;
+  /// 默认的接口字符串 / Default interface string
   static constexpr const char* DEFAULT_INTERFACE_STRING = "CMSIS-DAP";
+
+  /// DAP_Info 命令返回的字符串集合；空指针项返回空字符串响应 / Strings returned by the
+  /// DAP_Info command; a null entry yields an empty-string response
   struct InfoStrings
   {
-    const char* vendor = nullptr;
-    const char* product = nullptr;
-    const char* serial = nullptr;
-    const char* firmware_ver = nullptr;
+    const char* vendor = nullptr;        ///< 厂商名 / Vendor name
+    const char* product = nullptr;       ///< 产品名 / Product name
+    const char* serial = nullptr;        ///< 序列号 / Serial number
+    const char* firmware_ver = nullptr;  ///< 固件版本 / Firmware version
 
-    const char* device_vendor = nullptr;
-    const char* device_name = nullptr;
-    const char* board_vendor = nullptr;
-    const char* board_name = nullptr;
-    const char* product_fw_ver = nullptr;
+    const char* device_vendor = nullptr;   ///< 目标器件厂商 / Target device vendor
+    const char* device_name = nullptr;     ///< 目标器件名 / Target device name
+    const char* board_vendor = nullptr;    ///< 板卡厂商 / Board vendor
+    const char* board_name = nullptr;      ///< 板卡名 / Board name
+    const char* product_fw_ver = nullptr;  ///< 产品固件版本 / Product firmware version
   };
 
+  /**
+   * @brief 构造函数 / Constructor
+   * @param in_ep_num IN 端点号 / IN endpoint number
+   * @param out_ep_num OUT 端点号 / OUT endpoint number
+   * @param swd_link SWD 链路，须比本对象长寿 / SWD link, must outlive this object
+   * @param nreset_gpio 可选的 nRESET 引脚，空表示不支持复位控制 / Optional nRESET pin,
+   * null means no reset control
+   */
   explicit DapLinkV1Class(Endpoint::EPNumber in_ep_num, Endpoint::EPNumber out_ep_num,
                           SwdPort& swd_link, LibXR::GPIO* nreset_gpio = nullptr);
 
@@ -75,9 +99,26 @@ class DapLinkV1Class
   DapLinkV1Class(const DapLinkV1Class&) = delete;
   DapLinkV1Class& operator=(const DapLinkV1Class&) = delete;
 
+  /**
+   * @brief 设置 DAP_Info 返回的字符串 / Set the strings returned by DAP_Info
+   * @param info 字符串集合，指针指向的内存须保持有效 / String set; the pointed-to memory
+   * must stay valid
+   */
   void SetInfoStrings(const InfoStrings& info);
+
+  /**
+   * @brief 设置 JTAG 后端 / Set the JTAG backend
+   * @param jtag JTAG 驱动；非空时才在 DAP_Info 能力里声明 JTAG。未编译 JTAG 时忽略 /
+   * JTAG driver; JTAG is advertised in the DAP_Info capabilities only when non-null.
+   * Ignored when JTAG is not compiled in
+   */
   void SetJtag(LibXR::Debug::Jtag* jtag);
+
+  /// 当前 DAP 会话状态 / Current DAP session state
   const LibXR::USB::DapLinkV1Def::State& GetState() const;
+
+  /// 是否处于绑定状态（BindEndpoints 之后、UnbindEndpoints 之前）/ Whether the class is
+  /// bound (after BindEndpoints, before UnbindEndpoints)
   bool IsInited() const;
 
   /**
