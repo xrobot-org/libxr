@@ -133,6 +133,7 @@ struct Rig
   {
     hw.setup_packet_event_early = selected.setup_event_early;
     hw.self_clear_reads = selected.flush_reads;
+    hw.ahbidl_follows_flush = selected.flush_reads > 1U;
     hw.disable_latency = selected.disable_latency;
     hw.tolerated.emplace_back(OUT_DISABLE_RULE);
   }

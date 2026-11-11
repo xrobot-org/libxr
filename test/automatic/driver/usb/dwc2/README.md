@@ -26,8 +26,10 @@ only.
 
 ## 控制器模型 / The controller model
 
-模型按参考手册的设备编程模型写，不参照驱动的期望；手册没有写明的地方是模型的假设，在下面单列。手册写明"必须"而驱动没有照做的操作
-（对未使能的端点写 EPDIS、不经全局 OUT NAK 就禁用 OUT 端点、端点使能期间改写传输长度寄存器、
+模型按参考手册的设备编程模型写，不参照驱动的期望；手册没有写明的地方是模型的假设，在下面单列。
+手册写明"必须"而驱动没有照做的操作
+（对未使能的端点写 EPDIS、不经全局 OUT NAK 就禁用 OUT 端点、AHBIDL 为 0 时或上一次冲刷未完成时写 TXFFLSH、
+冲刷期间写同一个发送 FIFO 或使能用它的端点、端点使能期间改写传输长度寄存器、
 发送 FIFO 溢出、接收 FIFO 为空时弹出、DMA 访问可达内存之外的地址、总线复位后第一个令牌到来时
 还没做完"USB 复位时的端点初始化"的 5 步）被记下来，每个用例结束时
 检查没有这样的记录。手册没有给出时间的地方是模型的参数：FIFO 冲刷位读回几次才清零、EPDIS 写入
@@ -36,7 +38,9 @@ only.
 The model follows the device programming model of the reference manual, not what a driver expects;
 where the manual is silent the model makes an assumption, listed below.
 Operations the manual marks as mandatory and a driver does not follow (EPDIS on an endpoint that is
-not enabled, an OUT endpoint disabled without the global OUT NAK, a transfer size register written
+not enabled, an OUT endpoint disabled without the global OUT NAK, TXFFLSH written while AHBIDL is 0 or
+the previous flush has not finished, a transmit FIFO written or an endpoint using it enabled during its
+flush, a transfer size register written
 while the endpoint is enabled, a transmit FIFO overflow, a pop of the empty receive FIFO, a DMA
 access outside the reachable memory, and the five steps of "Endpoint initialization on USB reset" not
 done when the first token after a bus reset arrives) are recorded, and every case checks at its end that nothing
@@ -59,6 +63,7 @@ differs, the cases that depend on it draw a wrong conclusion.
 | 等时 IN 端点在 EPENA 为 0 或奇偶不是 EONUM 的帧里收到 IN 令牌时回零长包 / an isochronous IN endpoint answers a zero-length packet when EPENA is clear or the frame has the other parity than EONUM | 只有 FIFO 里缺数据（零长包）和 NAKSTS 置位（零长包）两种情形 / only a FIFO lacking the data and NAKSTS set (zero-length packet) are stated | 主机每帧都看到一个包，和有数据的帧一致 / the host sees one packet per frame, as in a frame with data | `TestIsochronousFrames`, `TestUacStreams`（ESP 的 `isochronous_frames`、`uac_streams` 发现也用它 / the ESP findings `isochronous_frames` and `uac_streams` use it too） |
 | 3.00a 之后的核心在 DMA 模式收到 SETUP 包时置 XFRC\|STPKTRX / cores after 3.00a raise XFRC\|STPKTRX when the SETUP packet arrives in DMA mode | STPKTRX 只在 SETUP_COMPLETE 状态出现时（SETUP 阶段结束）置位 / STPKTRX is set only when the SETUP_COMPLETE status is seen (end of the SETUP stage) | 后端按核心版本分了支，两种时序都要跑（`early` 模式）/ the backend branches on the core revision, both timings run (the `early` modes) | 所有控制传输用例的 `DMA, early SETUP event` 模式 / the `DMA, early SETUP event` mode of every control case |
 | 3.10a 核心在非 DMA 模式弹出 SETUP 数据状态字时置 XFRC\|STPKTRX / a 3.10a core raises XFRC\|STPKTRX when the SETUP data status word is popped without DMA | RM0385 写明 STPKTRX 只用于缓冲 DMA 模式 / RM0385 says STPKTRX is for buffer DMA mode only | 后端对 3.10a 非 DMA 有单独的判断 / the backend tests for core 3.10a without DMA | 所有控制传输用例的 `FIFO mode, core 3.10a` 模式 / the `FIFO mode, core 3.10a` mode of every control case |
+| 发送 FIFO 冲刷：内容到 TXFFLSH 自清时才清掉；AHBIDL 在冲刷期间和 TXFFLSH 清零后的前两次读取里为 0（只在慢冲刷模式）/ transmit FIFO flush: the content is dropped when TXFFLSH clears; AHBIDL reads 0 while the flush runs and for the first two reads after TXFFLSH cleared (slow-flush modes only) | 应用写 TXFFLSH 之前要检查 AHBIDL，之后要等核心清掉该位（8 个时钟）；没有给出 AHBIDL 为 0 的时长 / the application must check AHBIDL before writing TXFFLSH and wait until the core clears the bit (eight clocks); no duration of AHBIDL = 0 is given | 让跳过 AHBIDL 检查或不等 TXFFLSH 清零的驱动能被发现；模型把这样的写入记为违反 / lets a driver that skips the AHBIDL check or does not wait for TXFFLSH be caught; the model records such writes as violations | 慢冲刷模式下的 `TestBusResetMidTransfer`、`TestStopIn`、`TestStopOut` 等所有走停止序列的用例 / every case that runs a stop sequence in the slow-flush modes, such as `TestBusResetMidTransfer`, `TestStopIn`, `TestStopOut` |
 
 时间参数（冲刷位读回几次才清零、EPDIS 生效前的寄存器访问次数）也是手册没有给出的，
 见上一节；默认运行把多个取值都跑一遍，所以不依赖某一个取值。

@@ -81,6 +81,19 @@ class Host
     for (unsigned i = 0; i < count; ++i) Sof();
   }
 
+  /// 推进帧直到条件成立，最多 limit 帧；返回条件的值。停止序列走完需要的帧数取决于冲刷
+  /// 和禁用的时间，手册没有给出，所以等条件而不是等固定的帧数。
+  /// Advance frames until the condition holds, at most limit; returns the condition. The
+  /// number of frames a stop sequence needs depends on the flush and disable times, which
+  /// the manual does not give, so the case waits for the condition instead of a fixed
+  /// number of frames.
+  template <typename Condition>
+  bool SofUntil(Condition condition, unsigned limit = 16)
+  {
+    for (unsigned i = 0; i < limit && !condition(); ++i) Sof();
+    return condition();
+  }
+
   static std::array<uint8_t, 8> Setup(uint8_t type, uint8_t request, uint16_t value,
                                       uint16_t index, uint16_t length)
   {

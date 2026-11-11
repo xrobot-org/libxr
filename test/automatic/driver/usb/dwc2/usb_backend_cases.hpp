@@ -873,7 +873,7 @@ void TestBusResetMidTransfer(const typename Fixture::ModeType& mode)
   f.Service();
   // 复位里的停止靠帧推进 / Stops started by the reset advance on frames
   f.host.address = 0;
-  f.host.Sof(4);
+  TEST_ASSERT(f.host.SofUntil([&] { return f.probe.resets == 2U; }));
   TEST_ASSERT(f.hw.Address() == 0U);
   TEST_ASSERT(!f.device.IsConfigured() && f.probe.resets == 2U);
   TEST_ASSERT(f.probe.bulk_in_log.items.size() == 1U &&
@@ -914,13 +914,13 @@ void TestBusResetMidTransfer(const typename Fixture::ModeType& mode)
 /// 复位后第一个令牌到来时检查全部 5 步）。重新枚举并配置后，两个方向的 EP1 都正常传数据，
 /// 不应答 STALL，类的端点也不再是 halted。手册没有要求复位清 STALL，这里检查的是主机在新
 /// 会话里看到的结果。
-/// After a bus reset the endpoints are no longer stalled: EP1 is halted in both directions
-/// with SET_FEATURE(ENDPOINT_HALT); after the reset every OUT endpoint is NAKed (step 1 of
-/// "Endpoint initialization on USB reset" in the manual; the controller model checks all
-/// five steps when the first token after the reset arrives). After enumerating and
-/// configuring again, EP1 moves data in both directions, answers no STALL and the class
-/// endpoints are not halted. The manual does not ask for the reset to clear STALL; what is
-/// checked is what the host sees in the new session.
+/// After a bus reset the endpoints are no longer stalled: EP1 is halted in both
+/// directions with SET_FEATURE(ENDPOINT_HALT); after the reset every OUT endpoint is
+/// NAKed (step 1 of "Endpoint initialization on USB reset" in the manual; the controller
+/// model checks all five steps when the first token after the reset arrives). After
+/// enumerating and configuring again, EP1 moves data in both directions, answers no STALL
+/// and the class endpoints are not halted. The manual does not ask for the reset to clear
+/// STALL; what is checked is what the host sees in the new session.
 template <typename Fixture>
 void TestBusResetClearsHalt(const typename Fixture::ModeType& mode)
 {
@@ -1134,8 +1134,8 @@ void TestIsochronousFrames(const typename Fixture::ModeType& mode)
 /// with the missed frame ends the request once with ABORTED.
 /// 依赖模型的假设：中断挂起期间 DSTS 仍显示刚结束的那一帧（手册没有写 FNSOF 的更新时间，
 /// 见 fake_dwc2.hpp 的 ASSUMPTION）。
-/// Depends on a model ASSUMPTION: while the interrupt is pending DSTS still shows the frame
-/// that just ended (the manual does not say when FNSOF updates, see fake_dwc2.hpp).
+/// Depends on a model ASSUMPTION: while the interrupt is pending DSTS still shows the
+/// frame that just ended (the manual does not say when FNSOF updates, see fake_dwc2.hpp).
 template <typename Fixture>
 void TestIsochronousMissedFrame(const typename Fixture::ModeType& mode)
 {

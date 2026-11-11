@@ -208,6 +208,20 @@ class Controller : public MmioTrap::Device
   /// (the manual gives eight clocks)
   unsigned self_clear_reads = 1;
 
+  /// 发送 FIFO 的内容要到 TXFFLSH 自清时才被清掉（之前主机仍能取走，驱动仍能读到
+  /// DTXFSTS）；这个开关为真时 AHBIDL 在冲刷期间读到 0，TXFFLSH 清零之后的前两次
+  /// GRSTCTL 读取仍读到 0（总线事件不会提前结束它）。
+  /// ASSUMPTION：手册要求应用在写 TXFFLSH 之前检查 AHBIDL（RM0468 GRSTCTL 的 TXFFLSH），
+  /// 没有给出 AHBIDL 为 0 持续多久；这样选是为了让不检查 AHBIDL 的驱动被发现。
+  /// The content of the transmit FIFO is only dropped when TXFFLSH clears itself (until
+  /// then the host can still take it and the driver still reads DTXFSTS); with this set
+  /// AHBIDL reads 0 while the flush runs, and for the first two GRSTCTL reads after
+  /// TXFFLSH has cleared (a bus event does not end it early). ASSUMPTION: the manual has
+  /// the application check AHBIDL before it writes TXFFLSH (RM0468 GRSTCTL, TXFFLSH) and
+  /// gives no duration of AHBIDL = 0; chosen so that a driver that skips the AHBIDL check
+  /// is caught.
+  bool ahbidl_follows_flush = false;
+
   /// EPDIS 写入之后，再过多少次寄存器访问端点才真正禁用并置 EPDISD（0 表示立即）；
   /// 总线上再发生任何事时也已经生效。手册只要求等待 EPDISD 中断，没有给出时间。
   /// How many further register accesses pass before a written EPDIS disables the
@@ -216,21 +230,22 @@ class Controller : public MmioTrap::Device
   unsigned disable_latency = 0;
 
   /// ASSUMPTION：手册只写了缓冲 DMA 模式下 STPKTRX 在 SETUP 阶段结束（第一个 IN/OUT 令牌
-  /// 之后的 SETUP_COMPLETE 状态）时置位；3.00a 之后的核心在收到 SETUP 包时就置 XFRC|STPKTRX
-  /// 手册里没有。选它是因为后端按核心版本分了这条分支（stm32_usb_otg.cpp 的 STPKTRX 判断），
-  /// 两种时序都要跑到。
-  /// ASSUMPTION: the manual only has STPKTRX set at the end of the SETUP stage in buffer
-  /// DMA mode (the SETUP_COMPLETE status after the first IN or OUT token). Cores after
-  /// 3.00a raising XFRC|STPKTRX when the SETUP packet arrives is not in the manual. It is
-  /// modelled because the backend branches on the core revision here (the STPKTRX test in
-  /// stm32_usb_otg.cpp) and both timings have to be run.
+  /// 之后的 SETUP_COMPLETE 状态）时置位；3.00a 之后的核心在收到 SETUP 包时就置
+  /// XFRC|STPKTRX 手册里没有。选它是因为后端按核心版本分了这条分支（stm32_usb_otg.cpp 的
+  /// STPKTRX 判断）， 两种时序都要跑到。 ASSUMPTION: the manual only has STPKTRX set at
+  /// the end of the SETUP stage in buffer DMA mode (the SETUP_COMPLETE status after the
+  /// first IN or OUT token). Cores after 3.00a raising XFRC|STPKTRX when the SETUP packet
+  /// arrives is not in the manual. It is modelled because the backend branches on the
+  /// core revision here (the STPKTRX test in stm32_usb_otg.cpp) and both timings have to
+  /// be run.
   bool setup_packet_event_early = false;
   /// ASSUMPTION：RM0385 写明 STPKTRX 只用于缓冲 DMA 模式；3.10a 核心在非 DMA 模式弹出
   /// SETUP 数据状态字时置 XFRC|STPKTRX 手册里没有。选它的理由同上（后端对 3.10a 的非 DMA
   /// 模式有单独的判断）。
   /// ASSUMPTION: the manual (RM0385) says STPKTRX is for buffer DMA mode only; a 3.10a
-  /// core raising XFRC|STPKTRX when the SETUP data status word is popped without DMA is not
-  /// in it. Chosen for the same reason (the backend tests for core 3.10a without DMA).
+  /// core raising XFRC|STPKTRX when the SETUP data status word is popped without DMA is
+  /// not in it. Chosen for the same reason (the backend tests for core 3.10a without
+  /// DMA).
   bool slave_setup_event = false;
   /// STM32 OTG_HS 内嵌全速 PHY 上测得：每个 SOF 令牌 GINTSTS.SOF 被置位两次，间隔约
   /// 1.4 us，两次读到的 DSTS.FNSOF 相同。开启后，驱动清除某个 SOF 之后，模型对同一令牌
@@ -542,8 +557,8 @@ class Controller : public MmioTrap::Device
       // ASSUMPTION: the manual does not say what an active isochronous IN endpoint does
       // when EPENA is clear or when the token comes in a frame of the other parity than
       // EONUM. The model answers a zero-length packet there as well, so that the host
-      // sees one packet per frame; TestIsochronousFrames and TestUacStreams rely on it for
-      // the frame before the scheduled one.
+      // sees one packet per frame; TestIsochronousFrames and TestUacStreams rely on it
+      // for the frame before the scheduled one.
       result.resp = iso ? Resp::DATA : Resp::NAK;
       return result;
     }
@@ -601,7 +616,7 @@ class Controller : public MmioTrap::Device
       case GUSBCFG:
         return gusbcfg_;
       case GRSTCTL:
-        return RST_AHBIDL | (grstctl_ & 0x7C0U) | busy_bits_;
+        return (AhbIdle() ? RST_AHBIDL : 0U) | (grstctl_ & 0x7C0U) | busy_bits_;
       case GINTSTS:
         return Gintsts();
       case GINTMSK:
@@ -696,7 +711,14 @@ class Controller : public MmioTrap::Device
     }
     if (offset == GRSTCTL)
     {
-      if (busy_reads_ != 0U && --busy_reads_ == 0U) busy_bits_ = 0U;
+      if (busy_reads_ != 0U)
+      {
+        if (--busy_reads_ == 0U) EndBusy();
+      }
+      else if (ahb_hold_reads_ != 0U)
+      {
+        --ahb_hold_reads_;
+      }
       return;
     }
     if (offset != GRXSTSP) return;
@@ -919,10 +941,42 @@ class Controller : public MmioTrap::Device
 
   void Tick(const char* event, unsigned number = 0)
   {
-    busy_reads_ = 0;
-    busy_bits_ = 0;
+    EndBusy();
     Elapse(true);
     if (log != nullptr) Log("bus: %s %u (frame %u)", event, number, frame_);
+  }
+
+  bool AhbIdle() const
+  {
+    return !ahbidl_follows_flush || (busy_bits_ == 0U && ahb_hold_reads_ == 0U);
+  }
+
+  /// 自清位清零；发送 FIFO 的冲刷在这一刻生效 / The self-clearing bits clear; the flush
+  /// of the transmit FIFO takes effect now
+  void EndBusy()
+  {
+    if ((busy_bits_ & RST_TXFFLSH) != 0U)
+    {
+      for (uint8_t i = 0; i < config_.endpoints; ++i)
+      {
+        InEp& in = in_[i];
+        if (flush_fifo_ != 0x10U && FifoOf(in) != flush_fifo_) continue;
+        in.packets.clear();
+        in.partial.clear();
+      }
+    }
+    if ((busy_bits_ & RST_TXFFLSH) != 0U && ahbidl_follows_flush) ahb_hold_reads_ = 2U;
+    busy_bits_ = 0U;
+    busy_reads_ = 0U;
+  }
+
+  static uint32_t FifoOf(const InEp& in) { return (in.ctl & CTL_TXFNUM) >> 22U; }
+
+  /// 发送 FIFO 正在冲刷 / The transmit FIFO is being flushed
+  bool Flushing(uint32_t fifo) const
+  {
+    return (busy_bits_ & RST_TXFFLSH) != 0U &&
+           (flush_fifo_ == 0x10U || flush_fifo_ == fifo);
   }
 
   void SetInNak(InEp& in)
@@ -934,16 +988,17 @@ class Controller : public MmioTrap::Device
   /// 总线复位之后主机的第一个令牌到达时，检查驱动是否做完了手册的"USB 复位时的端点初始化"
   /// （RM0468 62.15.6 Device programming model, Endpoint initialization on USB reset）：
   /// 1. 所有 OUT 端点 SNAK = 1；2. 打开 DAINTMSK 的 INEP0 和 OUTEP0、DOEPMSK 的 STUPM 和
-  /// XFRCM、DIEPMSK 的 XFRCM 和 TOM；3. 接收 FIFO 至少 EP0 一个最大包加 2 个字（OUT 数据的
-  /// 状态）加 10 个字（SETUP 包），EP0 的发送 FIFO 至少一个最大包；4. DOEPTSIZ0.STUPCNT = 3；
+  /// XFRCM、DIEPMSK 的 XFRCM 和 TOM；3. 接收 FIFO 至少 EP0 一个最大包加 2 个字（OUT
+  /// 数据的 状态）加 10 个字（SETUP 包），EP0 的发送 FIFO 至少一个最大包；4.
+  /// DOEPTSIZ0.STUPCNT = 3；
   /// 5. DMA 模式下 DOEPDMA0 是有效的内存地址。
   /// When the first token after a bus reset arrives, check that the driver completed
-  /// "Endpoint initialization on USB reset" of the manual (RM0468 62.15.6 Device programming
-  /// model): 1. SNAK = 1 on all OUT endpoints; 2. INEP0 and OUTEP0 unmasked in DAINTMSK,
-  /// STUPM and XFRCM in DOEPMSK, XFRCM and TOM in DIEPMSK; 3. a receive FIFO of at least
-  /// one EP0 maximum packet plus 2 words (status of the OUT data) plus 10 words (SETUP
-  /// packets) and a transmit FIFO 0 of at least one maximum packet; 4. STUPCNT = 3 in
-  /// DOEPTSIZ0; 5. in DMA mode DOEPDMA0 holds a valid memory address.
+  /// "Endpoint initialization on USB reset" of the manual (RM0468 62.15.6 Device
+  /// programming model): 1. SNAK = 1 on all OUT endpoints; 2. INEP0 and OUTEP0 unmasked
+  /// in DAINTMSK, STUPM and XFRCM in DOEPMSK, XFRCM and TOM in DIEPMSK; 3. a receive FIFO
+  /// of at least one EP0 maximum packet plus 2 words (status of the OUT data) plus 10
+  /// words (SETUP packets) and a transmit FIFO 0 of at least one maximum packet; 4.
+  /// STUPCNT = 3 in DOEPTSIZ0; 5. in DMA mode DOEPDMA0 holds a valid memory address.
   void CheckResetSteps()
   {
     if (!reset_steps_due_) return;
@@ -956,8 +1011,9 @@ class Controller : public MmioTrap::Device
     }
     constexpr uint32_t DAINT_EP0 = 0x10001U;
     if ((daintmsk_ & DAINT_EP0) != DAINT_EP0)
-      Violation("EP0 interrupts not unmasked in DAINTMSK after the USB reset (%s, step 2)",
-                RULE);
+      Violation(
+          "EP0 interrupts not unmasked in DAINTMSK after the USB reset (%s, step 2)",
+          RULE);
     if ((doepmsk_ & (INT_STUP | INT_XFRC)) != (INT_STUP | INT_XFRC))
       Violation("STUPM/XFRCM not set in DOEPMSK after the USB reset (%s, step 2)", RULE);
     if ((diepmsk_ & (INT_TOC | INT_XFRC)) != (INT_TOC | INT_XFRC))
@@ -966,8 +1022,9 @@ class Controller : public MmioTrap::Device
       Violation("receive FIFO smaller than 28 words after the USB reset (%s, step 3)",
                 RULE);
     if ((txf_[0] >> 16U) < 16U)
-      Violation("transmit FIFO 0 smaller than one packet after the USB reset (%s, step 3)",
-                RULE);
+      Violation(
+          "transmit FIFO 0 smaller than one packet after the USB reset (%s, step 3)",
+          RULE);
     if (((out_[0].tsiz >> 29U) & 3U) != 3U)
       Violation("STUPCNT is not 3 in DOEPTSIZ0 after the USB reset (%s, step 4)", RULE);
     if (DmaEnabled() && !DmaReachable(out_[0].dma, 8U))
@@ -1074,6 +1131,11 @@ class Controller : public MmioTrap::Device
       return;
     }
     InEp& in = in_[num];
+    if (Flushing(FifoOf(in)))
+      Violation(
+          "word written to transmit FIFO %u while its flush is running (RM0468 "
+          "OTG_GRSTCTL TXFFLSH: wait until the core clears the bit)",
+          num);
     if (DmaEnabled() || (in.ctl & CTL_EPENA) == 0U || XfrSiz(in.tsiz, num) == 0U)
     {
       Violation("word written to transmit FIFO %u with no transfer data left", num);
@@ -1134,6 +1196,11 @@ class Controller : public MmioTrap::Device
       // An endpoint whose size register was rewritten while it was enabled goes on with
       // the new values.
       in.reprogrammed = false;
+      if (Flushing(FifoOf(in)))
+        Violation(
+            "IN endpoint %u enabled while its transmit FIFO is being flushed (RM0468 "
+            "OTG_GRSTCTL TXFFLSH: wait until the core clears the bit)",
+            num);
       if (TypeOf(in.ctl) == Type::ISOCHRONOUS)
       {
         in.packets.clear();
@@ -1198,6 +1265,24 @@ class Controller : public MmioTrap::Device
 
   void Flush(uint32_t value)
   {
+    static constexpr char RULE[] = "RM0468 OTG_GRSTCTL";
+    if ((busy_bits_ & RST_TXFFLSH) != 0U)
+    {
+      if (((value ^ grstctl_) & 0x7C0U) != 0U)
+        Violation(
+            "TXFNUM changed while TXFFLSH is still set (%s: not before the core clears "
+            "it)",
+            RULE);
+      if ((value & RST_TXFFLSH) != 0U)
+        Violation(
+            "TXFFLSH written while the previous flush is still running (%s: wait until "
+            "the core clears the bit)",
+            RULE);
+    }
+    else if ((value & RST_TXFFLSH) != 0U && !AhbIdle())
+    {
+      Violation("TXFFLSH written while AHBIDL is 0 (%s: check AHBIDL first)", RULE);
+    }
     grstctl_ = value & 0x7C0U;
     if ((value & RST_CSRST) != 0U)
     {
@@ -1214,18 +1299,21 @@ class Controller : public MmioTrap::Device
       const uint32_t fifo = (value >> 6U) & 0x1FU;
       for (uint8_t i = 0; i < config_.endpoints; ++i)
       {
-        InEp& in = in_[i];
-        if (fifo != 0x10U && ((in.ctl & CTL_TXFNUM) >> 22U) != fifo) continue;
+        const InEp& in = in_[i];
+        if (fifo != 0x10U && FifoOf(in) != fifo) continue;
         if ((in.ctl & CTL_EPENA) != 0U && (in.ctl & CTL_NAKSTS) == 0U && !in_reset_)
           Note("transmit FIFO %u flushed while IN endpoint %u is enabled without NAK",
                fifo, i);
-        in.packets.clear();
-        in.partial.clear();
       }
+      flush_fifo_ = fifo;
       busy_bits_ |= RST_TXFFLSH;
     }
-    busy_reads_ = busy_bits_ != 0U ? self_clear_reads : 0U;
-    if (busy_reads_ == 0U) busy_bits_ = 0U;
+    if (busy_bits_ == 0U)
+      busy_reads_ = 0U;
+    else if (self_clear_reads == 0U)
+      EndBusy();
+    else
+      busy_reads_ = self_clear_reads;
   }
 
   void Write(uint32_t offset, uint32_t value)
@@ -1395,6 +1483,7 @@ class Controller : public MmioTrap::Device
     grstctl_ = 0;
     busy_bits_ = 0;
     busy_reads_ = 0;
+    ahb_hold_reads_ = 0;
     latched_ = 0;
     sof_again_ = false;
     gintmsk_ = 0;
@@ -1425,8 +1514,10 @@ class Controller : public MmioTrap::Device
   uint32_t gotgctl_ = 0, gotgint_ = 0, gahbcfg_ = 0, gusbcfg_ = 0, grstctl_ = 0;
   uint32_t busy_bits_ = 0;
   unsigned busy_reads_ = 0;
-  uint32_t latched_ = 0;    // Write-one-to-clear bits of GINTSTS.
-  bool sof_again_ = false;  // The repeated SOF of the last token is still due.
+  unsigned ahb_hold_reads_ = 0;  // Reads left that still see AHBIDL = 0 after a flush.
+  uint32_t flush_fifo_ = 0;      // TXFNUM of the transmit FIFO flush that is running.
+  uint32_t latched_ = 0;         // Write-one-to-clear bits of GINTSTS.
+  bool sof_again_ = false;       // The repeated SOF of the last token is still due.
   uint32_t gintmsk_ = 0, grxfsiz_ = 0, txf_[16] = {};
   uint32_t dcfg_ = 0, dctl_ = 0, diepmsk_ = 0, doepmsk_ = 0, daintmsk_ = 0;
   uint32_t diepempmsk_ = 0, enumspd_ = 1;
@@ -1438,8 +1529,9 @@ class Controller : public MmioTrap::Device
 
   // Bus state.
   bool vbus_ = true, suspended_ = false, in_reset_ = false;
-  bool reset_steps_due_ = false;     // The first token after a reset checks the steps.
-  bool snak_since_reset_[16] = {};  // SNAK was written to the OUT endpoint after the reset.
+  bool reset_steps_due_ = false;  // The first token after a reset checks the steps.
+  bool snak_since_reset_[16] =
+      {};  // SNAK was written to the OUT endpoint after the reset.
   uint16_t frame_ = 0;
   bool setup_done_due_ = false, setup_done_held_ = false;
   bool set_address_stage_ = false;
