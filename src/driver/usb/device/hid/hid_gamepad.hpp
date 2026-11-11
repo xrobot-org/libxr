@@ -153,14 +153,14 @@ class HIDGamepadT
     // 发送方可能在中断或别的线程里：取一份完整的快照，再把它交给核心。
     // The sender may be an interrupt or another thread: take one complete snapshot and
     // hand that to the core.
-    const Report& reply = sent_.Read();
+    const Report& reply = sent_.Read(Session());
     result.write_data = ConstRawData{&reply, sizeof(reply)};
     return ErrorCode::OK;
   }
 
-  void PublishInputReport(ConstRawData report) override
+  void PublishInputReport(ConstRawData report, uint32_t session) override
   {
-    sent_.Publish(*static_cast<const Report*>(report.addr_));
+    sent_.Publish(*static_cast<const Report*>(report.addr_), session);
   }
 
   void WithdrawInputReport() override { sent_.Withdraw(); }

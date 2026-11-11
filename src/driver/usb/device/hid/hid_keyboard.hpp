@@ -493,17 +493,22 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1, 1>
     // 发送方可能在中断或别的线程里：取一份完整的快照，再把它交给核心。
     // The sender may be an interrupt or another thread: take one complete snapshot and
     // hand that to the core.
-    const Report& reply = last_input_.Read();
+    const Report& reply = last_input_.Read(Session());
     result.write_data = ConstRawData{&reply, sizeof(reply)};
     return ErrorCode::OK;
   }
 
-  void PublishInputReport(ConstRawData report) override
+  void PublishInputReport(ConstRawData report, uint32_t session) override
   {
-    last_input_.Publish(*static_cast<const Report*>(report.addr_));
+    last_input_.Publish(*static_cast<const Report*>(report.addr_), session);
   }
 
   void WithdrawInputReport() override { last_input_.Withdraw(); }
+
+  /// 新会话不带上一次会话的 LED 报告；LED 字节只由 owner 写，绑定也在 owner 里。
+  /// A new session does not keep the LED report of the previous one; the LED byte is
+  /// written by the owner only, and bind runs in the owner.
+  void OnSessionStart() override { led_state_ = 0; }
 
   /**
    * @brief GET_REPORT(Output)：返回最近收到的 LED 输出报告（1 字节），尚未收到时为 0

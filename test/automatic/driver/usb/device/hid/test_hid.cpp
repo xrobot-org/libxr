@@ -1209,9 +1209,9 @@ class TapMouse : public HIDMouse
   std::function<void()> after_publish;
 
  protected:
-  void PublishInputReport(ConstRawData report) override
+  void PublishInputReport(ConstRawData report, uint32_t session) override
   {
-    HIDMouse::PublishInputReport(report);
+    HIDMouse::PublishInputReport(report, session);
     if (after_publish)
     {
       auto hook = std::move(after_publish);
@@ -1222,7 +1222,9 @@ class TapMouse : public HIDMouse
 };
 
 /// A report the endpoint did not take (a bus reset between the slot and the submit) was
-/// never sent: GET_REPORT keeps answering the report before it.
+/// never sent: GET_REPORT keeps answering the report before it. When the interface was
+/// bound again in between, the old session's report is not touched and the new session
+/// answers its neutral report.
 void TestRefusedReportIsWithdrawn()
 {
   Fixture f;
@@ -1238,6 +1240,25 @@ void TestRefusedReportIsWithdrawn()
   TEST_ASSERT(f.in.starts.size() == 1);
   TEST_ASSERT(GetReport(mouse, REPORT_INPUT, 0, data) == ErrorCode::OK);
   TEST_ASSERT(data == std::vector<uint8_t>({0x01, 0x05, 0xFD, 0x01}));
+
+  mouse.UnbindEndpoints(f.pool, false);
+  mouse.BindEndpoints(f.pool, 0, false);
+  mouse.Move(HIDMouse::Button::LEFT, 5, -3, 1, false);
+  f.in.Complete();
+  mouse.after_publish = [&]
+  {
+    f.in.Close(false);
+    mouse.UnbindEndpoints(f.pool, false);
+    mouse.BindEndpoints(f.pool, 0, false);
+  };
+  mouse.Move(HIDMouse::Button::RIGHT, 7, 8, 9, false);
+  TEST_ASSERT(GetReport(mouse, REPORT_INPUT, 0, data) == ErrorCode::OK);
+  TEST_ASSERT(data == std::vector<uint8_t>(4, 0));
+  // The new session sends as usual.
+  mouse.Move(HIDMouse::Button::RIGHT, 7, 8, 9, false);
+  TEST_ASSERT(GetReport(mouse, REPORT_INPUT, 0, data) == ErrorCode::OK);
+  TEST_ASSERT(data == std::vector<uint8_t>({0x02, 7, 8, 9}));
+  f.in.Complete();
 }
 
 /// Two sender threads send at full speed, a third plays the host and takes every report,
@@ -1319,6 +1340,105 @@ void TestTwoSendersAgainstGetReport()
   }
 }
 
+/// HID 1.11 7.2.6: a device is in the report protocol after reset, and a session starts
+/// without the previous session's reports. The host leaves the configuration and enters
+/// it again (what a bus reset or a replug comes to).
+void TestSessionStartsClean()
+{
+  constexpr uint8_t GET_PROTOCOL = 0x03, SET_PROTOCOL = 0x0B;
+  {
+    HidDeviceFixture f;
+    TestKeyboard kbd(Number::EP1, Number::EP2, false);
+    HidDevice device(f.pool, &kbd);
+    device.Init(false);
+    (void)f.Control(device, 0x00, 9, 1, 0);
+    TEST_ASSERT(!f.stalled);
+    TEST_ASSERT(f.Control(device, 0xA1, GET_PROTOCOL, 0, 1) == std::vector<uint8_t>({1}));
+    (void)f.Control(device, 0x21, SET_PROTOCOL, 0, 0);
+    TEST_ASSERT(!f.stalled);
+    TEST_ASSERT(f.Control(device, 0xA1, GET_PROTOCOL, 0, 1) == std::vector<uint8_t>({0}));
+    kbd.PressKey({HIDKeyboard::KeyCode::A}, HIDKeyboard::Modifier::LEFT_CTRL, false);
+    f.in1.Complete();
+    const auto held =
+        std::vector<uint8_t>({HIDKeyboard::Modifier::LEFT_CTRL, 0, 4, 0, 0, 0, 0, 0});
+    TEST_ASSERT(f.Control(device, 0xA1, 0x01, 0x0100, 8) == held);
+
+    (void)f.Control(device, 0x00, 9, 0, 0);  // Unconfigured.
+    (void)f.Control(device, 0x00, 9, 1, 0);
+    TEST_ASSERT(!f.stalled);
+    TEST_ASSERT(f.Control(device, 0xA1, GET_PROTOCOL, 0, 1) == std::vector<uint8_t>({1}));
+    TEST_ASSERT(f.Control(device, 0xA1, 0x01, 0x0100, 8) == std::vector<uint8_t>(8, 0));
+    // The new session works as usual.
+    kbd.PressKey({HIDKeyboard::KeyCode::B}, 0, false);
+    TEST_ASSERT(f.in1.IsActive());
+    f.in1.Complete();
+    TEST_ASSERT(f.Control(device, 0xA1, 0x01, 0x0100, 8) ==
+                std::vector<uint8_t>({0, 0, 5, 0, 0, 0, 0, 0}));
+  }
+  {
+    // The LED report of the previous session is gone as well.
+    Fixture f;
+    TestKeyboard kbd(Number::EP1, Number::EP2, true);
+    kbd.BindEndpoints(f.pool, 0, false);
+    std::vector<uint8_t> data;
+    f.out.HostSends({0x03});
+    TEST_ASSERT(GetReport(kbd, REPORT_OUTPUT, 0, data) == ErrorCode::OK &&
+                data == std::vector<uint8_t>({0x03}));
+    TEST_ASSERT(kbd.GetNumLock() && kbd.GetCapsLock());
+    kbd.UnbindEndpoints(f.pool, false);
+    kbd.BindEndpoints(f.pool, 0, false);
+    TEST_ASSERT(GetReport(kbd, REPORT_OUTPUT, 0, data) == ErrorCode::OK &&
+                data == std::vector<uint8_t>({0x00}));
+    TEST_ASSERT(!kbd.GetNumLock() && !kbd.GetCapsLock() && !kbd.GetScrollLock());
+  }
+  {
+    Fixture f;
+    TestMouse mouse(Number::EP1);
+    mouse.BindEndpoints(f.pool, 0, false);
+    TestMouse::ControlTransferResult result;
+    TEST_ASSERT(mouse.OnClassRequest(false, SET_PROTOCOL, 0, 0, 0, result) ==
+                ErrorCode::OK);
+    mouse.Move(HIDMouse::Button::LEFT, 5, -3, 1, false);
+    f.in.Complete();
+    std::vector<uint8_t> data;
+    TEST_ASSERT(GetReport(mouse, REPORT_INPUT, 0, data) == ErrorCode::OK &&
+                data == std::vector<uint8_t>({0x01, 0x05, 0xFD, 0x01}));
+    mouse.UnbindEndpoints(f.pool, false);
+    mouse.BindEndpoints(f.pool, 0, false);
+    TEST_ASSERT(GetReport(mouse, REPORT_INPUT, 0, data) == ErrorCode::OK &&
+                data == std::vector<uint8_t>(4, 0));
+    result.write_data = {};
+    TEST_ASSERT(mouse.OnClassRequest(false, GET_PROTOCOL, 0, 1, 0, result) ==
+                ErrorCode::OK);
+    TEST_ASSERT(static_cast<const uint8_t*>(result.write_data.addr_)[0] == 1U);
+  }
+  {
+    // The gamepad answers its neutral state, axes centred.
+    Fixture f;
+    TestGamepad pad(Number::EP1);
+    pad.BindEndpoints(f.pool, 0, false);
+    TestGamepad::ControlTransferResult result;
+    TEST_ASSERT(pad.OnClassRequest(false, SET_PROTOCOL, 0, 0, 0, result) ==
+                ErrorCode::OK);
+    std::vector<uint8_t> data;
+    TEST_ASSERT(GetReport(pad, REPORT_INPUT, 0, data) == ErrorCode::OK);
+    const auto neutral = data;
+    TEST_ASSERT(neutral.size() == 9 && neutral[8] == 0);
+    TEST_ASSERT(pad.Send(100, 200, 300, 400, 0x81, false) == ErrorCode::OK);
+    f.in.Complete();
+    TEST_ASSERT(GetReport(pad, REPORT_INPUT, 0, data) == ErrorCode::OK &&
+                data != neutral);
+    pad.UnbindEndpoints(f.pool, false);
+    pad.BindEndpoints(f.pool, 0, false);
+    TEST_ASSERT(GetReport(pad, REPORT_INPUT, 0, data) == ErrorCode::OK &&
+                data == neutral);
+    result.write_data = {};
+    TEST_ASSERT(pad.OnClassRequest(false, GET_PROTOCOL, 0, 1, 0, result) ==
+                ErrorCode::OK);
+    TEST_ASSERT(static_cast<const uint8_t*>(result.write_data.addr_)[0] == 1U);
+  }
+}
+
 }  // namespace
 
 int main()
@@ -1342,5 +1462,6 @@ int main()
   TestInterleavedSendersKeepSendOrder();
   TestRefusedReportIsWithdrawn();
   TestTwoSendersAgainstGetReport();
+  TestSessionStartsClean();
   std::puts("HID class: slot model, OUT lease, reset, idle rate and LED passed");
 }

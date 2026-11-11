@@ -16,11 +16,15 @@ namespace LibXR::USB
  *        GET_REPORT
  *
  * 写者是 HID::SendInputReport 独占窗口里的发送方（PublishInputReport /
- * WithdrawInputReport），读者是 owner（GET_REPORT）；同一时刻只有一个发送方在窗口里，
- * 所以快照只有一个生产者。
+ * WithdrawInputReport），读者是 owner（GET_REPORT）。每份报告带着发布时的会话号；
+ * 会话由 owner 在绑定时推进，会话号不符的报告属于上一次会话，读到时按中立值处理，
+ * 所以 owner 不必写快照，也就不会与发送方争当生产者。
  * The writer is the sender inside the exclusive window of HID::SendInputReport
- * (PublishInputReport / WithdrawInputReport); the reader is the owner (GET_REPORT). One
- * sender at a time is inside the window, so the snapshot has a single producer.
+ * (PublishInputReport / WithdrawInputReport); the reader is the owner (GET_REPORT). Each
+ * report carries the session it was published in. The owner advances the session on
+ * bind, and a report of another session belongs to the previous one and reads as the
+ * neutral value, so the owner never writes the snapshot and never competes with the
+ * sender as a second producer.
  *
  * @tparam Report 报告类型 / Report type
  */
@@ -28,18 +32,18 @@ template <typename Report>
 class LastInputReport
 {
  public:
-  /// @param initial 第一份报告之前的值 / The value before the first report
-  explicit LastInputReport(const Report& initial)
-      : current_(initial), previous_(initial), snapshot_(initial), reply_(initial)
+  /// @param neutral 会话开始时的报告 / The report a session starts with
+  explicit LastInputReport(const Report& neutral)
+      : neutral_(neutral), current_{neutral, 0U}, previous_(current_), snapshot_(current_)
   {
   }
 
   /// 发布 report；只在 SendInputReport 的独占窗口里调用 / Publish report; only inside
   /// the exclusive window of SendInputReport
-  void Publish(const Report& report)
+  void Publish(const Report& report, uint32_t session)
   {
     previous_ = current_;
-    current_ = report;
+    current_ = Stamped{report, session};
     snapshot_.Store(current_);
   }
 
@@ -52,19 +56,28 @@ class LastInputReport
     snapshot_.Store(current_);
   }
 
-  /// 最近发送的报告；只由 owner 调用，返回值在下次调用前保持不变 / The report last sent;
-  /// owner only, the result stays valid until the next call
-  const Report& Read()
+  /// 本会话最近发送的报告，本会话还没有发送时为中立值；只由 owner 调用，返回值在下次
+  /// 调用前保持不变 / The report last sent in this session, the neutral value before the
+  /// first; owner only, the result stays valid until the next call
+  const Report& Read(uint32_t session)
   {
     (void)snapshot_.LoadLatest(reply_);
-    return reply_;
+    if (reply_.session != session) reply_.report = neutral_;
+    return reply_.report;
   }
 
  private:
-  Report current_;   ///< 只由独占窗口里的发送方写 / Written by the sender in the window
-  Report previous_;  ///< 同上 / Same
-  LatestSnapshot<Report> snapshot_;
-  Report reply_;  ///< 只由 owner 写 / Owner only
+  struct Stamped
+  {
+    Report report;
+    uint32_t session;
+  };
+
+  Report neutral_;
+  Stamped current_;   ///< 只由独占窗口里的发送方写 / Written by the sender in the window
+  Stamped previous_;  ///< 同上 / Same
+  LatestSnapshot<Stamped> snapshot_;
+  Stamped reply_{};  ///< 只由 owner 写 / Owner only
 };
 
 /**
@@ -220,6 +233,15 @@ class HID : public DeviceClass
   void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num,
                      bool in_isr) override
   {
+    // HID 1.11 7.2.6：每次会话从报告协议开始，也不带上一次会话的报告。先推进会话号，
+    // 再放开 in_ep_ref_，发送方看到新端点时一定看到新会话号。
+    // HID 1.11 7.2.6: every session starts in the report protocol and without the
+    // reports of the previous one. The session number advances before in_ep_ref_ is
+    // published, so a sender that sees the new endpoint sees the new session.
+    protocol_ = Protocol::REPORT;
+    session_.fetch_add(1U, std::memory_order_release);
+    OnSessionStart();
+
     inited_ = false;
     itf_num_ = start_itf_num;
     ep_in_ = nullptr;
@@ -708,6 +730,10 @@ class HID : public DeviceClass
     if (!input_in_flight_.compare_exchange_strong(expected, 1U,
                                                   std::memory_order_acq_rel))
       return ErrorCode::BUSY;
+    // 先读会话号再读端点：看到新会话号时，端点要么还没放开，要么是新端点。
+    // Read the session before the endpoint: with a new session number the endpoint is
+    // either not published yet or the new one.
+    const uint32_t session = session_.load(std::memory_order_acquire);
     Endpoint* ep = in_ep_ref_.load(std::memory_order_acquire);
     if (ep == nullptr)
     {
@@ -734,7 +760,7 @@ class HID : public DeviceClass
     // 在独占窗口里、Submit 之前发布：Submit 之后 IN 完成随时会放开窗口。
     // Publish inside the exclusive window and before Submit: after Submit the IN
     // completion can open the window at any moment.
-    PublishInputReport(report);
+    PublishInputReport(report, session);
 
     ans = ep->Submit(slot, report.size_, false, in_isr);
     if (ans != ErrorCode::OK)
@@ -748,9 +774,11 @@ class HID : public DeviceClass
       {
         ep->ReleaseSlot(slot, in_isr);
       }
-      // 报告没有发出，撤回。
-      // The report was not sent: take it back.
-      WithdrawInputReport();
+      // 报告没有发出，撤回。会话已经换了（解绑后重新绑定）时，这份报告属于旧会话，读者
+      // 本来就不会采用它，不再碰快照。
+      // The report was not sent: take it back. After a rebind the report belongs to the
+      // old session and readers ignore it, so the snapshot is left alone.
+      if (session_.load(std::memory_order_acquire) == session) WithdrawInputReport();
       input_in_flight_.store(0U, std::memory_order_release);
       return ErrorCode::FAILED;
     }
@@ -758,12 +786,24 @@ class HID : public DeviceClass
   }
 
   /**
-   * @brief 记下即将提交的输入报告，供 GET_REPORT 返回；在 SendInputReport 的独占窗口里、
-   *        Submit 之前调用
-   * Record the input report about to be submitted, for GET_REPORT to return; called
-   * inside the exclusive window of SendInputReport before Submit
+   * @brief 会话开始（绑定时，owner 上下文）：类在这里清掉只属于上一次会话的状态
+   * A session starts (on bind, owner context): the class clears the state that belonged
+   * to the previous session here
    */
-  virtual void PublishInputReport(ConstRawData report) { UNUSED(report); }
+  virtual void OnSessionStart() {}
+
+  /**
+   * @brief 记下即将提交的输入报告，供 GET_REPORT 返回；在 SendInputReport 的独占窗口里、
+   *        Submit 之前调用，session 是本次发送读到的会话号
+   * Record the input report about to be submitted, for GET_REPORT to return; called
+   * inside the exclusive window of SendInputReport before Submit, with the session number
+   * this send read
+   */
+  virtual void PublishInputReport(ConstRawData report, uint32_t session)
+  {
+    UNUSED(report);
+    UNUSED(session);
+  }
 
   /**
    * @brief 撤回刚发布的输入报告：Submit 失败，主机不会看到它；与 PublishInputReport 在
@@ -772,6 +812,10 @@ class HID : public DeviceClass
    * it; called in the same exclusive window as PublishInputReport
    */
   virtual void WithdrawInputReport() {}
+
+  /// 当前会话号；绑定时 owner 推进 / Current session number; the owner advances it on
+  /// bind
+  uint32_t Session() const { return session_.load(std::memory_order_acquire); }
 
   /**
    * @brief 获取IDLE报告率
@@ -882,6 +926,8 @@ class HID : public DeviceClass
       0};  ///< 单条在途标志 / One input report in flight
   std::atomic<Endpoint*> in_ep_ref_{
       nullptr};  ///< SendInputReport 的 IN 端点 / IN endpoint doorbell
+  std::atomic<uint32_t> session_{
+      0};  ///< 会话号，每次绑定加一 / Session number, advanced on every bind
 
   uint8_t in_ep_interval_;         ///< 输入端点间隔 / IN endpoint interval
   uint8_t out_ep_interval_;        ///< 输出端点间隔 / OUT endpoint interval

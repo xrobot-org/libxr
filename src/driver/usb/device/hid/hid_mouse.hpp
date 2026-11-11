@@ -131,14 +131,14 @@ class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0, 2>
                              DeviceClass::ControlTransferResult& result) override
   {
     if (report_id != 0U) return ErrorCode::NOT_SUPPORT;
-    const Report& reply = last_input_.Read();
+    const Report& reply = last_input_.Read(Session());
     result.write_data = ConstRawData{&reply, sizeof(reply)};
     return ErrorCode::OK;
   }
 
-  void PublishInputReport(ConstRawData report) override
+  void PublishInputReport(ConstRawData report, uint32_t session) override
   {
-    last_input_.Publish(*static_cast<const Report*>(report.addr_));
+    last_input_.Publish(*static_cast<const Report*>(report.addr_), session);
   }
 
   void WithdrawInputReport() override { last_input_.Withdraw(); }
