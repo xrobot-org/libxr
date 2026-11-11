@@ -379,7 +379,6 @@ ErrorCode HPMGPIO::SetAnalogHighImpedance()
 /**
  * @brief 扫描并分发指定端口的 GPIO 中断 / Scan and dispatch GPIO IRQ callbacks for one
  * port.
- * @param port GPIO 端口号 / GPIO port index.
  *
  * 建议在板级 IRQHandler 中仅调用一次该函数：
  * - 读取端口中断标志；
@@ -459,7 +458,8 @@ uint16_t HPMGPIO::ResolvePadIndex(GPIO_Type* gpio, uint32_t port, uint8_t pin)
 
 /**
  * @brief GPIO 中断分发的 C 封装入口 / C wrapper entry for GPIO interrupt dispatch.
- * @param port GPIO 端口号 / GPIO port index.
+ *
+ * 参数见头文件声明 / See the header declaration for the parameter.
  */
 extern "C" void libxr_hpm_gpio_check_interrupt(uint32_t port)
 {

@@ -25,6 +25,12 @@ namespace LibXR
 class LinuxGPIO : public GPIO
 {
  public:
+  /**
+   * @brief 构造并打开 GPIO 芯片设备 / Construct and open the GPIO chip device
+   * @param chip_path GPIO 字符设备路径，例如 /dev/gpiochip0 / GPIO character device path,
+   * for example /dev/gpiochip0
+   * @param line_offset 芯片内的线偏移 / Line offset within the chip
+   */
   LinuxGPIO(const std::string& chip_path, unsigned int line_offset);
   ~LinuxGPIO() override;
 
