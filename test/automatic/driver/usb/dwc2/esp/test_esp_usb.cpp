@@ -393,6 +393,58 @@ void TestStopStart(const Mode& mode)
               f.probe.bulk_out_log.items[0].data == bytes);
 }
 
+/// 总线复位的 SE0 期间核心在 ENUMDONE 之前报 USBSUSP（ESP32-S3 板上实测）：后端不当作
+/// 挂起，把 SFTDISCON 置 1 再清 0；设备回到总线，复位结束后正常枚举，数据照常。
+/// The core raises USBSUSP before ENUMDONE during the SE0 of a bus reset (measured on an
+/// ESP32-S3): the backend does not take it for a suspend and pulses SFTDISCON; the device
+/// is back on the bus, enumerates after the reset ends, and data flows as before.
+void TestFalseSuspendInReset(const Mode& mode)
+{
+  Probe f(mode);
+  f.Up();
+  f.hw.false_suspend_in_reset = true;
+  const unsigned pulses = f.hw.soft_disconnects;
+  const unsigned delay = fake_esp.delay_us;
+  TEST_ASSERT(f.host.Enumerate(5, 1) == Result::OK);
+  f.hw.false_suspend_in_reset = false;
+  TEST_ASSERT(f.hw.soft_disconnects == pulses + 1U);
+  TEST_ASSERT(fake_esp.delay_us > delay);
+  TEST_ASSERT(f.hw.Connected() && (f.hw.Peek(Dwc2::DCTL) & Dwc2::DCTL_SDIS) == 0U);
+  TEST_ASSERT(!f.device.IsSuspended() && !f.hw.SofMasked());
+  TEST_ASSERT(f.device.IsConfigured() && f.probe.binds == 2U);
+  std::vector<uint8_t> data;
+  const auto bytes = Bytes(20, 1);
+  TEST_ASSERT(SubmitBytes(f.probe.bulk_in, bytes) == ErrorCode::OK);
+  TEST_ASSERT(f.host.Read(1, data) == Result::OK && data == bytes);
+
+  // 下一次复位没有假挂起：没有软断开 / The next reset has no false suspend: no pulse
+  TEST_ASSERT(f.host.Enumerate(6, 1) == Result::OK);
+  TEST_ASSERT(f.hw.soft_disconnects == pulses + 1U);
+}
+
+/// 复位的 ENUMDONE 之后的挂起是真的挂起：到达 OnSuspend，不做软断开；恢复后照常。
+/// A suspend after the ENUMDONE of a reset is a genuine suspend: it reaches OnSuspend
+/// with no soft disconnect, and the device works after the resume.
+void TestSuspendAfterEnumDone(const Mode& mode)
+{
+  Probe f(mode);
+  f.Up();
+  const unsigned pulses = f.hw.soft_disconnects;
+  f.host.Reset();
+  f.hw.HostSuspend();
+  f.Service();
+  TEST_ASSERT(f.device.IsSuspended() && f.hw.SofMasked());
+  TEST_ASSERT(f.hw.soft_disconnects == pulses);
+  f.hw.HostResume();
+  f.Service();
+  TEST_ASSERT(!f.device.IsSuspended() && !f.hw.SofMasked());
+  f.host.address = 0;
+  f.host.ResetToggles();
+  std::vector<uint8_t> descriptor;
+  TEST_ASSERT(f.host.GetDescriptor(1, 0, 18, descriptor) == Result::OK &&
+              descriptor.size() == 18U);
+}
+
 /// 中断状态寄存器的位是写 1 清除的，清一个位不能碰别的位：处理挂起中断的过程中到来的
 /// 总线复位不会丢，设备回到地址 0，主机照常枚举。
 /// The bits of the interrupt status register are cleared by writing 1, and clearing one
@@ -465,6 +517,8 @@ void RunAll()
     TestSuspendResume<Probe>(mode);
     TestInterruptClearKeepsOthers(mode);
     TestStopStart(mode);
+    TestFalseSuspendInReset(mode);
+    TestSuspendAfterEnumDone(mode);
     TestFrameTicks<Probe>(mode);
     TestIsochronousFrames<Probe>(mode);
     TestIsochronousMissedFrame<Probe>(mode);

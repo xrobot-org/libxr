@@ -41,6 +41,9 @@ extern "C"
     return ESP_OK;
   }
 
+  // The model has no clock: the delay is only recorded.
+  void esp_rom_delay_us(uint32_t us) { fake_esp.delay_us += us; }
+
   void usb_dev_deinit(void) { ++fake_esp.rom_deinit; }
 
   void usb_dw_ctrl_deinit(void) { ++fake_esp.rom_deinit; }

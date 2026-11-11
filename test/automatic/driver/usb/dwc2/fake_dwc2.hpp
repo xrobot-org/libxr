@@ -192,6 +192,7 @@ class Controller : public MmioTrap::Device
     CoreReset(false);
     vbus_ = true;
     suspended_ = false;
+    se0_stuck_ = false;
     frame_ = 0;
     violations.clear();
     notes.clear();
@@ -281,6 +282,20 @@ class Controller : public MmioTrap::Device
   /// When on, the model sets the flag once more for the same token after the driver has
   /// cleared the first one
   bool sof_twice = false;
+  /// ESP32-S3 板上实测，手册没有：总线复位的 SE0 期间，核心在 ENUMDONE 之前报 USBSUSP，
+  /// 随后线路一直是 SE0，主机看不到设备；DCTL.SFTDISCON 置 1 再清 0 之后设备回到总线，
+  /// 复位信号仍在时核心再报 USBRST。开启后，每次复位的第一个 HostResetEnd() 不结束复位，
+  /// 而是这样的假挂起；驱动不处理的话，第二个 HostResetEnd() 之后也没有 ENUMDONE。
+  /// Measured on an ESP32-S3, not in the manual: during the SE0 of a bus reset the core
+  /// raises USBSUSP before ENUMDONE, after which the line stays SE0 and the host does not
+  /// see the device; after DCTL.SFTDISCON is set and cleared the device is back on the
+  /// bus and, while the reset signalling goes on, the core raises USBRST again. When on,
+  /// the first HostResetEnd() of every reset does not end the reset but raises such a
+  /// false suspend; a driver that does not handle it gets no ENUMDONE after the second
+  /// HostResetEnd() either.
+  bool false_suspend_in_reset = false;
+  /// DCTL.SFTDISCON 从 0 变 1 的次数 / Times DCTL.SFTDISCON went from 0 to 1
+  unsigned soft_disconnects = 0;
 
   std::vector<std::string> violations;  ///< 违反手册"必须"的操作 / Mandatory rules broken
   std::vector<std::string> notes;       ///< 值得记录但不判错 / Recorded, not judged
@@ -317,7 +332,9 @@ class Controller : public MmioTrap::Device
   }
   bool IrqLine() { return (gahbcfg_ & AHB_GINT) != 0U && (Gintsts() & gintmsk_) != 0U; }
   bool SofMasked() const { return (gintmsk_ & GINT_SOF) == 0U; }
-  bool Connected() const { return vbus_ && (dctl_ & DCTL_SDIS) == 0U; }
+  bool Connected() const { return vbus_ && (dctl_ & DCTL_SDIS) == 0U && !se0_stuck_; }
+  /// 复位信号还在 / The reset signalling is still on
+  bool InReset() const { return in_reset_; }
   bool DmaEnabled() const { return (gahbcfg_ & AHB_DMAEN) != 0U; }
   uint16_t Frame() const { return frame_; }
   /// 驱动读 DSTS 看到的帧号。
@@ -368,23 +385,22 @@ class Controller : public MmioTrap::Device
     if (!Connected()) return;
     suspended_ = false;
     in_reset_ = true;
-    latched_ |= GINT_USBRST;
-    for (uint8_t i = 1; i < config_.endpoints; ++i)
-    {
-      in_[i].ctl &= ~CTL_USBAEP;
-      out_[i].ctl &= ~CTL_USBAEP;
-    }
-    set_address_stage_ = false;
-    setup_done_due_ = false;
-    control_write_data_ = false;
-    reset_steps_due_ = true;
-    for (auto& done : snak_since_reset_) done = false;
+    false_suspend_due_ = false_suspend_in_reset;
+    DetectReset();
   }
 
   /// 复位信号结束，速度确定 / End of the reset signalling, the speed is known
   void HostResetEnd()
   {
     Tick("reset ends");
+    if (false_suspend_due_ && in_reset_ && Connected())
+    {
+      false_suspend_due_ = false;
+      suspended_ = true;
+      se0_stuck_ = true;
+      latched_ |= GINT_ESUSP | GINT_USBSUSP;
+      return;
+    }
     if (!Connected() || !in_reset_) return;
     in_reset_ = false;
     const uint32_t dspd = dcfg_ & 3U;
@@ -1008,6 +1024,24 @@ class Controller : public MmioTrap::Device
     }
   }
 
+  /// 核心检测到复位：置 USBRST，非 0 端点失去 USBAEP，复位后的第一个令牌要检查初始化步骤
+  /// / The core detects a reset: USBRST is set, the non-zero endpoints lose USBAEP, and
+  /// the first token after the reset checks the initialization steps
+  void DetectReset()
+  {
+    latched_ |= GINT_USBRST;
+    for (uint8_t i = 1; i < config_.endpoints; ++i)
+    {
+      in_[i].ctl &= ~CTL_USBAEP;
+      out_[i].ctl &= ~CTL_USBAEP;
+    }
+    set_address_stage_ = false;
+    setup_done_due_ = false;
+    control_write_data_ = false;
+    reset_steps_due_ = true;
+    for (auto& done : snak_since_reset_) done = false;
+  }
+
   void Tick(const char* event, unsigned number = 0)
   {
     EndBusy();
@@ -1437,7 +1471,19 @@ class Controller : public MmioTrap::Device
         dcfg_ = value;
         return;
       case DCTL:
+      {
+        const bool was_off = (dctl_ & DCTL_SDIS) != 0U;
         dctl_ = value & (DCTL_RWUSIG | DCTL_SDIS | 0x00078870U);
+        const bool now_off = (dctl_ & DCTL_SDIS) != 0U;
+        if (!was_off && now_off) ++soft_disconnects;
+        if (was_off && !now_off && se0_stuck_)
+        {
+          // 设备回到总线；复位信号还在时核心重新检测到复位 / The device is back on the
+          // bus; while the reset signalling goes on the core detects the reset again
+          se0_stuck_ = false;
+          suspended_ = false;
+          if (in_reset_) DetectReset();
+        }
         if ((value & DCTL_SGINAK) != 0U) ginak_ = true;
         if ((value & DCTL_CGINAK) != 0U) ginak_ = false;
         if ((value & DCTL_SGONAK) != 0U)
@@ -1462,6 +1508,7 @@ class Controller : public MmioTrap::Device
           gonak_due_ = 0;
         }
         return;
+      }
       case DIEPMSK:
         diepmsk_ = value;
         return;
@@ -1610,7 +1657,9 @@ class Controller : public MmioTrap::Device
 
   // Bus state.
   bool vbus_ = true, suspended_ = false, in_reset_ = false;
-  bool reset_steps_due_ = false;  // The first token after a reset checks the steps.
+  bool false_suspend_due_ = false;  // The next HostResetEnd() raises the false suspend.
+  bool se0_stuck_ = false;          // The line stays SE0 until SFTDISCON is pulsed.
+  bool reset_steps_due_ = false;    // The first token after a reset checks the steps.
   bool snak_since_reset_[16] =
       {};  // SNAK was written to the OUT endpoint after the reset.
   uint16_t frame_ = 0;

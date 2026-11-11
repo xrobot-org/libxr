@@ -1,11 +1,11 @@
 // Fake ESP-IDF for host tests of the ESP32-S2/S3 USB backend: the declarations the
 // backend uses from FreeRTOS.h, sdkconfig.h, soc/soc_caps.h, esp_err.h, esp_attr.h,
 // esp_heap_caps.h, esp_dma_utils.h, esp_memory_utils.h, hal/cache_hal.h,
-// esp_intr_alloc.h, esp_private/usb_phy.h, soc/interrupts.h and the ROM USB headers,
-// written against the ESP-IDF 5.3 to 5.5 API (esp_dma_mem_info_t in esp_dma_utils.h). The
-// headers with those names in this directory include this file. The target is an
-// ESP32-S3; the calls are recorded in fake_esp so that the test can run the registered
-// interrupt handler and check what the backend asked for.
+// esp_intr_alloc.h, esp_private/usb_phy.h, esp_rom_sys.h, soc/interrupts.h and the ROM
+// USB headers, written against the ESP-IDF 5.3 to 5.5 API (esp_dma_mem_info_t in
+// esp_dma_utils.h). The headers with those names in this directory include this file. The
+// target is an ESP32-S3; the calls are recorded in fake_esp so that the test can run the
+// registered interrupt handler and check what the backend asked for.
 #pragma once
 
 #include <stdbool.h>
@@ -109,6 +109,7 @@ extern "C"
     unsigned rom_deinit;
     unsigned critical_depth;
     unsigned cache_syncs;
+    unsigned delay_us;  ///< Sum of the esp_rom_delay_us() arguments.
   } FakeEspState;
   extern FakeEspState fake_esp;
 
@@ -117,6 +118,7 @@ extern "C"
   esp_err_t esp_intr_enable(intr_handle_t handle);
   esp_err_t esp_intr_disable(intr_handle_t handle);
   esp_err_t usb_new_phy(const usb_phy_config_t* config, usb_phy_handle_t* handle);
+  void esp_rom_delay_us(uint32_t us);
   void usb_dev_deinit(void);
   void usb_dw_ctrl_deinit(void);
   extern void* uart_acm_dev;

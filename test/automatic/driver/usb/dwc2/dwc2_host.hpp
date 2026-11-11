@@ -66,6 +66,13 @@ class Host
     Service();
     hw_.HostResetEnd();
     Service();
+    // 复位信号还在（核心重新检测到复位）：再结束一次 / The reset signalling is still on
+    // (the core detected the reset again): end it once more
+    if (hw_.InReset())
+    {
+      hw_.HostResetEnd();
+      Service();
+    }
     address = 0;
     out_toggle_.fill(0);
     in_toggle_.fill(0);
