@@ -17,11 +17,29 @@
 namespace LibXR
 {
 
+/**
+ * @brief ESP32 I2C 主机驱动 / ESP32 I2C controller driver
+ */
 class ESP32I2C : public I2C
 {
  public:
+  /// 表示“未指定引脚”的哨兵值；构造函数要求有效的 GPIO，不接受该值 / Sentinel for "no
+  /// pin"; the constructor needs valid GPIO numbers and does not accept it
   static constexpr int PIN_NO_CHANGE = -1;
 
+  /**
+   * @brief 构造并初始化 I2C 端口 / Construct and initialize the I2C port
+   * @param port_num I2C 端口号 / I2C port number
+   * @param scl_pin SCL 引脚（有效输出 GPIO）/ SCL pin (valid output GPIO)
+   * @param sda_pin SDA 引脚（有效输出 GPIO）/ SDA pin (valid output GPIO)
+   * @param clock_speed 总线速率（Hz）/ Bus speed (Hz)
+   * @param enable_internal_pullup 是否启用内部上拉 / Enable the internal pull-ups
+   * @param timeout_ms 事务超时（ms），UINT32_MAX 表示不超时 / Transaction timeout (ms);
+   *        UINT32_MAX means no timeout
+   * @param isr_enable_min_size 事务总字节数不小于该值时改用中断驱动，0 表示始终轮询 /
+   *        Transactions of at least this many bytes use interrupt-driven transfer; 0
+   *        means always poll
+   */
   ESP32I2C(i2c_port_t port_num, int scl_pin, int sda_pin, uint32_t clock_speed = 400000U,
            bool enable_internal_pullup = true, uint32_t timeout_ms = 100U,
            uint32_t isr_enable_min_size = 32U);
@@ -44,6 +62,7 @@ class ESP32I2C : public I2C
                      MemAddrLength mem_addr_size = MemAddrLength::BYTE_8,
                      bool in_isr = false) override;
 
+  /// 当前使用的 I2C 端口号 / The I2C port number in use
   i2c_port_t Port() const { return port_num_; }
 
  private:

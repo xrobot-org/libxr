@@ -103,6 +103,7 @@ class ESP32USBDevice : public USB::EndpointPool,
    */
   void Deinit(bool in_isr) override;
   void OnControllerReset() override;
+  /// 重新装填 EP0 的 SETUP 接收窗口 / Reload the EP0 SETUP receive window
   void OnControlReady() override;
 
   /**

@@ -16,9 +16,24 @@
 namespace LibXR
 {
 
+/**
+ * @brief ESP32 内置 DAC 通道 / ESP32 built-in DAC channel
+ */
 class ESP32DAC : public DAC
 {
  public:
+  /**
+   * @brief 构造 DAC 通道并输出初始电压 / Construct a DAC channel and output the initial
+   *        voltage
+   * @param channel_id DAC 通道号，须小于 SOC_DAC_CHAN_NUM / DAC channel index, below
+   *        SOC_DAC_CHAN_NUM
+   * @param init_voltage 初始输出电压（V）/ Initial output voltage (V)
+   * @param reference_voltage 满量程对应的电压（V），大于 0 / Voltage (V) at full scale, >
+   * 0
+   * @note 参数非法或芯片无 DAC 时对象保持未就绪，Write() 返回 NOT_SUPPORT。
+   *       With invalid arguments or no DAC on the chip the object stays not ready and
+   *       Write() returns NOT_SUPPORT.
+   */
   explicit ESP32DAC(uint8_t channel_id = 0, float init_voltage = 0.0f,
                     float reference_voltage = 3.3f)
       : channel_id_(channel_id), reference_voltage_(reference_voltage)

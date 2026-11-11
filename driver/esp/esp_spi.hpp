@@ -15,9 +15,28 @@
 namespace LibXR
 {
 
+/**
+ * @brief ESP32 SPI 主机驱动 / ESP32 SPI master driver
+ */
 class ESP32SPI : public SPI
 {
  public:
+  /**
+   * @brief 构造并初始化 SPI 主机 / Construct and initialize the SPI master
+   * @param host SPI 主机，不能是 SPI1_HOST / SPI host, must not be SPI1_HOST
+   * @param sclk_pin SCLK 引脚 / SCLK pin
+   * @param miso_pin MISO 引脚 / MISO pin
+   * @param mosi_pin MOSI 引脚 / MOSI pin
+   * @param dma_rx 接收缓冲区，不能为空；同时用作 DMA 缓冲；启用 double_buffer
+   * 时分为两半轮流使用 / RX buffer and DMA buffer, must not be empty; split in two halves
+   * used alternately when double_buffer is enabled
+   * @param dma_tx 发送缓冲区，不能为空，用法同 dma_rx / TX buffer, must not be empty,
+   *        used like dma_rx
+   * @param config 初始 SPI 配置 / Initial SPI configuration
+   * @param dma_enable_min_size 传输长度大于该值时使用 DMA（字节）/ Transfers longer than
+   *        this many bytes use DMA
+   * @param enable_dma 是否允许使用 DMA / Whether DMA may be used
+   */
   ESP32SPI(spi_host_device_t host, int sclk_pin, int miso_pin, int mosi_pin,
            RawData dma_rx, RawData dma_tx,
            SPI::Configuration config =
@@ -46,8 +65,12 @@ class ESP32SPI : public SPI
 
   Prescaler GetMaxPrescaler() const override;
 
+  /// 当前接收缓冲区；启用双缓冲时为当前活动的那一半 / Current RX buffer; the active half
+  /// when double buffering is enabled
   RawData GetRxBuffer();
 
+  /// 当前发送缓冲区；启用双缓冲时为当前活动的那一半 / Current TX buffer; the active half
+  /// when double buffering is enabled
   RawData GetTxBuffer();
 
  private:
