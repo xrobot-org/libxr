@@ -159,8 +159,10 @@ class MSPM0UART : public UART
   /// 查询是否使用接收半传输通知 / Check RX half-transfer notification use.
   [[nodiscard]] bool RxHalfInterruptEnabled() const { return res_.rx_half_interrupt; }
 
+  /// 接收端口，UART 基类的读接口 / RX port, the read interface of the UART base
   MSPM0UARTReadPort _read_port;  // NOLINT(readability-identifier-naming)
-  WritePort _write_port;         // NOLINT(readability-identifier-naming)
+  /// 发送端口，UART 基类的写接口 / TX port, the write interface of the UART base
+  WritePort _write_port;  // NOLINT(readability-identifier-naming)
 
   /// 根据 UART 中断号取得实例编号 / Resolve an instance index from its UART IRQ.
   static constexpr uint8_t ResolveIndex(IRQn_Type irqn)

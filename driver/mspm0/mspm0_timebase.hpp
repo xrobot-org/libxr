@@ -7,6 +7,9 @@
 namespace LibXR
 {
 
+/**
+ * @brief 基于 SysTick 的 MSPM0 时间基 / MSPM0 timebase driven by SysTick
+ */
 class MSPM0Timebase : public Timebase
 {
  public:

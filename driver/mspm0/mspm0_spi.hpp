@@ -21,16 +21,28 @@ namespace LibXR
 class MSPM0SPI : public SPI
 {
  public:
+  /// 一个 SPI 实例的硬件资源描述 / Hardware resources of one SPI instance
   struct Resources
   {
-    SPI_Regs* instance;
-    IRQn_Type irqn;
-    uint32_t clock_freq;
-    uint8_t index;
-    uint8_t dma_rx_channel;
-    uint8_t dma_tx_channel;
+    SPI_Regs* instance;      ///< SPI 外设寄存器 / SPI peripheral registers
+    IRQn_Type irqn;          ///< 该实例的中断号 / Interrupt number of the instance
+    uint32_t clock_freq;     ///< 外设时钟（Hz，>0）/ Peripheral clock (Hz, > 0)
+    uint8_t index;           ///< 实例编号 / Instance index
+    uint8_t dma_rx_channel;  ///< 接收 DMA 通道 / RX DMA channel
+    uint8_t dma_tx_channel;  ///< 发送 DMA 通道 / TX DMA channel
   };
 
+  /**
+   * @brief 构造 SPI 控制器并登记到中断分发表 / Construct the SPI controller and register
+   *        it for interrupt dispatch
+   * @param res 硬件资源；同一 index 只能构造一个实例 / Hardware resources; one instance
+   *        per index
+   * @param dma_rx_buffer 接收 DMA 缓冲区，不能为空 / RX DMA buffer, must not be empty
+   * @param dma_tx_buffer 发送 DMA 缓冲区，不能为空 / TX DMA buffer, must not be empty
+   * @param dma_enable_min_size 传输长度大于该值时使用 DMA（字节）/ Transfers longer than
+   *        this many bytes use DMA
+   * @param config 初始 SPI 配置 / Initial SPI configuration
+   */
   MSPM0SPI(Resources res, RawData dma_rx_buffer, RawData dma_tx_buffer,
            uint32_t dma_enable_min_size = 3,
            SPI::Configuration config = {SPI::ClockPolarity::LOW, SPI::ClockPhase::EDGE_1,
@@ -53,8 +65,13 @@ class MSPM0SPI : public SPI
 
   ErrorCode Transfer(size_t size, OperationRW& op, bool in_isr = false) override;
 
+  /// SPI 中断入口，由对应的 SPIx_IRQHandler 调用 / SPI interrupt entry, called from the
+  /// matching SPIx_IRQHandler
+  /// @param index 实例编号 / Instance index
   static void OnInterrupt(uint8_t index);
 
+  /// 由 SPI 中断号取得实例编号，未知中断号返回无效编号 / Resolve the instance index from
+  /// the SPI IRQ number; the invalid index for an unknown IRQ
   static constexpr uint8_t ResolveIndex(IRQn_Type irqn)
   {
     switch (irqn)
