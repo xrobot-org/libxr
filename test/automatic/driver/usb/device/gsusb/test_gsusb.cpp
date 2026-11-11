@@ -20,6 +20,7 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <type_traits>
 #include <vector>
 
 #include "../../mock_endpoint.hpp"
@@ -66,6 +67,27 @@ void FreshTimerList() { LibXR::Timer::list_ = new LibXR::LockFreeList(); }
 constexpr std::size_t WIRE_HEADER = 12;
 constexpr std::size_t WIRE_CLASSIC = WIRE_HEADER + 8;
 
+/// A transmit queue that can be full: it takes `capacity` frames, answers FULL after
+/// that, and `Drain` models frames leaving the queue on the bus.
+struct TxQueueModel
+{
+  size_t capacity = SIZE_MAX;
+  size_t queued = 0;
+  unsigned refused = 0;  ///< how many AddMessage calls were answered FULL
+
+  bool Take()
+  {
+    if (queued >= capacity)
+    {
+      ++refused;
+      return false;
+    }
+    ++queued;
+    return true;
+  }
+  void Drain(size_t n) { queued -= std::min(n, queued); }
+};
+
 /// Minimal CAN controller: records what the class transmits and injects RX frames.
 class StubCan : public LibXR::CAN
 {
@@ -85,6 +107,7 @@ class StubCan : public LibXR::CAN
   uint32_t GetClockFreq() const override { return 42000000u; }
   ErrorCode AddMessage(const ClassicPack& pack) override
   {
+    if (!queue.Take()) return ErrorCode::FULL;
     Tx entry{};
     entry.id = pack.id;
     entry.dlc = pack.dlc;
@@ -106,7 +129,43 @@ class StubCan : public LibXR::CAN
   }
 
   unsigned configures = 0;
+  std::vector<Tx> tx;  ///< the frames the controller accepted, in order
+  TxQueueModel queue;
+};
+
+/// The same for a CAN FD controller: records the accepted frames as (id, length, first
+/// data byte).
+class StubFdCan : public LibXR::FDCAN
+{
+ public:
+  struct Tx
+  {
+    uint32_t id;
+    uint8_t len;
+    uint8_t first;
+  };
+
+  ErrorCode SetConfig(const LibXR::CAN::Configuration&) override { return ErrorCode::OK; }
+  ErrorCode SetConfig(const LibXR::FDCAN::Configuration&) override
+  {
+    return ErrorCode::OK;
+  }
+  uint32_t GetClockFreq() const override { return 42000000u; }
+  ErrorCode AddMessage(const ClassicPack& pack) override
+  {
+    if (!queue.Take()) return ErrorCode::FULL;
+    tx.push_back({pack.id, pack.dlc, pack.data[0]});
+    return ErrorCode::OK;
+  }
+  ErrorCode AddMessage(const FDPack& pack) override
+  {
+    if (!queue.Take()) return ErrorCode::FULL;
+    tx.push_back({pack.id, pack.len, pack.data[0]});
+    return ErrorCode::OK;
+  }
+
   std::vector<Tx> tx;
+  TxQueueModel queue;
 };
 
 /// RAM-backed Flash for the Database (erase fills with 0xFF, write copies).
@@ -154,21 +213,29 @@ uint32_t ReadU32(const std::vector<uint8_t>& frame, std::size_t offset)
 }
 
 /// Two CAN channels, the class and the composition that gives it a service pool.
-struct GsFixture
+template <typename Can>
+struct GsFixtureT
 {
+  /// The class constructor that is picked: FDCAN controllers offer CAN FD, plain CAN
+  /// controllers do not.
+  using Interface =
+      std::conditional_t<std::is_base_of_v<LibXR::FDCAN, Can>, LibXR::FDCAN, LibXR::CAN>;
   Block<256> in_storage, out_storage;
   EndpointPool pool{4};
   MockEndpoint in{Number::EP1, Direction::IN, in_storage.Raw()};
   MockEndpoint out{Number::EP2, Direction::OUT, out_storage.Raw()};
-  StubCan can0, can1;
+  Can can0, can1;
   TestGs gs;
   DeviceComposition composition;
   Callback<uint32_t> handler;
 
-  explicit GsFixture(size_t rx_queue_size = 32, size_t echo_queue_size = 32,
-                     LibXR::Database* database = nullptr)
-      : gs(Number::EP1, Number::EP2, {&can0, &can1}, rx_queue_size, echo_queue_size,
-           nullptr, {}, database),
+  explicit GsFixtureT(size_t rx_queue_size = 32, size_t echo_queue_size = 32,
+                      LibXR::Database* database = nullptr,
+                      size_t tx_stage_size = Gs::DEFAULT_TX_STAGE_SIZE)
+      : gs(Number::EP1, Number::EP2,
+           {static_cast<Interface*>(&can0), static_cast<Interface*>(&can1)},
+           rx_queue_size, echo_queue_size, nullptr, {}, database,
+           Gs::DEFAULT_INTERFACE_STRING, tx_stage_size),
         composition(pool, {&TEST_LANGUAGE}, {{&gs}})
   {
     TEST_ASSERT(pool.Put(&in) == ErrorCode::OK);
@@ -183,10 +250,13 @@ struct GsFixture
     pool.SetControlHandler(handler);
   }
 };
+using GsFixture = GsFixtureT<StubCan>;
+using GsFdFixture = GsFixtureT<StubFdCan>;
 
 /// Host format negotiation (little-endian marker) and per-channel mode. Every request
 /// with a data stage needs its vendor request first: that is what selects the channel.
-void Configure(GsFixture& f, bool enable_ch0 = true, bool enable_ch1 = true)
+template <typename Fixture>
+void Configure(Fixture& f, bool enable_ch0 = true, bool enable_ch1 = true)
 {
   const uint32_t byte_order = 0x0000beefu;
   ConstRawData fmt{&byte_order, sizeof(byte_order)};
@@ -207,7 +277,8 @@ void Configure(GsFixture& f, bool enable_ch0 = true, bool enable_ch1 = true)
 }
 
 /// One MODE request (vendor request that selects the channel, then its data stage).
-void SetMode(GsFixture& f, uint16_t ch, uint32_t mode_value, uint32_t flags = 0U)
+template <typename Fixture>
+void SetMode(Fixture& f, uint16_t ch, uint32_t mode_value, uint32_t flags = 0U)
 {
   TestGs::ControlTransferResult result;
   TEST_ASSERT(f.gs.OnVendorRequest(false, static_cast<uint8_t>(GsUsb::BReq::MODE), ch,
@@ -736,6 +807,448 @@ void TestErrorFrameHasOwnQueue()
   }
   TEST_ASSERT(errors == 1);
 }
+/// The echo ids of the frames the class has sent to the host so far, in order (frames
+/// from the CAN bus carry ECHO_ID_RX and are left out).
+template <typename Fixture>
+std::vector<uint32_t> EchoIds(Fixture& f)
+{
+  std::vector<uint32_t> ids;
+  for (const auto& frame : f.in.sent)
+  {
+    if (ReadU32(frame, 0) != 0xFFFFFFFFu) ids.push_back(ReadU32(frame, 0));
+  }
+  return ids;
+}
+
+/// The echo ids in [low, high) (one channel uses one id range in these tests).
+template <typename Fixture>
+std::vector<uint32_t> EchoIdsIn(Fixture& f, uint32_t low, uint32_t high)
+{
+  std::vector<uint32_t> ids;
+  for (uint32_t id : EchoIds(f))
+  {
+    if (id >= low && id < high) ids.push_back(id);
+  }
+  return ids;
+}
+
+/// The ids 'first', 'first' + 1, ... ('count' of them).
+std::vector<uint32_t> Run(uint32_t first, unsigned count)
+{
+  std::vector<uint32_t> ids;
+  for (unsigned i = 0; i < count; ++i) ids.push_back(first + i);
+  return ids;
+}
+
+/// Deliver the IN transfer that is waiting, if any (the host reads the echo).
+template <typename Fixture>
+void HostReadsIn(Fixture& f)
+{
+  if (f.in.active) f.in.Complete();
+}
+
+/// One SOF tick: the bus-time callback the device core delivers only while the class
+/// wants it.
+template <typename Fixture>
+void SofTick(Fixture& f)
+{
+  if (f.gs.WantsBusTime()) f.gs.OnBusTime(false, BusTime{});
+}
+
+/// A host frame with one data byte on channel `ch`: the CAN id is `echo_id & 0x7FF`.
+std::vector<uint8_t> HostFrame(uint32_t echo_id, uint8_t ch)
+{
+  return ClassicFrame(echo_id, echo_id & 0x7FFu, 1, ch, 0,
+                      {static_cast<uint8_t>(echo_id)});
+}
+
+/// 主机帧多于 CAN 发送队列容量：主机按 Linux 驱动的方式每通道最多 10 帧在途（收到 echo
+/// 才发下一帧）。暂存的帧一帧不丢、不重复、顺序不变，每帧恰好一个 echo，echo 不会跑到
+/// 控制器接受那一帧之前，而且 OUT 端点从不被占住。
+/// A host burst larger than the CAN transmit queue, sent the way the Linux driver does:
+/// at most 10 frames in flight per channel (the next frame goes out after an echo). The
+/// staged frames are not lost or duplicated, the order is kept, every frame gets exactly
+/// one echo, an echo never runs ahead of the controller accepting its frame, and the OUT
+/// endpoint is never held.
+void TestFullCanQueueStagesTheFrames()
+{
+  FreshTimerList();
+  GsFixture f;
+  f.can0.queue.capacity = 3;
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f);
+  TEST_ASSERT(!f.gs.WantsBusTime());
+
+  constexpr unsigned FRAMES = 100, WINDOW = 10;
+  unsigned sent = 0, staged_ticks = 0;
+  size_t max_unechoed = 0;
+  bool done = false;
+  for (unsigned guard = 0; guard < 20000 && !done; ++guard)
+  {
+    HostReadsIn(f);
+    const size_t echoed = EchoIds(f).size();
+    TEST_ASSERT(echoed <= f.can0.tx.size());  // an echo means the driver accepted it
+    if (sent < FRAMES && sent - echoed < WINDOW)
+    {
+      TEST_ASSERT(f.out.active);  // the OUT endpoint is never held
+      f.out.HostSends(HostFrame(0x1000u + sent, 0));
+      ++sent;
+      max_unechoed = std::max<size_t>(max_unechoed, sent - EchoIds(f).size());
+      continue;
+    }
+    if (sent == FRAMES && echoed == FRAMES && !f.in.active)
+    {
+      done = true;
+      break;
+    }
+    if (f.gs.WantsBusTime()) ++staged_ticks;
+    f.can0.queue.Drain(1);  // one frame leaves on the bus
+    SofTick(f);
+  }
+  TEST_ASSERT(done);
+  TEST_ASSERT(staged_ticks > 0);
+  TEST_ASSERT(f.can0.queue.refused > 0);
+  TEST_ASSERT(max_unechoed <= WINDOW);
+  TEST_ASSERT(f.can0.tx.size() == FRAMES);  // each frame accepted once, none lost
+  TEST_ASSERT(EchoIds(f) == Run(0x1000u, FRAMES));
+  for (unsigned i = 0; i < FRAMES; ++i)
+  {
+    TEST_ASSERT(f.can0.tx[i].id == ((0x1000u + i) & 0x7FFu) &&
+                f.can0.tx[i].data[0] == static_cast<uint8_t>(0x1000u + i));
+  }
+  TEST_ASSERT(f.out.active);
+  TEST_ASSERT(!f.gs.WantsBusTime());
+  TEST_ASSERT(f.can1.tx.empty());
+}
+
+/// 新帧不会越过暂存的帧：暂存队列非空时，即使驱动已有空位，新帧也排在队尾。
+/// A new frame never overtakes a staged one: while the staging queue is not empty, the
+/// new frame goes to its end even if the driver has room.
+void TestNewFrameQueuesBehindStagedFrames()
+{
+  FreshTimerList();
+  GsFixture f;
+  f.can0.queue.capacity = 1;
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f);
+
+  f.out.HostSends(HostFrame(0x10u, 0));  // A: accepted
+  f.out.HostSends(HostFrame(0x11u, 0));  // B: the driver is full, staged
+  TEST_ASSERT(f.out.active);
+  TEST_ASSERT(f.can0.tx.size() == 1 && f.gs.WantsBusTime());
+
+  f.can0.queue.Drain(1);                 // room for exactly one frame, no service yet
+  f.out.HostSends(HostFrame(0x12u, 0));  // C arrives behind B
+  TEST_ASSERT(f.out.active);
+  // B (not C) took the room, C waits behind it.
+  TEST_ASSERT(f.can0.tx.size() == 2 && f.can0.tx[1].id == 0x11u);
+  TEST_ASSERT(f.gs.WantsBusTime());
+
+  f.can0.queue.Drain(1);
+  SofTick(f);
+  while (f.in.active) f.in.Complete();
+  TEST_ASSERT(f.can0.tx.size() == 3 && f.can0.tx[2].id == 0x12u);
+  TEST_ASSERT((EchoIds(f) == std::vector<uint32_t>{0x10u, 0x11u, 0x12u}));
+  TEST_ASSERT(!f.gs.WantsBusTime());
+}
+
+/// 重试不只靠 SOF 节拍：收到总线帧、IN 完成而请求的类服务也会重试。
+/// The retry does not depend on the SOF tick alone: the class service that a received
+/// bus frame or an IN completion requests retries as well.
+void TestStagedFrameIsRetriedByTheService()
+{
+  FreshTimerList();
+  GsFixture f;
+  f.can0.queue.capacity = 1;
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f);
+
+  f.out.HostSends(HostFrame(0x10u, 0));
+  f.out.HostSends(HostFrame(0x11u, 0));
+  TEST_ASSERT(f.out.active && f.gs.WantsBusTime());
+  TEST_ASSERT(f.can0.tx.size() == 1);
+
+  f.can0.queue.Drain(1);
+  f.can1.Inject(0x7FFu, {0x00});  // a frame from the bus requests the service
+  TEST_ASSERT(f.can0.tx.size() == 2 && f.can0.tx[1].id == 0x11u);
+  TEST_ASSERT(!f.gs.WantsBusTime());
+  while (f.in.active) f.in.Complete();
+  TEST_ASSERT((EchoIds(f) == std::vector<uint32_t>{0x10u, 0x11u}));
+}
+
+/// 通道 0 的发送队列永远满，通道 1 照常发送：通道 1 不受影响，OUT 端点一直可收；通道 0
+/// 恰好有“暂存容量”个没有 echo 的帧（主机在这里停下），故障消除后按顺序发出并回 echo。
+/// Channel 0's transmit queue stays full forever while channel 1 keeps sending: channel 1
+/// is not affected and the OUT endpoint stays armed; channel 0 has exactly the staging
+/// capacity of unechoed frames (where the host stops), and after the fault is gone they
+/// go out in order and are echoed.
+void TestStuckChannelDoesNotBlockTheOtherChannel()
+{
+  FreshTimerList();
+  GsFixture f;
+  f.can0.queue.capacity = 0;  // channel 0 never accepts a frame
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f);
+
+  constexpr unsigned WINDOW = 10;  // the host's in-flight limit == the staging capacity
+  for (unsigned i = 0; i < WINDOW; ++i)
+  {
+    TEST_ASSERT(f.out.active);
+    f.out.HostSends(HostFrame(0x1000u + i, 0));
+  }
+  TEST_ASSERT(f.out.active);
+  TEST_ASSERT(f.can0.tx.empty() && f.gs.WantsBusTime());
+
+  for (unsigned i = 0; i < 200; ++i)
+  {
+    HostReadsIn(f);
+    TEST_ASSERT(f.out.active);
+    f.out.HostSends(HostFrame(0x2000u + i, 1));
+    if ((i % 8) == 0) SofTick(f);  // the retries of channel 0 are refused
+  }
+  while (f.in.active) f.in.Complete();
+
+  TEST_ASSERT(f.can1.tx.size() == 200);
+  TEST_ASSERT(EchoIdsIn(f, 0x2000u, 0x3000u) == Run(0x2000u, 200));
+  TEST_ASSERT(f.can0.tx.empty());
+  TEST_ASSERT(EchoIdsIn(f, 0x1000u, 0x2000u).empty());  // exactly WINDOW unechoed
+  TEST_ASSERT(f.gs.WantsBusTime());
+  TEST_ASSERT(f.out.active);
+
+  f.can0.queue.capacity = SIZE_MAX;  // the fault is gone
+  SofTick(f);
+  while (f.in.active) f.in.Complete();
+  TEST_ASSERT(f.can0.tx.size() == WINDOW);
+  for (unsigned i = 0; i < WINDOW; ++i)
+  {
+    TEST_ASSERT(f.can0.tx[i].id == ((0x1000u + i) & 0x7FFu));
+  }
+  TEST_ASSERT(EchoIdsIn(f, 0x1000u, 0x2000u) == Run(0x1000u, WINDOW));
+  TEST_ASSERT(!f.gs.WantsBusTime());
+}
+
+/// 暂存队列满（主机不遵守每通道在途上限）：多出的帧被丢弃，仍然回 echo，
+/// OUT 端点不被占住；暂存的帧不受影响，之后按顺序发出，被丢弃的帧不会被发送。
+/// The staging queue is full (a host that ignores the per-channel in-flight limit): the
+/// extra frames are dropped and still echoed, the OUT endpoint is not held; the staged
+/// frames are not affected and go out in order later, the dropped frames are never sent.
+void TestStagingOverflowDropsAndEchoes()
+{
+  FreshTimerList();
+  GsFixture f(32, 32, nullptr, 4);  // four staged frames per channel
+  f.can0.queue.capacity = 0;
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f);
+
+  for (unsigned i = 0; i < 7; ++i)
+  {
+    HostReadsIn(f);
+    TEST_ASSERT(f.out.active);
+    f.out.HostSends(HostFrame(0x1000u + i, 0));
+  }
+  while (f.in.active) f.in.Complete();
+  TEST_ASSERT(f.out.active);
+  TEST_ASSERT(f.can0.tx.empty());
+  // The three frames beyond the capacity are echoed at once (and dropped).
+  TEST_ASSERT((EchoIds(f) == std::vector<uint32_t>{0x1004u, 0x1005u, 0x1006u}));
+
+  f.can0.queue.capacity = SIZE_MAX;
+  SofTick(f);
+  while (f.in.active) f.in.Complete();
+  TEST_ASSERT(f.can0.tx.size() == 4);
+  for (unsigned i = 0; i < 4; ++i)
+  {
+    TEST_ASSERT(f.can0.tx[i].id == ((0x1000u + i) & 0x7FFu));
+  }
+  TEST_ASSERT((EchoIds(f) == std::vector<uint32_t>{0x1004u, 0x1005u, 0x1006u, 0x1000u,
+                                                   0x1001u, 0x1002u, 0x1003u}));
+  TEST_ASSERT(!f.gs.WantsBusTime());
+
+  // Channel 1 has its own staging queue: channel 0's overflow did not touch it.
+  f.can1.queue.capacity = 0;
+  for (unsigned i = 0; i < 4; ++i) f.out.HostSends(HostFrame(0x2000u + i, 1));
+  TEST_ASSERT(f.out.active && f.can1.tx.empty());
+  f.can1.queue.capacity = SIZE_MAX;
+  SofTick(f);
+  TEST_ASSERT(f.can1.tx.size() == 4);
+}
+
+/// 通道复位、重新启动或总线复位（解绑）时，该通道暂存的帧被丢弃：不发送，
+/// 不回 echo。另一个通道的暂存帧不受影响（解绑除外：整个绑定结束）。
+/// A channel reset, a restart of the channel or a bus reset (unbind) drops the frames
+/// staged for it: never sent, no echo. The other channel's staged frames are not touched
+/// (an unbind ends the whole binding).
+void TestChannelStopDropsItsStagedFrames()
+{
+  for (unsigned how = 0; how < 3; ++how)  // 0: MODE RESET, 1: MODE START, 2: unbind
+  {
+    FreshTimerList();
+    GsFixture f;
+    f.can0.queue.capacity = 0;
+    f.can1.queue.capacity = 0;
+    f.gs.BindEndpoints(f.pool, 0, false);
+    Configure(f);
+
+    for (unsigned i = 0; i < 3; ++i)
+    {
+      f.out.HostSends(HostFrame(0x1000u + i, 0));
+      f.out.HostSends(HostFrame(0x2000u + i, 1));
+    }
+    TEST_ASSERT(f.out.active && f.gs.WantsBusTime());
+
+    if (how == 0) SetMode(f, 1, 0);
+    if (how == 1) SetMode(f, 1, 1);
+    if (how == 2)
+    {
+      f.gs.UnbindEndpoints(f.pool, false);
+      TEST_ASSERT(!f.gs.WantsBusTime());
+      f.gs.BindEndpoints(f.pool, 0, false);
+      Configure(f);
+    }
+    TEST_ASSERT(f.out.active);
+    TEST_ASSERT(f.gs.WantsBusTime() == (how != 2));
+
+    // Both queues free up: only channel 0's frames of a surviving binding go out.
+    f.can0.queue.capacity = SIZE_MAX;
+    f.can1.queue.capacity = SIZE_MAX;
+    SofTick(f);
+    f.gs.OnService(false);
+    while (f.in.active) f.in.Complete();
+    TEST_ASSERT(f.can1.tx.empty());
+    if (how == 2)
+    {
+      TEST_ASSERT(f.can0.tx.empty());
+      TEST_ASSERT(EchoIds(f).empty());
+    }
+    else
+    {
+      TEST_ASSERT(f.can0.tx.size() == 3);
+      TEST_ASSERT(EchoIds(f) == Run(0x1000u, 3));
+    }
+    TEST_ASSERT(!f.gs.WantsBusTime());
+
+    // The channel works again after the stop (for MODE RESET, once it is started).
+    if (how == 0) SetMode(f, 1, 1);
+    f.out.HostSends(HostFrame(0x2100u, 1));
+    while (f.in.active) f.in.Complete();
+    TEST_ASSERT(f.can1.tx.size() == 1 && f.can1.tx[0].id == (0x2100u & 0x7FFu));
+    TEST_ASSERT(EchoIdsIn(f, 0x2000u, 0x3000u) == std::vector<uint32_t>{0x2100u});
+  }
+}
+
+/// echo 队列满时的配合：驱动接受了队头，但 echo 队列没有位置，这一帧保持“已接受”，
+/// 下次服务只补推 echo，不会再次提交 CAN，也不会回两个 echo；此时通道复位则丢弃它，
+/// 不回 echo。
+/// Interplay with a full echo queue: the driver accepted the head but the echo queue has
+/// no room, the frame stays "accepted" and the next service only pushes its echo; it is
+/// never submitted to CAN twice nor echoed twice; a channel reset in that state drops it
+/// without an echo.
+/// state drops it without an echo.
+void TestEchoQueueFullWhileStagedFramesAreAccepted()
+{
+  for (unsigned reset = 0; reset < 2; ++reset)
+  {
+    FreshTimerList();
+    GsFixture f(32, 2);  // two echo slots
+    f.can0.queue.capacity = 0;
+    f.gs.BindEndpoints(f.pool, 0, false);
+    Configure(f);
+    constexpr unsigned FRAMES = 8;
+    for (unsigned i = 0; i < FRAMES; ++i)
+    {
+      TEST_ASSERT(f.out.active);
+      f.out.HostSends(HostFrame(0x1000u + i, 0));
+    }
+    TEST_ASSERT(f.can0.tx.empty());
+
+    // The controller has room for all of them, but the host does not read the IN
+    // endpoint: the echo queue fills and the head frame is accepted without an echo.
+    f.can0.queue.capacity = SIZE_MAX;
+    for (unsigned i = 0; i < 5; ++i) SofTick(f);
+    const size_t accepted = f.can0.tx.size();
+    TEST_ASSERT(accepted > 0 && accepted < FRAMES);
+    TEST_ASSERT(accepted > EchoIds(f).size());
+    TEST_ASSERT(f.gs.WantsBusTime());
+    TEST_ASSERT(f.out.active);
+
+    if (reset)
+    {
+      SetMode(f, 0, 0);  // the staged frames, accepted head included, are dropped
+      TEST_ASSERT(!f.gs.WantsBusTime());
+      for (unsigned i = 0; i < 64 && f.in.active; ++i) f.in.Complete();
+      for (unsigned i = 0; i < 5; ++i) SofTick(f);
+      TEST_ASSERT(f.can0.tx.size() == accepted);  // nothing more was submitted
+      // The head frame was accepted but its echo was never queued.
+      TEST_ASSERT(EchoIds(f).size() == accepted - 1);
+      continue;
+    }
+
+    for (unsigned guard = 0; guard < 200 && f.gs.WantsBusTime(); ++guard)
+    {
+      HostReadsIn(f);
+      SofTick(f);
+      TEST_ASSERT(f.can0.tx.size() <= FRAMES);  // never submitted twice
+    }
+    while (f.in.active) f.in.Complete();
+    TEST_ASSERT(f.can0.tx.size() == FRAMES);
+    for (unsigned i = 0; i < FRAMES; ++i)
+    {
+      TEST_ASSERT(f.can0.tx[i].id == ((0x1000u + i) & 0x7FFu));
+    }
+    TEST_ASSERT(EchoIds(f) == Run(0x1000u, FRAMES));  // one echo each, in order
+    TEST_ASSERT(!f.gs.WantsBusTime());
+  }
+}
+
+/// CAN FD 帧和不要 echo 的帧同样走暂存：提交一次，之后才有 echo（或没有）。
+/// A CAN FD frame and a frame that wants no echo are staged the same way: submitted once,
+/// echoed afterwards (or not at all).
+void TestStagedFdFrameAndFrameWithoutEcho()
+{
+  FreshTimerList();
+  GsFdFixture f;
+  f.can0.queue.capacity = 1;
+  f.gs.BindEndpoints(f.pool, 0, false);
+  Configure(f);
+  SetMode(f, 0, 1, GsUsb::GSCAN_MODE_FD);
+
+  auto fd_frame = [](uint32_t echo_id, uint32_t can_id, uint8_t first)
+  {
+    std::vector<uint8_t> frame(WIRE_HEADER + 64, 0);
+    std::memcpy(&frame[0], &echo_id, 4);
+    std::memcpy(&frame[4], &can_id, 4);
+    frame[8] = 8;  // 8 data bytes
+    frame[9] = 0;
+    frame[10] = GsUsb::CAN_FLAG_FD;
+    frame[WIRE_HEADER] = first;
+    return frame;
+  };
+
+  f.out.HostSends(fd_frame(0x5001u, 0x301u, 0xA1));
+  f.out.HostSends(fd_frame(0x5002u, 0x302u, 0xB2));  // refused: staged
+  TEST_ASSERT(f.out.active && f.gs.WantsBusTime());
+  TEST_ASSERT(f.can0.tx.size() == 1);
+  HostReadsIn(f);
+  TEST_ASSERT((EchoIds(f) == std::vector<uint32_t>{0x5001u}));
+
+  f.can0.queue.Drain(1);
+  SofTick(f);
+  TEST_ASSERT(!f.gs.WantsBusTime());
+  TEST_ASSERT(f.can0.tx.size() == 2 && f.can0.tx[1].id == 0x302u &&
+              f.can0.tx[1].first == 0xB2);
+  while (f.in.active) f.in.Complete();
+  TEST_ASSERT((EchoIds(f) == std::vector<uint32_t>{0x5001u, 0x5002u}));
+
+  // A frame that wants no echo (echo_id = ECHO_ID_RX): staged, sent, never echoed.
+  f.out.HostSends(fd_frame(0xFFFFFFFFu, 0x303u, 0xC3));  // queue full again: staged
+  TEST_ASSERT(f.out.active && f.gs.WantsBusTime());
+  f.can0.queue.Drain(1);
+  SofTick(f);
+  TEST_ASSERT(f.can0.tx.size() == 3 && f.can0.tx[2].id == 0x303u);
+  TEST_ASSERT(!f.gs.WantsBusTime());
+  while (f.in.active) f.in.Complete();
+  TEST_ASSERT((EchoIds(f) == std::vector<uint32_t>{0x5001u, 0x5002u}));
+}
 }  // namespace
 
 int main()
@@ -754,7 +1267,15 @@ int main()
   TestUserIdRoundTripAndDatabaseWrite();
   TestMultiChannelRoundRobin();
   TestErrorFrameHasOwnQueue();
+  TestFullCanQueueStagesTheFrames();
+  TestNewFrameQueuesBehindStagedFrames();
+  TestStagedFrameIsRetriedByTheService();
+  TestStuckChannelDoesNotBlockTheOtherChannel();
+  TestStagingOverflowDropsAndEchoes();
+  TestChannelStopDropsItsStagedFrames();
+  TestEchoQueueFullWhileStagedFramesAreAccepted();
+  TestStagedFdFrameAndFrameWithoutEcho();
   std::puts(
       "gs_usb class: queues, echo and RX alternation, burst, backpressure, overflow, "
-      "USER_ID, round-robin and error queue passed");
+      "USER_ID, round-robin, error queue and CAN transmit queue staging passed");
 }

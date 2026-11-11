@@ -44,6 +44,28 @@ namespace LibXR::USB
  * are drained round-robin across the channels; a full RX queue drops the frame and
  * counts it per channel, and the overflow flag rides on that channel's next frame to
  * the host (RX, error or echo).
+ *
+ * 发送路径：echo 的含义是“设备的 CAN 驱动已接受这一帧”。OUT 帧交给 CAN 驱动；驱动的
+ * 发送队列满（FULL）时，帧进入该通道自己的暂存队列，不回 echo，OUT 租约立即归还，
+ * 另一个通道不受影响。暂存队列非空期间，该通道的新帧排在队尾，保持顺序。服务和 SOF
+ * 节拍（只在有暂存帧时请求）按顺序重试，驱动接受一帧才回它的 echo。每通道的流控靠
+ * 主机每通道的在途帧上限（Linux gs_usb 驱动为 10 帧，等于默认的暂存容量）：主机收到
+ * echo 才继续发，所以暂存队列不会溢出。超过容量时（主机不遵守该上限）这一帧被丢弃，
+ * 仍然回 echo。通道复位、重新启动或端点解绑时，该通道的暂存帧被丢弃，不发送、不回 echo。
+ *
+ * Transmit path: an echo means "the device's CAN driver accepted this frame". An OUT
+ * frame goes to the CAN driver; when the driver's transmit queue is full (FULL) the
+ * frame goes to that channel's own staging queue, gets no echo yet, and the OUT lease
+ * goes back at once, so the other channel is not held up. While a channel's staging
+ * queue is not empty, its new frames go to the end of it to keep the order. The
+ * service and the SOF tick (requested only while something is staged) retry in order,
+ * and a frame's echo is sent when the driver accepts it. Per-channel flow control rests
+ * on the host's per-channel in-flight limit (10 frames in the Linux gs_usb driver,
+ * equal to the default staging capacity): the host sends on only after an echo, so the
+ * staging queue does not overflow. Beyond the capacity (a host that ignores that limit)
+ * the frame is dropped and still echoed. A channel reset, a restart of the channel or
+ * an endpoint unbind drops the channel's staged frames: they are never sent and get no
+ * echo.
  */
 template <std::size_t CanChNum>
 class GsUsbClass : public DeviceClass
@@ -62,6 +84,11 @@ class GsUsbClass : public DeviceClass
   // 每通道错误帧队列容量。
   // Per-channel error-frame queue capacity.
   static constexpr std::size_t ERR_QUEUE_SIZE = 8;
+
+  // 每通道暂存队列的默认容量：Linux gs_usb 驱动每通道最多 10 帧在途（GS_MAX_TX_URBS）。
+  // Default per-channel staging capacity: the Linux gs_usb driver keeps at most 10
+  // frames in flight per channel (GS_MAX_TX_URBS).
+  static constexpr std::size_t DEFAULT_TX_STAGE_SIZE = 10;
 
  private:
   // ===== Linux gs_usb 线缆格式（固定 12 字节头） / Linux gs_usb wire format
@@ -119,13 +146,18 @@ class GsUsbClass : public DeviceClass
    * @param database 数据库存储（可选，用于 USER_ID） / Database storage (optional, used
    * by USER_ID)
    * @param interface_string 接口字符串 / Interface string
+   * @param tx_stage_size 每通道暂存队列容量（至少 1），默认 10（Linux gs_usb 驱动每通道
+   * 在途帧上限）/ Per-channel staging capacity (at least 1) for host frames while the CAN
+   * transmit queue is full; default 10 (the per-channel in-flight limit of the Linux
+   * gs_usb driver)
    */
   GsUsbClass(Endpoint::EPNumber data_in_ep_num, Endpoint::EPNumber data_out_ep_num,
              std::initializer_list<LibXR::CAN*> cans, size_t rx_queue_size = 32,
              size_t echo_queue_size = 32, LibXR::GPIO* identify_gpio = nullptr,
              std::initializer_list<LibXR::GPIO*> termination_gpios = {},
              LibXR::Database* database = nullptr,
-             const char* interface_string = DEFAULT_INTERFACE_STRING)
+             const char* interface_string = DEFAULT_INTERFACE_STRING,
+             size_t tx_stage_size = DEFAULT_TX_STAGE_SIZE)
       : data_in_ep_num_(data_in_ep_num),
         data_out_ep_num_(data_out_ep_num),
         interface_string_(interface_string),
@@ -133,7 +165,8 @@ class GsUsbClass : public DeviceClass
         database_(database),
         echo_queue_(echo_queue_size),
         rx_queues_(rx_queue_size),
-        err_queues_(ERR_QUEUE_SIZE)
+        err_queues_(ERR_QUEUE_SIZE),
+        stage_queues_(tx_stage_size)
   {
     ASSERT(cans.size() == CAN_CH_NUM);
     std::size_t i = 0;
@@ -175,13 +208,18 @@ class GsUsbClass : public DeviceClass
    * @param database 数据库存储（可选，用于 USER_ID） / Database storage (optional, used
    * by USER_ID)
    * @param interface_string 接口字符串 / Interface string
+   * @param tx_stage_size 每通道暂存队列容量（至少 1），默认 10（Linux gs_usb 驱动每通道
+   * 在途帧上限）/ Per-channel staging capacity (at least 1) for host frames while the CAN
+   * transmit queue is full; default 10 (the per-channel in-flight limit of the Linux
+   * gs_usb driver)
    */
   GsUsbClass(Endpoint::EPNumber data_in_ep_num, Endpoint::EPNumber data_out_ep_num,
              std::initializer_list<LibXR::FDCAN*> fd_cans, size_t rx_queue_size = 32,
              size_t echo_queue_size = 32, LibXR::GPIO* identify_gpio = nullptr,
              std::initializer_list<LibXR::GPIO*> termination_gpios = {},
              LibXR::Database* database = nullptr,
-             const char* interface_string = DEFAULT_INTERFACE_STRING)
+             const char* interface_string = DEFAULT_INTERFACE_STRING,
+             size_t tx_stage_size = DEFAULT_TX_STAGE_SIZE)
       : fd_supported_(true),
         data_in_ep_num_(data_in_ep_num),
         data_out_ep_num_(data_out_ep_num),
@@ -190,7 +228,8 @@ class GsUsbClass : public DeviceClass
         database_(database),
         echo_queue_(echo_queue_size),
         rx_queues_(rx_queue_size),
-        err_queues_(ERR_QUEUE_SIZE)
+        err_queues_(ERR_QUEUE_SIZE),
+        stage_queues_(tx_stage_size)
   {
     ASSERT(fd_cans.size() == CAN_CH_NUM);
     std::size_t i = 0;
@@ -248,6 +287,11 @@ class GsUsbClass : public DeviceClass
       // Echo queue still full: keep holding the lease and wait for the next service.
     }
 
+    // CAN 发送队列曾经满而暂存的主机帧：按顺序重试提交，驱动接受后回 echo。
+    // Host frames staged while a CAN transmit queue was full: retry their submission in
+    // order and send the echo once the driver accepts a frame.
+    ServiceStagedFrames();
+
     // 取槽 → 选帧 → 打包 → 提交；IN 槽都在途时停下，完成回调再请求服务。
     // Acquire a slot, pick a frame, pack and submit; stop when no IN slot is free, the
     // completion callback re-requests the service.
@@ -286,6 +330,30 @@ class GsUsbClass : public DeviceClass
         break;
       }
     }
+  }
+
+  /**
+   * @brief 只在有帧暂存时要 SOF 节拍 / The SOF tick is wanted only while frames are
+   *        staged
+   *
+   * CAN 驱动没有发送完成通知，队列腾位只能轮询。有暂存帧时每个 SOF 重试一次（全速
+   * 1 ms，高速 125 us），没有时不占 SOF 中断。
+   * The CAN driver has no transmit-complete notification, so freed room can only be
+   * polled for. While frames are staged the retry runs once per SOF (1 ms at full
+   * speed, 125 us at high speed); with nothing staged the class costs no SOF interrupt.
+   */
+  bool WantsBusTime() const override
+  {
+    return stage_pending_.load(std::memory_order_relaxed);
+  }
+
+  void OnBusTime(bool in_isr, const BusTime& time) override
+  {
+    UNUSED(time);
+    // 直接走服务：重试成功后要推 echo，并把 echo 发给主机。
+    // Run the service itself: after a successful retry the echo is queued and sent to
+    // the host.
+    if (stage_pending_.load(std::memory_order_relaxed)) OnService(in_isr);
   }
 
  protected:
@@ -403,6 +471,14 @@ class GsUsbClass : public DeviceClass
       out_hold_ = false;
     }
     out_armed_ = false;
+
+    // 暂存的主机帧同样属于这次绑定：不再发送，也不回 echo。
+    // The staged host frames belong to this binding too: they are never sent and get
+    // no echo.
+    for (uint8_t i = 0; i < can_count_; ++i)
+    {
+      DropStagedFrames(i);
+    }
 
     for (uint8_t i = 0; i < can_count_; ++i)
     {
@@ -1122,6 +1198,20 @@ class GsUsbClass : public DeviceClass
   // interrupt, whose priorities need not be equal, so error frames get their own queue
   // and every queue keeps one producer context.
   RxQueueArray err_queues_;
+  /// 每通道暂存队列：CAN 发送队列满时的主机帧，只在 owner 里读写 / Per-channel staging
+  /// queue for host frames while the CAN transmit queue is full; owner context only
+  RxQueueArray stage_queues_;
+
+  // 暂存队列队头的状态，只在 owner 访问：队头帧已被 CAN 驱动接受、只等 echo 队列腾位时
+  // stage_accepted_ 为真（不会再次提交）；stage_ts_ 是驱动接受它的时间戳。
+  // State of the head of each staging queue, owner only: stage_accepted_ is set when the
+  // CAN driver already accepted the head frame and only room in the echo queue is
+  // missing (it is never submitted again); stage_ts_ is the time it was accepted.
+  bool stage_accepted_[CanChNum]{};
+  uint32_t stage_ts_[CanChNum]{};
+  /// 有帧在暂存队列里（给 SOF 中断里的 WantsBusTime 读）/ Some frame is staged (read from
+  /// the SOF interrupt path by WantsBusTime)
+  std::atomic<bool> stage_pending_{false};
 
   // 发往主机的调度状态，只在 owner（完成回调与服务）上下文访问。
   // Host-send scheduling state, accessed only in the owner (completions and service).
@@ -1635,6 +1725,115 @@ class GsUsbClass : public DeviceClass
     return fdcans_[ch]->SetConfig(fd_cfg);
   }
 
+  /// 暂存队列里有没有帧 / Whether any staging queue holds a frame
+  bool AnyStaged()
+  {
+    for (uint8_t i = 0; i < can_count_; ++i)
+    {
+      if (stage_queues_[i].Size() != 0U) return true;
+    }
+    return false;
+  }
+
+  /**
+   * @brief 把一帧提交给 CAN 驱动 / Submit one frame to the CAN driver
+   * @return 驱动的返回值；FULL 表示发送队列满、帧没有被接受 / The driver's result; FULL
+   *         means the transmit queue is full and the frame was not accepted
+   */
+  ErrorCode SubmitToCan(uint8_t ch, bool is_fd, const WireHeader& hdr,
+                        const uint8_t* payload)
+  {
+    if (is_fd)
+    {
+      LibXR::FDCAN::FDPack fd{};
+      HostWireToFdPack(hdr, payload, fd);
+      return fdcans_[ch]->AddMessage(fd);
+    }
+    LibXR::CAN::ClassicPack classic{};
+    HostWireToClassicPack(hdr, payload, classic);
+    return cans_[ch]->AddMessage(classic);
+  }
+
+  /**
+   * @brief 丢弃该通道暂存的主机帧：不发送，不回 echo / Drop the host frames staged for
+   *        this channel: they are never sent and get no echo
+   *
+   * 只在 owner 中调用，owner 是暂存队列唯一的生产者和消费者。
+   * Owner only: the owner is the only producer and consumer of the staging queues.
+   */
+  void DropStagedFrames(uint8_t ch)
+  {
+    QueueItem item;
+    while (stage_queues_[ch].Pop(item) == ErrorCode::OK)
+    {
+    }
+    stage_accepted_[ch] = false;
+    stage_pending_.store(AnyStaged(), std::memory_order_relaxed);
+  }
+
+  /**
+   * @brief 按顺序重试各通道暂存的主机帧；驱动接受一帧后才回它的 echo /
+   *        Retry the staged host frames of every channel in order; a frame's echo is
+   *        sent only after the driver accepted it
+   *
+   * 每个通道只看自己的队头：一个通道的发送队列还是满的，只停下这个通道，其他通道照常。
+   * 帧被驱动接受后 echo 队列恰好满时，队头保留并标记为已接受，下次只补推 echo，不会
+   * 再次提交。
+   * Each channel looks at its own head only: a channel whose transmit queue is still full
+   * stops that channel alone. When the echo queue happens to be full right after the
+   * driver accepted a frame, the head stays, marked as accepted, and only its echo is
+   * pushed next time; the frame is never submitted again.
+   */
+  void ServiceStagedFrames()
+  {
+    if (!stage_pending_.load(std::memory_order_relaxed)) return;
+
+    for (uint8_t ch = 0; ch < can_count_; ++ch)
+    {
+      QueueItem item;
+      while (stage_queues_[ch].Peek(item) == ErrorCode::OK)
+      {
+        if (!stage_accepted_[ch])
+        {
+          // 正常情况下通道停止时已经丢弃了暂存帧；这里是兜底，通道已停就不再发送。
+          // The staged frames are normally dropped when the channel stops; this is a
+          // safety net so that a stopped channel never sends them.
+          if (!can_enabled_[ch].load(std::memory_order_relaxed) ||
+              (item.is_fd && !fd_enabled_[ch].load(std::memory_order_relaxed)))
+          {
+            DropStagedFrames(ch);
+            break;
+          }
+
+          // 仍然满：这个通道停在队头，下一次服务或 SOF 节拍再试。
+          // Still full: this channel stays at its head until the next service or SOF
+          // tick.
+          if (SubmitToCan(ch, item.is_fd, item.hdr, item.data.data()) == ErrorCode::FULL)
+          {
+            break;
+          }
+          // 其他结果（OK 或别的错误码）与直接提交时一样处理：这一帧不再提交。
+          // Any other result (OK or another error code) is handled as for a direct
+          // submission: the frame is not submitted again.
+          stage_accepted_[ch] = true;
+          stage_ts_[ch] = MakeTimestampUs(ch);
+        }
+
+        if (item.hdr.echo_id != ECHO_ID_RX)
+        {
+          item.timestamp_us = stage_ts_[ch];
+          // echo 队列满：队头保持“已接受”，下次服务只补推 echo。
+          // Echo queue full: the head stays "accepted" and the next service only pushes
+          // the echo.
+          if (echo_queue_.Push(item) != ErrorCode::OK) break;
+        }
+        stage_accepted_[ch] = false;
+        (void)stage_queues_[ch].Pop(item);
+      }
+    }
+    stage_pending_.store(AnyStaged(), std::memory_order_relaxed);
+  }
+
   /**
    * @brief 通道启动：丢弃上一次会话留下、还没发给主机的接收帧、错误帧和这个通道的回显。
    *        CAN 帧有时效性，回显 ID 属于上一个主机会话；其他通道的回显保留，顺序不变。
@@ -1649,6 +1848,7 @@ class GsUsbClass : public DeviceClass
    */
   void DropStaleFrames(uint8_t ch)
   {
+    DropStagedFrames(ch);
     QueueItem item;
     while (rx_queues_[ch].Pop(item) == ErrorCode::OK)
     {
@@ -1678,6 +1878,10 @@ class GsUsbClass : public DeviceClass
       case GsUsb::CanMode::RESET:
         can_enabled_[ch] = false;
         fd_enabled_[ch] = false;
+        // 这个通道暂存的主机帧属于要结束的会话：丢弃，不发送，不回 echo。
+        // The host frames staged for this channel belong to the session that ends: drop
+        // them, they are never sent and get no echo.
+        DropStagedFrames(ch);
         break;
 
       case GsUsb::CanMode::START:
@@ -1827,31 +2031,58 @@ class GsUsbClass : public DeviceClass
       return;
     }
 
-    // CAN TX 先提交，且只提交一次：echo 队列满时只把 echo 与租约暂存下来，
-    // 服务补推 echo 后归还租约，不会再次提交 CAN。
-    // Submit the CAN TX first and exactly once: a full echo queue only holds the echo
-    // and the lease, and the service returns the lease after pushing the echo without
-    // submitting the CAN frame again.
-    if (IS_FD)
+    // echo 的含义是“CAN 驱动已接受这一帧”。CAN TX 先提交，且只提交一次。
+    // 该通道的暂存队列非空时，新帧不直接交给驱动，而是排到暂存队列末尾，保持顺序。
+    // CAN 发送队列满（FULL）时驱动没有接受这一帧：把它暂存到该通道自己的队列，现在不回
+    // echo，OUT 租约立即归还（不阻塞另一个通道，两个通道共用同一条 OUT 端点）；服务和
+    // SOF 节拍按顺序重试，驱动接受后才回 echo（见 ServiceStagedFrames）。每通道的流控靠
+    // 主机每通道的在途帧上限：Linux gs_usb 驱动每通道最多 10 帧在途，收到 echo 才发下
+    // 一帧，所以默认容量的暂存队列不会满。暂存队列满了（主机不遵守该上限）时，这一帧
+    // 被丢弃，仍然回 echo。
+    // The echo means "the CAN driver accepted this frame". Submit the CAN TX first and
+    // exactly once. While the channel's staging queue is not empty a new frame is not
+    // handed to the driver but goes to the end of that queue, to keep the order. When
+    // the CAN transmit queue is full (FULL) the driver did not accept the frame: it is
+    // staged in the channel's own queue, no echo is sent yet, and the OUT lease goes
+    // back at once (the other channel is not held up, both share one OUT endpoint); the
+    // service and the SOF tick retry in order, and the echo is sent after the driver
+    // accepted the frame (see ServiceStagedFrames). Per-channel flow control rests on
+    // the host's per-channel in-flight limit: the Linux gs_usb driver keeps at most 10
+    // frames per channel in flight and sends the next only after an echo, so a staging
+    // queue of the default capacity does not fill up. When it is full (a host that
+    // ignores that limit) the frame is dropped and still echoed.
+    const bool NEED_ECHO = wh.echo_id != ECHO_ID_RX;
+    QueueItem qi;
+    qi.hdr = wh;
+    qi.is_fd = IS_FD;
+    qi.data_len = IS_FD ? 64u : 8u;
+    qi.timestamp_us = 0U;
+    Memory::FastCopy(qi.data.data(), payload, qi.data_len);
+
+    auto& stage = stage_queues_[CH];
+    if (stage.Size() != 0U || (IS_FD ? fdcans_[CH]->AddMessage(fd)
+                                     : cans_[CH]->AddMessage(classic)) == ErrorCode::FULL)
     {
-      (void)fdcans_[CH]->AddMessage(fd);
-    }
-    else
-    {
-      (void)cans_[CH]->AddMessage(classic);
+      if (stage.Push(qi) == ErrorCode::OK)
+      {
+        stage_pending_.store(true, std::memory_order_relaxed);
+        // 请求服务：先重试一次，并让 owner 在这一轮之后打开 SOF 节拍。
+        // Request the service: it retries once now and makes the owner switch the SOF
+        // tick on after this pass.
+        RequestClassService(in_isr);
+        ReturnLease(in_isr, completion.slot);
+        return;
+      }
+      // 暂存队列满：丢弃这一帧，下面照常回 echo（原行为）。
+      // The staging queue is full: the frame is dropped and echoed below as before.
     }
 
     // TX echo：host 通过 echo_id 跟踪 TX buffer；设备需回送 echo_id。
     // TX echo: the host tracks TX buffers via echo_id, and the device should echo it
     // back.
-    if (wh.echo_id != ECHO_ID_RX)
+    if (NEED_ECHO)
     {
-      QueueItem qi;
-      qi.hdr = wh;
-      qi.is_fd = IS_FD;
-      qi.data_len = IS_FD ? 64u : 8u;
       qi.timestamp_us = MakeTimestampUs(CH);
-      Memory::FastCopy(qi.data.data(), payload, qi.data_len);
 
       if (echo_queue_.Push(qi) != ErrorCode::OK)
       {
