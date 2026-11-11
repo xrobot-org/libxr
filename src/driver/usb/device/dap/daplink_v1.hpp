@@ -342,7 +342,9 @@ bool DapLinkV1Class<SwdPort>::IsInited() const
 template <typename SwdPort>
 ErrorCode DapLinkV1Class<SwdPort>::WriteDeviceDescriptor(DeviceDescriptor& header)
 {
-  header.data_.bDeviceClass = DeviceDescriptor::ClassID::HID;
+  // HID 1.11 4.1: the HID class is declared by the interface descriptor; the device
+  // descriptor carries class 0 so the host reads the class per interface.
+  header.data_.bDeviceClass = DeviceDescriptor::ClassID::PER_INTERFACE;
   header.data_.bDeviceSubClass = 0;
   header.data_.bDeviceProtocol = 0;
   return ErrorCode::OK;

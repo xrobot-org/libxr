@@ -23,6 +23,8 @@
 #include "../../mock_endpoint.hpp"
 #include "daplink_v1.hpp"
 #include "debug/swd.hpp"
+#include "dev_core.hpp"
+#include "ep_pool.hpp"
 
 using namespace LibXR;
 using namespace LibXR::USB;
@@ -444,6 +446,74 @@ void TestResponseNeverSentWithoutABinding()
               ErrorCode::FAILED);
   TEST_ASSERT(f.in.starts.empty());
 }
+
+static constexpr auto TEST_LANGUAGE = DescriptorStrings::MakeLanguagePack(
+    DescriptorStrings::Language::EN_US, "LibXR", "USB tests", "0");
+
+/// A full-speed device core around the probe as the only function.
+class DapDevice : public DeviceCore<FullSpeedCapabilities>
+{
+ public:
+  DapDevice(EndpointPool& pool, ConfigDescriptorItem* item)
+      : DeviceCore(pool, USBSpec::USB_2_0, Speed::FULL,
+                   DeviceDescriptor::PacketSize0::SIZE_64, 0x1209, 0x4321, 0x0100,
+                   {&TEST_LANGUAGE}, {{item}})
+  {
+  }
+  void Start(bool) override {}
+  void Stop(bool) override {}
+
+ protected:
+  ErrorCode SetAddress(uint8_t, ControlContext) override { return ErrorCode::OK; }
+  void OnStopTimeout(bool) override {}
+};
+
+/// HID 1.11 4.1: the HID class belongs to the interface descriptor; the device
+/// descriptor of a probe that is nothing but HID has class, subclass and protocol 0 and
+/// the host reads the class per interface.
+void TestClassIsDeclaredOnTheInterface()
+{
+  FakeSwd swd;
+  Block<64> ep0_in_storage, ep0_out_storage;
+  Block<128> in_storage, out_storage;
+  EndpointPool pool{4};
+  MockEndpoint in0{Number::EP0, Direction::IN, ep0_in_storage.Raw()};
+  MockEndpoint out0{Number::EP0, Direction::OUT, ep0_out_storage.Raw()};
+  MockEndpoint in{Number::EP1, Direction::IN, in_storage.Raw()};
+  MockEndpoint out{Number::EP2, Direction::OUT, out_storage.Raw()};
+  TEST_ASSERT(pool.Put(&in) == ErrorCode::OK);
+  TEST_ASSERT(pool.Put(&out) == ErrorCode::OK);
+  pool.SetEndpoint0(&in0, &out0);
+  TestDap dap(Number::EP1, Number::EP2, swd);
+  DapDevice device(pool, &dap);
+  device.Init(false);
+
+  auto control = [&](uint16_t value, uint16_t length)
+  {
+    in0.active = false;
+    out0.active = false;
+    const size_t starts_before = in0.starts.size();
+    SetupPacket packet{0x80, 6, value, 0, length};
+    device.OnSetupPacket(true, &packet);
+    TEST_ASSERT(in0.starts.size() != starts_before);
+    return in0.Last().data;
+  };
+  const auto dev = control(0x0100, 18);
+  TEST_ASSERT(dev.size() == 18 && dev[1] == 1);
+  TEST_ASSERT(dev[4] == 0 && dev[5] == 0 && dev[6] == 0);
+
+  const auto cfg = control(0x0200, 255);
+  TEST_ASSERT(cfg.size() >= 9 && cfg[1] == 2);
+  size_t interfaces = 0;
+  for (size_t at = cfg[0]; at + 2 <= cfg.size(); at += cfg[at])
+  {
+    TEST_ASSERT(cfg[at] >= 2 && at + cfg[at] <= cfg.size());
+    if (cfg[at + 1] != 4) continue;
+    ++interfaces;
+    TEST_ASSERT(cfg[at + 5] == 3 && cfg[at + 6] == 0 && cfg[at + 7] == 0);
+  }
+  TEST_ASSERT(interfaces == 1);
+}
 }  // namespace
 
 int main()
@@ -457,5 +527,6 @@ int main()
   TestBindAndUnbindLeaveSwdToStep();
   TestSwdConfigureReachesThePolicy();
   TestResponseNeverSentWithoutABinding();
+  TestClassIsDeclaredOnTheInterface();
   std::puts("DAP v1 class: Step model, lease backpressure and rebind passed");
 }
