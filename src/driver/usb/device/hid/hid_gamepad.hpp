@@ -153,10 +153,17 @@ class HIDGamepadT
     // 发送方可能在中断或别的线程里：取一份完整的快照，再把它交给核心。
     // The sender may be an interrupt or another thread: take one complete snapshot and
     // hand that to the core.
-    (void)sent_.LoadLatest(reply_);
-    result.write_data = ConstRawData{&reply_, sizeof(reply_)};
+    const Report& reply = sent_.Read();
+    result.write_data = ConstRawData{&reply, sizeof(reply)};
     return ErrorCode::OK;
   }
+
+  void PublishInputReport(ConstRawData report) override
+  {
+    sent_.Publish(*static_cast<const Report*>(report.addr_));
+  }
+
+  void WithdrawInputReport() override { sent_.Withdraw(); }
 
   /**
    * @brief 写入设备描述符（Per-Interface） / Write device descriptor (Per-Interface)
@@ -260,28 +267,23 @@ class HIDGamepadT
   }
 
   /**
-   * @brief 提交 last_；端点收下才记入 sent_（被拒绝的报告主机从未见过）
-   * Submit last_; it is recorded in sent_ only when the endpoint took it (the host never
-   * saw a refused report)
+   * @brief 提交 last_；sent_ 记下的是端点收下的报告（被拒绝的报告主机从未见过）
+   * Submit last_; sent_ keeps the reports the endpoint took (the host never saw a refused
+   * report)
    */
   ErrorCode Submit(bool in_isr)
   {
-    const ErrorCode ans = SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
-    if (ans == ErrorCode::OK) sent_.Store(last_);
-    return ans;
+    return SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
   }
 
   Report
       last_{};  ///< 当前状态（部分更新的基准）/ Current state (base of partial updates)
-  /// 最近发送的输入报告。发送方（任何上下文）写，GET_REPORT（owner）读，所以用单生产者
-  /// 快照；发送方一次只能在一个上下文里调用 Send / SendButtons / SendAxes（last_ 的部分
-  /// 更新本来就要求这样）。
-  /// Last input report sent. The sender (any context) writes it and GET_REPORT (the
-  /// owner) reads it, hence the single-producer snapshot; Send / SendButtons / SendAxes
-  /// must be called from one context at a time (the partial updates of last_ already
-  /// require that).
-  LatestSnapshot<Report> sent_{Neutral()};
-  Report reply_{};  ///< GET_REPORT 的应答缓冲，只由 owner 写 / Reply buffer, owner only
+  /// 最近发送的输入报告。基类保证同一时刻只有一个发送方在发布；last_ 的部分更新仍然要求
+  /// Send / SendButtons / SendAxes 一次只在一个上下文里调用。
+  /// Last input report sent. The base class lets one sender at a time publish; the
+  /// partial updates of last_ still require Send / SendButtons / SendAxes to be called
+  /// from one context at a time.
+  LastInputReport<Report> sent_{Neutral()};
 };
 
 /**

@@ -3,12 +3,69 @@
 #include <cstring>
 
 #include "dev_core.hpp"
+#include "latest_snapshot.hpp"
 #include "libxr_mem.hpp"
 #include "usb/core/desc_cfg.hpp"
 #include "usb/core/usb_macro_guard.hpp"
 
 namespace LibXR::USB
 {
+
+/**
+ * @brief 最近发送的输入报告，供 GET_REPORT 读取 / The last input report sent, read by
+ *        GET_REPORT
+ *
+ * 写者是 HID::SendInputReport 独占窗口里的发送方（PublishInputReport /
+ * WithdrawInputReport），读者是 owner（GET_REPORT）；同一时刻只有一个发送方在窗口里，
+ * 所以快照只有一个生产者。
+ * The writer is the sender inside the exclusive window of HID::SendInputReport
+ * (PublishInputReport / WithdrawInputReport); the reader is the owner (GET_REPORT). One
+ * sender at a time is inside the window, so the snapshot has a single producer.
+ *
+ * @tparam Report 报告类型 / Report type
+ */
+template <typename Report>
+class LastInputReport
+{
+ public:
+  /// @param initial 第一份报告之前的值 / The value before the first report
+  explicit LastInputReport(const Report& initial)
+      : current_(initial), previous_(initial), snapshot_(initial), reply_(initial)
+  {
+  }
+
+  /// 发布 report；只在 SendInputReport 的独占窗口里调用 / Publish report; only inside
+  /// the exclusive window of SendInputReport
+  void Publish(const Report& report)
+  {
+    previous_ = current_;
+    current_ = report;
+    snapshot_.Store(current_);
+  }
+
+  /// 撤回刚发布的报告，恢复发布前的那份；与 Publish 在同一个独占窗口里调用 /
+  /// Take back the report just published and restore the one before it; called in the
+  /// same exclusive window as Publish
+  void Withdraw()
+  {
+    current_ = previous_;
+    snapshot_.Store(current_);
+  }
+
+  /// 最近发送的报告；只由 owner 调用，返回值在下次调用前保持不变 / The report last sent;
+  /// owner only, the result stays valid until the next call
+  const Report& Read()
+  {
+    (void)snapshot_.LoadLatest(reply_);
+    return reply_;
+  }
+
+ private:
+  Report current_;   ///< 只由独占窗口里的发送方写 / Written by the sender in the window
+  Report previous_;  ///< 同上 / Same
+  LatestSnapshot<Report> snapshot_;
+  Report reply_;  ///< 只由 owner 写 / Owner only
+};
 
 /**
  * @brief
@@ -630,6 +687,15 @@ class HID : public DeviceClass
    * Submit return ABORTED; this returns FAILED, as for an unbound endpoint: the report
    * was never published and is not retried.
    *
+   * 在途标志从取得到 IN 完成（或失败路径）一直由当前发送方持有，所以同一时刻只有一个
+   * 发送方在 PublishInputReport 与 WithdrawInputReport 里；Publish 在 Submit 之前，
+   * 先于完成，后一个发送方的 Publish 一定排在它之后。Submit 失败时撤回。
+   * The in-flight flag is held by the current sender from the moment it is taken until
+   * the IN completion (or a failure path), so one sender at a time is inside
+   * PublishInputReport and WithdrawInputReport. Publish runs before Submit, hence before
+   * the completion, and the next sender's Publish is always ordered after it. A failed
+   * Submit withdraws the report.
+   *
    * @param report 输入报告数据指针及长度 / Input report data and length
    * @param in_isr 是否在中断中 / Whether in ISR
    * @return ErrorCode OK/BUSY/FAILED/ARG_ERR / Error code
@@ -665,6 +731,11 @@ class HID : public DeviceClass
     }
     Memory::FastCopy(slot.data.addr_, report.addr_, report.size_);
 
+    // 在独占窗口里、Submit 之前发布：Submit 之后 IN 完成随时会放开窗口。
+    // Publish inside the exclusive window and before Submit: after Submit the IN
+    // completion can open the window at any moment.
+    PublishInputReport(report);
+
     ans = ep->Submit(slot, report.size_, false, in_isr);
     if (ans != ErrorCode::OK)
     {
@@ -677,11 +748,30 @@ class HID : public DeviceClass
       {
         ep->ReleaseSlot(slot, in_isr);
       }
+      // 报告没有发出，撤回。
+      // The report was not sent: take it back.
+      WithdrawInputReport();
       input_in_flight_.store(0U, std::memory_order_release);
       return ErrorCode::FAILED;
     }
     return ErrorCode::OK;
   }
+
+  /**
+   * @brief 记下即将提交的输入报告，供 GET_REPORT 返回；在 SendInputReport 的独占窗口里、
+   *        Submit 之前调用
+   * Record the input report about to be submitted, for GET_REPORT to return; called
+   * inside the exclusive window of SendInputReport before Submit
+   */
+  virtual void PublishInputReport(ConstRawData report) { UNUSED(report); }
+
+  /**
+   * @brief 撤回刚发布的输入报告：Submit 失败，主机不会看到它；与 PublishInputReport 在
+   *        同一个独占窗口里调用
+   * Take back the input report just published: Submit failed and the host will not see
+   * it; called in the same exclusive window as PublishInputReport
+   */
+  virtual void WithdrawInputReport() {}
 
   /**
    * @brief 获取IDLE报告率

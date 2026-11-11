@@ -400,10 +400,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1, 1>
    */
   void Send(const Report& report, bool in_isr)
   {
-    if (SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr) == ErrorCode::OK)
-    {
-      last_input_.Store(report);
-    }
+    (void)SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr);
   }
 
  protected:
@@ -496,10 +493,17 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1, 1>
     // 发送方可能在中断或别的线程里：取一份完整的快照，再把它交给核心。
     // The sender may be an interrupt or another thread: take one complete snapshot and
     // hand that to the core.
-    (void)last_input_.LoadLatest(reply_);
-    result.write_data = ConstRawData{&reply_, sizeof(reply_)};
+    const Report& reply = last_input_.Read();
+    result.write_data = ConstRawData{&reply, sizeof(reply)};
     return ErrorCode::OK;
   }
+
+  void PublishInputReport(ConstRawData report) override
+  {
+    last_input_.Publish(*static_cast<const Report*>(report.addr_));
+  }
+
+  void WithdrawInputReport() override { last_input_.Withdraw(); }
 
   /**
    * @brief GET_REPORT(Output)：返回最近收到的 LED 输出报告（1 字节），尚未收到时为 0
@@ -546,13 +550,11 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1, 1>
   /// 五个 LED 位；高三位是常量填充 / The five LED bits; the upper three are padding
   static constexpr uint8_t LED_MASK = 0x1F;
   uint8_t led_state_ = 0;  ///< LED 状态/ LED state
-  /// 最近发送的输入报告。发送方（任何上下文）写，GET_REPORT（owner）读，所以用单生产者
-  /// 快照；发送方一次只能在一个上下文里调用 PressKey / ReleaseAll。
-  /// Last input report sent. The sender (any context) writes it and GET_REPORT (the
-  /// owner) reads it, hence the single-producer snapshot; PressKey / ReleaseAll must be
-  /// called from one context at a time.
-  LatestSnapshot<Report> last_input_{Report{}};
-  Report reply_{};  ///< GET_REPORT 的应答缓冲，只由 owner 写 / Reply buffer, owner only
+  /// 最近发送的输入报告。PressKey / ReleaseAll 可以在任何上下文、同时调用：基类保证同一
+  /// 时刻只有一个发送方在发布。
+  /// Last input report sent. PressKey / ReleaseAll may be called from any context and at
+  /// the same time: the base class lets one sender at a time publish.
+  LastInputReport<Report> last_input_{Report{}};
   LibXR::Callback<bool, bool, bool>
       on_led_change_cb_;  ///< LED 状态变化回调 / LED state change callback
 };

@@ -110,19 +110,14 @@ class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0, 2>
    */
   void Send(const Report& report, bool in_isr)
   {
-    if (SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr) == ErrorCode::OK)
-    {
-      last_input_.Store(report);
-    }
+    (void)SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr);
   }
 
-  /// 最近发送的输入报告。发送方（任何上下文）写，GET_REPORT（owner）读，所以用单生产者
-  /// 快照；发送方一次只能在一个上下文里调用 Move / Release。
-  /// Last input report sent. The sender (any context) writes it and GET_REPORT (the
-  /// owner) reads it, hence the single-producer snapshot; Move / Release must be called
-  /// from one context at a time.
-  LatestSnapshot<Report> last_input_{Report{}};
-  Report reply_{};  ///< GET_REPORT 的应答缓冲，只由 owner 写 / Reply buffer, owner only
+  /// 最近发送的输入报告。Move / Release 可以在任何上下文、同时调用：基类保证同一时刻
+  /// 只有一个发送方在发布。
+  /// Last input report sent. Move / Release may be called from any context and at the
+  /// same time: the base class lets one sender at a time publish.
+  LastInputReport<Report> last_input_{Report{}};
 
  protected:
   /**
@@ -136,10 +131,17 @@ class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0, 2>
                              DeviceClass::ControlTransferResult& result) override
   {
     if (report_id != 0U) return ErrorCode::NOT_SUPPORT;
-    (void)last_input_.LoadLatest(reply_);
-    result.write_data = ConstRawData{&reply_, sizeof(reply_)};
+    const Report& reply = last_input_.Read();
+    result.write_data = ConstRawData{&reply, sizeof(reply)};
     return ErrorCode::OK;
   }
+
+  void PublishInputReport(ConstRawData report) override
+  {
+    last_input_.Publish(*static_cast<const Report*>(report.addr_));
+  }
+
+  void WithdrawInputReport() override { last_input_.Withdraw(); }
 
   /**
    * @brief 写入设备描述符：类代码为 0，由接口描述符给出（HID 1.11 4.1）；boot 子类和鼠标

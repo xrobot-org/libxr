@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <thread>
 #include <type_traits>
 #include <vector>
@@ -92,6 +93,13 @@ class TestMouse : public HIDMouse
   using HIDMouse::BindEndpoints;
   using HIDMouse::OnClassRequest;
   using HIDMouse::UnbindEndpoints;
+  std::function<void()> on_in_complete;  // Runs in the owner when a report completed.
+
+ protected:
+  void OnDataInComplete(bool, const Endpoint::Completion&) override
+  {
+    if (on_in_complete) on_in_complete();
+  }
 };
 
 class TestKeyboard : public HIDKeyboard
@@ -109,6 +117,13 @@ class TestKeyboard : public HIDKeyboard
   using HIDKeyboard::OnClassData;
   using HIDKeyboard::OnClassRequest;
   using HIDKeyboard::UnbindEndpoints;
+  std::function<void()> on_in_complete;  // Runs in the owner when a report completed.
+
+ protected:
+  void OnDataInComplete(bool, const Endpoint::Completion&) override
+  {
+    if (on_in_complete) on_in_complete();
+  }
 };
 
 class TestGamepad : public HIDGamepad
@@ -119,6 +134,13 @@ class TestGamepad : public HIDGamepad
   using HIDGamepad::BindEndpoints;
   using HIDGamepad::OnClassRequest;
   using HIDGamepad::UnbindEndpoints;
+  std::function<void()> on_in_complete;  // Runs in the owner when a report completed.
+
+ protected:
+  void OnDataInComplete(bool, const Endpoint::Completion&) override
+  {
+    if (on_in_complete) on_in_complete();
+  }
 };
 
 void TestSendInputReport()
@@ -1058,6 +1080,245 @@ void TestGetReportThroughDeviceCore()
   TEST_ASSERT(f.stalled);
 }
 
+/// IN endpoint double that runs a hook once, right after the hardware accepted a
+/// request and before Submit returns to the sender: where an interrupt can preempt the
+/// sender while it is still inside SendInputReport.
+class HookedEndpoint : public MockEndpoint
+{
+ public:
+  using MockEndpoint::MockEndpoint;
+  std::function<void()> after_start;
+
+ protected:
+  ErrorCode StartHardware(const HwRequest& request, bool in_isr) override
+  {
+    const ErrorCode ans = MockEndpoint::StartHardware(request, in_isr);
+    if (ans == ErrorCode::OK && after_start)
+    {
+      auto hook = std::move(after_start);
+      after_start = nullptr;
+      hook();
+    }
+    return ans;
+  }
+};
+
+/// One IN endpoint with the hook above.
+struct HookedFixture
+{
+  Block<128> in_storage;
+  EndpointPool pool{2};
+  HookedEndpoint in{Number::EP1, Direction::IN, in_storage.Raw()};
+  HookedFixture() { TEST_ASSERT(pool.Put(&in) == ErrorCode::OK); }
+};
+
+/// Two senders at once. The host takes the first report while the first sender is still
+/// inside SendInputReport (the completion runs in the owner, which drains it before
+/// Submit returns), and the second sender runs from that completion. Its report is on the
+/// wire after the first one, so GET_REPORT must answer the second. Before the store moved
+/// into the exclusive window, the first sender stored its report last and GET_REPORT
+/// answered the older one.
+template <typename Hid>
+void CheckSecondSenderWins(Hid& hid, HookedFixture& f, std::function<void()> first,
+                           std::function<void()> second,
+                           const std::vector<uint8_t>& first_bytes,
+                           const std::vector<uint8_t>& second_bytes)
+{
+  std::vector<uint8_t> data;
+  f.in.after_start = [&] { f.in.Complete(false); };
+  bool fired = false;
+  hid.on_in_complete = [&]
+  {
+    if (fired) return;
+    fired = true;
+    second();
+  };
+  first();
+  TEST_ASSERT(fired);
+  TEST_ASSERT(f.in.starts.size() == 2);
+  TEST_ASSERT(f.in.starts[0].data == first_bytes && f.in.starts[1].data == second_bytes);
+  TEST_ASSERT(GetReport(hid, REPORT_INPUT, 0, data) == ErrorCode::OK);
+  TEST_ASSERT(data == second_bytes);
+  f.in.Complete(false);
+
+  // The second sender runs while the first report is still in flight: the endpoint
+  // refuses it, and a refused report is not remembered.
+  f.in.after_start = [&]
+  {
+    second();
+    TEST_ASSERT(f.in.starts.size() == 3);
+  };
+  first();
+  TEST_ASSERT(f.in.starts.size() == 3);
+  TEST_ASSERT(GetReport(hid, REPORT_INPUT, 0, data) == ErrorCode::OK);
+  TEST_ASSERT(data == first_bytes);
+  f.in.Complete(false);
+
+  // The next report goes through as usual.
+  second();
+  TEST_ASSERT(GetReport(hid, REPORT_INPUT, 0, data) == ErrorCode::OK);
+  TEST_ASSERT(data == second_bytes);
+  f.in.Complete(false);
+}
+
+void TestInterleavedSendersKeepSendOrder()
+{
+  {
+    HookedFixture f;
+    TestMouse mouse(Number::EP1);
+    mouse.BindEndpoints(f.pool, 0, false);
+    CheckSecondSenderWins(
+        mouse, f, [&] { mouse.Move(HIDMouse::Button::LEFT, 5, -3, 1, false); },
+        [&] { mouse.Move(HIDMouse::Button::RIGHT, 7, 8, 9, false); },
+        std::vector<uint8_t>({0x01, 0x05, 0xFD, 0x01}),
+        std::vector<uint8_t>({0x02, 7, 8, 9}));
+  }
+  {
+    HookedFixture f;
+    TestKeyboard kbd(Number::EP1, Number::EP2, false);
+    kbd.BindEndpoints(f.pool, 0, false);
+    CheckSecondSenderWins(
+        kbd, f, [&]
+        { kbd.PressKey({HIDKeyboard::KeyCode::A}, HIDKeyboard::Modifier::LEFT_CTRL); },
+        [&] { kbd.ReleaseAll(); },
+        std::vector<uint8_t>({HIDKeyboard::Modifier::LEFT_CTRL, 0, 4, 0, 0, 0, 0, 0}),
+        std::vector<uint8_t>(8, 0));
+  }
+  {
+    HookedFixture f;
+    TestGamepad pad(Number::EP1);
+    pad.BindEndpoints(f.pool, 0, false);
+    CheckSecondSenderWins(
+        pad, f, [&] { (void)pad.Send(100, 200, 300, 400, 0x81, false); },
+        [&] { (void)pad.Send(1, 2, 3, 4, 0x02, false); },
+        std::vector<uint8_t>({100, 0, 200, 0, 0x2C, 0x01, 0x90, 0x01, 0x81}),
+        std::vector<uint8_t>({1, 0, 2, 0, 3, 0, 4, 0, 0x02}));
+  }
+}
+
+/// Mouse that runs a hook between the moment a report is published for GET_REPORT and the
+/// moment it is submitted: where a bus reset can take the slot away from the sender.
+class TapMouse : public HIDMouse
+{
+ public:
+  using ControlTransferResult = DeviceClass::ControlTransferResult;
+  explicit TapMouse(Endpoint::EPNumber in) : HIDMouse(in) {}
+  using HIDMouse::BindEndpoints;
+  using HIDMouse::OnClassRequest;
+  using HIDMouse::UnbindEndpoints;
+  std::function<void()> after_publish;
+
+ protected:
+  void PublishInputReport(ConstRawData report) override
+  {
+    HIDMouse::PublishInputReport(report);
+    if (after_publish)
+    {
+      auto hook = std::move(after_publish);
+      after_publish = nullptr;
+      hook();
+    }
+  }
+};
+
+/// A report the endpoint did not take (a bus reset between the slot and the submit) was
+/// never sent: GET_REPORT keeps answering the report before it.
+void TestRefusedReportIsWithdrawn()
+{
+  Fixture f;
+  TapMouse mouse(Number::EP1);
+  mouse.BindEndpoints(f.pool, 0, false);
+  std::vector<uint8_t> data;
+  mouse.Move(HIDMouse::Button::LEFT, 5, -3, 1, false);
+  f.in.Complete();
+  TEST_ASSERT(f.in.starts.size() == 1);
+
+  mouse.after_publish = [&] { f.in.Close(false); };
+  mouse.Move(HIDMouse::Button::RIGHT, 7, 8, 9, false);
+  TEST_ASSERT(f.in.starts.size() == 1);
+  TEST_ASSERT(GetReport(mouse, REPORT_INPUT, 0, data) == ErrorCode::OK);
+  TEST_ASSERT(data == std::vector<uint8_t>({0x01, 0x05, 0xFD, 0x01}));
+}
+
+/// Two sender threads send at full speed, a third plays the host and takes every report,
+/// and the owner answers GET_REPORT. Every reply is one complete report; when the senders
+/// stop, GET_REPORT answers the report that was put on the wire last. Under
+/// ThreadSanitizer this is also the data race check of the two producers.
+void TestTwoSendersAgainstGetReport()
+{
+  constexpr int ROUNDS = 20000;
+  auto run = [&](auto& hid, MockEndpoint& ep, auto&& send, auto&& uniform)
+  {
+    std::atomic<int> senders_done{0};
+    std::atomic<bool> stop_host{false};
+    std::vector<std::thread> senders;
+    for (int s = 0; s < 2; ++s)
+    {
+      senders.emplace_back(
+          [&, s]
+          {
+            for (int i = 0; i < ROUNDS; ++i)
+              send(static_cast<uint8_t>(s * 100 + i % 100 + 1));
+            senders_done.fetch_add(1);
+          });
+    }
+    std::thread host(
+        [&]
+        {
+          while (!stop_host.load())
+            if (ep.IsActive()) ep.Complete(false);
+        });
+    std::vector<uint8_t> data;
+    size_t replies = 0;
+    while (senders_done.load() < 2)
+    {
+      TEST_ASSERT(GetReport(hid, REPORT_INPUT, 0, data) == ErrorCode::OK);
+      TEST_ASSERT(uniform(data));
+      ++replies;
+    }
+    for (auto& t : senders) t.join();
+    stop_host.store(true);
+    host.join();
+    TEST_ASSERT(replies > 0 && !ep.starts.empty());
+    TEST_ASSERT(GetReport(hid, REPORT_INPUT, 0, data) == ErrorCode::OK);
+    TEST_ASSERT(data == ep.starts.back().data);
+  };
+
+  {
+    Fixture f;
+    TestMouse mouse(Number::EP1);
+    mouse.BindEndpoints(f.pool, 0, false);
+    run(
+        mouse, f.in,
+        [&](uint8_t v)
+        {
+          mouse.Move(v, static_cast<int8_t>(v), static_cast<int8_t>(v),
+                     static_cast<int8_t>(v), false);
+        },
+        [](const std::vector<uint8_t>& d)
+        { return d.size() == 4 && d[1] == d[0] && d[2] == d[0] && d[3] == d[0]; });
+  }
+  {
+    Fixture f;
+    TestKeyboard kbd(Number::EP1, Number::EP2, false);
+    kbd.BindEndpoints(f.pool, 0, false);
+    run(
+        kbd, f.in,
+        [&](uint8_t v)
+        {
+          const auto k = static_cast<HIDKeyboard::KeyCode>(v);
+          kbd.PressKey({k, k, k, k, k, k}, v, false);
+        },
+        [](const std::vector<uint8_t>& d)
+        {
+          if (d.size() != 8 || d[1] != 0) return false;
+          for (size_t i = 2; i < 8; ++i)
+            if (d[i] != d[0]) return false;
+          return true;
+        });
+  }
+}
+
 }  // namespace
 
 int main()
@@ -1078,5 +1339,8 @@ int main()
   TestGetReportWhileSending();
   TestKeyboardReportDescriptorRange();
   TestGetReportThroughDeviceCore();
+  TestInterleavedSendersKeepSendOrder();
+  TestRefusedReportIsWithdrawn();
+  TestTwoSendersAgainstGetReport();
   std::puts("HID class: slot model, OUT lease, reset, idle rate and LED passed");
 }
