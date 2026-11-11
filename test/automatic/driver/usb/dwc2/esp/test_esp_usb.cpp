@@ -207,17 +207,32 @@ struct Probe : Rig
   ESP32USBDevice& device;
   uint16_t bulk = 64;
 
-  explicit Probe(const Mode& selected, bool needs_tick = false)
-      : Rig(selected), device(*Make(needs_tick))
+  /// vbus_sensing 只有 STM32 的夹具用，这里不读 / vbus_sensing is used by the STM32
+  /// fixture only and is not read here
+  explicit Probe(const Mode& selected, bool needs_tick = false,
+                 [[maybe_unused]] bool vbus_sensing = false, bool second_iso = false)
+      : Rig(selected), device(*Make(needs_tick, second_iso))
   {
     device.Init(false);
     device.Start(false);
   }
   ~Probe() { device.Stop(false); }
 
-  ESP32USBDevice* Make(bool needs_tick)
+  ESP32USBDevice* Make(bool needs_tick, bool second_iso)
   {
     probe.needs_frame_tick = needs_tick;
+    probe.second_iso = second_iso;
+    if (second_iso)
+    {
+      return Create(
+          std::initializer_list<EpConfig>{EpConfig(Mem(128)), EpConfig(Mem(1024)),
+                                          EpConfig(Mem(256)), EpConfig(Mem(256), true),
+                                          EpConfig(Mem(256), true)},
+          DeviceDescriptor::PacketSize0::SIZE_64, 0x1209, 0x0053, 0x0100,
+          std::initializer_list<const DescriptorStrings::LanguagePack*>{&LANGUAGE},
+          std::initializer_list<const std::initializer_list<ConfigDescriptorItem*>>{
+              {&probe}});
+    }
     return Create(
         std::initializer_list<EpConfig>{EpConfig(Mem(128)), EpConfig(Mem(1024)),
                                         EpConfig(Mem(256)), EpConfig(Mem(256), true)},
@@ -452,6 +467,7 @@ void RunAll()
     TestFrameTicks<Probe>(mode);
     TestIsochronousFrames<Probe>(mode);
     TestIsochronousMissedFrame<Probe>(mode);
+    TestTwoIsochronousStreams<Probe>(mode);
     TestUacStreams<Uac>(mode);
     TestUacStopsWithoutFrameInterrupt<Uac>(mode);
     TestUacFrameInterruptIgnoresConfiguration<Uac>(mode);

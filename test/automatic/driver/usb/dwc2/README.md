@@ -117,6 +117,7 @@ behaviour yet and the case is not in the default run (see the next section).
 | 核心对同一个 SOF 令牌把帧中断置位两次（STM32H723 实测，`Controller::sof_twice`）：每帧（高速时每微帧）仍只送一次 OnFrameTick，复位之后同一帧号的第一个 SOF 照常送出 / the core flags one SOF token twice (measured on an STM32H723, `Controller::sof_twice`): still one OnFrameTick per frame (microframe at high speed), and after a reset the first SOF with the same number is delivered | UAC | `TestFrameTicksWhenSofIsRaisedTwice` | 默认 / default | 不适用：ESP 后端没有这个处理，也没有硬件证据 / not applicable: the ESP backend has no such handling and there is no hardware evidence |
 | 等时 IN：每帧一个包、奇偶帧 / isochronous IN: one packet per frame, even and odd frames | UAC | `TestIsochronousFrames`, `TestUacStreams` | 默认 / default | 默认 / default |
 | 等时 IN 错过了它的帧，以 FAILED 结束 / isochronous IN that missed its frame ends with FAILED | UAC | `TestIsochronousMissedFrame` | 默认 / default | 默认 / default |
+| 两个等时 IN 流，一个错过了它的帧：只有它以 FAILED 结束，另一个已为下一帧挂好的请求保持 / two isochronous IN streams, one misses its frame: only it ends with FAILED and the request the other has armed for the next frame stays | UAC | `TestTwoIsochronousStreams` | 默认 / default | 默认 / default |
 | 帧中断被关掉时流停止 / the stream stops with the frame interrupt off | UAC | `TestUacStopsWithoutFrameInterrupt` | 默认 / default | 默认 / default |
 
 DFU 只用控制端点；等时 OUT 没有设备类使用，没有用例。

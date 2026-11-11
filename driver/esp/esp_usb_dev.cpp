@@ -729,12 +729,16 @@ void ESP32USBDevice::HandleInterrupt()
 
     if (pending.incompisoin)
     {
+      // 帧号在清标志之前读一次：这个中断属于它产生时的那一帧。
+      // The frame number is read once, before the flag is cleared: the interrupt belongs
+      // to the frame that is current when it is raised.
+      const bool ended_odd = (dev->dsts_reg.soffn & 1U) != 0U;
       dev->gintsts_reg.val = GINTSTS_INCOMPISOIN;
       for (uint8_t i = 1; i < ENDPOINT_COUNT; ++i)
       {
         if (endpoint_map_.in[i] != nullptr)
         {
-          static_cast<ESP32USBEndpoint*>(endpoint_map_.in[i])->OnIsoIncomplete();
+          static_cast<ESP32USBEndpoint*>(endpoint_map_.in[i])->OnIsoIncomplete(ended_odd);
         }
       }
     }

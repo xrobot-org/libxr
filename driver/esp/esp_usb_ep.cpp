@@ -460,21 +460,28 @@ void ESP32USBEndpoint::ConfirmStopAfterReset(bool in_isr)
   OnHardwareStopped(in_isr);
 }
 
-// 等时 IN 传输没有在安排的那一帧发出去（主机没有取，或令牌出错）：核心报告"未完成的等时
-// IN 传输"，应用要给端点置 NAK 并禁用它，等端点禁用中断，再冲刷发送 FIFO。请求以 FAILED
-// 结束，设备类据此提交下一帧。
+// 等时 IN 传输没有在安排的那一帧发出去（主机没有取，或令牌出错）：核心只报告"至少有
+// 一个等时 IN 端点没发"，应用要逐个读等时 IN 端点的控制寄存器找出是哪个。端点仍使能、
+// 且奇偶帧位（EONUM）等于刚结束那一帧的奇偶（ended_odd）时，它就是为那一帧安排的；为下
+// 一帧安排的端点奇偶相反，请求保持。对未完成的端点置 NAK 并禁用，等端点禁用中断，再冲刷
+// 发送 FIFO。请求以 FAILED 结束，设备类据此提交下一帧。
 // An isochronous IN transfer was not sent in the frame it was scheduled for (the host
-// did not take it, or the token was corrupted): the core reports an incomplete
-// isochronous IN transfer, and the application sets the NAK and disables the endpoint,
+// did not take it, or the token was corrupted): the core only reports that at least one
+// isochronous IN endpoint did not send, and the application reads the control register of
+// every isochronous IN endpoint to find which. An endpoint that is still enabled and
+// whose even/odd frame bit (EONUM) equals the parity of the frame that ended (ended_odd)
+// was armed for that frame; one armed for the next frame has the other parity and keeps
+// its request. The incomplete endpoint gets the NAK and is disabled, the application
 // waits for the endpoint-disabled interrupt and flushes the transmit FIFO. The request
 // ends with FAILED, on which the class submits the next frame.
-void ESP32USBEndpoint::OnIsoIncomplete()
+void ESP32USBEndpoint::OnIsoIncomplete(bool ended_odd)
 {
   if (GetDirection() != Direction::IN || GetConfig().type != Type::ISOCHRONOUS) return;
   if (!transfer_active_ || stop_phase_ != StopPhase::NONE) return;
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   auto& ctl = dev->in_eps[EPNumberToInt8(GetNumber()) - 1U].diepctl_reg;
   if (ctl.epena == 0U) return;
+  if ((ctl.dpid != 0U) != ended_odd) return;
   iso_abort_ = true;
   dev->diepmsk_reg.epdisbldmsk = 1;
   ctl.snak = 1;
