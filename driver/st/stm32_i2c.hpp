@@ -94,12 +94,16 @@ class STM32I2C : public I2C
   {
   };
 
+  /// 句柄没有 Init.ClockSpeed 字段时不做任何事 / No-op when the handle has no
+  /// Init.ClockSpeed field
   template <typename T>
   typename std::enable_if<!HasClockSpeed<T>::value>::type SetClockSpeed(
       T&, const Configuration&)
   {
   }
 
+  /// 把配置中的时钟速度写入 Init.ClockSpeed（Hz）/ Write the configured clock speed into
+  /// Init.ClockSpeed (Hz)
   template <typename T>
   typename std::enable_if<HasClockSpeed<T>::value>::type SetClockSpeed(
       T& i2c_handle, const Configuration& config)
@@ -107,6 +111,7 @@ class STM32I2C : public I2C
     i2c_handle->Init.ClockSpeed = config.clock_speed;
   }
 
+  /// 把 timing 写入 Init.Timing / Write timing into Init.Timing
   template <typename T>
   typename std::enable_if<HasTiming<T>::value>::type SetTiming(T& i2c_handle,
                                                                uint32_t timing)
@@ -114,6 +119,8 @@ class STM32I2C : public I2C
     i2c_handle->Init.Timing = timing;
   }
 
+  /// 句柄没有 Init.Timing 字段时不做任何事 / No-op when the handle has no Init.Timing
+  /// field
   template <typename T>
   typename std::enable_if<!HasTiming<T>::value>::type SetTiming(T&, uint32_t)
   {
@@ -121,20 +128,34 @@ class STM32I2C : public I2C
 
   ErrorCode SetConfig(Configuration config) override;
 
+  /// 外设编号，同时是 map 的下标 / Peripheral ID, also the index into map
   stm32_i2c_id_t id_;
+  /// HAL I2C 句柄 / HAL I2C handle
   I2C_HandleTypeDef* i2c_handle_;
+  /// 传输长度大于该值时使用 DMA（字节）/ Transfers longer than this many bytes use DMA
   uint32_t dma_enable_min_size_;
 
+  /// DMA 传输用的暂存缓冲区 / Staging buffer for DMA transfers
   RawData dma_buff_;
 
+  /// 进行中读事务的完成通知 / Completion operation of the read in flight
   ReadOperation read_op_;
+  /// 进行中写事务的完成通知 / Completion operation of the write in flight
   WriteOperation write_op_;
+  /// 调用者的读目标缓冲区，DMA 完成后从 dma_buff_ 拷入 / Caller's read destination,
+  /// filled from dma_buff_ when the DMA completes
   RawData read_buff_;
 
+  /// 当前事务是读 / Whether the current transaction is a read
   bool read_ = false;
+  /// 阻塞超时后正在恢复外设，期间拒绝新事务 / Peripheral recovery after a blocking
+  /// timeout is running; new transactions are refused meanwhile
   bool recovering_ = false;
+  /// 阻塞模式下等待完成的同步对象 / Synchronization for waiting in blocking mode
   AsyncBlockWait block_wait_{};
 
+  /// 外设编号到实例的映射，供 HAL 回调找回对象 / Instance table by peripheral ID, used
+  /// by HAL callbacks to find the object
   static STM32I2C* map[STM32_I2C_NUMBER];  // NOLINT
 };
 }  // namespace LibXR

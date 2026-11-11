@@ -19,17 +19,35 @@ struct adc_oneshot_hal_ctx_t;
 namespace LibXR
 {
 
+/**
+ * @brief ESP32 ADC 单元驱动 / ESP32 ADC unit driver
+ *
+ * 优先使用连续 DMA 采样；该单元不支持连续模式时退回单次采样。每个通道通过 GetChannel()
+ * 取得一个 ADC 接口对象。
+ * Prefers continuous DMA sampling and falls back to one-shot sampling when the unit has
+ * no continuous mode. Each channel is exposed as an ADC object through GetChannel().
+ */
 class ESP32ADC
 {
  public:
+  /// 单个 ADC 通道，读数委托给所属的 ESP32ADC / One ADC channel; reads are delegated to
+  /// the owning ESP32ADC
   class Channel : public ADC
   {
    public:
     Channel();
+    /**
+     * @brief 构造绑定到某个 ESP32ADC 的通道 / Construct a channel bound to an ESP32ADC
+     * @param parent 所属 ADC 单元 / Owning ADC unit
+     * @param idx 通道在 channels 数组中的下标 / Index in the constructor's channel array
+     * @param channel_num 硬件通道号（adc_channel_t）/ Hardware channel number
+     *        (adc_channel_t)
+     */
     Channel(ESP32ADC* parent, uint8_t idx, uint8_t channel_num);
 
     float Read() override;
 
+    /// 硬件通道号 / Hardware channel number
     uint8_t ChannelNumber() const { return channel_num_; }
 
    private:
@@ -38,13 +56,29 @@ class ESP32ADC
     uint8_t channel_num_;
   };
 
+  /// 连续 DMA 模式的初始化结果 / Result of initializing continuous DMA mode
   enum class ContinuousInitResult : uint8_t
   {
-    STARTED = 0,
-    UNSUPPORTED,
-    FAILED,
+    STARTED = 0,  ///< 连续采样已启动 / Continuous sampling started
+    UNSUPPORTED,  ///< 该单元不支持，改用单次采样 / Unsupported, use one-shot instead
+    FAILED,       ///< 初始化失败 / Initialization failed
   };
 
+  /**
+   * @brief 构造 ADC 单元并启动采样 / Construct the ADC unit and start sampling
+   * @param unit ADC 单元 / ADC unit
+   * @param channels 通道号数组，元素互不相同 / Channel array, entries must be distinct
+   * @param num_channels channels 的元素个数，大于 0 / Number of entries in channels, > 0
+   * @param freq 连续模式采样率（Hz），超出芯片范围时被限幅 / Continuous-mode sample rate
+   *        (Hz), clamped to the chip range
+   * @param attenuation 输入衰减 / Input attenuation
+   * @param bitwidth 采样位宽，ADC_BITWIDTH_DEFAULT 取芯片最大位宽 / Sample bit width;
+   *        ADC_BITWIDTH_DEFAULT selects the chip maximum
+   * @param reference_voltage 满量程对应的参考电压（V），大于 0 / Reference voltage (V) at
+   *        full scale, > 0
+   * @param dma_buf_size 连续模式 DMA 缓冲区大小（字节）/ Continuous-mode DMA buffer size
+   *        (bytes)
+   */
   ESP32ADC(
       adc_unit_t unit, const adc_channel_t* channels, uint8_t num_channels,
       uint32_t freq = SOC_ADC_SAMPLE_FREQ_THRES_LOW,
@@ -52,8 +86,19 @@ class ESP32ADC
       adc_bitwidth_t bitwidth = static_cast<adc_bitwidth_t>(SOC_ADC_DIGI_MAX_BITWIDTH),
       float reference_voltage = 3.3f, size_t dma_buf_size = 256);
 
+  /**
+   * @brief 取得第 idx 个通道对象 / Get the channel object at index idx
+   * @param idx 通道下标，小于 num_channels / Channel index, below num_channels
+   * @return 通道引用 / Channel reference
+   */
   Channel& GetChannel(uint8_t idx);
 
+  /**
+   * @brief 读取第 idx 个通道的电压 / Read the voltage of channel idx
+   * @param idx 通道下标，小于 num_channels / Channel index, below num_channels
+   * @return 电压（V）；单元未就绪或读取失败时为 0 / Voltage (V); 0 when the unit is not
+   *         ready or the read fails
+   */
   float ReadChannel(uint8_t idx);
 
  private:

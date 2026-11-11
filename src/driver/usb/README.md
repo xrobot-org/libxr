@@ -54,6 +54,10 @@ device controller used by XRUSB. `CDC-JTAG` on ESP32-C3 and ESP32-C6 is implemen
 
 `CDCWriteTest` and `CDCReadTest` in `device/cdc/cdc_test.hpp` test CDC transfers.
 
+设备类在总线复位、拔插或重新配置时对用户侧数据的处理：`HID::SendInputReport` 在设备未配置期间立即返回失败，不排队；`GsUsbClass` 在主机复位通道（MODE RESET）时丢弃该通道排着队的接收帧、错误帧、回显、被回显队列压住的回显以及因 CAN 发送队列满而暂存的主机帧，主机启动通道（MODE START）时再丢弃一次（覆盖没有收到复位的重新绑定），没有启动的通道的帧不交给 IN 端点，最后一个已启动的通道复位时清空共享 IN 端点（已经打包进槽里的帧不会在下次打开时交给主机），其他通道的帧和回显保留；`UAC1MicrophoneQ` 在主机开始推流（切到发送音频的 alt 设置）时丢弃之前写入的 PCM，录音从最新的数据开始；`DapLinkV2Class` 丢弃绑定变化前收到的命令，调试端口、时钟等在下一个会话的第一条命令之前由 Step 线程恢复默认值，注册了会话复位闸门并且闸门返回 false 时除外。
+
+How the device classes treat data on the user side across a bus reset, a cable replug or a reconfiguration: `HID::SendInputReport` fails at once while the device is not configured and queues nothing; `GsUsbClass` drops the receive frames, error frames and echoes of a channel, the echo held by echo-queue back-pressure, and the host frames staged because the CAN transmit queue was full, when the host resets the channel (MODE RESET) and again when it starts it (MODE START, which also covers a rebind that got no reset), never hands the frames of a channel that is not started to the IN endpoint, flushes the shared IN endpoint when the last started channel is reset (so the frames already packed into its slots do not reach the host at the next open), and keeps the frames and echoes of the other channels; `UAC1MicrophoneQ` drops the PCM written before the host starts streaming (selects the alt setting that sends audio), so a capture starts from fresh data; `DapLinkV2Class` drops the commands received before the binding changed, and the Step thread puts the debug port, clock and the rest back to their defaults before the first command of the next session, unless a session reset gate is registered and returns false.
+
 ## 设备控制器 / Device Controllers
 
 | 平台 / Platform | 控制器 / Controller | 驱动 / Driver | 测试设备 / Tested on |
@@ -121,13 +125,21 @@ buffer. Old code fails to compile and no compatibility shims are provided.
   (`CONFIG_USB_ALIGN_SIZE`, or the L1 cache line); the constructor checks it. The EP0 buffer is split in
   halves for OUT and IN, so it is at least twice the EP0 packet size (128 bytes for 64-byte packets).
 - 后端从 `DeviceCore<Capabilities>` 派生：`FullSpeedCapabilities` 或 `HighSpeedCapabilities` 给出支持的
-  速度和 BOS、总线时间两项功能。原来的 `DeviceCore::Context` 改名为 `ControlContext`。设备核心在总线复位
+  速度和 BOS 功能。原来的 `DeviceCore::Context` 改名为 `ControlContext`。设备核心在总线复位
   时读一次总线速度；控制器在速度协商结束前就报告复位时，后端要在速度确定后再报告一次复位 / Backends
   derive from `DeviceCore<Capabilities>`: `FullSpeedCapabilities` or `HighSpeedCapabilities` names the
-  supported speeds and the BOS and bus-time features. The former `DeviceCore::Context` is now
+  supported speeds and the BOS feature. The former `DeviceCore::Context` is now
   `ControlContext`. The device core reads the bus speed once, at the bus reset; a controller that
   reports the reset before speed negotiation ends has to report the reset again once the speed is
   known.
+- 后端的帧中断（SOF）在设备上总线且没有挂起时一直打开：启动或总线复位、枚举完成时打开，挂起、断开和
+  停止时关闭，恢复时重新打开，不看设备类是否需要帧节拍。停止超时计帧、FIFO 冲刷轮询、逐帧检查停止都
+  依赖它。`DeviceCore::OnSof` 只在有设备类的 `NeedsFrameTick()` 为真时才向它发节拍事件 / A backend keeps
+  its frame interrupt (SOF) on while the device is on the bus and not suspended: on at start or at the bus
+  reset and enumeration done, off at a suspend, a disconnect and a stop, on again at the resume,
+  whatever the classes need. The stop timeout frame count, the FIFO flush polling and the per-frame stop
+  check depend on it. `DeviceCore::OnSof` posts the tick event only while some class's `NeedsFrameTick()`
+  is true.
 - 端点完成回调的签名是 `Callback<const Endpoint::Completion&>`，经 `Endpoint::SetOnComplete()` 设置，
   `Completion` 带结果、实际字节数和 OUT 租约的槽。IN 数据用 `AcquireSlot()` 借槽、写入后 `Submit()`；OUT
   数据用 `Receive()` 挂接收，完成时借出的槽用 `ReturnSlot()` 归还并重新挂接收，或用 `ReleaseSlot()` 只
@@ -142,12 +154,12 @@ buffer. Old code fails to compile and no compatibility shims are provided.
   `ReturnSlot()` 时得到 `ABORTED`，槽回到空闲 / Requests ended by an unbind, a flush or a STALL complete
   with `ErrorCode::ABORTED`; a slot lent before an unbind gets `ABORTED` from `Submit()` or
   `ReturnSlot()` and becomes free.
-- 类回调（BindEndpoints/UnbindEndpoints、OnDeviceEvent、控制请求、OnService、OnBusTime、端点完成）都在
+- 类回调（BindEndpoints/UnbindEndpoints、OnDeviceEvent、控制请求、OnService、OnFrameTick、端点完成）都在
   设备的 owner 中执行。owner 由赢得 `SerializedService::Invoke` 的调用者执行：控制器中断，或者任何调用
   Submit/Receive/ReturnSlot/RequestClassService/Init 的应用线程，所以每个回调都可能在中断里
   （`in_isr=true`）或任意应用线程里（`in_isr=false`）运行，必须不阻塞。线程持有 owner 时，中断只发布工作，
   要等这个线程处理 / Class callbacks (BindEndpoints/UnbindEndpoints, OnDeviceEvent, control requests,
-  OnService, OnBusTime, endpoint completions) all run in the device's owner. The owner pass runs in
+  OnService, OnFrameTick, endpoint completions) all run in the device's owner. The owner pass runs in
   whichever caller wins `SerializedService::Invoke`: the controller interrupt, or any application
   thread that calls Submit/Receive/ReturnSlot/RequestClassService/Init. Every callback can therefore run
   in an interrupt (`in_isr=true`) or in an arbitrary application thread (`in_isr=false`), and must not
@@ -197,6 +209,7 @@ buffer. Old code fails to compile and no compatibility shims are provided.
   records the idle rate, readable through `GetIDLERate()`; the class does not resend reports by it.
 - `HID::SendInputReport` 与 `CDC::SendSerialState` 新增 `in_isr` 参数 / `HID::SendInputReport`
   and `CDC::SendSerialState` take a new `in_isr` argument.
+- `GsUsbClass` 的 echo 表示“设备的 CAN 驱动已接受这一帧”。CAN 发送队列满（`AddMessage` 返回 `FULL`）时，帧进入该通道自己的暂存队列（构造参数 `tx_stage_size`，默认 10，即 Linux gs_usb 驱动每通道的在途帧上限），暂不回 echo，OUT 端点照常接收，另一个通道不受影响；类服务和 SOF 节拍（只在有暂存帧时请求，全速 1 ms，高速 125 us）按顺序重试，驱动接受后才回 echo。每通道的流控靠主机每通道的在途帧上限；超过容量的帧被丢弃，仍然回 echo。通道复位、重新启动或总线复位时，该通道暂存的帧被丢弃，都不回 echo；通道复位时该通道排着队的接收帧、错误帧和 echo 也丢弃（主机关闭通道时已经释放了 tx 上下文），最后一个通道复位时共享 IN 端点上排队和在途的帧一起结束；还没交给 CAN 驱动的不发送，驱动已接受的队头已经交出，仍可能发到总线上 / An echo of `GsUsbClass` means "the device's CAN driver accepted the frame". When the CAN transmit queue is full (`AddMessage` returns `FULL`), the frame goes to its channel's own staging queue (constructor argument `tx_stage_size`, default 10, the per-channel in-flight limit of the Linux gs_usb driver) and gets no echo yet, the OUT endpoint keeps receiving, and the other channel is not affected; the class service and the SOF tick (requested only while frames are staged; 1 ms at full speed, 125 us at high speed) retry in order, and the echo is sent after the driver accepted the frame. Per-channel flow control rests on the host's per-channel in-flight limit; a frame beyond the capacity is dropped and still echoed. A channel reset, a restart of the channel or a bus reset drops the frames staged for it, none is echoed; a channel reset also drops the channel's queued receive frames, error frames and echoes (the host freed its tx contexts when it closed the channel), and the reset of the last started channel ends the frames queued and in flight on the shared IN endpoint; those not yet handed to the CAN driver are never sent, while an accepted head frame has been handed over and may still go out on the bus.
 - 传入 `Database` 的 `GsUsbClass` 在构造时创建 `user_id` 键，`Database` 须先于它就绪，键添加失败为致命错误 / A `GsUsbClass` given a `Database` creates the `user_id` key at construction; the `Database` must be ready before it, and a failed key add is fatal.
 
 ## 文档 / Documentation

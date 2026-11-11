@@ -91,12 +91,15 @@ ErrorCode ESP32USBEndpoint::ConfigureHardware(const Config& cfg)
 
 void ESP32USBEndpoint::CloseHardware(bool /*in_isr*/)
 {
-  // 核心保证先停止、确认后才关闭，所以到这里端点已经是禁用的；这里只收掉中断掩码，
-  // 万一硬件仍是使能，发出禁用请求但不等待（等待由停止状态机和 SOF 超时负责）。
+  // 核心保证先停止、确认后才关闭，所以到这里端点已经是禁用的；这里收掉中断掩码并清
+  // USBAEP 停用端点（EP0 始终激活），之后核心不再应答发给它的令牌。万一硬件仍是使能，
+  // 发出禁用请求但不等待（等待由停止状态机和 SOF 超时负责）。
   // The core stops an endpoint and waits for the confirmation before closing it, so the
-  // endpoint is already disabled here; only the interrupt masks are dropped. If the
-  // hardware is still enabled, a disable request goes out without waiting (waiting
-  // belongs to the stop state machine and the SOF timeout).
+  // endpoint is already disabled here; the interrupt masks are dropped and the endpoint
+  // is deactivated by clearing USBAEP (EP0 is always active), after which the controller
+  // no longer answers tokens sent to it. If the hardware is still enabled, a disable
+  // request goes out without waiting (waiting belongs to the stop state machine and the
+  // SOF timeout).
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
 
@@ -118,6 +121,7 @@ void ESP32USBEndpoint::CloseHardware(bool /*in_isr*/)
         dev->in_eps[ep_num - 1U].diepctl_reg.snak = 1;
         dev->in_eps[ep_num - 1U].diepctl_reg.epdis = 1;
       }
+      dev->in_eps[ep_num - 1U].diepctl_reg.usbactep = 0;
     }
     dev->daintmsk_reg.val &= ~(1UL << ep_num);
   }
@@ -130,6 +134,7 @@ void ESP32USBEndpoint::CloseHardware(bool /*in_isr*/)
     else
     {
       ESPUSBDetail::RequestOutDisable(dev->out_eps[ep_num - 1U].doepctl_reg, true);
+      dev->out_eps[ep_num - 1U].doepctl_reg.usbactep = 0;
     }
     dev->daintmsk_reg.val &= ~(1UL << (16U + ep_num));
   }
@@ -229,6 +234,23 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
   // interrupt advance the rest and call OnHardwareStopped when it is done.
   if (is_in)
   {
+    if (iso_abort_)
+    {
+      // 错过帧的禁用序列已经在跑：它改为以这次停止结束。
+      // A missed-frame disable is already running; it now ends as this stop.
+      iso_abort_ = false;
+      // 端点已经自己禁用（传输先完成了），没有 EPDISD 会来：这里直接结束。
+      // The endpoint has disabled itself (the transfer completed first), no EPDISD will
+      // come: end the stop here.
+      if (ep_num != 0U && dev->in_eps[ep_num - 1U].diepctl_reg.epena == 0U)
+      {
+        ESPUSBDetail::FlushTxFifo(dev, ep_num);
+        stop_phase_ = StopPhase::NONE;
+        transfer_active_ = false;
+        return StopResult::DONE;
+      }
+      return StopResult::PENDING;
+    }
     bool enabled = false;
     if (ep_num == 0U)
     {
@@ -249,16 +271,24 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
     // Unmask EPDISD and INEPNE so the interrupt can drive the sequence.
     dev->diepmsk_reg.epdisbldmsk = 1;
     dev->diepmsk_reg.inepnakeffmsk = 1;
+    // NAK 已经生效时（SETUP 让核心自己给 EP0 IN 置了 NAK，那次 INEPNE 早已处理过）不再
+    // 等 INEPNE，直接写 EPDIS。
+    // With the NAK already in effect (a SETUP made the core set it on EP0 IN, and that
+    // INEPNE was handled long ago) there is no INEPNE to wait for: write EPDIS directly.
+    bool nak_effective = false;
     if (ep_num == 0U)
     {
+      nak_effective = dev->diepctl0_reg.naksts != 0U;
       dev->diepctl0_reg.snak = 1;
+      if (nak_effective) dev->diepctl0_reg.epdis = 1;
     }
     else
     {
+      nak_effective = dev->in_eps[ep_num - 1U].diepctl_reg.naksts != 0U;
       dev->in_eps[ep_num - 1U].diepctl_reg.snak = 1;
+      if (nak_effective) dev->in_eps[ep_num - 1U].diepctl_reg.epdis = 1;
     }
-    stop_phase_ = StopPhase::SNAK_WAIT;
-    device_.UpdateTick();
+    stop_phase_ = nak_effective ? StopPhase::DIS_WAIT : StopPhase::SNAK_WAIT;
     return StopResult::PENDING;
   }
 
@@ -272,7 +302,8 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
     // DOEPDMA0 at the driver's own scratch so a late packet lands in the scratch
     // and the lent slot can be reclaimed safely.
     dev->doepctl0_reg.snak = 1;
-    dev->doepdma0_reg.val = reinterpret_cast<uint32_t>(ep0_scratch_);
+    dev->doepdma0_reg.val =
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(ep0_scratch_));
     stop_phase_ = StopPhase::NONE;
     transfer_active_ = false;
     return StopResult::DONE;
@@ -284,20 +315,18 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
     transfer_active_ = false;
     return StopResult::DONE;
   }
-  // 非 EP0 OUT：先按端点 SNAK（本核的 DCTL 没有 SGONAK/CGONAK，无法做全局 OUT
-  // NAK；单个端点用 SNAK 挡住新事务、EPDIS 结束在途事务，效果等价），再 EPDIS，
-  // 中断确认 EPDISD 后完成。
-  // Non-EP0 OUT: per-endpoint SNAK first (this core's DCTL has no SGONAK/CGONAK, so
-  // there is no global OUT NAK; for a single endpoint SNAK blocks new transactions
-  // and EPDIS ends the in-flight one, which is equivalent), then EPDIS; the
-  // EPDISD interrupt confirms the stop.
-  dev->out_eps[ep_num - 1U].doepctl_reg.snak = 1;
-  dev->doepmsk_reg.epdisbldmsk = 1;
-  dev->out_eps[ep_num - 1U].doepctl_reg.epdis = 1;
-  stop_phase_ = StopPhase::DIS_WAIT;
-  device_.UpdateTick();
+  // 非 EP0 OUT：禁用 OUT 端点之前要先让全局 OUT NAK 生效（DCTL.SGOUTNAK，等
+  // GINTSTS.GOUTNAKEFF），再写 SNAK 和 EPDIS，中断确认 EPDISD 后撤销全局 OUT NAK。
+  // 全局 OUT NAK 由所有正在停止的 OUT 端点共用；已经生效时这里直接走到 EPDIS。
+  // Non-EP0 OUT: the global OUT NAK has to be in effect before an OUT endpoint is
+  // disabled (DCTL.SGOUTNAK, then GINTSTS.GOUTNAKEFF); SNAK and EPDIS follow, and once
+  // the EPDISD interrupt confirms the stop the global OUT NAK is released. It is shared
+  // by every OUT endpoint that is stopping; when it is already in effect this goes on to
+  // EPDIS at once.
+  stop_phase_ = StopPhase::SNAK_WAIT;
+  device_.AcquireGlobalOutNak();
+  AdvanceStop(in_isr);
   return StopResult::PENDING;
-  UNUSED(in_isr);
 }
 
 void ESP32USBEndpoint::AdvanceStop(bool in_isr)
@@ -323,6 +352,24 @@ void ESP32USBEndpoint::AdvanceStop(bool in_isr)
   {
     if (stop_phase_ == StopPhase::SNAK_WAIT)
     {
+      // NAK 生效之前核心仍可能把最后一个包发出去：传输已经完成、端点已经禁用时不能再写
+      // EPDIS（只能对使能的端点写，也不会再有 EPDISD）。FIFO 已空，停止到此结束；完成由
+      // 传输完成中断照常报告。
+      // The core may still send the last packet before the NAK is in effect: once the
+      // transfer has completed and the endpoint is disabled, EPDIS must not be written
+      // (it is only for an enabled endpoint, and no EPDISD would follow). The FIFO is
+      // empty and the stop ends here; the transfer-complete interrupt reports the
+      // completion as usual.
+      const bool enabled = (ep_num == 0U)
+                               ? (dev->diepctl0_reg.epena != 0U)
+                               : (dev->in_eps[ep_num - 1U].diepctl_reg.epena != 0U);
+      if (!enabled)
+      {
+        stop_phase_ = StopPhase::NONE;
+        transfer_active_ = false;
+        OnHardwareStopped(in_isr);
+        return;
+      }
       const bool nak_effective =
           (ep_num == 0U) ? (dev->diepint0_reg.inepnakeff != 0U)
                          : (dev->in_eps[ep_num - 1U].diepint_reg.inepnakeff != 0U);
@@ -342,10 +389,43 @@ void ESP32USBEndpoint::AdvanceStop(bool in_isr)
     }
     if (stop_phase_ == StopPhase::DIS_WAIT)
     {
+      // EPENA is read first: an EPDISD that arrives between the two reads is then seen as
+      // the interrupt, not mistaken for a missing one.
+      const bool enabled = (ep_num == 0U)
+                               ? (dev->diepctl0_reg.epena != 0U)
+                               : (dev->in_eps[ep_num - 1U].diepctl_reg.epena != 0U);
       const bool disabled = (ep_num == 0U)
                                 ? (dev->diepint0_reg.epdisbld != 0U)
                                 : (dev->in_eps[ep_num - 1U].diepint_reg.epdisbld != 0U);
-      if (!disabled) return;
+      if (!disabled)
+      {
+        // Only a transfer-complete flag shows that the transfer ended first: EPENA alone
+        // may clear a moment before the EPDISD flag of an ordinary disable is raised.
+        const bool completed =
+            (ep_num == 0U) ? (dev->diepint0_reg.xfercompl != 0U)
+                           : (dev->in_eps[ep_num - 1U].diepint_reg.xfercompl != 0U);
+        if (enabled || !completed) return;
+        // 端点没有等到 EPDIS 生效就先把传输发完了（主机的令牌排在 EPDIS 前面）：核心在
+        // 传输完成时自己清 EPENA，EPDIS 写到一个已禁用的端点上，EPDISD 不会再来。等它只
+        // 会一直等到超时。传输已经完成，XFRC 照常报告结果；等待中的错过帧中止作废（数据
+        // 其实发出去了），等待中的停止在这里结束。
+        // The endpoint finished its transfer before the EPDIS took effect (the host's
+        // token came ahead of it): the core clears EPENA itself at the end of a transfer,
+        // EPDIS lands on an endpoint that is already disabled, and no EPDISD follows.
+        // Waiting for it would only end in the timeout. The transfer is complete and XFRC
+        // reports it as usual; a missed-frame abort that was waiting is void (the data
+        // went out) and a waiting stop ends here.
+        stop_phase_ = StopPhase::NONE;
+        if (iso_abort_)
+        {
+          iso_abort_ = false;
+          return;
+        }
+        ESPUSBDetail::FlushTxFifo(dev, ep_num);
+        transfer_active_ = false;
+        OnHardwareStopped(in_isr);
+        return;
+      }
       if (ep_num == 0U)
       {
         dev->diepint0_reg.val = USB_DWC_EPDISD_MSK;
@@ -357,8 +437,36 @@ void ESP32USBEndpoint::AdvanceStop(bool in_isr)
       ESPUSBDetail::FlushTxFifo(dev, ep_num);
       stop_phase_ = StopPhase::NONE;
       transfer_active_ = false;
+      if (iso_abort_)
+      {
+        const uint32_t tag = transfer_tag_;
+        ResetTransferState();
+        OnHardwareComplete(in_isr, tag, 0U, ErrorCode::FAILED);
+        return;
+      }
       OnHardwareStopped(in_isr);
     }
+    return;
+  }
+
+  if (stop_phase_ == StopPhase::SNAK_WAIT)
+  {
+    if (dev->gintsts_reg.goutnakeff == 0U) return;
+    auto& ctl = dev->out_eps[ep_num - 1U].doepctl_reg;
+    if (ctl.epena == 0U)
+    {
+      // 等全局 OUT NAK 期间传输已经收完，端点已禁用：不能再写 EPDIS。
+      // The transfer completed while the global OUT NAK was awaited and the endpoint is
+      // disabled: EPDIS must not be written.
+      device_.ReleaseGlobalOutNak();
+      stop_phase_ = StopPhase::NONE;
+      transfer_active_ = false;
+      OnHardwareStopped(in_isr);
+      return;
+    }
+    dev->doepmsk_reg.epdisbldmsk = 1;
+    ESPUSBDetail::RequestOutDisable(ctl, true);
+    stop_phase_ = StopPhase::DIS_WAIT;
     return;
   }
 
@@ -366,6 +474,7 @@ void ESP32USBEndpoint::AdvanceStop(bool in_isr)
       dev->out_eps[ep_num - 1U].doepint_reg.epdisbld != 0U)
   {
     dev->out_eps[ep_num - 1U].doepint_reg.val = USB_DWC_EPDISD_MSK;
+    device_.ReleaseGlobalOutNak();
     stop_phase_ = StopPhase::NONE;
     transfer_active_ = false;
     OnHardwareStopped(in_isr);
@@ -384,7 +493,43 @@ void ESP32USBEndpoint::ConfirmStopAfterReset(bool in_isr)
   }
   stop_phase_ = StopPhase::NONE;
   transfer_active_ = false;
+  if (iso_abort_)
+  {
+    // 没有停止在等确认；请求由复位的收尾流程结束。
+    // No stop is waiting for a confirmation; the reset teardown ends the request.
+    iso_abort_ = false;
+    return;
+  }
   OnHardwareStopped(in_isr);
+}
+
+// 等时 IN 传输没有在安排的那一帧发出去（主机没有取，或令牌出错）：核心只报告"至少有
+// 一个等时 IN 端点没发"，应用要逐个读等时 IN 端点的控制寄存器找出是哪个。端点仍使能、
+// 且奇偶帧位（EONUM）等于刚结束那一帧的奇偶（ended_odd）时，它就是为那一帧安排的；为下
+// 一帧安排的端点奇偶相反，请求保持。对未完成的端点置 NAK 并禁用，等端点禁用中断，再冲刷
+// 发送 FIFO。请求以 FAILED 结束，设备类据此提交下一帧。
+// An isochronous IN transfer was not sent in the frame it was scheduled for (the host
+// did not take it, or the token was corrupted): the core only reports that at least one
+// isochronous IN endpoint did not send, and the application reads the control register of
+// every isochronous IN endpoint to find which. An endpoint that is still enabled and
+// whose even/odd frame bit (EONUM) equals the parity of the frame that ended (ended_odd)
+// was armed for that frame; one armed for the next frame has the other parity and keeps
+// its request. The incomplete endpoint gets the NAK and is disabled, the application
+// waits for the endpoint-disabled interrupt and flushes the transmit FIFO. The request
+// ends with FAILED, on which the class submits the next frame.
+void ESP32USBEndpoint::OnIsoIncomplete(bool ended_odd)
+{
+  if (GetDirection() != Direction::IN || GetConfig().type != Type::ISOCHRONOUS) return;
+  if (!transfer_active_ || stop_phase_ != StopPhase::NONE) return;
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  auto& ctl = dev->in_eps[EPNumberToInt8(GetNumber()) - 1U].diepctl_reg;
+  if (ctl.epena == 0U) return;
+  if ((ctl.dpid != 0U) != ended_odd) return;
+  iso_abort_ = true;
+  dev->diepmsk_reg.epdisbldmsk = 1;
+  ctl.snak = 1;
+  ctl.epdis = 1;
+  stop_phase_ = StopPhase::DIS_WAIT;
 }
 
 void ESP32USBEndpoint::ForceStop(bool in_isr)
@@ -496,15 +641,25 @@ void ESP32USBEndpoint::HandleInInterrupt(bool in_isr)
   usb_dwc_diepint_reg_t intr = {};
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
 
+  // 停止序列正在等的那一位不在这里清，留给 AdvanceStop：它可能在上面的 AdvanceStop 之后
+  // 才置位（EPDIS 刚写下去端点就禁用了），在这里清掉就没人处理，停止会一直等到超时。
+  // The bit the stop sequence is waiting for is not cleared here but left to AdvanceStop:
+  // it may have been set after the AdvanceStop above (the endpoint was disabled right
+  // after EPDIS was written), and clearing it here would leave it unhandled and the stop
+  // waiting until it times out.
+  uint32_t awaited = 0U;
+  if (stop_phase_ == StopPhase::SNAK_WAIT) awaited = USB_DWC_INEPNE_MSK;
+  if (stop_phase_ == StopPhase::DIS_WAIT) awaited = USB_DWC_EPDISD_MSK;
+
   if (ep_num == 0U)
   {
     intr.val = dev->diepint0_reg.val;
-    dev->diepint0_reg.val = intr.val;
+    dev->diepint0_reg.val = intr.val & ~awaited;
   }
   else
   {
     intr.val = dev->in_eps[ep_num - 1U].diepint_reg.val;
-    dev->in_eps[ep_num - 1U].diepint_reg.val = intr.val;
+    dev->in_eps[ep_num - 1U].diepint_reg.val = intr.val & ~awaited;
   }
 
   if (!device_.DmaEnabled() && intr.txfemp)
@@ -556,15 +711,19 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
   usb_dwc_doepint_reg_t intr = {};
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
 
+  // 停止序列等的 EPDISD 留给 AdvanceStop 清（见 HandleInInterrupt）。
+  // The EPDISD a stop sequence waits for is left to AdvanceStop (see HandleInInterrupt).
+  const uint32_t awaited = (stop_phase_ == StopPhase::DIS_WAIT) ? USB_DWC_EPDISD_MSK : 0U;
+
   if (ep_num == 0U)
   {
     intr.val = dev->doepint0_reg.val;
-    dev->doepint0_reg.val = intr.val;
+    dev->doepint0_reg.val = intr.val & ~awaited;
   }
   else
   {
     intr.val = dev->out_eps[ep_num - 1U].doepint_reg.val;
-    dev->out_eps[ep_num - 1U].doepint_reg.val = intr.val;
+    dev->out_eps[ep_num - 1U].doepint_reg.val = intr.val & ~awaited;
   }
 
   const bool ep0_setup_related =
@@ -596,6 +755,17 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
     }
   }
 
+  // EP0 OUT 收完一个数据包、或主机进入控制写的状态阶段之后被核心关掉：重新使能它来接收
+  // SETUP，保持 NAK。SETUP 阶段结束的情况在下面处理。
+  // EP0 OUT was disabled by the core after a data packet or when the host entered the
+  // status stage of a control write: enable it again for SETUP packets, with the NAK
+  // kept. The end of a SETUP stage is handled below.
+  if ((ep_num == 0U) && device_.DmaEnabled() && !intr.setup &&
+      (intr.xfercompl || intr.stsphsercvd) && (dev->doepctl0_reg.epena == 0U))
+  {
+    device_.ReloadSetupPacketCount(false);
+  }
+
   if (intr.setup)
   {
     if (device_.DmaEnabled())
@@ -604,8 +774,36 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
           device_.setup_packet_, ESP32USBDevice::SETUP_DMA_BUFFER_BYTES, false);
       REQUIRE_FROM_CALLBACK(cache_sync_dma_buffer_result, in_isr);
     }
-    device_.UpdateSetupState(device_.setup_packet_);
-    const auto* setup = reinterpret_cast<const USB::SetupPacket*>(device_.setup_packet_);
+    // 核心把每个 SETUP 写到 DOEPDMA0 当前的地址并前移 8 字节，要处理的是最后收到的那个，
+    // 它就在这个地址之前：背靠背的 SETUP 依次排在 SETUP 缓冲区里；OUT 数据阶段已经挂上时
+    // 到来的 SETUP 写在数据槽的开头。其余情况（刚重新装填过）取 SETUP 缓冲区的开头。
+    // The core stores each SETUP at the current address of DOEPDMA0 and advances it by 8
+    // bytes, and the one to process is the last received, right below that address:
+    // back-to-back SETUP packets follow one another in the SETUP buffer, and a SETUP that
+    // arrives with an OUT data stage armed lands at the start of the data slot. Anything
+    // else (the buffer was just reloaded) means the start of the SETUP buffer.
+    const uint8_t* packet = device_.setup_packet_;
+    if (device_.DmaEnabled())
+    {
+      const uintptr_t start = reinterpret_cast<uintptr_t>(device_.setup_packet_);
+      const uintptr_t last = static_cast<uintptr_t>(dev->doepdma0_reg.val) -
+                             ESP32USBDevice::SETUP_PACKET_BYTES;
+      if (last > start && last + ESP32USBDevice::SETUP_PACKET_BYTES <=
+                              start + ESP32USBDevice::SETUP_DMA_BUFFER_BYTES)
+      {
+        packet = reinterpret_cast<const uint8_t*>(last);
+      }
+      else if (transfer_hw_buffer_ != nullptr &&
+               last == reinterpret_cast<uintptr_t>(transfer_hw_buffer_))
+      {
+        const auto slot_sync_result = ESPUSBDetail::CacheSyncDmaBuffer(
+            transfer_hw_buffer_, ESPUSBDetail::USB_DMA_ALIGNMENT, false);
+        REQUIRE_FROM_CALLBACK(slot_sync_result, in_isr);
+        packet = transfer_hw_buffer_;
+      }
+    }
+    device_.UpdateSetupState(packet);
+    const auto* setup = reinterpret_cast<const USB::SetupPacket*>(packet);
     const bool expect_out_data_stage =
         ((setup->bmRequestType & 0x80U) == 0U) && (setup->wLength > 0U);
 
@@ -613,18 +811,15 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
     ep0_out_phase_ = Ep0OutPhase::SETUP;
     ResetTransferState();
 
-    if (device_.endpoint_map_.in[0] != nullptr)
-    {
-      auto* ep0_in = static_cast<ESP32USBEndpoint*>(device_.endpoint_map_.in[0]);
-      if (ep0_in->transfer_active_)
-      {
-        ep0_in->ResetTransferState();
-      }
-    }
+    // EP0 IN 上被这个 SETUP 打断的传输不在这里清软件状态：它在硬件里还使能着、FIFO 里
+    // 还有包，核心处理 SETUP 时会停止它（StopHardware 走禁用端点、冲刷 FIFO 的序列）。
+    // The EP0 IN transfer this SETUP interrupts keeps its software state here: it is
+    // still enabled in the hardware with a packet in its FIFO, and the core stops it when
+    // it handles the SETUP (StopHardware runs the disable and FIFO flush sequence).
 
-    if (device_.DmaEnabled() && !expect_out_data_stage)
+    if (device_.DmaEnabled())
     {
-      device_.ReloadSetupPacketCount();
+      device_.ReloadSetupPacketCount(!expect_out_data_stage);
     }
     device_.OnSetupPacket(in_isr, setup);
   }
@@ -694,6 +889,7 @@ void ESP32USBEndpoint::ResetTransferState()
   transfer_queued_size_ = 0U;
   dma_rx_status_bytes_ = 0U;
   dma_rx_status_seen_ = false;
+  iso_abort_ = false;
 }
 
 bool ESP32USBEndpoint::PrepareTransferBuffer(size_t size)
@@ -823,6 +1019,12 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
   const uint16_t pkt_count = ESPUSBDetail::PacketCount(size, MaxPacketSize());
+  // 等时端点只在帧号奇偶与端点的奇偶位相同的帧里传输，每次传输都要设置：安排在下一帧。
+  // An isochronous endpoint transfers only in a frame whose parity equals the parity bit
+  // of the endpoint, which is programmed for each transfer: schedule it for the next
+  // frame.
+  const bool iso = GetConfig().type == Type::ISOCHRONOUS;
+  const bool odd_frame = (dev->dsts_reg.soffn & 1U) != 0U;
 
   if (GetDirection() == Direction::IN)
   {
@@ -848,6 +1050,17 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
         dev->in_eps[ep_num - 1U].diepdma_reg.dmaddr =
             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(transfer_hw_buffer_));
       }
+      if (iso)
+      {
+        if (odd_frame)
+        {
+          dev->in_eps[ep_num - 1U].diepctl_reg.setd0pid = 1;
+        }
+        else
+        {
+          dev->in_eps[ep_num - 1U].diepctl_reg.setd1pid = 1;
+        }
+      }
       ESPUSBDetail::StartEndpointTransfer(dev->in_eps[ep_num - 1U].diepctl_reg);
     }
 
@@ -864,10 +1077,13 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
   {
     if (ep_num == 0U)
     {
-      dev->doeptsiz0_reg.val = 0U;
-      dev->doeptsiz0_reg.xfersize =
-          static_cast<uint32_t>((size == 0U) ? MaxPacketSize() : size);
-      dev->doeptsiz0_reg.pktcnt = pkt_count;
+      // 整字一次写入：EP0 OUT 此时可能正使能着等 SETUP，中间值不能落到寄存器里。
+      // Written as one word: EP0 OUT may be enabled for SETUP packets at this point, and
+      // no intermediate value may reach the register.
+      usb_dwc_doeptsiz0_reg_t tsiz = {};
+      tsiz.xfersize = static_cast<uint32_t>((size == 0U) ? MaxPacketSize() : size);
+      tsiz.pktcnt = pkt_count;
+      dev->doeptsiz0_reg.val = tsiz.val;
       if (device_.DmaEnabled() && (size > 0U))
       {
         dev->doepdma0_reg.dmaaddr =
@@ -885,6 +1101,17 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
       {
         dev->out_eps[ep_num - 1U].doepdma_reg.dmaaddr =
             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(transfer_hw_buffer_));
+      }
+      if (iso)
+      {
+        if (odd_frame)
+        {
+          dev->out_eps[ep_num - 1U].doepctl_reg.setd0pid = 1;
+        }
+        else
+        {
+          dev->out_eps[ep_num - 1U].doepctl_reg.setd1pid = 1;
+        }
       }
       ESPUSBDetail::StartEndpointTransfer(dev->out_eps[ep_num - 1U].doepctl_reg);
     }

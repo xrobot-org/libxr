@@ -219,8 +219,6 @@ volatile uint32_t& STM32USBOtgDevice::Fifo(uint8_t num) const
       reinterpret_cast<uintptr_t>(core_) + USB_OTG_FIFO_BASE + num * USB_OTG_FIFO_SIZE);
 }
 
-uint32_t STM32USBOtgDevice::CoreId() const { return core_id_; }
-
 void STM32USBOtgDevice::Start(bool)
 {
   USB::EndpointPool::HardwareScope hardware(this);
@@ -231,14 +229,15 @@ void STM32USBOtgDevice::Start(bool)
 void STM32USBOtgDevice::Connect()
 {
   discard_ = false;
+  last_sof_position_ = NO_SOF_POSITION;
   core_->GINTSTS = 0xBFFFFFFFU;
   uint32_t mask = USB_OTG_GINTMSK_USBRST | USB_OTG_GINTMSK_ENUMDNEM |
                   USB_OTG_GINTMSK_USBSUSPM | USB_OTG_GINTMSK_WUIM |
-                  USB_OTG_GINTMSK_IEPINT | USB_OTG_GINTMSK_OEPINT;
+                  USB_OTG_GINTMSK_IEPINT | USB_OTG_GINTMSK_OEPINT |
+                  USB_OTG_GINTMSK_IISOIXFRM | USB_OTG_GINTMSK_SOFM;
   if (!hw_.dma) mask |= USB_OTG_GINTMSK_RXFLVLM;
   if (hw_.vbus_sensing) mask |= USB_OTG_GINTMSK_SRQIM | USB_OTG_GINTMSK_OTGINT;
   core_->GINTMSK = mask;
-  UpdateTick();
   core_->GAHBCFG |= USB_OTG_GAHBCFG_GINT;
   (void)USB_DevConnect(core_);
 }
@@ -249,6 +248,7 @@ void STM32USBOtgDevice::Stop(bool in_isr)
     USB::EndpointPool::HardwareScope hardware(this);
     (void)USB_DevDisconnect(core_);
     core_->GAHBCFG &= ~USB_OTG_GAHBCFG_GINT;
+    core_->GINTMSK &= ~USB_OTG_GINTMSK_SOFM;
     if (devices_[index_] == this) devices_[index_] = nullptr;
   }
   // Off the bus nothing reaches an endpoint any more; confirm every waiting stop.
@@ -266,15 +266,10 @@ void STM32USBOtgDevice::OnStopTimeout(bool in_isr)
     USB::EndpointPool::HardwareScope hardware(this);
     (void)USB_DevDisconnect(core_);
     core_->GAHBCFG &= ~USB_OTG_GAHBCFG_GINT;
+    core_->GINTMSK &= ~USB_OTG_GINTMSK_SOFM;
   }
   ForceStopAll(in_isr);
   OnDisconnect(in_isr);
-}
-
-void STM32USBOtgDevice::OnStopsSettled()
-{
-  USB::EndpointPool::HardwareScope hardware(this);
-  UpdateTick();
 }
 
 USB::Speed STM32USBOtgDevice::ReadBusSpeed() const { return bus_speed_; }
@@ -301,7 +296,7 @@ void STM32USBOtgDevice::ArmSetup()
 {
   auto* out0 = OutEp(0);
   // Newer cores must not be reprogrammed while EP0 OUT is still enabled (as HAL does).
-  if (CoreId() > USB_OTG_CORE_ID_300A && (out0->DOEPCTL & USB_OTG_DOEPCTL_EPENA) != 0U)
+  if (core_id_ > USB_OTG_CORE_ID_300A && (out0->DOEPCTL & USB_OTG_DOEPCTL_EPENA) != 0U)
     return;
   out0->DOEPTSIZ =
       USB_OTG_DOEPTSIZ_STUPCNT | (1U << PKTCNT_POS) | (SETUP_COUNT * SETUP_SIZE);
@@ -338,23 +333,28 @@ void STM32USBOtgDevice::HandleInterrupt()
   // One snapshot, a fixed order, no re-read: a bus reset first, so that endpoint events
   // of the old session in the same snapshot are ended by the reset.
   const uint32_t status = core_->GINTSTS & core_->GINTMSK;
-  if (status & USB_OTG_GINTSTS_MMIS) core_->GINTSTS = USB_OTG_GINTSTS_MMIS;
   if (status & USB_OTG_GINTSTS_USBRST) OnUsbReset();
   if (status & USB_OTG_GINTSTS_ENUMDNE) OnEnumerationDone();
   if (status & USB_OTG_GINTSTS_RXFLVL) DrainRxFifo();
   if (status & USB_OTG_GINTSTS_OEPINT) HandleOutEndpoints();
   if (status & USB_OTG_GINTSTS_IEPINT) HandleInEndpoints();
+  if (status & USB_OTG_GINTSTS_IISOIXFR) HandleIsoIncomplete();
   if (status & USB_OTG_GINTSTS_BOUTNAKEFF) HandleGlobalOutNak();
   if (status & USB_OTG_GINTSTS_SOF) HandleSof();
   if (status & USB_OTG_GINTSTS_USBSUSP)
   {
     core_->GINTSTS = USB_OTG_GINTSTS_USBSUSP;
-    if ((Device()->DSTS & USB_OTG_DSTS_SUSPSTS) != 0U) OnSuspend(true);
+    if ((Device()->DSTS & USB_OTG_DSTS_SUSPSTS) != 0U)
+    {
+      core_->GINTMSK &= ~USB_OTG_GINTMSK_SOFM;
+      OnSuspend(true);
+    }
   }
   if (status & USB_OTG_GINTSTS_WKUINT)
   {
     core_->GINTSTS = USB_OTG_GINTSTS_WKUINT;
     Device()->DCTL &= ~USB_OTG_DCTL_RWUSIG;
+    core_->GINTMSK |= USB_OTG_GINTMSK_SOFM;
     OnResume(true);
   }
   if (status & USB_OTG_GINTSTS_SRQINT) core_->GINTSTS = USB_OTG_GINTSTS_SRQINT;
@@ -362,7 +362,11 @@ void STM32USBOtgDevice::HandleInterrupt()
   {
     const uint32_t otg = core_->GOTGINT;
     core_->GOTGINT = otg;
-    if ((otg & USB_OTG_GOTGINT_SEDET) != 0U) OnDisconnect(true);
+    if ((otg & USB_OTG_GOTGINT_SEDET) != 0U)
+    {
+      core_->GINTMSK &= ~USB_OTG_GINTMSK_SOFM;
+      OnDisconnect(true);
+    }
   }
   PollTxFlush();
 }
@@ -370,6 +374,7 @@ void STM32USBOtgDevice::HandleInterrupt()
 void STM32USBOtgDevice::OnUsbReset()
 {
   core_->GINTSTS = USB_OTG_GINTSTS_USBRST;
+  last_sof_position_ = NO_SOF_POSITION;
   // Data of the old session is dropped until the owner has applied the reset.
   discard_ = true;
   Device()->DCTL &= ~USB_OTG_DCTL_RWUSIG;
@@ -400,6 +405,7 @@ void STM32USBOtgDevice::OnEnumerationDone()
   const uint8_t speed = USB_GetDevSpeed(core_);
   bus_speed_ = speed == USBD_HS_SPEED ? USB::Speed::HIGH : USB::Speed::FULL;
   (void)USB_SetTurnaroundTime(core_, HAL_RCC_GetHCLKFreq(), speed);
+  core_->GINTMSK |= USB_OTG_GINTMSK_SOFM;
   OnBusReset(true);
 }
 
@@ -415,7 +421,7 @@ void STM32USBOtgDevice::DrainRxFifo()
     const uint32_t kind = (entry & USB_OTG_GRXSTSP_PKTSTS) >> USB_OTG_GRXSTSP_PKTSTS_Pos;
     if (kind == STS_DATA_UPDT)
     {
-      STM32OtgEndpoint* ep = num < MAX_ENDPOINTS ? out_[num] : nullptr;
+      STM32OtgEndpoint* ep = out_[num];
       if (ep != nullptr && (!discard_ || num == 0U))
       {
         ep->ReadFifo(bytes);
@@ -449,7 +455,7 @@ void STM32USBOtgDevice::DeliverSetup(const uint8_t* packet)
 
 void STM32USBOtgDevice::HandleOutEndpoints()
 {
-  const uint32_t core_id = CoreId();
+  const uint32_t core_id = core_id_;
   uint32_t bits = (Device()->DAINT & Device()->DAINTMSK) >> 16U;
   while (bits != 0U)
   {
@@ -462,7 +468,7 @@ void STM32USBOtgDevice::HandleOutEndpoints()
                   USB_OTG_DOEPINT_OTEPDIS | USB_OTG_DOEPINT_OTEPSPR |
                   USB_OTG_DOEPINT_STPKTRX | USB_OTG_DOEPINT_NAK);
     regs->DOEPINT = handled;
-    STM32OtgEndpoint* ep = num < MAX_ENDPOINTS ? out_[num] : nullptr;
+    STM32OtgEndpoint* ep = out_[num];
     const bool setup = (events & USB_OTG_DOEPINT_STUP) != 0U;
     if ((events & USB_OTG_DOEPINT_XFRC) != 0U && ep != nullptr)
     {
@@ -477,6 +483,9 @@ void STM32USBOtgDevice::HandleOutEndpoints()
         data = data && !(core_id == USB_OTG_CORE_ID_310A &&
                          (events & USB_OTG_DOEPINT_STPKTRX) != 0U);
       if (data) ep->OnTransferComplete();
+      // With DMA a SETUP is stored only while EP0 OUT is enabled, and a transfer complete
+      // leaves it disabled; the next data or status stage programs it again.
+      if (num == 0U && hw_.dma && !setup) ArmSetup();
     }
     if (setup && num == 0U)
     {
@@ -495,7 +504,7 @@ void STM32USBOtgDevice::HandleOutEndpoints()
         DeliverSetup(setup_);
       }
     }
-    if ((events & USB_OTG_DOEPINT_EPDISD) != 0U && ep != nullptr) ep->OnDisabled();
+    if ((events & USB_OTG_DOEPINT_EPDISD) != 0U && ep != nullptr) ep->PollStop();
   }
 }
 
@@ -512,7 +521,7 @@ void STM32USBOtgDevice::HandleInEndpoints()
     const uint32_t raw = regs->DIEPINT;
     const uint32_t events =
         raw & (mask | (((empty_mask >> num) & 1U) != 0U ? USB_OTG_DIEPINT_TXFE : 0U));
-    STM32OtgEndpoint* ep = num < MAX_ENDPOINTS ? in_[num] : nullptr;
+    STM32OtgEndpoint* ep = in_[num];
     if ((events & USB_OTG_DIEPINT_XFRC) != 0U)
     {
       Device()->DIEPEMPMSK &= ~(1UL << num);
@@ -524,12 +533,12 @@ void STM32USBOtgDevice::HandleInEndpoints()
     if ((events & USB_OTG_DIEPINT_INEPNE) != 0U)
     {
       regs->DIEPINT = USB_OTG_DIEPINT_INEPNE;
-      if (ep != nullptr) ep->OnNakEffective();
+      if (ep != nullptr) ep->PollStop();
     }
     if ((events & USB_OTG_DIEPINT_EPDISD) != 0U)
     {
       regs->DIEPINT = USB_OTG_DIEPINT_EPDISD;
-      if (ep != nullptr) ep->OnDisabled();
+      if (ep != nullptr) ep->PollStop();
     }
     if ((events & USB_OTG_DIEPINT_TXFE) != 0U)
     {
@@ -549,9 +558,29 @@ void STM32USBOtgDevice::HandleGlobalOutNak()
     if (out_[i] != nullptr) out_[i]->OnGlobalOutNak();
 }
 
+void STM32USBOtgDevice::HandleIsoIncomplete()
+{
+  // The frame number is read before the flag is cleared: the interrupt belongs to the
+  // frame that is current when it is raised.
+  const bool ended_odd =
+      (((Device()->DSTS & USB_OTG_DSTS_FNSOF) >> USB_OTG_DSTS_FNSOF_Pos) & 1U) != 0U;
+  core_->GINTSTS = USB_OTG_GINTSTS_IISOIXFR;
+  for (uint8_t i = 1; i < endpoint_count_; ++i)
+    if (in_[i] != nullptr) in_[i]->OnIsoIncomplete(ended_odd);
+}
+
 void STM32USBOtgDevice::HandleSof()
 {
   core_->GINTSTS = USB_OTG_GINTSTS_SOF;
+  const uint32_t position =
+      (Device()->DSTS & USB_OTG_DSTS_FNSOF) >> USB_OTG_DSTS_FNSOF_Pos;
+  // The core can set GINTSTS.SOF a second time about 1.4 us after the first one for the
+  // same token (measured on an STM32H723 with the embedded full-speed PHY; the ST HAL
+  // sees it too). DSTS.FNSOF is the same both times, so a position that was just handled
+  // is skipped. At high speed the low 3 bits are the microframe, so every microframe
+  // still differs from the one before.
+  if (position == last_sof_position_) return;
+  last_sof_position_ = position;
   // Backstop for stops: the register state is checked once per frame.
   for (uint8_t i = 0; i < endpoint_count_; ++i)
   {
@@ -560,8 +589,6 @@ void STM32USBOtgDevice::HandleSof()
     if (out_[i] != nullptr && out_[i]->stop_stage_ != STM32OtgEndpoint::StopStage::NONE)
       out_[i]->PollStop();
   }
-  const uint32_t position =
-      (Device()->DSTS & USB_OTG_DSTS_FNSOF) >> USB_OTG_DSTS_FNSOF_Pos;
   if (bus_speed_ == USB::Speed::HIGH)
     OnSof(true, static_cast<uint16_t>(position >> 3U),
           static_cast<uint8_t>(position & 7U));
@@ -604,7 +631,6 @@ void STM32USBOtgDevice::ReleaseGlobalOutNak()
 void STM32USBOtgDevice::RequestTxFlush(uint8_t fifo)
 {
   flush_pending_ |= fifo == FLUSH_ALL ? (1UL << 16U) : (1UL << fifo);
-  core_->GINTMSK |= USB_OTG_GINTMSK_SOFM;
   PollTxFlush();
 }
 
@@ -623,11 +649,7 @@ void STM32USBOtgDevice::PollTxFlush()
       for (uint8_t i = 0; i < endpoint_count_; ++i)
         if (in_[i] != nullptr && (done == FLUSH_ALL || done == i)) in_[i]->OnFlushDone();
     }
-    if (flush_pending_ == 0U)
-    {
-      UpdateTick();  // The flush that kept the bus tick on has finished.
-      return;
-    }
+    if (flush_pending_ == 0U) return;
     if ((core_->GRSTCTL & USB_OTG_GRSTCTL_AHBIDL) == 0U) return;
     uint8_t fifo;
     if ((flush_pending_ & (1UL << 16U)) != 0U)
@@ -645,21 +667,6 @@ void STM32USBOtgDevice::PollTxFlush()
   }
 }
 
-void STM32USBOtgDevice::UpdateTick()
-{
-  bool needed = WantsBusTime() || flush_pending_ != 0U || flush_active_ != NO_FLUSH;
-  for (uint8_t i = 0; i < endpoint_count_ && !needed; ++i)
-  {
-    needed =
-        (in_[i] != nullptr && in_[i]->stop_stage_ != STM32OtgEndpoint::StopStage::NONE) ||
-        (out_[i] != nullptr && out_[i]->stop_stage_ != STM32OtgEndpoint::StopStage::NONE);
-  }
-  if (needed)
-    core_->GINTMSK |= USB_OTG_GINTMSK_SOFM;
-  else
-    core_->GINTMSK &= ~USB_OTG_GINTMSK_SOFM;
-}
-
 void STM32USBOtgDevice::ForceStopAll(bool in_isr)
 {
   {
@@ -669,6 +676,16 @@ void STM32USBOtgDevice::ForceStopAll(bool in_isr)
     Device()->DCTL |= USB_OTG_DCTL_CGONAK;
     flush_pending_ = 0U;
     flush_active_ = NO_FLUSH;
+    // An IN stop still waiting for its NAK has not written EPDIS. The endpoint must not
+    // stay enabled: the next session programs its transfer size ("Transfer stop
+    // programming for IN endpoints"; the bus reset of that session flushes the FIFO).
+    for (uint8_t i = 0; i < endpoint_count_; ++i)
+    {
+      if (in_[i] != nullptr &&
+          in_[i]->stop_stage_ == STM32OtgEndpoint::StopStage::IN_NAK &&
+          (InEp(i)->DIEPCTL & USB_OTG_DIEPCTL_EPENA) != 0U)
+        InEp(i)->DIEPCTL |= USB_OTG_DIEPCTL_SNAK | USB_OTG_DIEPCTL_EPDIS;
+    }
   }
   for (uint8_t i = 0; i < endpoint_count_; ++i)
   {
@@ -704,6 +721,7 @@ ErrorCode STM32OtgEndpoint::ConfigureHardware(const Config& cfg)
 {
   ResetTransfer();
   stop_stage_ = StopStage::NONE;
+  iso_abort_ = false;
   const uint8_t num = Num();
   const uint32_t packet = cfg.max_packet_size;
   auto* dev = device_.Device();
@@ -737,6 +755,7 @@ void STM32OtgEndpoint::CloseHardware(bool in_isr)
   UNUSED(in_isr);
   ResetTransfer();
   stop_stage_ = StopStage::NONE;
+  iso_abort_ = false;
   const uint8_t num = Num();
   if (num == 0U) return;  // EP0 stays active.
   auto* dev = device_.Device();
@@ -929,6 +948,12 @@ USB::Endpoint::StopResult STM32OtgEndpoint::StopHardware(bool in_isr)
   const uint8_t num = Num();
   if (IsIn())
   {
+    if (iso_abort_)
+    {
+      // A missed-frame disable is already running; it now ends as this stop.
+      iso_abort_ = false;
+      return StopResult::PENDING;
+    }
     auto* regs = device_.InEp(num);
     device_.Device()->DIEPEMPMSK &= ~(1UL << num);
     if ((regs->DIEPCTL & USB_OTG_DIEPCTL_EPENA) == 0U)
@@ -940,7 +965,6 @@ USB::Endpoint::StopResult STM32OtgEndpoint::StopHardware(bool in_isr)
     stop_stage_ = StopStage::IN_NAK;
     device_.UpdateInNakMask();
     regs->DIEPCTL |= USB_OTG_DIEPCTL_SNAK;
-    device_.UpdateTick();
     return StopResult::PENDING;
   }
   auto* regs = device_.OutEp(num);
@@ -966,7 +990,6 @@ USB::Endpoint::StopResult STM32OtgEndpoint::StopHardware(bool in_isr)
     regs->DOEPCTL |= USB_OTG_DOEPCTL_SNAK | USB_OTG_DOEPCTL_EPDIS;
     stop_stage_ = StopStage::OUT_DISABLE;
   }
-  device_.UpdateTick();
   return StopResult::PENDING;
 }
 
@@ -1025,9 +1048,31 @@ void STM32OtgEndpoint::PollStop()
   }
 }
 
-void STM32OtgEndpoint::OnNakEffective() { PollStop(); }
-
-void STM32OtgEndpoint::OnDisabled() { PollStop(); }
+// "Incomplete isochronous IN data transfers" (OTG section of the reference manual): the
+// interrupt says that at least one isochronous IN endpoint did not send in the frame
+// that ended, and the application reads the control register of every isochronous IN
+// endpoint to find which. An endpoint is incomplete when it is still enabled and its
+// even/odd frame bit (EONUM) equals the parity of the frame number read when the
+// interrupt came (ended_odd): it was armed for the frame that ended. An endpoint armed
+// for the next frame has the other parity and keeps its request. Disable the incomplete
+// one with the IN stop sequence and end its request with FAILED, so the class submits the
+// next frame.
+void STM32OtgEndpoint::OnIsoIncomplete(bool ended_odd)
+{
+  if (hw_tag_ == 0U || stop_stage_ != StopStage::NONE) return;
+  if (GetConfig().type != Type::ISOCHRONOUS) return;
+  const uint8_t num = Num();
+  auto* regs = device_.InEp(num);
+  const uint32_t control = regs->DIEPCTL;
+  if ((control & USB_OTG_DIEPCTL_EPENA) == 0U) return;
+  const bool armed_odd = (control & USB_OTG_DIEPCTL_EONUM_DPID) != 0U;
+  if (ended_odd != armed_odd) return;
+  iso_abort_ = true;
+  device_.Device()->DIEPEMPMSK &= ~(1UL << num);
+  stop_stage_ = StopStage::IN_NAK;
+  device_.UpdateInNakMask();
+  regs->DIEPCTL |= USB_OTG_DIEPCTL_SNAK;
+}
 
 void STM32OtgEndpoint::OnGlobalOutNak()
 {
@@ -1055,9 +1100,17 @@ void STM32OtgEndpoint::ConfirmStop(bool in_isr)
       stopped_actual_ = hw_done_;
     }
   }
+  const bool iso_abort = iso_abort_;
+  const uint32_t tag = hw_tag_;
+  iso_abort_ = false;
   stop_stage_ = StopStage::NONE;
   ResetTransfer();
   device_.UpdateInNakMask();
+  if (iso_abort)
+  {
+    OnHardwareComplete(in_isr, tag, 0U, ErrorCode::FAILED);
+    return;
+  }
   OnHardwareStopped(in_isr);
 }
 
@@ -1096,6 +1149,9 @@ ErrorCode STM32OtgEndpoint::StallHardware(bool in_isr)
     if ((regs->DOEPCTL & USB_OTG_DOEPCTL_EPENA) == 0U && num != 0U)
       regs->DOEPCTL &= ~USB_OTG_DOEPCTL_EPDIS;
     regs->DOEPCTL |= USB_OTG_DOEPCTL_STALL;
+    // With DMA a SETUP is stored only while EP0 OUT is enabled, and a stalled request has
+    // no status stage to enable it again (as HAL_PCD_EP_SetStall does).
+    if (num == 0U && Dma()) device_.ArmSetup();
   }
   return ErrorCode::OK;
 }

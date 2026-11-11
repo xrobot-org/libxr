@@ -8,6 +8,8 @@
 namespace LibXR
 {
 
+/// GPIO 端口编号，按芯片实际具备的端口顺序排列，CH32_GPIO_NUMBER 为端口总数 / GPIO port
+/// index in the order of the ports the chip has; CH32_GPIO_NUMBER is the port count
 typedef enum
 {
 #if defined(GPIOA)
@@ -40,6 +42,13 @@ typedef enum
   CH32_GPIO_NUMBER
 } ch32_gpio_group_t;
 
+/**
+ * @brief 获取 GPIO 端口对应的 APB2 外设时钟位 / Get the APB2 peripheral clock bit of a
+ * GPIO port
+ * @param port GPIO 端口寄存器指针 / GPIO port register pointer
+ * @return RCC_APB2Periph_GPIOx 时钟位（仅识别 GPIOA..GPIOE），未识别的端口返回 0 /
+ * The RCC_APB2Periph_GPIOx bit (only GPIOA..GPIOE are recognized); 0 for other ports
+ */
 uint32_t ch32_get_gpio_periph(GPIO_TypeDef* port);
 
 /**
@@ -119,8 +128,18 @@ class CH32GPIO final : public GPIO
     return ErrorCode::OK;
   }
 
+  /// 在中断上下文中执行已注册的回调（回调为空则不执行）/ Run the registered callback in
+  /// interrupt context (nothing if no callback is set)
   void OnInterrupt();
 
+  /**
+   * @brief 检查并处理一条 EXTI 线的挂起中断 / Check and handle the pending interrupt of
+   * one EXTI line
+   * @param line EXTI 线路号（EXTI_LineX）/ EXTI line (EXTI_LineX)
+   * @note 若该线挂起则先清除挂起位，再调用 map_ 中对应 GPIO 的 OnInterrupt()；由 EXTI
+   *       中断服务函数调用。 / If the line is pending, clears the pending bit and calls
+   *       OnInterrupt() of the GPIO in map_; called from the EXTI ISRs.
+   */
   static void CheckInterrupt(uint32_t line);
 
   /// EXTI 线路映射表 / EXTI line map

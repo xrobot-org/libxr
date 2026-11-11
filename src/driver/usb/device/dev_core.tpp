@@ -34,7 +34,7 @@ DeviceCore<C>::DeviceCore(
   pool_.SetSpeed(speed);
   pool_.SetControlHandler(
       Callback<uint32_t>::Create([](bool context, DeviceCore* self, uint32_t events)
-                                 { self->ProcessEvents(context, events); }, this));
+                                 { self->DispatchEvents(context, events); }, this));
 }
 
 template <typename C>
@@ -62,7 +62,7 @@ void DeviceCore<C>::Initialize(bool in_isr)
     return;
   }
   {
-    EndpointPool::HardwareScope hardware(&pool_);
+    EndpointPool::HardwareScope hardware(pool_);
     OnControlReady();
     // An IRQ can run as soon as the hardware guard releases. Publish readiness
     // before then, or a valid first SETUP can be discarded as uninitialized.
@@ -82,12 +82,11 @@ void DeviceCore<C>::Deinitialize(bool in_isr)
 }
 
 template <typename C>
-void DeviceCore<C>::ProcessEvents(bool in_isr, uint32_t events)
+void DeviceCore<C>::DispatchEvents(bool in_isr, uint32_t events)
 {
   // While an endpoint stop is unconfirmed nothing else proceeds; the confirmation
   // posts STOP_DONE_EVENT and the held events run then.
   if ((events & STOP_TIMEOUT_EVENT) && pool_.AnyStopping()) OnStopTimeout(in_isr);
-  if ((events & STOP_DONE_EVENT) && !pool_.AnyStopping()) OnStopsSettled();
   events = (events | deferred_events_) & ~(STOP_DONE_EVENT | STOP_TIMEOUT_EVENT);
   deferred_events_ = 0;
   // A held-back lifecycle event also holds every endpoint start.
@@ -114,7 +113,7 @@ void DeviceCore<C>::ProcessEvents(bool in_isr, uint32_t events)
       bool speed_ok = true;
       if (events & RESET_EVENT)
       {
-        EndpointPool::HardwareScope hardware(&pool_);
+        EndpointPool::HardwareScope hardware(pool_);
         OnControllerReset();
         const Speed observed_speed = ReadBusSpeed();
         speed_ok = (profile_speeds_ & SpeedBit(observed_speed)) != 0U;
@@ -127,7 +126,7 @@ void DeviceCore<C>::ProcessEvents(bool in_isr, uint32_t events)
       if (speed_ok)
       {
         pool_.SetSuspended(false, in_isr);
-        if constexpr (C::BUS_TIME) this->previous = 0xffffffffU;
+        previous_frame_ = 0xffffffffU;
         Initialize(in_isr);
         if ((events & RESET_EVENT) && IsInited())
           composition_.Notify(in_isr, DeviceEvent::RESET);
@@ -164,8 +163,7 @@ void DeviceCore<C>::ProcessEvents(bool in_isr, uint32_t events)
     SetupPacket setup;
     if (TakeCapturedSetup(setup)) HandleSetup(in_isr, setup);
   }
-  if constexpr (C::BUS_TIME)
-    if (events & TIME_EVENT) DeliverBusTime(in_isr);
+  if (events & FRAME_TICK_EVENT) DeliverFrameTick(in_isr);
 }
 
 template <typename C>
@@ -200,7 +198,7 @@ void DeviceCore<C>::OnSetupPacket(bool in_isr, const SetupPacket* setup)
 {
   if (setup == nullptr) return;
   {
-    EndpointPool::HardwareScope hardware(&pool_);
+    EndpointPool::HardwareScope hardware(pool_);
     captured_setup_ = *setup;
     captured_setup_pending_ = true;
     pool_.PublishControl(SETUP_EVENT);
@@ -211,7 +209,7 @@ void DeviceCore<C>::OnSetupPacket(bool in_isr, const SetupPacket* setup)
 template <typename C>
 bool DeviceCore<C>::TakeCapturedSetup(SetupPacket& setup)
 {
-  EndpointPool::HardwareScope hardware(&pool_);
+  EndpointPool::HardwareScope hardware(pool_);
   // A newer lifecycle request must be applied before a post-boundary SETUP.
   // Its publication is inside the same guard as mailbox invalidation.
   if (!captured_setup_pending_ || pool_.HasPendingControl(LIFECYCLE_EVENTS)) return false;
@@ -230,7 +228,7 @@ template <typename C>
 bool DeviceCore<C>::Superseded()
 {
   if (replacing_setup_) return true;
-  EndpointPool::HardwareScope hardware(&pool_);
+  EndpointPool::HardwareScope hardware(pool_);
   return captured_setup_pending_;
 }
 
@@ -280,7 +278,6 @@ void DeviceCore<C>::Abort(bool in_isr)
   phase_ = Phase::IDLE;
   control_in_ = {nullptr, 0};
   transferred_ = 0;
-  in_segment_size_ = 0;
   in_tail_zero_ = false;
   status_out_armed_ = false;
   status_out_seen_ = false;
@@ -304,7 +301,7 @@ void DeviceCore<C>::Finish(bool in_isr)
   // (CH32 USBHS: RX goes to ACK, the packets are dropped and the transfer hangs). The
   // capture happens under the same guard, so the check and the reopen are atomic to it.
   {
-    EndpointPool::HardwareScope hardware(&pool_);
+    EndpointPool::HardwareScope hardware(pool_);
     if (!replacing_setup_ && !captured_setup_pending_) OnControlReady();
   }
   if (previous) previous->OnControlComplete(in_isr, completed);
@@ -314,7 +311,6 @@ template <typename C>
 void DeviceCore<C>::Stall(bool in_isr)
 {
   Abort(in_isr);
-  phase_ = Phase::STALLED;
   if (in0_) (void)in0_->Stall(in_isr);
   if (out0_) (void)out0_->Stall(in_isr);
 }
@@ -374,7 +370,6 @@ void DeviceCore<C>::SendNextIn(bool in_isr)
   if constexpr ((C::SPEEDS & SpeedBit(Speed::HIGH)) != 0U)
     if (this->other_speed_descriptor && transferred_ <= 1U && transferred_ + amount > 1U)
       static_cast<uint8_t*>(slot.data.addr_)[1U - transferred_] = 7U;
-  in_segment_size_ = amount;
   // A reply shorter than wLength that ends on a packet boundary is terminated by a
   // ZLP within the same request.
   const bool last = transferred_ + amount == control_in_.size_;
@@ -413,7 +408,7 @@ void DeviceCore<C>::InComplete(bool in_isr, const Endpoint::Completion& completi
   // A newer SETUP waits or replaces this transfer: its bookkeeping goes on (a transfer
   // the host completed still completes), but nothing of it may stall EP0 or send on it.
   const bool superseded = Superseded();
-  if (phase_ != Phase::DATA_IN || completion.actual != in_segment_size_)
+  if (phase_ != Phase::DATA_IN)
   {
     if (!superseded) Stall(in_isr);
     return;
@@ -783,24 +778,21 @@ ErrorCode DeviceCore<C>::HandleStandardRequest(bool in_isr)
       return ErrorCode::OK;
     }
     case StandardRequest::SYNCH_FRAME:
-      if constexpr (C::BUS_TIME)
-      {
-        if (!input || recipient != Recipient::ENDPOINT || setup_.wValue ||
-            setup_.wLength != 2U || (setup_.wIndex & 0xff70U))
-          return ErrorCode::ARG_ERR;
-        Endpoint* ep = nullptr;
-        if (pool_.FindEndpoint(static_cast<uint8_t>(setup_.wIndex), ep) !=
-                ErrorCode::OK ||
-            ep->GetType() != Endpoint::Type::ISOCHRONOUS)
-          return ErrorCode::NOT_SUPPORT;
-        const uint16_t frame = static_cast<uint16_t>(
-            this->observed.load(std::memory_order_acquire) & 0x7ffU);
-        const uint8_t bytes[] = {static_cast<uint8_t>(frame),
-                                 static_cast<uint8_t>(frame >> 8U)};
-        WriteControl(in_isr, {bytes, 2});
-        return ErrorCode::OK;
-      }
-      return ErrorCode::NOT_SUPPORT;
+    {
+      if (!input || recipient != Recipient::ENDPOINT || setup_.wValue ||
+          setup_.wLength != 2U || (setup_.wIndex & 0xff70U))
+        return ErrorCode::ARG_ERR;
+      Endpoint* ep = nullptr;
+      if (pool_.FindEndpoint(static_cast<uint8_t>(setup_.wIndex), ep) != ErrorCode::OK ||
+          ep->GetType() != Endpoint::Type::ISOCHRONOUS)
+        return ErrorCode::NOT_SUPPORT;
+      const uint16_t frame =
+          static_cast<uint16_t>(observed_frame_.load(std::memory_order_acquire) & 0x7ffU);
+      const uint8_t bytes[] = {static_cast<uint8_t>(frame),
+                               static_cast<uint8_t>(frame >> 8U)};
+      WriteControl(in_isr, {bytes, 2});
+      return ErrorCode::OK;
+    }
     default:
       return ErrorCode::NOT_SUPPORT;
   }
@@ -810,52 +802,40 @@ template <typename C>
 void DeviceCore<C>::OnSof(bool in_isr, uint16_t frame, uint8_t microframe)
 {
   if (pool_.CountStopFrame(frame)) pool_.PostControl(STOP_TIMEOUT_EVENT, in_isr);
-  if constexpr (C::BUS_TIME)
-  {
-    this->observed_ms.store(static_cast<uint32_t>(Timebase::GetMilliseconds()),
-                            std::memory_order_relaxed);
-    this->observed.store((frame == 0xffffU ? 0xffffU : (frame & 0x7ffU)) |
-                             (static_cast<uint32_t>(microframe) << 16U),
-                         std::memory_order_release);
-    if (composition_.WantsBusTime()) pool_.PostControl(TIME_EVENT, in_isr);
-  }
-  else
-  {
-    UNUSED(in_isr);
-    UNUSED(frame);
-    UNUSED(microframe);
-  }
+  observed_frame_ms_.store(static_cast<uint32_t>(Timebase::GetMilliseconds()),
+                           std::memory_order_relaxed);
+  observed_frame_.store((frame == 0xffffU ? 0xffffU : (frame & 0x7ffU)) |
+                            (static_cast<uint32_t>(microframe) << 16U),
+                        std::memory_order_release);
+  if (composition_.NeedsFrameTick()) pool_.PostControl(FRAME_TICK_EVENT, in_isr);
 }
 
 template <typename C>
-void DeviceCore<C>::DeliverBusTime(bool in_isr)
+void DeviceCore<C>::DeliverFrameTick(bool in_isr)
 {
-  if constexpr (C::BUS_TIME)
+  const uint32_t now = observed_frame_.load(std::memory_order_acquire);
+  const uint32_t ms = observed_frame_ms_.load(std::memory_order_relaxed);
+  FrameTick tick;
+  const uint16_t frame = static_cast<uint16_t>(now & 0xffffU);
+  tick.microframe = static_cast<uint8_t>(now >> 16U);
+  if (previous_frame_ != 0xffffffffU && frame != 0xffffU &&
+      (previous_frame_ & 0xffffU) != 0xffffU && ms - previous_frame_ms_ < 2048U)
   {
-    const uint32_t now = this->observed.load(std::memory_order_acquire);
-    const uint32_t ms = this->observed_ms.load(std::memory_order_relaxed);
-    BusTime time;
-    const uint16_t frame = static_cast<uint16_t>(now & 0xffffU);
-    time.microframe = static_cast<uint8_t>(now >> 16U);
-    if (this->previous != 0xffffffffU && frame != 0xffffU &&
-        (this->previous & 0xffffU) != 0xffffU && ms - this->previous_ms < 2048U)
+    const uint8_t previous_micro = static_cast<uint8_t>(previous_frame_ >> 16U);
+    if ((previous_micro == 0xffU) == (tick.microframe == 0xffU))
     {
-      const uint8_t previous_micro = static_cast<uint8_t>(this->previous >> 16U);
-      if ((previous_micro == 0xffU) == (time.microframe == 0xffU))
+      if (tick.microframe == 0xffU)
+        tick.elapsed_intervals = (frame - (previous_frame_ & 0x7ffU)) & 0x7ffU;
+      else
       {
-        if (time.microframe == 0xffU)
-          time.elapsed_intervals = (frame - (this->previous & 0x7ffU)) & 0x7ffU;
-        else
-        {
-          const uint32_t current = frame * 8U + time.microframe;
-          const uint32_t previous = (this->previous & 0x7ffU) * 8U + previous_micro;
-          time.elapsed_intervals = (current - previous) & 0x3fffU;
-        }
+        const uint32_t current = frame * 8U + tick.microframe;
+        const uint32_t previous = (previous_frame_ & 0x7ffU) * 8U + previous_micro;
+        tick.elapsed_intervals = (current - previous) & 0x3fffU;
       }
     }
-    this->previous = now;
-    this->previous_ms = ms;
-    composition_.NotifyBusTime(in_isr, time);
   }
+  previous_frame_ = now;
+  previous_frame_ms_ = ms;
+  composition_.NotifyFrameTick(in_isr, tick);
 }
 }  // namespace LibXR::USB

@@ -80,6 +80,18 @@ class DeviceComposition
    * stops are confirmed, the second step binds the new one.
    */
   ErrorCode BeginSwitchConfig(size_t index, bool in_isr);
+
+  /**
+   * @brief 切换配置的第二步：绑定新配置并使能数据端点
+   *        Second step of a configuration switch: bind the new configuration and enable
+   *        the data endpoints.
+   *
+   * @param index configuration value，0 表示未配置 / Configuration value, 0 means
+   * unconfigured
+   * @param in_isr 是否在 ISR / Whether in ISR context
+   * @return OK；端点规划无效时为 INIT_ERR（此时已回到未配置状态）/ OK; INIT_ERR when the
+   * endpoint plan is invalid (the state falls back to unconfigured)
+   */
   ErrorCode FinishSwitchConfig(size_t index, bool in_isr);
 
   /**
@@ -87,22 +99,70 @@ class DeviceComposition
    *        Build the current configuration descriptor cache.
    */
   ErrorCode BuildConfigDescriptor();
+
+  /// 为 speeds 中的每个速度和每个 configuration 预先生成并缓存配置描述符，仅在初始化时
+  /// 分配内存；已准备好时直接返回 OK / Build and cache the configuration descriptor of
+  /// every configuration for each speed in speeds; memory is allocated only at
+  /// initialization time; returns OK at once when already prepared
+  /// @param speeds SpeedBit 编码的速度位图 / Speed bitmap encoded with SpeedBit
+  /// @param in_isr 是否在 ISR / Whether in ISR context
+  /// @return OK；某个配置的端点规划无效时为 INIT_ERR / OK; INIT_ERR when the endpoint
+  /// plan of some configuration is invalid
   ErrorCode PrepareDescriptors(uint32_t speeds, bool in_isr);
+
+  /// 取 PrepareDescriptors 缓存的配置描述符 / Get a configuration descriptor cached by
+  /// PrepareDescriptors
+  /// @param index 从 0 开始的 configuration 序号（configuration value 减 1）/ Zero-based
+  /// configuration index (configuration value minus 1)
+  /// @param speed 总线速度 / Bus speed
+  /// @return 描述符数据；未缓存或参数越界时为空 / The descriptor data; empty when not
+  /// cached or out of range
   ConstRawData GetConfigDescriptor(size_t index, Speed speed) const;
+
+  /// 所有类要求的控制 OUT 数据阶段缓冲区大小的最大值，至少 64 字节 / Largest control OUT
+  /// data-stage buffer size required by any class, at least 64 bytes
   size_t ControlReceiveCapacity() const;
+
+  /// 取某个配置中的第 item 个描述符项，不做越界检查 / Get the item-th descriptor item of
+  /// a configuration; not range checked
+  /// @param config 从 0 开始的 configuration 序号 / Zero-based configuration index
+  /// @param item 配置内的项序号，小于 ConfigItemCount / Item index inside the
+  /// configuration, below ConfigItemCount
   ConfigDescriptorItem* ConfigItem(size_t config, size_t item) const
   {
     return items_[config].items[item];
   }
+  /// 某个配置的描述符项数量 / Number of descriptor items in a configuration
+  /// @param config 从 0 开始的 configuration 序号 / Zero-based configuration index
   size_t ConfigItemCount(size_t config) const { return items_[config].item_num; }
+
+  /// 组合中的设备类数量 / Number of device classes in the composition
   size_t ClassCount() const { return class_count_; }
   /// 对应的 BOS 平台能力；没有类需要 WinUSB 时为 nullptr / The matching BOS platform
   /// capability; nullptr when no class wants WinUSB
   BosCapability* WinUsbBosCapability() const { return winusb_cap_; }
+
+  /// 按序号取设备类，不做越界检查 / Get a device class by index; not range checked
+  /// @param index 小于 ClassCount 的序号 / Index below ClassCount
   DeviceClass* ClassAt(size_t index) const { return classes_[index]; }
+
+  /// 向设备类转发设备事件：RESET 发给所有类，其他事件只发给当前配置中的类；endpoint 非 0
+  /// 时只发给拥有该端点的类 / Forward a device event to the classes: RESET reaches every
+  /// class, other events only the classes of the current configuration; a non-zero
+  /// endpoint restricts delivery to the class that owns it
+  /// @param in_isr 是否在 ISR / Whether in ISR context
+  /// @param event 事件类型 / Event type
+  /// @param endpoint 端点地址，0 表示不限定 / Endpoint address, 0 for no restriction
   void Notify(bool in_isr, DeviceEvent event, uint8_t endpoint = 0);
-  void NotifyBusTime(bool in_isr, const BusTime& time);
-  bool WantsBusTime() const;
+
+  /// 向当前配置中需要帧节拍的类发送 OnFrameTick / Send OnFrameTick to the classes of the
+  /// current configuration that need it
+  /// @param in_isr 是否在 ISR / Whether in ISR context
+  /// @param time 帧节拍信息 / Frame tick information
+  void NotifyFrameTick(bool in_isr, const FrameTick& time);
+
+  /// 任一类是否需要帧节拍 / Whether any class needs frame ticks
+  bool NeedsFrameTick() const;
 
   /**
    * @brief 获取当前 configuration 描述符缓存

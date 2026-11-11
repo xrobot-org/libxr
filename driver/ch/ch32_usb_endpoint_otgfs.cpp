@@ -560,7 +560,8 @@ void CH32EndpointOtgFs::TransferComplete(size_t size)
     if (transfer_accumulated_ < transfer_requested_ && size == MaxPacketSize())
     {
       transfer_cursor_ += size;
-      *get_dma_addr(GetNumber()) = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(transfer_cursor_));
+      *get_dma_addr(GetNumber()) =
+          static_cast<uint32_t>(reinterpret_cast<uintptr_t>(transfer_cursor_));
       return;  // RES 仍为 ACK，继续收下一包
     }
     *get_rx_ctrl_addr(GetNumber()) =

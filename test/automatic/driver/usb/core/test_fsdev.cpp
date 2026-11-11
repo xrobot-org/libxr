@@ -417,7 +417,6 @@ constexpr auto TEST_LANGUAGE = DescriptorStrings::MakeLanguagePack(
 struct BasicCapabilities : FullSpeedCapabilities
 {
   static constexpr bool BOS = false;
-  static constexpr bool BUS_TIME = false;
 };
 
 class ControlClass : public DeviceClass
@@ -646,7 +645,8 @@ void TestBulkInMultiPacket()
   TEST_ASSERT(f.device.Get(in, Endpoint::Direction::IN, Endpoint::EPNumber::EP1) ==
               ErrorCode::OK);
   Done done;
-  in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64}, false);
+  TEST_ASSERT(in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64}, false) ==
+              ErrorCode::OK);
   in->SetOnComplete(done.CallbackFor());
   const auto bytes = Bytes(100, 0x11);
   TEST_ASSERT(SubmitBytes(in, bytes) == ErrorCode::OK);
@@ -668,7 +668,8 @@ void TestBulkOutMultiPacket()
   TEST_ASSERT(f.device.Get(out, Endpoint::Direction::OUT, Endpoint::EPNumber::EP1) ==
               ErrorCode::OK);
   Done done;
-  out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64}, false);
+  TEST_ASSERT(out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64},
+                             false) == ErrorCode::OK);
   out->SetOnComplete(done.CallbackFor());
   const auto data = Bytes(128, 0x22);
   TEST_ASSERT(out->Receive(128, false) == ErrorCode::OK);
@@ -701,7 +702,8 @@ void TestStopCountsLatePacket()
   TEST_ASSERT(f.device.Get(out, Endpoint::Direction::OUT, Endpoint::EPNumber::EP1) ==
               ErrorCode::OK);
   Done done;
-  out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64}, false);
+  TEST_ASSERT(out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64},
+                             false) == ErrorCode::OK);
   out->SetOnComplete(done.CallbackFor());
   TEST_ASSERT(out->Receive(128, false) == ErrorCode::OK);
   // 包已收、CTR 未处理时停止：那个包计入进度 / The packet arrived; the stop counts it.
@@ -722,7 +724,8 @@ void TestBusResetEndsTransfers()
   Endpoint* in = nullptr;
   TEST_ASSERT(f.device.Get(in, Endpoint::Direction::IN, Endpoint::EPNumber::EP1) ==
               ErrorCode::OK);
-  in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64}, false);
+  TEST_ASSERT(in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64}, false) ==
+              ErrorCode::OK);
   const auto bytes = Bytes(64, 0x33);
   TEST_ASSERT(SubmitBytes(in, bytes) == ErrorCode::OK);
   TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatTx) == 0x0030U);
@@ -749,17 +752,33 @@ void TestBusResetEndsTransfers()
   TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatTx) != 0x0030U);  // 旧会话不再发送
 }
 
+/// 帧中断（SOFM）在设备上总线且没有挂起时打开：Start 之后、枚举之后是开的，挂起后关，
+/// 恢复后开，挂起中的总线复位后也开，Stop 后关。
+/// The frame interrupt (SOFM) is on while the device is on the bus and not suspended: on
+/// after Start and after enumeration, off after a suspend, on after the resume, on after
+/// a bus reset during suspend and off after Stop.
 void TestSuspendResume()
 {
   Fixture f;
+  TEST_ASSERT((FakeHw::ReadCntr() & FakeHw::kCntrSofm) != 0U);
   FakeHw::RxPacket(0, nullptr, 0U, false);  // 无在途控制传输时的噪声包，读掉丢弃
   Pump();
   FakeHw::SuspendLine();
   Pump();
   TEST_ASSERT((FakeHw::ReadCntr() & 0x0008U) != 0U);  // FSUSP 置位
+  TEST_ASSERT((FakeHw::ReadCntr() & FakeHw::kCntrSofm) == 0U);
   FakeHw::ResumeLine();
   Pump();
   TEST_ASSERT((FakeHw::ReadCntr() & 0x0008U) == 0U);
+  TEST_ASSERT((FakeHw::ReadCntr() & FakeHw::kCntrSofm) != 0U);
+  FakeHw::SuspendLine();
+  Pump();
+  TEST_ASSERT((FakeHw::ReadCntr() & FakeHw::kCntrSofm) == 0U);
+  FakeHw::BusReset();
+  Pump();
+  TEST_ASSERT((FakeHw::ReadCntr() & FakeHw::kCntrSofm) != 0U);
+  f.device.Stop(false);
+  TEST_ASSERT((FakeHw::ReadCntr() & FakeHw::kCntrSofm) == 0U);
 }
 
 void TestIsochronousRejected()
@@ -878,7 +897,8 @@ void TestStopRaceWithTransaction()
     TEST_ASSERT(f.device.Get(out, Endpoint::Direction::OUT, Endpoint::EPNumber::EP1) ==
                 ErrorCode::OK);
     Done done;
-    out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64}, false);
+    TEST_ASSERT(out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64},
+                               false) == ErrorCode::OK);
     out->SetOnComplete(done.CallbackFor());
     TEST_ASSERT(out->Receive(128, false) == ErrorCode::OK);
     TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatRx) == 0x3000U);  // VALID
@@ -904,7 +924,8 @@ void TestStopRaceWithTransaction()
     TEST_ASSERT(f.device.Get(in, Endpoint::Direction::IN, Endpoint::EPNumber::EP1) ==
                 ErrorCode::OK);
     Done done;
-    in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64}, false);
+    TEST_ASSERT(in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64},
+                              false) == ErrorCode::OK);
     in->SetOnComplete(done.CallbackFor());
     const auto bytes = Bytes(64, 9);
     TEST_ASSERT(SubmitBytes(in, bytes) == ErrorCode::OK);
@@ -970,7 +991,8 @@ void TestArmNotRearmedByRace()
     TEST_ASSERT(f.device.Get(in, Endpoint::Direction::IN, Endpoint::EPNumber::EP1) ==
                 ErrorCode::OK);
     Done done;
-    in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64}, false);
+    TEST_ASSERT(in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64},
+                              false) == ErrorCode::OK);
     in->SetOnComplete(done.CallbackFor());
     const auto bytes = Bytes(64, 0x44);
     FakeHw::on_write_post = [] { FakeHw::AckIn(1); };
@@ -988,7 +1010,8 @@ void TestArmNotRearmedByRace()
     TEST_ASSERT(f.device.Get(out, Endpoint::Direction::OUT, Endpoint::EPNumber::EP1) ==
                 ErrorCode::OK);
     Done done;
-    out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64}, false);
+    TEST_ASSERT(out->Configure({Endpoint::Direction::OUT, Endpoint::Type::BULK, 64},
+                               false) == ErrorCode::OK);
     out->SetOnComplete(done.CallbackFor());
     const auto data = Bytes(64, 0x45);
     FakeHw::on_write_post = [&data]

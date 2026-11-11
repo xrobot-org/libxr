@@ -430,7 +430,7 @@ void CH32PWM::EnableChannel(bool en)
       break;
   }
 #else
-    (void)en;
+  (void)en;
 #endif
 }
 

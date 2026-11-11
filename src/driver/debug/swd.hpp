@@ -26,13 +26,22 @@ class Swd
    * - wait_retry：最大 WAIT 重试次数 / wait_retry: maximum WAIT retries.
    * - clear_sticky_on_fault：当 ACK==FAULT 时清除 sticky 错误 / clear_sticky_on_fault:
    * clear sticky errors when ACK==FAULT.
+   * - turnaround：转向周期数（1..4，与目标 DLCR.TURNROUND 一致），驱动不支持时忽略
+   * / turnaround: turnaround cycles (1..4, matching the target's DLCR.TURNROUND); a
+   * driver that cannot honour it ignores it.
+   * - data_phase：WAIT/FAULT 后仍走 33 个周期的数据阶段（目标开启 ORUNDETECT 时需要），
+   * 驱动不支持时忽略 / data_phase: clock the 33-cycle data phase after WAIT/FAULT as
+   * well (needed when the target has ORUNDETECT set); a driver that cannot honour it
+   * ignores it.
    */
   struct TransferPolicy
   {
     uint8_t idle_cycles = 0;    ///< 空闲周期数 / Idle cycles.
     uint16_t wait_retry = 100;  ///< WAIT 最大重试次数 / Maximum WAIT retries.
     bool clear_sticky_on_fault =
-        true;  ///< FAULT 时清除 sticky 错误 / Clear sticky errors on FAULT.
+        true;                ///< FAULT 时清除 sticky 错误 / Clear sticky errors on FAULT.
+    uint8_t turnaround = 1;  ///< 转向周期数 / Turnaround cycles.
+    bool data_phase = false;  ///< WAIT/FAULT 后的数据阶段 / Data phase after WAIT/FAULT.
   };
 
   /**
@@ -140,6 +149,59 @@ class Swd
         break;
       }
       ++retries;
+    }
+
+    if (resp.ack != SwdProtocol::Ack::OK)
+    {
+      InvalidateSelectCache();
+    }
+
+    if (resp.ack == SwdProtocol::Ack::FAULT && policy_.clear_sticky_on_fault)
+    {
+      (void)ClearStickyErrors();
+    }
+
+    return ErrorCode::OK;
+  }
+
+  /**
+   * @brief 调用方已做完第一次尝试并得到 WAIT 后，按策略继续重试（不再先传一次）。
+   *        Keep retrying according to the policy after the caller has made the first
+   *        attempt itself and got WAIT (it does not transfer once more first).
+   *
+   * wait_retry 为 N 时最多再传 N 次，N 为 0 时不再传，resp 保持调用方得到的 WAIT。
+   * 每次重试后插入 idle_cycles，结束时的处理与 TransferWithRetry 相同。
+   * With wait_retry N at most N more transfers follow; with 0 none does and resp keeps
+   * the WAIT the caller got. idle_cycles follow each retry and the final handling is that
+   * of TransferWithRetry.
+   *
+   * @param req 与第一次尝试相同的请求包 / The request of the first attempt.
+   * @param resp 第一次尝试的响应（ack 为 WAIT），返回最终响应 / Response of the first
+   *        attempt (ack is WAIT); the final response on return.
+   * @return ErrorCode 操作结果（传输流程级） / Error code (flow-level).
+   */
+  ErrorCode TransferRetryAfterWait(const SwdProtocol::Request& req,
+                                   SwdProtocol::Response& resp)
+  {
+    for (uint32_t retries = 0; retries < policy_.wait_retry; ++retries)
+    {
+      auto ec = Transfer(req, resp);
+      if (ec != ErrorCode::OK)
+      {
+        resp.ack = SwdProtocol::Ack::PROTOCOL;
+        InvalidateSelectCache();
+        return ec;
+      }
+
+      if (policy_.idle_cycles != 0u)
+      {
+        IdleClocks(policy_.idle_cycles);
+      }
+
+      if (resp.ack != SwdProtocol::Ack::WAIT)
+      {
+        break;
+      }
     }
 
     if (resp.ack != SwdProtocol::Ack::OK)
@@ -437,12 +499,24 @@ class Swd
    */
   virtual void IdleClocks(uint32_t cycles) = 0;
 
-  // 输出：在 SWDIO 上按 LSB-first 输出 data，并产生 SWCLK 脉冲。
-  // cycles: 位数（例如 1..256）；data_lsb_first 长度 >= (cycles+7)/8
+  /**
+   * @brief 在 SWDIO 上按 LSB-first 输出位序列并产生 SWCLK 脉冲 / Drive a bit sequence
+   * on SWDIO LSB-first while pulsing SWCLK
+   * @param cycles 位数（例如 1..256）/ Number of bits (e.g. 1..256)
+   * @param data_lsb_first 待输出数据，长度不小于 (cycles+7)/8 字节 / Data to send, at
+   * least (cycles+7)/8 bytes
+   * @return 操作结果 / Operation result
+   */
   virtual ErrorCode SeqWriteBits(uint32_t cycles, const uint8_t* data_lsb_first) = 0;
 
-  // 输入：产生 SWCLK 脉冲并采样 SWDIO，按 LSB-first 写入 out_lsb_first。
-  // out_lsb_first 长度 >= (cycles+7)/8
+  /**
+   * @brief 产生 SWCLK 脉冲并采样 SWDIO，按 LSB-first 存入缓冲区 / Pulse SWCLK and sample
+   * SWDIO, storing the bits LSB-first
+   * @param cycles 位数 / Number of bits
+   * @param out_lsb_first 输出缓冲区，长度不小于 (cycles+7)/8 字节 / Output buffer, at
+   * least (cycles+7)/8 bytes
+   * @return 操作结果 / Operation result
+   */
   virtual ErrorCode SeqReadBits(uint32_t cycles, uint8_t* out_lsb_first) = 0;
 
  private:

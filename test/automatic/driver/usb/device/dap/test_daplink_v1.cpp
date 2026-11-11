@@ -13,6 +13,7 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -21,8 +22,11 @@
 #include <vector>
 
 #include "../../mock_endpoint.hpp"
+#include "../../thread_wait.hpp"
 #include "daplink_v1.hpp"
 #include "debug/swd.hpp"
+#include "dev_core.hpp"
+#include "ep_pool.hpp"
 
 using namespace LibXR;
 using namespace LibXR::USB;
@@ -43,6 +47,9 @@ class FakeSwd : public LibXR::Debug::Swd
  public:
   unsigned enters = 0, closes = 0, line_resets = 0;
   uint32_t clock_hz = 0;
+  /// SetClockHz calls, readable from another thread: the Step thread's session start ends
+  /// with one, so a test that waits for it knows Step has begun the command it holds.
+  std::atomic<unsigned> clock_calls{0};
   unsigned writes = 0, reads = 0;
   std::vector<std::thread::id> callers;
 
@@ -50,6 +57,7 @@ class FakeSwd : public LibXR::Debug::Swd
   {
     Note();
     clock_hz = hz;
+    clock_calls.fetch_add(1);
     return ErrorCode::OK;
   }
   void Close() override
@@ -332,14 +340,24 @@ void TestNoStaleResponseAfterRebind()
   Fixture f;
   TestDap dap(Number::EP1, Number::EP2, swd);
   dap.BindEndpoints(f.pool, 0, false);
-  Run(dap);
 
-  // DAP_Delay 10000 us.
-  f.out.HostSends(Report({static_cast<uint8_t>(CommandId::DELAY), 0x10, 0x27}));
-  std::thread dap_thread([&dap]() { (void)dap.Step(1000); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(3));
+  // The longest DAP_Delay, 65535 us, so that the unbind lands inside it. The first Step
+  // of a session ends its session start with SetClockHz and then takes the IN slot for
+  // the response: waiting for that call means Step holds the command. The test then
+  // checks that Step had not finished, so a missed window is a failure, not a silent loss
+  // of coverage.
+  f.out.HostSends(Report({static_cast<uint8_t>(CommandId::DELAY), 0xFF, 0xFF}));
+  std::atomic<bool> step_returned{false};
+  std::thread dap_thread(
+      [&]()
+      {
+        (void)dap.Step(1000);
+        step_returned.store(true);
+      });
+  TEST_ASSERT(WaitUntil([&]() { return swd.clock_calls.load() != 0U; }));
   dap.UnbindEndpoints(f.pool, false);
   dap.BindEndpoints(f.pool, 0, false);
+  TEST_ASSERT(!step_returned.load());
   dap_thread.join();
   Run(dap);
   TEST_ASSERT(f.in.starts.empty());
@@ -385,6 +403,54 @@ void TestBindAndUnbindLeaveSwdToStep()
   }
 }
 
+/// DAP_SWD_Configure reaches the SWD driver's transfer policy: turnaround (cfg & 3) + 1
+/// cycles and the data phase flag (cfg & 4); a new session starts from the defaults
+/// again.
+void TestSwdConfigureReachesThePolicy()
+{
+  FakeSwd swd;
+  Fixture f;
+  TestDap dap(Number::EP1, Number::EP2, swd);
+  dap.BindEndpoints(f.pool, 0, false);
+  const uint8_t CONFIGURE = static_cast<uint8_t>(CommandId::SWD_CONFIGURE);
+  TEST_ASSERT(swd.GetTransferPolicy().turnaround == 1);
+  TEST_ASSERT(!swd.GetTransferPolicy().data_phase);
+
+  f.out.HostSends(Report({CONFIGURE, 0x06}));
+  Run(dap);
+  TEST_ASSERT(f.in.active);
+  TEST_ASSERT(f.in.Last().data[0] == CONFIGURE && f.in.Last().data[1] == 0x00);
+  f.in.Complete();
+  TEST_ASSERT(swd.GetTransferPolicy().turnaround == 3);
+  TEST_ASSERT(swd.GetTransferPolicy().data_phase);
+
+  f.out.HostSends(Report({CONFIGURE, 0x03}));
+  Run(dap);
+  f.in.Complete();
+  TEST_ASSERT(swd.GetTransferPolicy().turnaround == 4);
+  TEST_ASSERT(!swd.GetTransferPolicy().data_phase);
+
+  // A report is always a whole 64 bytes: the zero padding after the command byte is the
+  // configuration byte 0, turnaround 1 and no data phase.
+  f.out.HostSends(Report({CONFIGURE}));
+  Run(dap);
+  f.in.Complete();
+  TEST_ASSERT(swd.GetTransferPolicy().turnaround == 1);
+  TEST_ASSERT(!swd.GetTransferPolicy().data_phase);
+
+  f.out.HostSends(Report({CONFIGURE, 0x05}));
+  Run(dap);
+  f.in.Complete();
+  TEST_ASSERT(swd.GetTransferPolicy().turnaround == 2);
+  TEST_ASSERT(swd.GetTransferPolicy().data_phase);
+
+  dap.UnbindEndpoints(f.pool, false);
+  dap.BindEndpoints(f.pool, 0, false);
+  Run(dap);
+  TEST_ASSERT(swd.GetTransferPolicy().turnaround == 1);
+  TEST_ASSERT(!swd.GetTransferPolicy().data_phase);
+}
+
 void TestResponseNeverSentWithoutABinding()
 {
   // The class answers FAILED while unbound instead of touching the endpoints.
@@ -395,6 +461,74 @@ void TestResponseNeverSentWithoutABinding()
   TEST_ASSERT(dap.SendInputReport({report.data(), report.size()}, false) ==
               ErrorCode::FAILED);
   TEST_ASSERT(f.in.starts.empty());
+}
+
+static constexpr auto TEST_LANGUAGE = DescriptorStrings::MakeLanguagePack(
+    DescriptorStrings::Language::EN_US, "LibXR", "USB tests", "0");
+
+/// A full-speed device core around the probe as the only function.
+class DapDevice : public DeviceCore<FullSpeedCapabilities>
+{
+ public:
+  DapDevice(EndpointPool& pool, ConfigDescriptorItem* item)
+      : DeviceCore(pool, USBSpec::USB_2_0, Speed::FULL,
+                   DeviceDescriptor::PacketSize0::SIZE_64, 0x1209, 0x4321, 0x0100,
+                   {&TEST_LANGUAGE}, {{item}})
+  {
+  }
+  void Start(bool) override {}
+  void Stop(bool) override {}
+
+ protected:
+  ErrorCode SetAddress(uint8_t, ControlContext) override { return ErrorCode::OK; }
+  void OnStopTimeout(bool) override {}
+};
+
+/// HID 1.11 4.1: the HID class belongs to the interface descriptor; the device
+/// descriptor of a probe that is nothing but HID has class, subclass and protocol 0 and
+/// the host reads the class per interface.
+void TestClassIsDeclaredOnTheInterface()
+{
+  FakeSwd swd;
+  Block<64> ep0_in_storage, ep0_out_storage;
+  Block<128> in_storage, out_storage;
+  EndpointPool pool{4};
+  MockEndpoint in0{Number::EP0, Direction::IN, ep0_in_storage.Raw()};
+  MockEndpoint out0{Number::EP0, Direction::OUT, ep0_out_storage.Raw()};
+  MockEndpoint in{Number::EP1, Direction::IN, in_storage.Raw()};
+  MockEndpoint out{Number::EP2, Direction::OUT, out_storage.Raw()};
+  TEST_ASSERT(pool.Put(&in) == ErrorCode::OK);
+  TEST_ASSERT(pool.Put(&out) == ErrorCode::OK);
+  pool.SetEndpoint0(&in0, &out0);
+  TestDap dap(Number::EP1, Number::EP2, swd);
+  DapDevice device(pool, &dap);
+  device.Init(false);
+
+  auto control = [&](uint16_t value, uint16_t length)
+  {
+    in0.active = false;
+    out0.active = false;
+    const size_t starts_before = in0.starts.size();
+    SetupPacket packet{0x80, 6, value, 0, length};
+    device.OnSetupPacket(true, &packet);
+    TEST_ASSERT(in0.starts.size() != starts_before);
+    return in0.Last().data;
+  };
+  const auto dev = control(0x0100, 18);
+  TEST_ASSERT(dev.size() == 18 && dev[1] == 1);
+  TEST_ASSERT(dev[4] == 0 && dev[5] == 0 && dev[6] == 0);
+
+  const auto cfg = control(0x0200, 255);
+  TEST_ASSERT(cfg.size() >= 9 && cfg[1] == 2);
+  size_t interfaces = 0;
+  for (size_t at = cfg[0]; at + 2 <= cfg.size(); at += cfg[at])
+  {
+    TEST_ASSERT(cfg[at] >= 2 && at + cfg[at] <= cfg.size());
+    if (cfg[at + 1] != 4) continue;
+    ++interfaces;
+    TEST_ASSERT(cfg[at + 5] == 3 && cfg[at + 6] == 0 && cfg[at + 7] == 0);
+  }
+  TEST_ASSERT(interfaces == 1);
 }
 }  // namespace
 
@@ -407,6 +541,8 @@ int main()
   TestUnbindWhilePending();
   TestNoStaleResponseAfterRebind();
   TestBindAndUnbindLeaveSwdToStep();
+  TestSwdConfigureReachesThePolicy();
   TestResponseNeverSentWithoutABinding();
+  TestClassIsDeclaredOnTheInterface();
   std::puts("DAP v1 class: Step model, lease backpressure and rebind passed");
 }

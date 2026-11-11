@@ -3,12 +3,82 @@
 #include <cstring>
 
 #include "dev_core.hpp"
+#include "latest_snapshot.hpp"
 #include "libxr_mem.hpp"
 #include "usb/core/desc_cfg.hpp"
 #include "usb/core/usb_macro_guard.hpp"
 
 namespace LibXR::USB
 {
+
+/**
+ * @brief 最近发送的输入报告，供 GET_REPORT 读取 / The last input report sent, read by
+ *        GET_REPORT
+ *
+ * 写者是 HID::SendInputReport 独占窗口里的发送方（PublishInputReport /
+ * WithdrawInputReport），读者是 owner（GET_REPORT）。每份报告带着发布时的会话号；
+ * 会话由 owner 在绑定时推进，会话号不符的报告属于上一次会话，读到时按中立值处理，
+ * 所以 owner 不必写快照，也就不会与发送方争当生产者。
+ * The writer is the sender inside the exclusive window of HID::SendInputReport
+ * (PublishInputReport / WithdrawInputReport); the reader is the owner (GET_REPORT). Each
+ * report carries the session it was published in. The owner advances the session on
+ * bind, and a report of another session belongs to the previous one and reads as the
+ * neutral value, so the owner never writes the snapshot and never competes with the
+ * sender as a second producer.
+ *
+ * @tparam Report 报告类型 / Report type
+ */
+template <typename Report>
+class LastInputReport
+{
+ public:
+  /// @param neutral 会话开始时的报告 / The report a session starts with
+  explicit LastInputReport(const Report& neutral)
+      : neutral_(neutral), current_{neutral, 0U}, previous_(current_), snapshot_(current_)
+  {
+  }
+
+  /// 发布 report；只在 SendInputReport 的独占窗口里调用 / Publish report; only inside
+  /// the exclusive window of SendInputReport
+  void Publish(const Report& report, uint32_t session)
+  {
+    previous_ = current_;
+    current_ = Stamped{report, session};
+    snapshot_.Store(current_);
+  }
+
+  /// 撤回刚发布的报告，恢复发布前的那份；与 Publish 在同一个独占窗口里调用 /
+  /// Take back the report just published and restore the one before it; called in the
+  /// same exclusive window as Publish
+  void Withdraw()
+  {
+    current_ = previous_;
+    snapshot_.Store(current_);
+  }
+
+  /// 本会话最近发送的报告，本会话还没有发送时为中立值；只由 owner 调用，返回值在下次
+  /// 调用前保持不变 / The report last sent in this session, the neutral value before the
+  /// first; owner only, the result stays valid until the next call
+  const Report& Read(uint32_t session)
+  {
+    (void)snapshot_.LoadLatest(reply_);
+    if (reply_.session != session) reply_.report = neutral_;
+    return reply_.report;
+  }
+
+ private:
+  struct Stamped
+  {
+    Report report;
+    uint32_t session;
+  };
+
+  Report neutral_;
+  Stamped current_;   ///< 只由独占窗口里的发送方写 / Written by the sender in the window
+  Stamped previous_;  ///< 同上 / Same
+  LatestSnapshot<Stamped> snapshot_;
+  Stamped reply_{};  ///< 只由 owner 写 / Owner only
+};
 
 /**
  * @brief
@@ -26,13 +96,23 @@ namespace LibXR::USB
  * @tparam REPORT_DESC_LEN 报告描述符长度 / Report descriptor length (bytes)
  * @tparam TX_REPORT_LEN Input Report 长度 / Input report length (bytes)
  * @tparam RX_REPORT_LEN Output Report 长度 / Output report length (bytes) [default: 0]
+ * @tparam BOOT_PROTOCOL 接口声明的启动协议：0 无，1 键盘，2 鼠标（HID 1.11 4.3）。
+ * 非 0 时接口子类为 1（boot），接口协议为该值；报告在启动协议下必须是 HID 1.11 附录 B
+ * 的格式。
+ * Boot protocol the interface declares: 0 none, 1 keyboard, 2 mouse (HID 1.11 4.3). When
+ * non-zero the interface subclass is 1 (boot) and the interface protocol is this value;
+ * the report must then have the format of HID 1.11 appendix B in the boot protocol.
  */
-template <size_t REPORT_DESC_LEN, size_t TX_REPORT_LEN, size_t RX_REPORT_LEN = 0>
+template <size_t REPORT_DESC_LEN, size_t TX_REPORT_LEN, size_t RX_REPORT_LEN = 0,
+          uint8_t BOOT_PROTOCOL = 0>
 class HID : public DeviceClass
 {
+  static_assert(BOOT_PROTOCOL <= 2,
+                "BOOT_PROTOCOL is 0 (none), 1 (keyboard) or 2 (mouse)");
+
  public:
-  // 暴露单接口的 HID 功能默认使用这个接口字符串。
-  // Default interface string for HID functions that expose one interface.
+  /// 暴露单接口的 HID 功能默认使用这个接口字符串。
+  /// Default interface string for HID functions that expose one interface.
   static constexpr const char* DEFAULT_INTERFACE_STRING = "XRUSB HID";
 
   /** @brief HID 描述符类型 / HID Descriptor Types */
@@ -135,6 +215,8 @@ class HID : public DeviceClass
   {
   }
 
+  /// 仅序号 0 有字符串（HID 只有一个接口），其余返回 nullptr / Only index 0 has a string
+  /// (HID has a single interface); others return nullptr
   const char* GetInterfaceString(size_t local_interface_index) const override
   {
     // HID 只暴露一个接口。
@@ -153,6 +235,15 @@ class HID : public DeviceClass
   void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num,
                      bool in_isr) override
   {
+    // HID 1.11 7.2.6：每次会话从报告协议开始，也不带上一次会话的报告。先推进会话号，
+    // 再放开 in_ep_ref_，发送方看到新端点时一定看到新会话号。
+    // HID 1.11 7.2.6: every session starts in the report protocol and without the
+    // reports of the previous one. The session number advances before in_ep_ref_ is
+    // published, so a sender that sees the new endpoint sees the new session.
+    protocol_ = Protocol::REPORT;
+    session_.fetch_add(1U, std::memory_order_release);
+    OnSessionStart();
+
     inited_ = false;
     itf_num_ = start_itf_num;
     ep_in_ = nullptr;
@@ -192,8 +283,8 @@ class HID : public DeviceClass
         0,                                                   // bAlternateSetting
         static_cast<uint8_t>(enable_out_endpoint_ ? 2 : 1),  // bNumEndpoints
         0x03,                                                // bInterfaceClass (HID)
-        0x00,                                                // bInterfaceSubClass
-        0x00,                        // bInterfaceProtocol (可选键盘/鼠标设置1/2)
+        static_cast<uint8_t>(BOOT_PROTOCOL != 0 ? 1 : 0),    // bInterfaceSubClass (boot)
+        BOOT_PROTOCOL,               // bInterfaceProtocol (1 键盘 / 2 鼠标)
         GetInterfaceStringIndex(0u)  // iInterface
     };
 
@@ -296,6 +387,9 @@ class HID : public DeviceClass
    */
   bool HasIAD() override { return false; }
 
+  /// 端点地址是否属于本 HID（IN 端点，启用时还包括 OUT 端点）；未绑定时为 false / Whether
+  /// the endpoint address belongs to this HID (the IN endpoint, plus the OUT endpoint
+  /// when enabled); false before binding
   bool OwnsEndpoint(uint8_t ep_addr) const override
   {
     if (!inited_)
@@ -370,6 +464,8 @@ class HID : public DeviceClass
    * @param bRequest 请求码 / Request code
    * @param wValue 请求值 / Request value
    * @param wLength 请求长度 / Request length
+   * @param wIndex 请求索引（接口号），当前未使用 / Request index (interface number);
+   * currently unused
    * @param result 返回结果 / Result
    * @return ErrorCode 错误码 / Error code
    */
@@ -390,13 +486,17 @@ class HID : public DeviceClass
         switch (report_type)
         {
           case ReportType::INPUT:
-            // 查找或生成 Input Report（按你的设备实际逻辑）
+            // 派生类返回最近发送的 Input Report；没有该报告则 STALL。
+            // The derived class answers with the last Input Report it sent; a report it
+            // does not have stalls.
             return OnGetInputReport(report_id, result);
           case ReportType::OUTPUT:
-            // 查找或返回最近收到的 Output Report（通常很少实现GET Output）
+            // 最近收到的 Output Report；没有则 STALL。
+            // The last Output Report received; stalls when there is none.
             return OnGetLastOutputReport(report_id, result);
           case ReportType::FEATURE:
-            // 查找或生成 Feature Report
+            // Feature Report；没有则 STALL。
+            // A Feature Report; stalls when there is none.
             return OnGetFeatureReport(report_id, result);
           default:
             return OnCustomClassRequest(in_isr, bRequest, wValue, wLength, result);
@@ -435,7 +535,16 @@ class HID : public DeviceClass
         return ErrorCode::OK;
 
       case ClassRequest::SET_PROTOCOL:
-        protocol_ = static_cast<Protocol>(wValue & 0xFF);
+        // HID 1.11 7.2.6: wValue 0 selects the boot protocol, 1 the report protocol;
+        // any other value is a request error (STALL) and the protocol stays as it is.
+        // The request is required only for boot interfaces (7.2.5, 7.2.6); the other
+        // classes keep answering it, so a host that sends it still gets an answer.
+        if (wValue != static_cast<uint16_t>(Protocol::BOOT) &&
+            wValue != static_cast<uint16_t>(Protocol::REPORT))
+        {
+          return ErrorCode::ARG_ERR;
+        }
+        protocol_ = static_cast<Protocol>(wValue);
         return ErrorCode::OK;
 
       default:
@@ -500,37 +609,43 @@ class HID : public DeviceClass
   /**
    * @brief 获取输入报告
    * Get Input Report
+   *
+   * 类有该报告时把数据填入 result.write_data 并返回 OK；默认实现没有任何报告，返回
+   * NOT_SUPPORT，设备核心据此 STALL 控制管道（HID 1.11 7.2.1）。
+   * A class that has the report fills result.write_data and returns OK. The default has
+   * no report and returns NOT_SUPPORT, which the device core answers with a STALL of the
+   * control pipe (HID 1.11 7.2.1).
    */
   virtual ErrorCode OnGetInputReport(uint8_t report_id,
                                      DeviceClass::ControlTransferResult& result)
   {
     UNUSED(report_id);
-    result.write_data = ConstRawData{nullptr, 0};
-    return ErrorCode::OK;
+    UNUSED(result);
+    return ErrorCode::NOT_SUPPORT;
   }
 
   /**
-   * @brief 获取最近一次输出报告
-   * Get last Output Report
+   * @brief 获取最近一次输出报告；默认没有，STALL
+   * Get last Output Report; the default has none and stalls
    */
   virtual ErrorCode OnGetLastOutputReport(uint8_t report_id,
                                           DeviceClass::ControlTransferResult& result)
   {
     UNUSED(report_id);
-    result.write_data = ConstRawData{nullptr, 0};
-    return ErrorCode::OK;
+    UNUSED(result);
+    return ErrorCode::NOT_SUPPORT;
   }
 
   /**
-   * @brief 获取特征报告
-   * Get Feature Report
+   * @brief 获取特征报告；默认没有，STALL
+   * Get Feature Report; the default has none and stalls
    */
   virtual ErrorCode OnGetFeatureReport(uint8_t report_id,
                                        DeviceClass::ControlTransferResult& result)
   {
     UNUSED(report_id);
-    result.write_data = ConstRawData{nullptr, 0};
-    return ErrorCode::OK;
+    UNUSED(result);
+    return ErrorCode::NOT_SUPPORT;
   }
 
   /**
@@ -556,6 +671,18 @@ class HID : public DeviceClass
     return ErrorCode::NOT_SUPPORT;
   }
 
+  /**
+   * @brief 处理自定义类请求的数据阶段（SET_REPORT 以外的请求码）
+   *        Handle the data stage of a custom class request (any code other than
+   *        SET_REPORT)
+   *
+   * 默认返回 NOT_SUPPORT。 / The default returns NOT_SUPPORT.
+   *
+   * @param in_isr 是否在中断中 / In ISR
+   * @param bRequest 请求码 / Request code
+   * @param data 数据阶段数据 / Data stage payload
+   * @return ErrorCode 错误码 / Error code
+   */
   virtual ErrorCode OnCustomClassData(bool in_isr, uint8_t bRequest, ConstRawData& data)
   {
     UNUSED(in_isr);
@@ -601,6 +728,15 @@ class HID : public DeviceClass
    * Submit return ABORTED; this returns FAILED, as for an unbound endpoint: the report
    * was never published and is not retried.
    *
+   * 在途标志从取得到 IN 完成（或失败路径）一直由当前发送方持有，所以同一时刻只有一个
+   * 发送方在 PublishInputReport 与 WithdrawInputReport 里；Publish 在 Submit 之前，
+   * 先于完成，后一个发送方的 Publish 一定排在它之后。Submit 失败时撤回。
+   * The in-flight flag is held by the current sender from the moment it is taken until
+   * the IN completion (or a failure path), so one sender at a time is inside
+   * PublishInputReport and WithdrawInputReport. Publish runs before Submit, hence before
+   * the completion, and the next sender's Publish is always ordered after it. A failed
+   * Submit withdraws the report.
+   *
    * @param report 输入报告数据指针及长度 / Input report data and length
    * @param in_isr 是否在中断中 / Whether in ISR
    * @return ErrorCode OK/BUSY/FAILED/ARG_ERR / Error code
@@ -613,6 +749,10 @@ class HID : public DeviceClass
     if (!input_in_flight_.compare_exchange_strong(expected, 1U,
                                                   std::memory_order_acq_rel))
       return ErrorCode::BUSY;
+    // 先读会话号再读端点：看到新会话号时，端点要么还没放开，要么是新端点。
+    // Read the session before the endpoint: with a new session number the endpoint is
+    // either not published yet or the new one.
+    const uint32_t session = session_.load(std::memory_order_acquire);
     Endpoint* ep = in_ep_ref_.load(std::memory_order_acquire);
     if (ep == nullptr)
     {
@@ -636,6 +776,25 @@ class HID : public DeviceClass
     }
     Memory::FastCopy(slot.data.addr_, report.addr_, report.size_);
 
+    // 在独占窗口里、Submit 之前发布：Submit 之后 IN 完成随时会放开窗口。发布另有一把只有
+    // 发送方拿放的写者锁：绑定/解绑会清在途标志，暂停在发布里的旧发送方不能因此与新
+    // 发送方同时写快照；拿不到时和在途一样返回 BUSY。
+    // Publish inside the exclusive window and before Submit: after Submit the IN
+    // completion can open the window at any moment. Publishing also takes a writer guard
+    // that only senders take and release: bind and unbind clear the in-flight flag, and a
+    // sender paused inside the publish must not overlap a new sender writing the
+    // snapshot. A sender that cannot take it gets BUSY, as for a report in flight.
+    {
+      PublishGuard guard(publishing_);
+      if (!guard.Held())
+      {
+        ep->ReleaseSlot(slot, in_isr);
+        input_in_flight_.store(0U, std::memory_order_release);
+        return ErrorCode::BUSY;
+      }
+      PublishInputReport(report, session);
+    }
+
     ans = ep->Submit(slot, report.size_, false, in_isr);
     if (ans != ErrorCode::OK)
     {
@@ -648,11 +807,56 @@ class HID : public DeviceClass
       {
         ep->ReleaseSlot(slot, in_isr);
       }
+      // 报告没有发出，撤回。会话已经换了（解绑后重新绑定）时，这份报告属于旧会话，读者
+      // 本来就不会采用它，不再碰快照。
+      // The report was not sent: take it back. After a rebind the report belongs to the
+      // old session and readers ignore it, so the snapshot is left alone.
+      if (session_.load(std::memory_order_acquire) == session)
+      {
+        // 拿不到写者锁说明另一个发送方正在发布（重新绑定之后），那时这份报告已属于旧
+        // 会话，不用撤回。
+        // Without the writer guard another sender is publishing (after a rebind), and
+        // this report belongs to an old session: nothing to take back.
+        PublishGuard guard(publishing_);
+        if (guard.Held()) WithdrawInputReport();
+      }
       input_in_flight_.store(0U, std::memory_order_release);
       return ErrorCode::FAILED;
     }
     return ErrorCode::OK;
   }
+
+  /**
+   * @brief 会话开始（绑定时，owner 上下文）：类在这里清掉只属于上一次会话的状态
+   * A session starts (on bind, owner context): the class clears the state that belonged
+   * to the previous session here
+   */
+  virtual void OnSessionStart() {}
+
+  /**
+   * @brief 记下即将提交的输入报告，供 GET_REPORT 返回；在 SendInputReport 的独占窗口里、
+   *        Submit 之前调用，session 是本次发送读到的会话号
+   * Record the input report about to be submitted, for GET_REPORT to return; called
+   * inside the exclusive window of SendInputReport before Submit, with the session number
+   * this send read
+   */
+  virtual void PublishInputReport(ConstRawData report, uint32_t session)
+  {
+    UNUSED(report);
+    UNUSED(session);
+  }
+
+  /**
+   * @brief 撤回刚发布的输入报告：Submit 失败，主机不会看到它；与 PublishInputReport 在
+   *        同一个独占窗口里调用
+   * Take back the input report just published: Submit failed and the host will not see
+   * it; called in the same exclusive window as PublishInputReport
+   */
+  virtual void WithdrawInputReport() {}
+
+  /// 当前会话号；绑定时 owner 推进 / Current session number; the owner advances it on
+  /// bind
+  uint32_t Session() const { return session_.load(std::memory_order_acquire); }
 
   /**
    * @brief 获取IDLE报告率
@@ -685,10 +889,14 @@ class HID : public DeviceClass
   bool HasOutEndpoint() const { return enable_out_endpoint_; }
 
  public:
+  /// 控制 OUT 数据阶段的接收容量：64 与最大报告长度中的较大者 / Control OUT data-stage
+  /// receive capacity: the larger of 64 and the biggest report length
   size_t GetControlReceiveCapacity() const override
   {
     return LibXR::max<size_t>(64U, LibXR::max<size_t>(TX_REPORT_LEN, RX_REPORT_LEN));
   }
+  /// OUT 端点从暂停恢复时重新挂一次接收 / Re-arm a receive when the OUT endpoint resumes
+  /// from a halt
   void OnDeviceEvent(bool in_isr, DeviceEvent event, uint8_t endpoint) override
   {
     if (event != DeviceEvent::ENDPOINT_RESUMED || ep_out_ == nullptr) return;
@@ -759,10 +967,37 @@ class HID : public DeviceClass
     self->OnDataInComplete(in_isr, completion);
   }
 
+  /// 发布窗口的写者锁：只有发送方拿放，绑定、解绑和完成回调不碰它 / Writer guard of the
+  /// publish step: taken and released by senders only; bind, unbind and completions never
+  /// touch it
+  class PublishGuard
+  {
+   public:
+    explicit PublishGuard(std::atomic<uint32_t>& flag) : flag_(flag)
+    {
+      uint32_t expected = 0U;
+      held_ = flag_.compare_exchange_strong(expected, 1U, std::memory_order_acq_rel);
+    }
+    ~PublishGuard()
+    {
+      if (held_) flag_.store(0U, std::memory_order_release);
+    }
+    PublishGuard(const PublishGuard&) = delete;
+    PublishGuard& operator=(const PublishGuard&) = delete;
+    bool Held() const { return held_; }
+
+   private:
+    std::atomic<uint32_t>& flag_;
+    bool held_ = false;
+  };
+
   std::atomic<uint32_t> input_in_flight_{
-      0};  ///< 单条在途标志 / One input report in flight
+      0};                                ///< 单条在途标志 / One input report in flight
+  std::atomic<uint32_t> publishing_{0};  ///< 发布写者锁 / Publish writer guard
   std::atomic<Endpoint*> in_ep_ref_{
       nullptr};  ///< SendInputReport 的 IN 端点 / IN endpoint doorbell
+  std::atomic<uint32_t> session_{
+      0};  ///< 会话号，每次绑定加一 / Session number, advanced on every bind
 
   uint8_t in_ep_interval_;         ///< 输入端点间隔 / IN endpoint interval
   uint8_t out_ep_interval_;        ///< 输出端点间隔 / OUT endpoint interval

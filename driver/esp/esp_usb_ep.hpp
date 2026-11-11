@@ -1,5 +1,6 @@
 #pragma once
 
+#include "esp_def.hpp"
 #include "usb/core/ep.hpp"
 
 #if (SOC_USB_OTG_SUPPORTED &&                                                \
@@ -18,6 +19,10 @@ class ESP32USBDevice;
 class ESP32USBEndpoint : public USB::Endpoint
 {
  public:
+  /// @param device 所属 USB 设备 / Owning USB device
+  /// @param number 端点号 / Endpoint number
+  /// @param direction 端点方向 / Endpoint direction
+  /// @param buffer 该端点的数据缓冲区 / Data buffer of this endpoint
   ESP32USBEndpoint(ESP32USBDevice& device, EPNumber number, Direction direction,
                    RawData buffer);
 
@@ -25,7 +30,9 @@ class ESP32USBEndpoint : public USB::Endpoint
 
   ErrorCode ConfigureHardware(const Config& cfg) override;
   void CloseHardware(bool in_isr) override;
+  /// 置位该端点的 STALL / Set STALL on this endpoint
   ErrorCode StallHardware(bool in_isr) override;
+  /// 清除该端点的 STALL / Clear STALL on this endpoint
   ErrorCode ClearStallHardware(bool in_isr) override;
   ErrorCode StartHardware(const HwRequest& request, bool in_isr) override;
   StopResult StopHardware(bool in_isr) override;
@@ -36,16 +43,14 @@ class ESP32USBEndpoint : public USB::Endpoint
   enum class StopPhase : uint8_t
   {
     NONE = 0,
-    SNAK_WAIT,
-    DIS_WAIT,
+    SNAK_WAIT,  ///< IN：等 NAK 生效；OUT：等全局 OUT NAK 生效 / IN: NAK effective; OUT:
+                ///< global OUT NAK effective
+    DIS_WAIT,   ///< 等端点禁用 / Endpoint disabled
   };
 
   /// 由 IN/OUT 中断调用，推进停止时序 / Called from the IN/OUT interrupts to
   /// advance the stop sequence
   void AdvanceStop(bool in_isr);
-  /// 有停止在等硬件确认（设备据此打开 SOF，核心靠帧数判停止超时）/ A stop is waiting for
-  /// the hardware (the device keeps SOF on for it; the core counts frames to time it out)
-  bool StopPending() const { return stop_phase_ != StopPhase::NONE; }
 
   /// 控制器复位升级路径：收掉软件状态并确认停止（不再碰寄存器）/ Controller-reset
   /// escalation: drop the software state and confirm the stop (no register access)
@@ -66,6 +71,11 @@ class ESP32USBEndpoint : public USB::Endpoint
   /// reset: confirm a stop that is still waiting
   void ConfirmStopAfterReset(bool in_isr);
   void HandleInInterrupt(bool in_isr);
+  /// 等时 IN 错过了它的帧：禁用端点，请求以 FAILED 结束；只处理为刚结束的那一帧（奇偶位
+  /// 等于 ended_odd）安排的端点 / An isochronous IN transfer missed its frame: disable
+  /// the endpoint and end the request with FAILED; only an endpoint armed for the frame
+  /// that ended (its even/odd bit equals ended_odd) is handled
+  void OnIsoIncomplete(bool ended_odd);
   void FinishPendingEp0InStatus(bool in_isr);
   void HandleOutInterrupt(bool in_isr);
   void HandleRxData(size_t size);
@@ -88,6 +98,10 @@ class ESP32USBEndpoint : public USB::Endpoint
   uint32_t transfer_tag_ = 0U;
   bool transfer_active_ = false;
   StopPhase stop_phase_ = StopPhase::NONE;
+  /// 正在跑的禁用序列是为错过帧的等时 IN 请求发起的：结束时报 FAILED，而不是确认一次
+  /// 停止 / The running disable sequence was started for an isochronous IN request that
+  /// missed its frame: it ends the request with FAILED instead of confirming a stop
+  bool iso_abort_ = false;
   /// EP0 OUT 停止后的 DMA 落点，避免仍指向被借出的槽 / DMA target after an EP0
   /// OUT stop so it no longer points at the lent slot
   uint8_t ep0_scratch_[64] =

@@ -177,6 +177,9 @@ class ESP32GPIO : public GPIO
     return ErrorCode::OK;
   }
 
+  /// GPIO 中断服务入口，在 ISR 中运行对应对象的回调 / GPIO ISR entry; runs the matching
+  /// object's callback in the ISR
+  /// @param arg 以指针形式携带的 gpio_num_t / gpio_num_t carried as a pointer value
   static void InterruptDispatcher(void* arg);
 
  private:

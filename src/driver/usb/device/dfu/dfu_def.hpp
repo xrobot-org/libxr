@@ -72,12 +72,18 @@ enum class DFUStatusCode : uint8_t
  */
 struct DFUCapabilities
 {
-  bool can_download = true;
-  bool can_upload = true;
-  bool manifestation_tolerant = true;
-  bool will_detach = false;
-  uint16_t detach_timeout_ms = 1000u;
-  uint16_t transfer_size = 1024u;
+  bool can_download = true;            ///< 支持 DNLOAD（bitCanDnload）/ DNLOAD supported
+  bool can_upload = true;              ///< 支持 UPLOAD（bitCanUpload）/ UPLOAD supported
+  bool manifestation_tolerant = true;  ///< manifest 阶段设备仍能响应请求
+                                       ///< (bitManifestationTolerant) / The device can
+                                       ///< still answer requests while manifesting
+  bool will_detach = false;  ///< 收到 DETACH 后设备自行完成分离（bitWillDetach）/ The
+                             ///< device detaches by itself after DETACH
+  uint16_t detach_timeout_ms = 1000u;  ///< DETACH 后等待主机复位的时间，毫秒
+                                       ///< (wDetachTimeOut) / Time to wait for the host
+                                       ///< reset after DETACH, in milliseconds
+  uint16_t transfer_size = 1024u;  ///< 单次控制传输的最大字节数（wTransferSize）/ Maximum
+                                   ///< bytes per control transfer (wTransferSize)
 };
 
 /**
@@ -86,14 +92,23 @@ struct DFUCapabilities
 class DfuInterfaceClassBase : public DeviceClass
 {
  protected:
+  /// 默认的 WinUSB 设备接口 GUID / Default WinUSB device interface GUID
   static constexpr const char* DEFAULT_WINUSB_DEVICE_INTERFACE_GUID =
       "{4066E5F4-3B02-4B90-9475-12F770A7841B}";
 
-  // Shared single-interface DFU state:
-  // - one interface string
-  // - optional WebUSB BOS capability
-  // - the WinUSB interface GUID; the composition builds the MS OS 2.0 descriptor set
-  // - current interface/alt-setting pair
+  /// Shared single-interface DFU state:
+  /// - one interface string
+  /// - optional WebUSB BOS capability
+  /// - the WinUSB interface GUID; the composition builds the MS OS 2.0 descriptor set
+  /// - current interface/alt-setting pair
+  ///
+  /// @param interface_string 接口字符串 / Interface string
+  /// @param webusb_landing_page_url WebUSB 落地页 URL；nullptr 表示不启用 WebUSB / WebUSB
+  /// landing page URL; nullptr disables WebUSB
+  /// @param webusb_vendor_code WebUSB 厂商请求码 / WebUSB vendor request code
+  /// @param winusb_device_interface_guid WinUSB 设备接口 GUID；nullptr
+  /// 或空串表示不请求绑定 / WinUSB device interface GUID; nullptr or "" requests no
+  /// binding
   DfuInterfaceClassBase(
       const char* interface_string, const char* webusb_landing_page_url = nullptr,
       uint8_t webusb_vendor_code = LibXR::USB::WebUsb::WEBUSB_VENDOR_CODE_DEFAULT,
@@ -125,16 +140,19 @@ class DfuInterfaceClassBase : public DeviceClass
     return (index == 0u && webusb_cap_.Enabled()) ? &webusb_cap_ : nullptr;
   }
 
-  uint8_t interface_num_ = 0u;
-  uint8_t current_alt_setting_ = 0u;
-  bool inited_ = false;
+  uint8_t interface_num_ = 0u;  ///< 本 DFU 接口在配置内的接口号 / Interface number of
+                                ///< this DFU interface within the configuration
+  uint8_t current_alt_setting_ = 0u;  ///< 当前备用设置号 / Current alternate setting
+  bool inited_ = false;  ///< 端点已绑定且后端接受了备用设置 / Bound and the backend
+                         ///< accepted the alternate setting
 
  private:
   const char* interface_string_ = nullptr;
   const char* winusb_device_interface_guid_ = nullptr;
 
  protected:
-  LibXR::USB::WebUsb::WebUsbBosCapability webusb_cap_;
+  LibXR::USB::WebUsb::WebUsbBosCapability webusb_cap_;  ///< WebUSB BOS 能力 / WebUSB BOS
+                                                        ///< capability
 };
 
 }  // namespace LibXR::USB

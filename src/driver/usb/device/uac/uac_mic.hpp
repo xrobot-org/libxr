@@ -18,13 +18,13 @@ namespace LibXR::USB
  * @brief UAC1 队列式麦克风设备类实现（槽模型）
  *        UAC1 queue-driven microphone device class (slot model)
  *
- * 数据路径：SOF 节拍（OnBusTime）每个服务区间调用 KickOneFrame：取槽 → 从 PCM 队列
+ * 数据路径：SOF 节拍（OnFrameTick）每个服务区间调用 KickOneFrame：取槽 → 从 PCM 队列
  * PopBatch 取整数个音频帧、不足补零 → 提交。没有空闲槽时本帧丢弃并计数。等时请求以
  * FAILED 结束时结束待决请求、重新 Configure 后由下一拍继续。alt 0/1 切换走
  * SET_INTERFACE 流程：Close 结束本接口端点的待决请求，端点停止未
  * 确认时激活挂起，等停止确认或下一拍继续。
  *
- * Data path: the SOF tick (OnBusTime) calls KickOneFrame once per service interval:
+ * Data path: the SOF tick (OnFrameTick) calls KickOneFrame once per service interval:
  * acquire a slot, PopBatch whole audio frames from the PCM queue, zero-fill the
  * remainder, then submit. A frame with no free slot is dropped and counted. An
  * isochronous request that ends with FAILED ends the pending requests and re-Configures
@@ -42,7 +42,9 @@ class UAC1MicrophoneQ : public DeviceClass
                 "BITS_PER_SAMPLE must be 8/16/24");
   // AC / AS 接口对的默认字符串。
   // Default interface strings for the AC / AS pair.
+  /// AC 接口的默认字符串 / Default string of the AC interface
   static constexpr const char* DEFAULT_CONTROL_INTERFACE_STRING = "XRUSB UAC1 Control";
+  /// AS 接口的默认字符串 / Default string of the AS interface
   static constexpr const char* DEFAULT_STREAMING_INTERFACE_STRING =
       "XRUSB UAC1 Streaming";
 
@@ -209,6 +211,25 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct CSACHeader
   {
+    /**
+     * @var bLength
+     * 描述符长度，9 / Descriptor length, 9
+     * @var bDescriptorType
+     * CS_INTERFACE
+     * @var bDescriptorSubtype
+     * AC_HEADER
+     * @var bcdADC
+     * 音频类规范版本（BCD），0x0100 = 1.00 / Audio class specification release in BCD,
+     * 0x0100 = 1.00
+     * @var wTotalLength
+     * 全部 AC 类特定描述符的总字节数，绑定时填写 / Total bytes of all AC class-specific
+     * descriptors, filled at bind
+     * @var bInCollection
+     * 隶属本 AC 接口的 AS 接口数，1 / Number of AS interfaces belonging to this AC
+     * interface, 1
+     * @var baInterfaceNr
+     * AS 接口的接口号，绑定时填写 / Interface number of the AS interface, filled at bind
+     */
     uint8_t bLength = 9, bDescriptorType = CS_INTERFACE, bDescriptorSubtype = AC_HEADER;
     uint16_t bcdADC = 0x0100, wTotalLength = 0;
     uint8_t bInCollection = 1, baInterfaceNr = 0;
@@ -220,6 +241,29 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct ACInputTerminal
   {
+    /**
+     * @var bLength
+     * 描述符长度，12 / Descriptor length, 12
+     * @var bDescriptorType
+     * CS_INTERFACE
+     * @var bDescriptorSubtype
+     * AC_INPUT_TERMINAL
+     * @var bTerminalID
+     * 端子 ID（ID_IT_MIC）/ Terminal ID (ID_IT_MIC)
+     * @var wTerminalType
+     * 端子类型，0x0201 = 麦克风 / Terminal type, 0x0201 = microphone
+     * @var bAssocTerminal
+     * 关联的输出端子，0 表示无 / Associated output terminal, 0 for none
+     * @var bNrChannels
+     * 通道数（CHANNELS）/ Number of channels (CHANNELS)
+     * @var wChannelConfig
+     * 空间通道位图，绑定时按通道数设定 / Spatial channel bitmap, set at bind from the
+     * channel count
+     * @var iChannelNames
+     * 通道名字符串索引，0 表示无 / Channel-name string index, 0 for none
+     * @var iTerminal
+     * 端子字符串索引，0 表示无 / Terminal string index, 0 for none
+     */
     uint8_t bLength = 12, bDescriptorType = CS_INTERFACE,
             bDescriptorSubtype = AC_INPUT_TERMINAL;
     uint8_t bTerminalID = ID_IT_MIC;
@@ -235,6 +279,28 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct ACFeatureUnit
   {
+    /**
+     * @var bLength
+     * 描述符长度，7 + (CHANNELS + 1) / Descriptor length, 7 + (CHANNELS + 1)
+     * @var bDescriptorType
+     * CS_INTERFACE
+     * @var bDescriptorSubtype
+     * AC_FEATURE_UNIT
+     * @var bUnitID
+     * 单元 ID（ID_FU）/ Unit ID (ID_FU)
+     * @var bSourceID
+     * 输入来源实体（ID_IT_MIC）/ Source entity (ID_IT_MIC)
+     * @var bControlSize
+     * 每个 bmaControls 项的字节数，1 / Bytes per bmaControls entry, 1
+     * @var bmaControlsMaster
+     * 主通道控制位图，0x03 = 静音 + 音量 / Master channel control bitmap, 0x03 = mute +
+     * volume
+     * @var bmaControlsCh
+     * 各通道控制位图，0x03 = 静音 + 音量 / Per-channel control bitmaps, 0x03 = mute +
+     * volume
+     * @var iFeature
+     * 单元字符串索引，0 表示无 / Unit string index, 0 for none
+     */
     uint8_t bLength = static_cast<uint8_t>(7 + (CHANNELS + 1) * 1);
     uint8_t bDescriptorType = CS_INTERFACE, bDescriptorSubtype = AC_FEATURE_UNIT;
     uint8_t bUnitID = ID_FU, bSourceID = ID_IT_MIC, bControlSize = 1;
@@ -249,6 +315,24 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct ACOutputTerminal
   {
+    /**
+     * @var bLength
+     * 描述符长度，9 / Descriptor length, 9
+     * @var bDescriptorType
+     * CS_INTERFACE
+     * @var bDescriptorSubtype
+     * AC_OUTPUT_TERMINAL
+     * @var bTerminalID
+     * 端子 ID（ID_OT_USB）/ Terminal ID (ID_OT_USB)
+     * @var wTerminalType
+     * 端子类型，0x0101 = USB 流 / Terminal type, 0x0101 = USB streaming
+     * @var bAssocTerminal
+     * 关联的输入端子，0 表示无 / Associated input terminal, 0 for none
+     * @var bSourceID
+     * 输入来源实体（ID_FU）/ Source entity (ID_FU)
+     * @var iTerminal
+     * 端子字符串索引，0 表示无 / Terminal string index, 0 for none
+     */
     uint8_t bLength = 9, bDescriptorType = CS_INTERFACE,
             bDescriptorSubtype = AC_OUTPUT_TERMINAL;
     uint8_t bTerminalID = ID_OT_USB;
@@ -262,6 +346,21 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct ASGeneral
   {
+    /**
+     * @var bLength
+     * 描述符长度，7 / Descriptor length, 7
+     * @var bDescriptorType
+     * CS_INTERFACE
+     * @var bDescriptorSubtype
+     * AS_GENERAL
+     * @var bTerminalLink
+     * 该 AS 接口连接的端子（ID_OT_USB）/ Terminal this AS interface is linked to
+     * (ID_OT_USB)
+     * @var bDelay
+     * 接口内部延迟，以帧计，1 / Delay inside the interface in frames, 1
+     * @var wFormatTag
+     * 音频数据格式，WFORMAT_PCM / Audio data format, WFORMAT_PCM
+     */
     uint8_t bLength = 7, bDescriptorType = CS_INTERFACE, bDescriptorSubtype = AS_GENERAL;
     uint8_t bTerminalLink = ID_OT_USB, bDelay = 1;
     uint16_t wFormatTag = WFORMAT_PCM;
@@ -273,6 +372,27 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct TypeIFormat1
   {
+    /**
+     * @var bLength
+     * 描述符长度，11 / Descriptor length, 11
+     * @var bDescriptorType
+     * CS_INTERFACE
+     * @var bDescriptorSubtype
+     * AS_FORMAT_TYPE
+     * @var bFormatType
+     * 格式类型，FORMAT_TYPE_I / Format type, FORMAT_TYPE_I
+     * @var bNrChannels
+     * 通道数（CHANNELS）/ Number of channels (CHANNELS)
+     * @var bSubframeSize
+     * 每个子帧字节数（K_SUBFRAME_SIZE）/ Bytes per subframe (K_SUBFRAME_SIZE)
+     * @var bBitResolution
+     * 每个子帧有效位数（BITS_PER_SAMPLE）/ Valid bits per subframe (BITS_PER_SAMPLE)
+     * @var bSamFreqType
+     * 离散采样率个数，1 / Number of discrete sampling frequencies, 1
+     * @var tSamFreq
+     * 采样率（Hz，3 字节小端），绑定时填写 / Sampling frequency in Hz (3 bytes,
+     * little-endian), filled at bind
+     */
     uint8_t bLength = 11, bDescriptorType = CS_INTERFACE,
             bDescriptorSubtype = AS_FORMAT_TYPE;
     uint8_t bFormatType = FORMAT_TYPE_I, bNrChannels = CHANNELS;
@@ -287,6 +407,21 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct CSEndpointGeneral
   {
+    /**
+     * @var bLength
+     * 描述符长度，7 / Descriptor length, 7
+     * @var bDescriptorType
+     * CS_ENDPOINT
+     * @var bDescriptorSubtype
+     * EP_GENERAL
+     * @var bmAttributes
+     * 端点控制位图，0 表示无采样率、音高和包填充控制 / Endpoint control bitmap, 0 means
+     * no sampling-frequency, pitch or packet-padding control
+     * @var bLockDelayUnits
+     * 锁定延迟单位，0 表示未定义 / Lock delay units, 0 means undefined
+     * @var wLockDelay
+     * 锁定延迟，0 / Lock delay, 0
+     */
     uint8_t bLength = 7, bDescriptorType = CS_ENDPOINT, bDescriptorSubtype = EP_GENERAL;
     uint8_t bmAttributes = 0x00;
     uint8_t bLockDelayUnits = 0;
@@ -299,6 +434,27 @@ class UAC1MicrophoneQ : public DeviceClass
    */
   struct EndpointDescriptorIso9
   {
+    /**
+     * @var bLength
+     * 描述符长度，9 / Descriptor length, 9
+     * @var bDescriptorType
+     * ENDPOINT
+     * @var bEndpointAddress
+     * 端点地址（含方向位），绑定时填写 / Endpoint address with direction bit, filled at
+     * bind
+     * @var bmAttributes
+     * 传输属性，0x05 = 等时 + 异步 + 数据端点 / Transfer attributes, 0x05 = isochronous +
+     * asynchronous + data endpoint
+     * @var wMaxPacketSize
+     * 最大包长，绑定时填写 / Maximum packet size, filled at bind
+     * @var bInterval
+     * 轮询间隔，1 = 每帧 / Polling interval, 1 = every frame
+     * @var bRefresh
+     * 反馈刷新周期，仅反馈端点使用，0 / Feedback refresh rate, used by feedback endpoints
+     * only, 0
+     * @var bSynchAddress
+     * 伴随同步端点地址，0 表示没有 / Associated sync endpoint address, 0 means none
+     */
     uint8_t bLength = 9;
     uint8_t bDescriptorType = static_cast<uint8_t>(DescriptorType::ENDPOINT);
     uint8_t bEndpointAddress = 0;  // 含方向位 / includes direction bit
@@ -347,6 +503,7 @@ class UAC1MicrophoneQ : public DeviceClass
     activate_pending_ = false;
     acc_rem_ = 0;
     micro_debt_ = 0;
+    UpdateFrameTickWanted();
     speed_ = endpoint_pool.GetSpeed();
     RecomputeTiming();
 
@@ -492,6 +649,7 @@ class UAC1MicrophoneQ : public DeviceClass
 
     ep_iso_in_->Close(in_isr);  // Alternate zero does not activate a data endpoint.
     inited_ = true;
+    UpdateFrameTickWanted();  // 仍为假：绑定后在 alt 0 / still false: bound at alt 0
   }
 
   /**
@@ -508,6 +666,7 @@ class UAC1MicrophoneQ : public DeviceClass
     activate_pending_ = false;
     acc_rem_ = 0;
     micro_debt_ = 0;
+    UpdateFrameTickWanted();
     if (ep_iso_in_ != nullptr)
     {
       ep_iso_in_->Close(in_isr);
@@ -675,14 +834,19 @@ class UAC1MicrophoneQ : public DeviceClass
   }
 
   /**
-   * @brief 处理类请求数据阶段（应用 SET_CUR：采样率 / 静音 / 音量）
-   *        Handle the class request data stage (apply SET_CUR: rate / mute / volume)
+   * @brief 处理类请求数据阶段（应用 SET_CUR：采样率 / 静音 / 音量；SET_RES 接受并忽略）
+   *        Handle the class request data stage (apply SET_CUR: rate / mute / volume;
+   *        SET_RES is accepted and ignored)
    */
   ErrorCode OnClassData(bool, uint8_t bRequest, ConstRawData& data) override
   {
-    if (bRequest != SET_CUR) return ErrorCode::NOT_SUPPORT;
     const PendingControl pending = pending_control_;
     pending_control_ = PendingControl::NONE;
+    // 数据阶段属于登记它的那个请求：SET_RES 只配 SET_RES，其余配 SET_CUR。
+    // A data stage belongs to the request that registered it: SET_RES pairs with
+    // SET_RES, everything else with SET_CUR.
+    const uint8_t expected = pending == PendingControl::SET_RES ? SET_RES : SET_CUR;
+    if (bRequest != expected) return ErrorCode::NOT_SUPPORT;
     switch (pending)
     {
       case PendingControl::SET_SF:
@@ -748,6 +912,7 @@ class UAC1MicrophoneQ : public DeviceClass
         activate_pending_ = false;
         acc_rem_ = 0;
         micro_debt_ = 0;
+        UpdateFrameTickWanted();
         ep_iso_in_->Close(false);
         return ErrorCode::OK;
 
@@ -764,12 +929,15 @@ class UAC1MicrophoneQ : public DeviceClass
         active_ = false;
         acc_rem_ = 0;
         micro_debt_ = 0;
+        DropStalePcm();
         activate_pending_ = true;
+        UpdateFrameTickWanted();
         ep_iso_in_->Close(false);
         const ErrorCode result = ActivateStreaming(false);
         if (result != ErrorCode::OK)
         {
           activate_pending_ = false;
+          UpdateFrameTickWanted();
           return result;
         }
         return ErrorCode::OK;  // 已开启，或等停止确认后由下一拍开启 / On, or waiting
@@ -804,12 +972,19 @@ class UAC1MicrophoneQ : public DeviceClass
   }
 
   // ===== SOF 节拍 / Bus tick =====
-  // 绑定后即需要 SOF（帧节奏、挂起激活推进都靠它）；未绑定不再空转。
-  // SOF is needed while bound (frame pacing and deferred activation rely on it);
-  // an unbound device no longer wakes the owner.
-  bool WantsBusTime() const override { return inited_; }
+  // 只在主机选择了 alt 1（流在跑）或流的开启还挂起时要 SOF 节拍（帧节奏、挂起激活
+  // 的推进、失败恢复都靠它）；绑定后停在 alt 0 时不占 SOF 中断。该状态在 owner 里
+  // 写、在 SOF 中断里读，所以用原子量。
+  // The SOF tick is wanted only while the host has selected alt 1 (streaming) or a
+  // streaming start is pending (frame pacing, the deferred activation and the failure
+  // recovery rely on it); bound at alt 0 the class costs no SOF interrupt. The flag is
+  // written in the owner and read from the SOF interrupt path, hence atomic.
+  bool NeedsFrameTick() const override
+  {
+    return tick_wanted_.load(std::memory_order_relaxed);
+  }
 
-  void OnBusTime(bool in_isr, const BusTime& time) override
+  void OnFrameTick(bool in_isr, const FrameTick& time) override
   {
     // 节拍语义：FULL 每帧（1 ms）一个服务区间，一次节拍踢一帧；
     // HIGH 的服务区间为 2^(interval-1) 微帧，微帧差累积到一整个区间才踢。漏掉的区间
@@ -841,9 +1016,9 @@ class UAC1MicrophoneQ : public DeviceClass
   }
 
  protected:
-  // 解绑后 speed_ 的占位值：UAC 只在 FULL/HIGH 下工作，2.0.2 的能力位不会出现 SUPER。
-  // Placeholder speed_ while unbound: UAC works on FULL/HIGH only, and the 2.0.2
-  // capability bits never yield SUPER.
+  /// 解绑后 speed_ 的占位值：UAC 只在 FULL/HIGH 下工作，2.0.2 的能力位不会出现 SUPER。
+  /// Placeholder speed_ while unbound: UAC works on FULL/HIGH only, and the 2.0.2
+  /// capability bits never yield SUPER.
   static constexpr Speed K_SPEED_UNBOUND = Speed::SUPER;
 
   // ===== 诊断计数 / Diagnostics counters =====
@@ -922,6 +1097,26 @@ class UAC1MicrophoneQ : public DeviceClass
     acc_rem_ = 0;
     micro_debt_ = 0;
     activate_pending_ = true;
+    UpdateFrameTickWanted();
+  }
+
+  /// 开始推流：丢弃队列里开始推流之前写入的 PCM（拔插、复位或上一次录音留下的），录音
+  /// 从最新的数据开始，延迟不因旧数据变大。只在主机选择 alt 1 时调用，等时请求失败后的
+  /// 恢复不丢数据。在 owner 里出队，也就是消费者一侧，应用线程可以同时写。
+  /// Streaming starts: drop the PCM written before it (left by a replug, a reset or the
+  /// previous capture) so the capture starts from fresh data and the latency does not
+  /// grow by stale data. Called only when the host selects alt 1; the recovery after a
+  /// failed isochronous request keeps the queue. It dequeues in the owner, the consumer
+  /// side, so the application thread may keep writing meanwhile.
+  void DropStalePcm()
+  {
+    uint8_t scratch[64];
+    for (size_t left = pcm_queue_.Size(); left != 0U;)
+    {
+      const size_t n = LibXR::min(left, sizeof(scratch));
+      if (pcm_queue_.PopBatch(scratch, n) != ErrorCode::OK) break;
+      left -= n;
+    }
   }
 
   /**
@@ -969,11 +1164,13 @@ class UAC1MicrophoneQ : public DeviceClass
     activate_pending_ = false;
     if (result != ErrorCode::OK)
     {
+      UpdateFrameTickWanted();
       return result;  // 保持非流态（NO_BUFF / ARG_ERR / NOT_SUPPORT） / Streaming off
     }
     acc_rem_ = 0;
     micro_debt_ = 0;
     active_ = true;
+    UpdateFrameTickWanted();
     KickOneFrame(in_isr);
     return ErrorCode::OK;
   }
@@ -1083,7 +1280,16 @@ class UAC1MicrophoneQ : public DeviceClass
   bool active_ = false;  ///< alt 1 已生效，等时端点在跑 / alt 1 active, EP running
   bool activate_pending_ = false;  ///< 等端点停止确认后进入流态 / Activation waits for
                                    ///< the stop confirmation
+  std::atomic<bool> tick_wanted_{false};  ///< NeedsFrameTick 的值 / NeedsFrameTick value
   PendingControl pending_control_ = PendingControl::NONE;
+
+  /// 在 inited_/active_/activate_pending_ 变化后调用 / Call after inited_, active_ or
+  /// activate_pending_ changes
+  void UpdateFrameTickWanted()
+  {
+    tick_wanted_.store(inited_ && (active_ || activate_pending_),
+                       std::memory_order_relaxed);
+  }
 
   // 音量与静音状态。
   // Volume and mute state.

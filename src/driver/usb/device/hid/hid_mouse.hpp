@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "hid.hpp"
+#include "latest_snapshot.hpp"
 
 namespace LibXR::USB
 {
@@ -42,7 +43,7 @@ static const constexpr uint8_t HID_MOUSE_REPORT_DESC[] = {
  * @class HIDMouse
  * @brief 标准 USB HID 鼠标派生类 / Standard USB HID Mouse derived class
  */
-class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>
+class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0, 2>
 {
  public:
   /**
@@ -52,8 +53,7 @@ class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>
    * @param interface_string 接口字符串 / Interface string
    */
   HIDMouse(Endpoint::EPNumber in_ep_num, uint8_t in_ep_interval = 1,
-           const char* interface_string =
-               HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>::DEFAULT_INTERFACE_STRING)
+           const char* interface_string = DEFAULT_INTERFACE_STRING)
       : HID(in_ep_num, Endpoint::EPNumber::EP_INVALID, false, in_ep_interval, 1,
             interface_string)
   {
@@ -86,11 +86,12 @@ class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>
    * @param x X 轴移动量 / X-axis movement
    * @param y Y 轴移动量 / Y-axis movement
    * @param wheel 滚轮移动量 / Wheel movement
+   * @param in_isr 是否在中断中 / Whether in ISR
    */
   void Move(uint8_t buttons, int8_t x, int8_t y, int8_t wheel = 0, bool in_isr = false)
   {
     Report report = {buttons, x, y, wheel};
-    SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr);
+    Send(report, in_isr);
   }
 
   /**
@@ -99,15 +100,61 @@ class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>
   void Release(bool in_isr = false)
   {
     Report report = {0, 0, 0, 0};
-    SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr);
+    Send(report, in_isr);
   }
 
+ private:
+  /**
+   * @brief 发送一条输入报告；被端点拒绝的报告不算已发送，GET_REPORT 不会返回它
+   * Send one input report; a report the endpoint refused was not sent and GET_REPORT
+   * does not return it
+   */
+  void Send(const Report& report, bool in_isr)
+  {
+    (void)SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr);
+  }
+
+  /// 最近发送的输入报告。Move / Release 可以在任何上下文、同时调用：基类保证同一时刻
+  /// 只有一个发送方在发布。
+  /// Last input report sent. Move / Release may be called from any context and at the
+  /// same time: the base class lets one sender at a time publish.
+  LastInputReport<Report> last_input_{Report{}};
+
  protected:
+  /**
+   * @brief GET_REPORT(Input)：返回最近发送的输入报告，尚未发送时为全 0；非 0 的 Report
+   *        ID 不存在，STALL。鼠标没有 Output / Feature 报告，沿用基类默认（STALL）。
+   * GET_REPORT(Input): the last input report sent, all zero before the first; a non-zero
+   * report ID does not exist and stalls. The mouse has no Output or Feature report and
+   * keeps the base default (STALL).
+   */
+  ErrorCode OnGetInputReport(uint8_t report_id,
+                             DeviceClass::ControlTransferResult& result) override
+  {
+    if (report_id != 0U) return ErrorCode::NOT_SUPPORT;
+    const Report& reply = last_input_.Read(Session());
+    result.write_data = ConstRawData{&reply, sizeof(reply)};
+    return ErrorCode::OK;
+  }
+
+  void PublishInputReport(ConstRawData report, uint32_t session) override
+  {
+    last_input_.Publish(*static_cast<const Report*>(report.addr_), session);
+  }
+
+  void WithdrawInputReport() override { last_input_.Withdraw(); }
+
+  /**
+   * @brief 写入设备描述符：类代码为 0，由接口描述符给出（HID 1.11 4.1）；boot 子类和鼠标
+   *        协议在接口描述符里
+   * Write the device descriptor: class code 0, the class is given per interface (HID 1.11
+   * 4.1); the boot subclass and the mouse protocol are in the interface descriptor
+   */
   ErrorCode WriteDeviceDescriptor(DeviceDescriptor& header) override
   {
-    header.data_.bDeviceClass = DeviceDescriptor::ClassID::HID;
-    header.data_.bDeviceSubClass = 1;
-    header.data_.bDeviceProtocol = 2;  // Mouse
+    header.data_.bDeviceClass = DeviceDescriptor::ClassID::PER_INTERFACE;
+    header.data_.bDeviceSubClass = 0;
+    header.data_.bDeviceProtocol = 0;
     return ErrorCode::OK;
   }
 

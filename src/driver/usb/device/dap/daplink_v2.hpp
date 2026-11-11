@@ -43,7 +43,9 @@ template <typename SwdPort, uint16_t DefaultDapPacketSize = 512u,
 class DapLinkV2Class : public DeviceClass
 {
  public:
+  /// 编译期是否包含 JTAG 支持 / Whether JTAG support is compiled in
   static constexpr bool JTAG_ENABLED = DapLinkV2BuildConfig::kEnableJtag;
+  /// 默认的接口字符串 / Default interface string
   static constexpr const char* DEFAULT_INTERFACE_STRING = "CMSIS-DAP v2";
 
   /**
@@ -71,6 +73,8 @@ class DapLinkV2Class : public DeviceClass
    * @param data_out_ep_num Bulk OUT endpoint number (required)
    * @param swd_link        SWD link reference
    * @param nreset_gpio     Optional nRESET GPIO
+   * @param interface_string Interface string returned for the class's interface; must
+   *                         stay valid
    *
    */
   explicit DapLinkV2Class(Endpoint::EPNumber data_in_ep_num,
@@ -111,6 +115,11 @@ class DapLinkV2Class : public DeviceClass
    */
   void SetInfoStrings(const InfoStrings& info) { info_ = info; }
 
+  /**
+   * @brief Set the JTAG backend
+   * @param jtag JTAG driver; its clock is set to the current SWJ clock. Ignored when
+   *             JTAG is not compiled in
+   */
   void SetJtag(LibXR::Debug::Jtag* jtag)
   {
     if constexpr (JTAG_ENABLED)
@@ -425,13 +434,12 @@ class DapLinkV2Class : public DeviceClass
    *        Vendor control port on EP0: the probe's own settings, apart from DAP commands.
    *
    * 主机对 DAP 接口发厂商请求：OUT 方向的数据阶段交给 OnVendorOut（USB 上下文，可能在中断
-   * 里，只应拷贝并通知应用线程）；IN 方向的数据阶段取 OnVendorIn 给出的数据。请求和应答分两
-   * 次传输，应用在两次之间自己处理。
-   * The host sends vendor requests to the DAP interface: the data stage of an OUT request is
-   * handed to OnVendorOut (USB context, possibly an interrupt: copy and notify the
-   * application thread only); an IN request's data stage carries what OnVendorIn returns.
-   * Request and answer are two transfers, and the application handles the request between
-   * them.
+   * 里，只应拷贝并通知应用线程）；IN 方向的数据阶段取 OnVendorIn
+   * 给出的数据。请求和应答分两 次传输，应用在两次之间自己处理。 The host sends vendor
+   * requests to the DAP interface: the data stage of an OUT request is handed to
+   * OnVendorOut (USB context, possibly an interrupt: copy and notify the application
+   * thread only); an IN request's data stage carries what OnVendorIn returns. Request and
+   * answer are two transfers, and the application handles the request between them.
    */
   class VendorPort
   {
@@ -454,7 +462,8 @@ class DapLinkV2Class : public DeviceClass
   ErrorCode OnControlRequest(bool in_isr, const SetupPacket& setup,
                              ControlTransferResult& result) override
   {
-    if ((setup.bmRequestType & REQ_TYPE_MASK) != static_cast<uint8_t>(RequestType::VENDOR) ||
+    if ((setup.bmRequestType & REQ_TYPE_MASK) !=
+            static_cast<uint8_t>(RequestType::VENDOR) ||
         vendor_port_ == nullptr)
     {
       return DeviceClass::OnControlRequest(in_isr, setup, result);
@@ -469,7 +478,8 @@ class DapLinkV2Class : public DeviceClass
   ErrorCode OnControlData(bool in_isr, const SetupPacket& setup,
                           ConstRawData& data) override
   {
-    if ((setup.bmRequestType & REQ_TYPE_MASK) != static_cast<uint8_t>(RequestType::VENDOR) ||
+    if ((setup.bmRequestType & REQ_TYPE_MASK) !=
+            static_cast<uint8_t>(RequestType::VENDOR) ||
         vendor_port_ == nullptr)
     {
       return DeviceClass::OnControlData(in_isr, setup, data);
@@ -1229,6 +1239,14 @@ class DapLinkV2Class : public DeviceClass
     dap_state_.debug_port = LibXR::USB::DapLinkV2Def::DebugPort::DISABLED;
     transfer_abort_.store(false, std::memory_order_release);
 
+    // 转向周期和数据阶段回到默认值，下一个主机不继承上一个主机的 DAP_SWD_Configure。
+    // Turnaround and data phase go back to their defaults, so the next host does not
+    // inherit the DAP_SWD_Configure of the previous one.
+    Debug::Swd::TransferPolicy pol = swd_.GetTransferPolicy();
+    pol.turnaround = dap_state_.swd_cfg.turnaround;
+    pol.data_phase = dap_state_.swd_cfg.data_phase;
+    swd_.SetTransferPolicy(pol);
+
     swj_clock_hz_ = 1'000'000u;
     (void)swd_.SetClockHz(swj_clock_hz_);
     if constexpr (JTAG_ENABLED)
@@ -1310,27 +1328,6 @@ class DapLinkV2Class : public DeviceClass
   /// 配置给出的 DAP 包长（还没有按 IN 槽收敛） / The DAP packet size the configuration
   /// gives (before it is limited by the IN slot)
   static constexpr uint16_t ConfiguredDapPacketSize() { return MAX_DAP_PACKET_SIZE; }
-
-  /**
-   * @brief Clip response length by DAP packet size and buffer capacity
-   */
-  uint16_t ClipResponseLength(uint16_t len, uint16_t cap) const
-  {
-    const uint16_t DAP_PS = GetDapPacketSize();
-    if (len > DAP_PS)
-    {
-      len = DAP_PS;
-    }
-    if (len > RESP_SLOT_SIZE)
-    {
-      len = RESP_SLOT_SIZE;
-    }
-    if (len > cap)
-    {
-      len = cap;
-    }
-    return len;
-  }
 
   // ============================================================================
   // Queued command helpers
@@ -2471,6 +2468,11 @@ class DapLinkV2Class : public DeviceClass
     dap_state_.swd_cfg.turnaround = static_cast<uint8_t>((cfg & 0x03u) + 1u);
     dap_state_.swd_cfg.data_phase = ((cfg & 0x04u) != 0u);
 
+    Debug::Swd::TransferPolicy pol = swd_.GetTransferPolicy();
+    pol.turnaround = dap_state_.swd_cfg.turnaround;
+    pol.data_phase = dap_state_.swd_cfg.data_phase;
+    swd_.SetTransferPolicy(pol);
+
     resp[1] = ToU8(LibXR::USB::DapLinkV2Def::Status::OK);
     out_len = 2u;
     return ErrorCode::OK;
@@ -2781,10 +2783,13 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  /// 校验 [ID, 命令数, 命令...]：每条命令都能按自己的内容确定长度，且恰好占满请求。
-  /// Validate [ID, count, commands...]: every command's length follows from its content
-  /// and together they fill the request exactly.
-  bool ValidateInlineCommands(const uint8_t* req, uint16_t req_len) const
+  /// 校验 [ID, 命令数, 命令...]：每条命令都能按自己的内容确定长度；used 是 ID、命令数和
+  /// 所有子命令占的字节数，其后的字节是主机的补零（WinUSB 客户端把请求补到 DAP 包长）。
+  /// Validate [ID, count, commands...]: every command's length follows from its content;
+  /// used is the number of bytes taken by the ID, the count and all sub-commands, and the
+  /// bytes after it are the host's zero padding (WinUSB clients pad a request to the DAP
+  /// packet size).
+  bool ValidateInlineCommands(const uint8_t* req, uint16_t req_len, uint16_t& used) const
   {
     if (!req || req_len < 2u)
     {
@@ -2810,7 +2815,8 @@ class DapLinkV2Class : public DeviceClass
       req_off = static_cast<uint16_t>(req_off + cmd_len);
     }
 
-    return req_off == req_len;
+    used = req_off;
+    return true;
   }
 
   /**
@@ -2823,9 +2829,10 @@ class DapLinkV2Class : public DeviceClass
   ErrorCode HandleExecuteCommands(const uint8_t* req, uint16_t req_len, uint8_t* resp,
                                   uint16_t resp_cap, uint16_t& out_len)
   {
-    if (!ValidateInlineCommands(req, req_len) ||
-        !TryExecuteQueuedCommandStream(&req[2], static_cast<uint16_t>(req_len - 2u),
-                                       req[1], resp, resp_cap, out_len))
+    uint16_t used = 0u;
+    if (!ValidateInlineCommands(req, req_len, used) ||
+        !TryExecuteQueuedCommandStream(&req[2], static_cast<uint16_t>(used - 2u), req[1],
+                                       resp, resp_cap, out_len))
     {
       return BuildCmdStatusResponse(
           ToU8(LibXR::USB::DapLinkV2Def::CommandId::EXECUTE_COMMANDS), DAP_ERROR, resp,
@@ -2901,7 +2908,7 @@ class DapLinkV2Class : public DeviceClass
 
     if (resp.ack == LibXR::Debug::SwdProtocol::Ack::WAIT)
     {
-      return swd_.TransferWithRetry(req, resp);
+      return swd_.TransferRetryAfterWait(req, resp);
     }
 
     if (resp.ack == LibXR::Debug::SwdProtocol::Ack::FAULT)
@@ -4762,8 +4769,8 @@ class DapLinkV2Class : public DeviceClass
   Endpoint* ep_data_in_ = nullptr;   ///< Bulk IN endpoint
   Endpoint* ep_data_out_ = nullptr;  ///< Bulk OUT endpoint
 
-  std::atomic<bool> inited_{false};  ///< Initialized flag
-  uint8_t interface_num_ = 0;        ///< Interface number
+  std::atomic<bool> inited_{false};    ///< Initialized flag
+  uint8_t interface_num_ = 0;          ///< Interface number
   VendorPort* vendor_port_ = nullptr;  ///< EP0 vendor control port (nullable)
 
   LIBXR_PACKED_BEGIN

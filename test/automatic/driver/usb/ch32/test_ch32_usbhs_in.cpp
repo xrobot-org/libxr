@@ -4,8 +4,8 @@
 // UIF_TRANSFER is pending, and INT_ST then reports that NAK instead of the ACKed
 // packet. These cases check that the endpoint finds such a packet by its TOG_AUTO
 // toggle instead of leaving it armed, which made the controller send it twice. The
-// later cases check the repair of a toggle advance lost during an arm of the other
-// direction.
+// later cases check the repair of an IN toggle advance lost during an arm of the other
+// direction, the software toggle of the OUT endpoint and the SOF token.
 
 #include <cstdint>
 #include <cstdio>
@@ -199,12 +199,15 @@ void TestEp0StallClearKeepsData1()
   TEST_ASSERT(fake_usbhsd.UEP0_TX_CTRL == (USBHS_UEP_T_TOG_DATA1 | USBHS_UEP_T_RES_NAK));
 }
 
-// --- Toggle advances the controller loses while the other direction is armed ---------
-// UEPn_TX_LEN, TX_CTRL and RX_CTRL share one 32-bit word: when a packet completes while
-// an arm writes the other direction's registers, the controller's TOG_AUTO advance of
-// that packet can be lost. The arm records the toggle from before its writes
-// (tog_window_); the next good packet of that direction advances it once if it has not
+// --- Toggles ---------------------------------------------------------------------------
+// The IN toggle is advanced by the controller (TOG_AUTO). UEPn_TX_LEN, TX_CTRL and
+// RX_CTRL share one 32-bit word: when a packet completes while an arm writes the other
+// direction's registers, that advance can be lost. The arm records the toggle from
+// before its writes (tog_window_); the next good packet advances it once if it has not
 // moved. Here the test sets tog_window_ the way such an arm leaves it.
+// The BULK/INTERRUPT OUT toggle is advanced by software after each TOG_OK packet: with
+// TOG_AUTO a SOF would make the controller flip the RX toggle of the endpoint numbered
+// like the top four bits of the frame number.
 
 uint8_t RxToggle() { return fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_TOG_MASK; }
 uint8_t TxToggle() { return fake_usbhsd.UEP1_TX_CTRL & USBHS_UEP_T_TOG_MASK; }
@@ -234,37 +237,60 @@ struct OutFixture
   }
 };
 
-// The advance of a good OUT packet was lost: the toggle is advanced once.
-void TestLostRxAdvanceRepaired()
+// The OUT endpoint runs without TOG_AUTO and software flips the toggle after a TOG_OK
+// packet, one flip per packet.
+void TestOutPacketFlipsTheToggle()
 {
   OutFixture f;
-  TEST_ASSERT(RxToggle() == 0u);
-  f.ep.tog_window_ = CH32EndpointOtgHs::TOG_WINDOW | 0u;
-  f.HostSends(3, true);  // the controller did not move the toggle
-  TEST_ASSERT(f.rec.list.size() == 1 && f.rec.list[0].actual == 3);
-  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1 && f.ep.tog_window_ == 0u);
-}
-
-// The advance was not lost: the toggle stays where the controller put it.
-void TestKeptRxAdvanceUntouched()
-{
-  OutFixture f;
-  f.ep.tog_window_ = CH32EndpointOtgHs::TOG_WINDOW | 0u;
-  fake_usbhsd.UEP1_RX_CTRL ^= USBHS_UEP_R_TOG_DATA1;  // TOG_AUTO advanced
+  TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_TOG_AUTO) == 0u);
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA0);
   f.HostSends(3, true);
-  TEST_ASSERT(f.rec.list.size() == 1);
-  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1 && f.ep.tog_window_ == 0u);
+  TEST_ASSERT(f.rec.list.size() == 1 && f.rec.list[0].actual == 3);
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1);
+  TEST_ASSERT(f.ep.Receive(512, false) == ErrorCode::OK);
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1);  // the arm keeps the toggle
+  f.HostSends(4, true);
+  TEST_ASSERT(f.rec.list.size() == 2 && RxToggle() == USBHS_UEP_R_TOG_DATA0);
+  TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_TOG_AUTO) == 0u);
 }
 
-// A resend (TOG mismatch) does not advance the toggle and ends the window without a
-// repair; the request is armed again.
-void TestResendEndsWindow()
+// A resend (TOG_OK=0) does not flip the toggle and nothing is reported; the request is
+// armed again.
+void TestResendDoesNotFlipTheToggle()
 {
   OutFixture f;
-  f.ep.tog_window_ = CH32EndpointOtgHs::TOG_WINDOW | 0u;
+  f.HostSends(3, true);
+  const uint8_t after_first = RxToggle();
+  TEST_ASSERT(f.ep.Receive(512, false) == ErrorCode::OK);
   f.HostSends(3, false);
-  TEST_ASSERT(f.rec.list.empty() && RxToggle() == 0u && f.ep.tog_window_ == 0u);
+  TEST_ASSERT(f.rec.list.size() == 1 && RxToggle() == after_first);
   TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_RES_MASK) == USBHS_UEP_R_RES_ACK);
+}
+
+// A packet accepted after the request was stopped (the last transaction still completes)
+// was ACKed to the host, which advanced its phase: the toggle is flipped first and the
+// completion dropped. A resend after a stop does not flip.
+void TestLateCompletionAfterStopFlipsTheToggle()
+{
+  OutFixture f;
+  f.ep.StopHardware(false);
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA0);
+  f.HostSends(5, true);
+  TEST_ASSERT(f.rec.list.empty());
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1);
+  f.HostSends(5, false);
+  TEST_ASSERT(f.rec.list.empty() && RxToggle() == USBHS_UEP_R_TOG_DATA1);
+}
+
+// The stall clear starts the toggle at DATA0 again, still without TOG_AUTO.
+void TestStallClearRestartsTheOutToggle()
+{
+  OutFixture f;
+  f.HostSends(3, true);
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1);
+  TEST_ASSERT(f.ep.ClearStallHardware(false) == ErrorCode::OK);
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA0);
+  TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_TOG_AUTO) == 0u);
 }
 
 // A multi-packet OUT request: the host resends a packet that was already taken (it
@@ -290,18 +316,20 @@ void TestResendKeepsAcceptedPackets()
   fake_usbhsd.INT_ST = USBHS_UIS_TOG_OK;
   ep.TransferComplete(512);  // first packet taken
   TEST_ASSERT(rec.list.empty());
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1);
   const uint32_t second_dma = fake_usbhsd.UEP1_RX_DMA;
   TEST_ASSERT(second_dma == first_dma + 512u);
 
   fake_usbhsd.INT_ST = 0u;  // the host resends: TOG mismatch
   ep.TransferComplete(512);
-  TEST_ASSERT(rec.list.empty());
+  TEST_ASSERT(rec.list.empty() && RxToggle() == USBHS_UEP_R_TOG_DATA1);
   TEST_ASSERT(fake_usbhsd.UEP1_RX_DMA == second_dma);
   TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_RES_MASK) == USBHS_UEP_R_RES_ACK);
 
   fake_usbhsd.INT_ST = USBHS_UIS_TOG_OK;
   ep.TransferComplete(512);  // second packet taken
   TEST_ASSERT(rec.list.size() == 1 && rec.list[0].actual == 1024);
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA0);
 }
 
 // The advance of an ACKed IN packet was lost: the next response would go out with the
@@ -344,6 +372,37 @@ void TestArmWithoutCompletionRecordsNothing()
   TEST_ASSERT(in.tog_window_ == 0u);
 }
 
+// In device mode a SOF reaches the backend as a transfer event with the SOF token (manual
+// V2.5 p.339-340); FRAME_NO carries the frame number in its low 11 bits and the
+// microframe number in the top 3. The device core gets both.
+struct SofSink
+{
+  struct Call
+  {
+    bool in_isr;
+    uint16_t frame;
+    uint8_t microframe;
+  };
+  std::vector<Call> calls;
+  void OnSof(bool in_isr, uint16_t frame, uint8_t microframe)
+  {
+    calls.push_back({in_isr, frame, microframe});
+  }
+};
+
+void TestSofTokenReachesTheCoreWithFrameAndMicroframe()
+{
+  SofSink sink;
+  ReportSofToken(sink, 0x0000);
+  ReportSofToken(sink, static_cast<uint16_t>((5u << 13) | 0x123));
+  ReportSofToken(sink, 0xE7FF);
+  TEST_ASSERT(sink.calls.size() == 3);
+  TEST_ASSERT(sink.calls[0].in_isr && sink.calls[0].frame == 0 &&
+              sink.calls[0].microframe == 0);
+  TEST_ASSERT(sink.calls[1].frame == 0x123 && sink.calls[1].microframe == 5);
+  TEST_ASSERT(sink.calls[2].frame == 0x7FF && sink.calls[2].microframe == 7);
+}
+
 }  // namespace
 
 int main()
@@ -352,11 +411,13 @@ int main()
   TestPacketAndZlp();
   TestQueuedResponses();
   TestEp0StallClearKeepsData1();
-  TestLostRxAdvanceRepaired();
-  TestKeptRxAdvanceUntouched();
-  TestResendEndsWindow();
+  TestOutPacketFlipsTheToggle();
+  TestResendDoesNotFlipTheToggle();
+  TestLateCompletionAfterStopFlipsTheToggle();
+  TestStallClearRestartsTheOutToggle();
   TestResendKeepsAcceptedPackets();
   TestLostTxAdvanceRepaired();
   TestArmWithoutCompletionRecordsNothing();
+  TestSofTokenReachesTheCoreWithFrameAndMicroframe();
   std::puts("CH32 USBHS IN completions and lost toggle advances passed");
 }

@@ -44,11 +44,16 @@ class CH32SPI : public SPI
 
   /// DMA 中断回调 / DMA interrupt callbacks
   void RxDmaIRQHandler();
+
+  /// TX DMA 传输完成回调：关闭 TX DMA 请求与通道 / TX DMA transfer-complete callback:
+  /// disables the TX DMA request and channel
   void TxDmaIRQHandler();
 
   /// 轮询传输辅助函数 / Polling transfer helper
   ErrorCode PollingTransfer(uint8_t* rx, const uint8_t* tx, uint32_t len);
 
+  /// 按 SPI 编号索引的实例表，供中断服务函数查找 / Instances indexed by SPI id, used by
+  /// the ISRs to find the driver
   static CH32SPI* map_[CH32_SPI_NUMBER];
 
  private:
@@ -69,17 +74,23 @@ class CH32SPI : public SPI
   static bool MapEnumToCH32Prescaler(SPI::Prescaler p, uint16_t& out);
 
  public:
-  SPI_TypeDef* instance_;
-  DMA_Channel_TypeDef* dma_rx_channel_;
-  DMA_Channel_TypeDef* dma_tx_channel_;
-  ch32_spi_id_t id_;
+  SPI_TypeDef* instance_;                ///< SPI 外设寄存器 / SPI peripheral registers
+  DMA_Channel_TypeDef* dma_rx_channel_;  ///< RX DMA 通道 / RX DMA channel
+  DMA_Channel_TypeDef* dma_tx_channel_;  ///< TX DMA 通道 / TX DMA channel
+  ch32_spi_id_t id_;                     ///< SPI 编号 / SPI id
+  /// 使用 DMA 的最小传输字节数，不超过该值走轮询 / Transfers of at most this many bytes
+  /// are polled instead of using DMA
   uint32_t dma_enable_min_size_;
 
   /// 运行时状态 / Runtime state
   OperationRW rw_op_;
+  /// DMA 完成后接收数据要拷回的用户缓冲区；size_ 为 0 表示无需拷回 / User buffer the
+  /// received data is copied to on DMA completion; size_ of 0 means no copy-back
   RawData read_buff_;
+  /// 当前传输为寄存器读，接收缓冲区首字节（寄存器地址阶段）需跳过 / Current transfer is
+  /// a register read; the first received byte (register address phase) is skipped
   bool mem_read_ = false;
-  bool busy_ = false;
+  bool busy_ = false;          ///< 有 DMA 传输在进行 / A DMA transfer is in flight
   uint32_t dma_transfer_ = 0;  ///< 已开始的 DMA 传输数 / DMA transfers started
 
   /// SPI 寄存器配置缓存 / Cached SPI register configuration
@@ -87,16 +98,18 @@ class CH32SPI : public SPI
   uint16_t datasize_;   ///< SPI_DataSize_8b by default
   uint16_t firstbit_;   ///< SPI_FirstBit_MSB / SPI_FirstBit_LSB
   uint16_t prescaler_;  ///< SPI_BaudRatePrescaler_x
-  uint16_t nss_ = SPI_NSS_Soft;
+  uint16_t nss_ =
+      SPI_NSS_Soft;  ///< SPI_NSS_x，默认软件 NSS / SPI_NSS_x, software NSS by default
 
   /// GPIO 配置 / GPIO configuration
-  GPIO_TypeDef* sck_port_;
-  uint16_t sck_pin_;
-  GPIO_TypeDef* miso_port_;
-  uint16_t miso_pin_;
-  GPIO_TypeDef* mosi_port_;
-  uint16_t mosi_pin_;
+  GPIO_TypeDef* sck_port_;   ///< SCK 所在 GPIO 端口 / GPIO port of SCK
+  uint16_t sck_pin_;         ///< SCK 引脚掩码 / SCK pin mask
+  GPIO_TypeDef* miso_port_;  ///< MISO 所在 GPIO 端口 / GPIO port of MISO
+  uint16_t miso_pin_;        ///< MISO 引脚掩码 / MISO pin mask
+  GPIO_TypeDef* mosi_port_;  ///< MOSI 所在 GPIO 端口 / GPIO port of MOSI
+  uint16_t mosi_pin_;        ///< MOSI 引脚掩码 / MOSI pin mask
 
+  /// 阻塞模式下等待传输完成的同步对象 / Waits for transfer completion in blocking mode
   AsyncBlockWait block_wait_{};
 };
 

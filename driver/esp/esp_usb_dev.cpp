@@ -19,12 +19,29 @@
 #include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_private/usb_phy.h"
+#include "esp_rom_sys.h"
 #include "esp_usb.hpp"
 #include "esp_usb_ep.hpp"
 #include "soc/interrupts.h"
 
 namespace LibXR
 {
+
+namespace
+{
+// GINTSTS 的中断位写 1 清除，必须整字写入要清的那一位：位域赋值是读改写，会把此刻挂起的
+// 其他中断一起清掉。
+// The interrupt bits of GINTSTS are cleared by writing 1, and only the bit to clear may
+// be written: a bit-field assignment is a read-modify-write that also clears every other
+// interrupt pending at that moment.
+constexpr uint32_t GINTSTS_SOF = 1UL << 3;
+constexpr uint32_t GINTSTS_GOUTNAKEFF = 1UL << 7;  // 屏蔽位同位 / Same bit in GINTMSK
+constexpr uint32_t GINTSTS_USBSUSP = 1UL << 11;
+constexpr uint32_t GINTSTS_USBRST = 1UL << 12;
+constexpr uint32_t GINTSTS_ENUMDONE = 1UL << 13;
+constexpr uint32_t GINTSTS_INCOMPISOIN = 1UL << 20;
+constexpr uint32_t GINTSTS_WKUPINT = 1UL << 31;
+}  // namespace
 
 // 构造时先建立 endpoint 对象映射，再交给上层 USB core 统一驱动 / Build the
 // endpoint-object map first, then hand it to the shared USB core.
@@ -323,6 +340,7 @@ bool ESP32USBDevice::ResetCoreRegisters()
 
 bool ESP32USBDevice::RebuildCoreRegisters()
 {
+  reset_enum_pending_ = false;
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
 
   dev->pcgcctl_reg.stoppclk = 0;
@@ -354,36 +372,10 @@ bool ESP32USBDevice::RebuildCoreRegisters()
   dev->gintmsk_reg.rxflvlmsk = DmaEnabled() ? 0U : 1U;
   dev->gintmsk_reg.oepintmsk = 1;
   dev->gintmsk_reg.iepintmsk = 1;
+  dev->gintmsk_reg.incompisoinmsk = 1;
   dev->gintmsk_reg.otgintmsk = 1;
-  UpdateTick();
+  dev->gintmsk_reg.sofmsk = 1;
   return flushed;
-}
-
-void ESP32USBDevice::OnStopsSettled()
-{
-  EndpointPool::HardwareScope hardware(this);
-  UpdateTick();
-}
-
-void ESP32USBDevice::UpdateTick()
-{
-  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
-  bool needed = WantsBusTime();
-  for (size_t i = 0U; i < ENDPOINT_COUNT && !needed; ++i)
-  {
-    needed = (endpoint_map_.in[i] != nullptr &&
-              static_cast<ESP32USBEndpoint*>(endpoint_map_.in[i])->StopPending()) ||
-             (endpoint_map_.out[i] != nullptr &&
-              static_cast<ESP32USBEndpoint*>(endpoint_map_.out[i])->StopPending());
-  }
-  if (needed)
-  {
-    dev->gintmsk_reg.val |= 1U << 3U;
-  }
-  else
-  {
-    dev->gintmsk_reg.val &= ~(1U << 3U);
-  }
 }
 
 void ESP32USBDevice::OnStopTimeout(bool in_isr)
@@ -466,8 +458,25 @@ void ESP32USBDevice::ResetDone(void* arg, ErrorCode result)
   self->runtime_.started = true;
 }
 
+void ESP32USBDevice::AcquireGlobalOutNak()
+{
+  if (global_out_nak_users_++ != 0U) return;
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  dev->gintmsk_reg.val |= GINTSTS_GOUTNAKEFF;
+  dev->dctl_reg.sgoutnak = 1;
+}
+
+void ESP32USBDevice::ReleaseGlobalOutNak()
+{
+  if (global_out_nak_users_ == 0U || --global_out_nak_users_ != 0U) return;
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  dev->gintmsk_reg.val &= ~GINTSTS_GOUTNAKEFF;
+  dev->dctl_reg.cgoutnak = 1;
+}
+
 void ESP32USBDevice::ForceStopAll(bool in_isr)
 {
+  global_out_nak_users_ = 0U;
   for (size_t i = 0U; i < ESP32USBDevice::ENDPOINT_COUNT; ++i)
   {
     if (endpoint_map_.in[i] != nullptr)
@@ -530,6 +539,7 @@ void ESP32USBDevice::ResetDeviceState()
   // reset, clear the device-level register state first; each endpoint later rebuilds its
   // own concrete hardware configuration.
   ResetFifoState();
+  global_out_nak_users_ = 0U;
   // 此处内核已上电，FIFO 深度必须有效；不能假设关闭时钟的寄存器读取会返回 0。
   // The core is powered here, so its FIFO depth must be valid. An unclocked register
   // read is not guaranteed to return zero.
@@ -558,10 +568,17 @@ void ESP32USBDevice::ResetEndpointHardwareState()
   }
 }
 
-void ESP32USBDevice::ReloadSetupPacketCount()
+void ESP32USBDevice::ReloadSetupPacketCount(bool clear_nak)
 {
   // EP0 setup 接收窗口在 reset/setup-done 之后都要重新装填 / Reload the EP0 setup receive
   // window after reset and after each setup-done transition.
+  // DMA 模式下核心只在 EP0 OUT 使能时把 SETUP 写进内存，而 SETUP 阶段结束、OUT 传输完成和
+  // 主机进入状态阶段都会让核心关掉它：每次都要重新使能。后面还有 OUT 数据要收时保持 NAK，
+  // 数据阶段开始时再清。
+  // With DMA the core stores a SETUP only while EP0 OUT is enabled, and the end of a
+  // SETUP stage, a completed OUT transfer and the host entering the status stage all make
+  // the core disable it: it is enabled again every time. While OUT data is still to come
+  // the NAK is kept, and the data stage clears it when it starts.
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   dev->doeptsiz0_reg.val = 0U;
   if (DmaEnabled())
@@ -574,7 +591,14 @@ void ESP32USBDevice::ReloadSetupPacketCount()
     REQUIRE(cache_sync_dma_buffer_result);
     dev->doepdma0_reg.dmaaddr =
         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(setup_packet_));
-    dev->doepctl0_reg.cnak = 1;
+    if (clear_nak)
+    {
+      dev->doepctl0_reg.cnak = 1;
+    }
+    else
+    {
+      dev->doepctl0_reg.snak = 1;
+    }
     dev->doepctl0_reg.epena = 1;
     if (endpoint_map_.out[0] != nullptr)
     {
@@ -634,19 +658,20 @@ void ESP32USBDevice::HandleInterrupt()
 
     if (pending.sof)
     {
-      dev->gintsts_reg.val = 1U << 3U;
+      dev->gintsts_reg.val = GINTSTS_SOF;
       OnSof(true, static_cast<uint16_t>((dev->dsts_reg.val >> 8U) & 0x7ffU));
     }
     if (pending.usbrst)
     {
-      dev->gintsts_reg.usbrst = 1;
+      dev->gintsts_reg.val = GINTSTS_USBRST;
       HandleBusReset(true);
       continue;
     }
 
     if (pending.enumdone)
     {
-      dev->gintsts_reg.enumdone = 1;
+      dev->gintsts_reg.val = GINTSTS_ENUMDONE;
+      reset_enum_pending_ = false;
       const uint32_t enum_speed = dev->dsts_reg.enumspd;
       if (enum_speed != ESPUSBDetail::ENUM_SPEED_FULL_30_TO_60_MHZ &&
           enum_speed != ESPUSBDetail::ENUM_SPEED_FULL_48_MHZ)
@@ -657,13 +682,25 @@ void ESP32USBDevice::HandleInterrupt()
 
     if (pending.usbsusp)
     {
-      dev->gintsts_reg.usbsusp = 1;
+      dev->gintsts_reg.val = GINTSTS_USBSUSP;
+      if (reset_enum_pending_)
+      {
+        // ESP32-S3 板上实测：总线复位的 SE0 期间核心会在 ENUMDONE 之前报 USBSUSP，随后
+        // 线路一直是 SE0，设备不再回到总线；在复位窗口内软断开再连接可恢复枚举。
+        // Measured on an ESP32-S3: during the SE0 of a bus reset the core can raise
+        // USBSUSP before ENUMDONE, after which the line stays SE0 and the device does not
+        // come back; a soft disconnect and connect inside the reset restores enumeration.
+        RecoverFalseSuspend();
+        continue;
+      }
+      dev->gintmsk_reg.sofmsk = 0;
       OnSuspend(true);
     }
 
     if (pending.wkupint)
     {
-      dev->gintsts_reg.wkupint = 1;
+      dev->gintsts_reg.val = GINTSTS_WKUPINT;
+      dev->gintmsk_reg.sofmsk = 1;
       OnResume(true);
     }
 
@@ -682,9 +719,47 @@ void ESP32USBDevice::HandleInterrupt()
       HandleEndpointInterrupt(true, false);
     }
 
+    if (pending.goutnakeff)
+    {
+      // 全局 OUT NAK 期间这个标志一直为 1，通知一次就够：先关掉它的中断，再让等它的
+      // OUT 端点往下走。
+      // The flag stays set while the global OUT NAK is on and one notification is enough:
+      // mask it, then let the OUT endpoints that wait for it go on.
+      dev->gintmsk_reg.val &= ~GINTSTS_GOUTNAKEFF;
+      for (uint8_t i = 1; i < ENDPOINT_COUNT; ++i)
+      {
+        if (endpoint_map_.out[i] != nullptr)
+        {
+          static_cast<ESP32USBEndpoint*>(endpoint_map_.out[i])->AdvanceStop(true);
+        }
+      }
+    }
+
     if (pending.iepint)
     {
       HandleEndpointInterrupt(true, true);
+    }
+
+    if (pending.incompisoin)
+    {
+      // 帧号在清标志之前读一次。ESP32-S3 在新一帧的 SOF 到达时才报这个中断，此时 DSTS
+      // 里已经是新一帧的帧号（板上实测：中断总是在同一帧的 SOF 之后几微秒到达，读到的
+      // 帧号等于那个 SOF 的帧号），刚结束的是前一帧，所以结束帧的奇偶与读到的相反。
+      // The frame number is read once, before the flag is cleared. The ESP32-S3 raises
+      // this interrupt when the SOF of the new frame arrives, and DSTS already holds the
+      // number of the new frame (measured on the board: the interrupt always comes a few
+      // microseconds after the SOF of the same frame, and the number read equals that
+      // SOF's number). The frame that ended is the previous one, so its parity is the
+      // opposite of the one read.
+      const bool ended_odd = (dev->dsts_reg.soffn & 1U) == 0U;
+      dev->gintsts_reg.val = GINTSTS_INCOMPISOIN;
+      for (uint8_t i = 1; i < ENDPOINT_COUNT; ++i)
+      {
+        if (endpoint_map_.in[i] != nullptr)
+        {
+          static_cast<ESP32USBEndpoint*>(endpoint_map_.in[i])->OnIsoIncomplete(ended_odd);
+        }
+      }
     }
 
     if (pending.otgint)
@@ -693,6 +768,18 @@ void ESP32USBDevice::HandleInterrupt()
       dev->gotgint_reg.val = otg_status;
     }
   }
+}
+
+void ESP32USBDevice::RecoverFalseSuspend()
+{
+  // 软断开 20 us 再连接，在主机的复位窗口内完成（20 us 是板上试出的取值）。
+  // A soft disconnect of 20 us, then connect, inside the host's reset window (20 us is
+  // the value tried on the board).
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  reset_enum_pending_ = false;
+  dev->dctl_reg.sftdiscon = 1;
+  esp_rom_delay_us(20);
+  dev->dctl_reg.sftdiscon = 0;
 }
 
 void ESP32USBDevice::HandleBusReset(bool in_isr)
@@ -711,6 +798,28 @@ void ESP32USBDevice::HandleBusReset(bool in_isr)
   // cycles (EP0 OUT must not get EPDIS and does not take part in the check). If they
   // do not clear the controller cannot be trusted and the controller-reset escalation
   // takes over.
+  // 禁用 OUT 端点之前全局 OUT NAK 必须已经生效。本后端只用内部 DMA，核心自己处理接收
+  // FIFO，GOUTNAKEFF 不需要应用去读 FIFO 就会置位，所以这里可以有界地等它。
+  // The global OUT NAK must be in effect before an OUT endpoint is disabled. This backend
+  // only uses the internal DMA, where the core handles the receive FIFO itself and
+  // GOUTNAKEFF is set without the application reading the FIFO, so a bounded wait works.
+  bool out_enabled = false;
+  for (uint8_t i = 1; i < ENDPOINT_COUNT; ++i)
+  {
+    out_enabled = out_enabled || (dev->out_eps[i - 1U].doepctl_reg.epena != 0U);
+  }
+  if (out_enabled)
+  {
+    if (dev->gintsts_reg.goutnakeff == 0U)
+    {
+      dev->dctl_reg.sgoutnak = 1;
+    }
+    if (!ESPUSBDetail::SpinUntil([dev]() { return dev->gintsts_reg.goutnakeff != 0U; }))
+    {
+      OnStopTimeout(in_isr);
+      return;
+    }
+  }
   ESPUSBDetail::RequestOutDisable(dev->doepctl0_reg, false);
   for (uint8_t i = 1; i < ENDPOINT_COUNT; ++i)
   {
@@ -751,6 +860,15 @@ void ESP32USBDevice::HandleBusReset(bool in_isr)
     OnStopTimeout(in_isr);
     return;
   }
+  // 端点都已禁用：撤销全局 OUT NAK（这里置的，或被复位打断的停止置的）。
+  // Every endpoint is disabled: release the global OUT NAK (set here, or by a stop this
+  // reset cut short).
+  global_out_nak_users_ = 0U;
+  dev->gintmsk_reg.val &= ~GINTSTS_GOUTNAKEFF;
+  if (dev->dctl_reg.goutnaksts != 0U)
+  {
+    dev->dctl_reg.cgoutnak = 1;
+  }
 
   dev->daintmsk_reg.val = 0U;
   dev->doepmsk_reg.val = 0U;
@@ -783,10 +901,11 @@ void ESP32USBDevice::HandleBusReset(bool in_isr)
       static_cast<ESP32USBEndpoint*>(endpoint_map_.out[i])->ConfirmStopAfterReset(in_isr);
     }
   }
-  UpdateTick();
+  dev->gintmsk_reg.sofmsk = 1;
 
   dev->dcfg_reg.devaddr = 0U;
 
+  reset_enum_pending_ = true;
   OnBusReset(in_isr);
 }
 

@@ -103,6 +103,7 @@ class ESP32USBDevice : public USB::EndpointPool,
    */
   void Deinit(bool in_isr) override;
   void OnControllerReset() override;
+  /// 重新装填 EP0 的 SETUP 接收窗口 / Reload the EP0 SETUP receive window
   void OnControlReady() override;
 
   /**
@@ -127,13 +128,6 @@ class ESP32USBDevice : public USB::EndpointPool,
    *        controller reset
    */
   void OnStopTimeout(bool in_isr) override;
-
-  /**
-   * @brief 所有等待中的停止都已确认：按 WantsBusTime 重新决定是否保留 SOF 中断
-   *        All waiting stops are confirmed: decide again whether the SOF interrupt
-   *        stays on from WantsBusTime
-   */
-  void OnStopsSettled() override;
 
  private:
   friend class ESP32USBEndpoint;
@@ -256,7 +250,9 @@ class ESP32USBDevice : public USB::EndpointPool,
   /**
    * @brief 重新装填 EP0 setup 包接收计数 / Reload the EP0 setup-packet receive count
    */
-  void ReloadSetupPacketCount();
+  /// clear_nak 为 false 时 EP0 OUT 保持 NAK：只收 SETUP，不收 OUT 数据 / With clear_nak
+  /// false EP0 OUT keeps its NAK: it takes SETUP packets and no OUT data
+  void ReloadSetupPacketCount(bool clear_nak = true);
 
   /**
    * @brief 分发一批 USB 中断原因 / Dispatch one batch of USB interrupt causes
@@ -317,13 +313,16 @@ class ESP32USBDevice : public USB::EndpointPool,
   /// 重建寄存器基线（复位之后；FIFO 冲刷超界返回 false）/ Rebuild the register baseline
   /// (after a reset; false when the FIFO flush exceeds its bound)
   bool RebuildCoreRegisters();
-  /// 重新计算 SOF 中断是否需要打开：类要总线时间，或有停止在等（核心靠 SOF 帧数判停止
-  /// 超时）/ Recompute whether the SOF interrupt must be on: a class wants bus time, or a
-  /// stop is waiting (the core counts SOF frames to detect a stop timeout)
-  void UpdateTick();
   /// 确认所有等待中的停止（控制器复位路径）/ Confirm every waiting stop (the
   /// controller-reset path)
   void ForceStopAll(bool in_isr);
+  /// 复位期间的假挂起：软断开再连接，见 HandleInterrupt / A suspend inside a bus reset:
+  /// soft disconnect and connect, see HandleInterrupt
+  void RecoverFalseSuspend();
+  /// 全局 OUT NAK，由所有正在停止的 OUT 端点共用 / Global OUT NAK, shared by every OUT
+  /// endpoint that is stopping
+  void AcquireGlobalOutNak();
+  void ReleaseGlobalOutNak();
   /// 复位链的条件：单段，节拍上直接执行 / Reset-chain condition: one stage, runs on the
   /// tick directly
   static bool ResetCheck(void* arg);
@@ -344,6 +343,10 @@ class ESP32USBDevice : public USB::EndpointPool,
       {};  ///< 运行时资源与全局状态 / Runtime resource ownership and global flags
   alignas(SETUP_DMA_BUFFER_BYTES) uint8_t setup_packet_[SETUP_DMA_BUFFER_BYTES] =
       {};  ///< DMA 可见的共享 setup 包缓冲区 / Shared DMA-visible setup-packet buffer
+  /// 正在用全局 OUT NAK 的端点数 / Endpoints holding the global OUT NAK
+  uint8_t global_out_nak_users_ = 0U;
+  /// 总线复位之后、ENUMDONE 之前 / Between a bus reset and its ENUMDONE
+  bool reset_enum_pending_ = false;
   ControlState control_ = {};  ///< 需跨 status completion 保留的 EP0 setup 状态 / EP0
                                ///< setup state that must survive until status completion
 };

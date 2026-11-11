@@ -276,8 +276,8 @@ void TestUacActivateAndFill()
   // 16 bytes (8 audio frames) followed by 16 bytes of zero fill.
   const uint8_t pcm[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
   TEST_ASSERT(f.uac.WritePcm(pcm, sizeof(pcm)) == ErrorCode::OK);
-  BusTime tick;  // elapsed_intervals 为 0：按一拍处理 / zero delta: one interval
-  f.uac.OnBusTime(false, tick);
+  FrameTick tick;  // elapsed_intervals 为 0：按一拍处理 / zero delta: one interval
+  f.uac.OnFrameTick(false, tick);
   TEST_ASSERT(f.iso.starts.size() == 2 && f.iso.Last().length == 32 &&
               f.uac.UnderrunCount() == 2);
   f.iso.Complete();
@@ -290,7 +290,7 @@ void TestUacActivateAndFill()
   uint8_t full[32];
   for (size_t i = 0; i < sizeof(full); ++i) full[i] = static_cast<uint8_t>(40 + i);
   TEST_ASSERT(f.uac.WritePcm(full, sizeof(full)) == ErrorCode::OK);
-  f.uac.OnBusTime(false, tick);
+  f.uac.OnFrameTick(false, tick);
   TEST_ASSERT(f.iso.Last().length == 32 && f.uac.UnderrunCount() == 2);
   f.iso.Complete();
   TEST_ASSERT(f.iso.sent.back() == std::vector<uint8_t>(full, full + sizeof(full)));
@@ -299,7 +299,7 @@ void TestUacActivateAndFill()
   // A trailing partial audio frame (1 B) stays queued; sample frames are not split.
   const uint8_t tail[3] = {7, 7, 7};
   TEST_ASSERT(f.uac.WritePcm(tail, sizeof(tail)) == ErrorCode::OK);
-  f.uac.OnBusTime(false, tick);
+  f.uac.OnFrameTick(false, tick);
   f.iso.Complete();
   std::vector<uint8_t> tail_expected(tail, tail + 2);
   tail_expected.insert(tail_expected.end(), 30, 0);
@@ -311,7 +311,7 @@ void TestUacActivateAndFill()
   TEST_ASSERT(f.uac.SetAltSetting(1, 0) == ErrorCode::OK);
   TEST_ASSERT(f.iso.GetState() == State::DISABLED);
   TEST_ASSERT(f.uac.GetAltSetting(1, alt) == ErrorCode::OK && alt == 0);
-  f.uac.OnBusTime(false, tick);
+  f.uac.OnFrameTick(false, tick);
   TEST_ASSERT(f.iso.starts.size() == 4 && !f.iso.active);
 
   // 非法 alt 与外来接口号。
@@ -321,24 +321,71 @@ void TestUacActivateAndFill()
   TEST_ASSERT(f.uac.SetAltSetting(0, 0) == ErrorCode::NOT_SUPPORT);
 }
 
+/// 开始推流时丢弃之前写入的 PCM：第一帧不是旧数据，之后写入的照常发出。等时请求失败后
+/// 的恢复不是新的推流，队列里的数据保留。
+/// Starting the stream drops the PCM written before it: the first frame is not stale
+/// data, and what is written afterwards goes out as usual. The recovery after a failed
+/// isochronous request is not a new stream and keeps the queued data.
+void TestUacStartDropsStalePcm()
+{
+  UacFixture f;
+  f.uac.BindEndpoints(f.pool, 0, false);
+  std::vector<uint8_t> stale(200, 0xAA);  // more than one drain chunk
+  TEST_ASSERT(f.uac.WritePcm(stale.data(), stale.size()) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.QueueSize() == 200);
+
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.QueueSize() == 0);
+  f.iso.Complete();
+  TEST_ASSERT(f.iso.sent.back() == Zeros(32));
+
+  uint8_t fresh[32];
+  for (size_t i = 0; i < sizeof(fresh); ++i) fresh[i] = static_cast<uint8_t>(i + 1);
+  TEST_ASSERT(f.uac.WritePcm(fresh, sizeof(fresh)) == ErrorCode::OK);
+  FrameTick tick;
+  f.uac.OnFrameTick(false, tick);
+  f.iso.Complete();
+  TEST_ASSERT(f.iso.sent.back() == std::vector<uint8_t>(fresh, fresh + sizeof(fresh)));
+
+  // A failed isochronous request: the recovery re-activates the stream and keeps the
+  // queued data.
+  f.uac.OnFrameTick(false, tick);
+  TEST_ASSERT(f.iso.active);
+  f.iso.CompleteWith(10, ErrorCode::FAILED);
+  std::vector<uint8_t> kept(32, 0x77);
+  TEST_ASSERT(f.uac.WritePcm(kept.data(), kept.size()) == ErrorCode::OK);
+  f.uac.OnFrameTick(false, tick);
+  TEST_ASSERT(f.iso.active);
+  f.iso.Complete();
+  TEST_ASSERT(f.iso.sent.back() == kept);
+
+  // The host selects alt 1 again (a new capture): what was written meanwhile is dropped.
+  std::vector<uint8_t> stale2(64, 0xBB);
+  TEST_ASSERT(f.uac.WritePcm(stale2.data(), stale2.size()) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.SetAltSetting(1, 0) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.QueueSize() == 64);  // alt 0 keeps the queue
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.QueueSize() == 0);
+}
+
 void TestUacFrameDropCount()
 {
   UacFixture f;
   f.uac.BindEndpoints(f.pool, 0, false);
   TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);  // 槽 0 上线 / slot 0 on wire
   TEST_ASSERT(f.iso.active && f.iso.starts.size() == 1);
-  BusTime tick;
-  f.uac.OnBusTime(false, tick);  // 槽 1 排队 / slot 1 queued behind
+  FrameTick tick;
+  f.uac.OnFrameTick(false, tick);  // 槽 1 排队 / slot 1 queued behind
   TEST_ASSERT(f.iso.starts.size() == 1);
   // 两个槽都被占用：本帧丢弃并计数。
   // Both slots are taken: the frame is dropped and counted.
-  f.uac.OnBusTime(false, tick);
+  f.uac.OnFrameTick(false, tick);
   TEST_ASSERT(f.uac.DroppedFrameCount() == 1 && f.iso.starts.size() == 1);
   f.iso.Complete();  // 槽 0 完成，槽 1 上线 / slot 0 done, slot 1 starts
   TEST_ASSERT(f.iso.starts.size() == 2 && f.iso.active);
   f.iso.Complete();
   TEST_ASSERT(!f.iso.active);
-  f.uac.OnBusTime(false, tick);  // 有空闲槽了：继续投帧 / a slot is free again
+  f.uac.OnFrameTick(false, tick);  // 有空闲槽了：继续投帧 / a slot is free again
   TEST_ASSERT(f.iso.starts.size() == 3 && f.uac.DroppedFrameCount() == 1);
   f.iso.Complete();
 }
@@ -359,10 +406,10 @@ void TestUacFailedRecovery()
   // The isochronous request FAILED: the completion only raises the pending flag
   // (no lifecycle ops in a completion callback); the next non-ISR SOF runs Close and the
   // re-Configure via ActivateStreaming.
-  BusTime tick;
+  FrameTick tick;
   f.iso.CompleteWith(10, ErrorCode::FAILED);
   TEST_ASSERT(f.uac.MissedTransferCount() == 1);
-  f.uac.OnBusTime(false, tick);
+  f.uac.OnFrameTick(false, tick);
   TEST_ASSERT(f.iso.GetState() == State::IDLE && f.iso.active &&
               f.iso.starts.size() == 2);
   f.iso.Complete();
@@ -372,13 +419,13 @@ void TestUacFailedRecovery()
   // 完成不会自动投下一帧：先用一拍把下一帧放上线，才有请求可以 FAILED。
   // A completion does not submit the next frame: arm one with a tick, otherwise
   // there is no request left to fail.
-  f.uac.OnBusTime(false, tick);
+  f.uac.OnFrameTick(false, tick);
   TEST_ASSERT(f.iso.active);
   f.iso.CompleteWith(0, ErrorCode::FAILED);
   TEST_ASSERT(f.uac.MissedTransferCount() == 2);
   // 恢复同样延迟到下一拍非中断 SOF。
   // The recovery likewise defers to the next non-ISR SOF tick.
-  f.uac.OnBusTime(false, tick);
+  f.uac.OnFrameTick(false, tick);
   TEST_ASSERT(f.iso.GetState() == State::IDLE && f.iso.active);
   f.iso.Complete();
 
@@ -474,8 +521,8 @@ void TestUacSetInterfaceSlowStop()
   TEST_ASSERT(f.in0.active && f.in0.Last().length == 0);
   f.in0.Complete();
   TEST_ASSERT(f.iso.GetState() == State::DISABLED && !f.iso.active);
-  BusTime tick;
-  f.uac.OnBusTime(false, tick);
+  FrameTick tick;
+  f.uac.OnFrameTick(false, tick);
   TEST_ASSERT(f.iso.GetState() == State::IDLE && f.iso.active &&
               f.iso.starts.size() == 2);
   f.iso.pending_stop = false;
@@ -483,7 +530,7 @@ void TestUacSetInterfaceSlowStop()
   // 完成不会自动投帧：先补一拍把下一帧放上线，切换 alt 时才有在途请求要停。
   // A completion does not re-arm: tick once so the alt switch has an in-flight
   // request to stop.
-  f.uac.OnBusTime(false, tick);
+  f.uac.OnFrameTick(false, tick);
   TEST_ASSERT(f.iso.active);
 
   // 流传输在途时切 alt=0：同样等停止确认。
@@ -495,6 +542,61 @@ void TestUacSetInterfaceSlowStop()
   TEST_ASSERT(f.in0.active && f.in0.Last().length == 0);
   f.in0.Complete();
   TEST_ASSERT(f.iso.GetState() == State::DISABLED);
+}
+
+// ---------------------------------------------------------------------------
+// The frame tick is wanted only while the host streams or a streaming start is pending
+// ---------------------------------------------------------------------------
+
+void TestUacFrameTickOnlyWhileStreaming()
+{
+  UacFixture f;
+  TEST_ASSERT(!f.uac.NeedsFrameTick());  // 未绑定 / unbound
+  f.uac.BindEndpoints(f.pool, 0, false);
+  TEST_ASSERT(!f.uac.NeedsFrameTick());  // 已配置但在 alt 0 / configured, alt 0
+
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.NeedsFrameTick());  // alt 1 / streaming
+
+  // 请求失败：恢复由下一拍执行，期间仍要拍。
+  // A failed request: the recovery runs on the next tick, which must still come.
+  FrameTick tick;
+  f.iso.CompleteWith(0, ErrorCode::FAILED);
+  TEST_ASSERT(f.uac.NeedsFrameTick());
+  f.uac.OnFrameTick(false, tick);
+  TEST_ASSERT(f.iso.active && f.uac.NeedsFrameTick());
+  f.iso.Complete();
+
+  TEST_ASSERT(f.uac.SetAltSetting(1, 0) == ErrorCode::OK);
+  TEST_ASSERT(!f.uac.NeedsFrameTick());  // 回到 alt 0 / back at alt 0
+
+  // 停止未确认：激活挂起，仍要拍来推进它。
+  // Stop unconfirmed: the activation is pending and needs the tick to advance.
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);
+  f.iso.Complete();
+  f.uac.OnFrameTick(false, tick);
+  TEST_ASSERT(f.iso.active);
+  f.iso.pending_stop = true;
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);
+  TEST_ASSERT(f.iso.IsStopping() && f.uac.NeedsFrameTick());
+  f.iso.ConfirmStop();
+  f.iso.pending_stop = false;
+  f.uac.OnFrameTick(false, tick);
+  TEST_ASSERT(f.iso.active && f.uac.NeedsFrameTick());
+  f.iso.Complete();
+
+  // Configure 失败：流保持关闭，不再要拍。
+  // Configure fails: streaming stays off and no tick is wanted.
+  TEST_ASSERT(f.uac.SetAltSetting(1, 0) == ErrorCode::OK);
+  f.iso.configure_result = ErrorCode::NOT_SUPPORT;
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::NOT_SUPPORT);
+  TEST_ASSERT(!f.uac.NeedsFrameTick());
+  f.iso.configure_result = ErrorCode::OK;
+
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.NeedsFrameTick());
+  f.uac.UnbindEndpoints(f.pool, false);
+  TEST_ASSERT(!f.uac.NeedsFrameTick());  // 解绑 / unbound
 }
 
 // ---------------------------------------------------------------------------
@@ -611,11 +713,16 @@ void TestUacClassRequests()
                                    result) == ErrorCode::OK);
   TEST_ASSERT(IsBytes(result.write_data, {1}));
   // SET_RES 音量：接受并忽略（分辨率固定）。
-  // SET_RES of the volume: accepted and ignored (the resolution is fixed).
+  // SET_RES of the volume: accepted and ignored (the resolution is fixed). The data
+  // stage carries the actual request, SET_RES; a SET_CUR data stage does not belong to
+  // it.
   TEST_ASSERT(f.uac.OnClassRequest(false, Uac::SET_RES, Uac::FU_VOLUME << 8U, 2, fu,
                                    result) == ErrorCode::OK);
   stage = ConstRawData{volume, sizeof(volume)};
-  TEST_ASSERT(f.uac.OnClassData(false, Uac::SET_CUR, stage) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.OnClassData(false, Uac::SET_RES, stage) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.OnClassRequest(false, Uac::SET_RES, Uac::FU_VOLUME << 8U, 2, fu,
+                                   result) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.OnClassData(false, Uac::SET_CUR, stage) == ErrorCode::NOT_SUPPORT);
 
   // 错误的实体与通道。
   // A wrong entity and channel.
@@ -642,14 +749,14 @@ void TestUacHighSpeedPacing()
   TEST_ASSERT(f.iso.starts.size() == 1 && f.iso.Last().length == 4);
   f.iso.Complete();
 
-  BusTime micro{3, 3};  // 3 个微帧 elapsed，超出的债务丢弃
-  f.uac.OnBusTime(false, micro);
+  FrameTick micro{3, 3};  // 3 个微帧 elapsed，超出的债务丢弃
+  f.uac.OnFrameTick(false, micro);
   TEST_ASSERT(f.iso.starts.size() == 2 && f.iso.Last().length == 4);
   f.iso.Complete();
   // 帧号节拍的后端（无微帧）：1 帧 = 8 微帧。
   // A frame-only backend: one frame equals 8 microframes.
-  BusTime frame{0xFF, 1};
-  f.uac.OnBusTime(false, frame);
+  FrameTick frame{0xFF, 1};
+  f.uac.OnFrameTick(false, frame);
   TEST_ASSERT(f.iso.starts.size() == 3);
   f.iso.Complete();
   f.uac.UnbindEndpoints(f.pool, false);
@@ -662,11 +769,11 @@ void TestUacHighSpeedPacing()
   TEST_ASSERT(slow.SetAltSetting(1, 1) == ErrorCode::OK);
   TEST_ASSERT(f.iso.starts.size() == 4 && f.iso.Last().length == 8);
   f.iso.Complete();
-  BusTime partial{1, 3};  // 3 < 4 微帧：不踢 / 3 < 4 microframes: no kick
-  slow.OnBusTime(false, partial);
+  FrameTick partial{1, 3};  // 3 < 4 微帧：不踢 / 3 < 4 microframes: no kick
+  slow.OnFrameTick(false, partial);
   TEST_ASSERT(f.iso.starts.size() == 4);
-  BusTime rest{3, 2};  // 债务 5 ≥ 4：踢一次，余 1 / debt 5 ≥ 4: one kick
-  slow.OnBusTime(false, rest);
+  FrameTick rest{3, 2};  // 债务 5 ≥ 4：踢一次，余 1 / debt 5 ≥ 4: one kick
+  slow.OnFrameTick(false, rest);
   TEST_ASSERT(f.iso.starts.size() == 5 && f.iso.Last().length == 8);
   f.iso.Complete();
 }
@@ -676,10 +783,12 @@ void TestUacHighSpeedPacing()
 int main()
 {
   TestUacActivateAndFill();
+  TestUacStartDropsStalePcm();
   TestUacFrameDropCount();
   TestUacFailedRecovery();
   TestUacSetInterfaceFlow();
   TestUacSetInterfaceSlowStop();
+  TestUacFrameTickOnlyWhileStreaming();
   TestUacSpeedClearedOnUnbind();
   TestUacUnsupportedBackend();
   TestUacClassRequests();

@@ -109,26 +109,14 @@ static void HandleTransferOut(CH32EndpointOtgHs* ep_out, uint8_t ep_num, uint8_t
     return;
   }
 
-  if (!is_nak)
+  // NAK 的 OUT 没有收下数据，toggle 不动（INT_ST.IS_NAK，手册 V2.5 p.339-340）。板上
+  // 68 万个 OUT 事件里 IS_NAK 一次都没有出现。
+  // A NAKed OUT took no data and leaves the toggle alone (INT_ST.IS_NAK, manual V2.5
+  // p.339-340). IS_NAK never showed up in 684000 OUT events on the board.
+  if (is_nak)
   {
-    ep_out->TransferComplete(rx_len);
     return;
   }
-  if (!busy || rx_len == 0u)
-  {
-    // 不报出的零长包也推进了 toggle：它若是挂包期间完成的那个事务，下一个好包之后 toggle
-    // 会回到写之前的值，不能再当作丢了推进。
-    // An unreported zero-length packet also advanced the toggle: if it was the
-    // transaction that completed during the arm, the toggle is back at its earlier value
-    // after the next good packet, which must not count as a lost advance.
-    ep_out->tog_window_ = 0u;
-    return;
-  }
-
-  // 部分 non-EP0 OUT 路径在端点仍有在途请求时，仍可能给出可用的晚到长度快照；
-  // 这里只保留这条窄恢复路径。
-  // Some non-EP0 OUT paths may still expose a usable late length snapshot while a
-  // request is in flight. Keep that narrow recovery path here.
   ep_out->TransferComplete(rx_len);
 }
 
@@ -159,7 +147,8 @@ static void HandleTransferIn(CH32EndpointOtgHs* ep_in, uint8_t ep_num, uint8_t i
   ep_in->TransferComplete(0u);
 }
 
-static void HandleTransferToken(OtgHsEndpointMap& map, uint8_t int_st)
+static void HandleTransferToken(LibXR::CH32USBOtgHS* usb, OtgHsEndpointMap& map,
+                                uint8_t int_st)
 {
   const uint8_t token = int_st & USBHS_UIS_TOKEN_MASK;
   const uint8_t ep_num = int_st & USBHS_UIS_ENDP_MASK;
@@ -181,6 +170,17 @@ static void HandleTransferToken(OtgHsEndpointMap& map, uint8_t int_st)
     case USBHS_UIS_TOKEN_IN:
       HandleTransferIn(ep[IN_IDX], ep_num, int_st);
       break;
+
+    case USBHS_UIS_TOKEN_SOF:
+    {
+      // 设备模式下 SOF 以 UIF_TRANSFER 上报，INT_ST 令牌字段为 SOF（手册 V2.5
+      // p.339-340）；FRAME_NO 低 11 位是帧号，高 3 位是微帧号。
+      // In device mode a SOF is reported as UIF_TRANSFER with the INT_ST token field set
+      // to SOF (manual V2.5 p.339-340); FRAME_NO holds the frame number in its low 11
+      // bits and the microframe number in the top 3.
+      LibXR::ReportSofToken(*usb, USBHSD->FRAME_NO);
+      break;
+    }
 
     default:
       break;
@@ -246,25 +246,24 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
     {
       USBHSD->DEV_AD = 0;
       usb->OnBusReset(true);
+      USBHSD->INT_EN |= USBHS_UIE_SOF_ACT;
       ResetEp0State(map);
       setup_since_reset_pending = true;
       clear_mask |= USBHS_UIF_BUS_RST;
     }
 
-    if (INTFLAG & USBHS_UIF_HST_SOF)
-    {
-      const uint16_t frame = USBHSD->FRAME_NO;
-      usb->OnSof(true, frame & USBHS_SOF_FRAME_NUM,
-                 static_cast<uint8_t>((frame & USBHS_MICRO_FRAME_NUM) >> 13U));
-      clear_mask |= USBHS_UIF_HST_SOF;
-    }
-
     if (INTFLAG & USBHS_UIF_SUSPEND)
     {
       if (USBHSD->MIS_ST & USBHS_UMS_SUSPEND)
+      {
+        USBHSD->INT_EN &= static_cast<uint8_t>(~USBHS_UIE_SOF_ACT);
         usb->OnSuspend(true);
+      }
       else
+      {
+        USBHSD->INT_EN |= USBHS_UIE_SOF_ACT;
         usb->OnResume(true);
+      }
       clear_mask |= USBHS_UIF_SUSPEND;
     }
 
@@ -306,7 +305,7 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
     // 3) 普通 token 完成：非 setup 传输统一在这里分发。
     if ((INTFLAG & USBHS_UIF_TRANSFER) && ((clear_mask & USBHS_UIF_TRANSFER) == 0u))
     {
-      HandleTransferToken(map, INTST);
+      HandleTransferToken(usb, map, INTST);
       clear_mask |= USBHS_UIF_TRANSFER;
     }
     if (INTFLAG & USBHS_UIF_TRANSFER)
@@ -403,11 +402,7 @@ LibXR::ErrorCode CH32USBOtgHS::SetAddress(uint8_t address, USB::ControlContext c
   return LibXR::ErrorCode::OK;
 }
 
-void CH32USBOtgHS::OnControlReady()
-{
-  USBHSD->UEP0_RX_CTRL = USBHS_UEP_R_RES_ACK;
-  if (WantsBusTime()) USBHSD->INT_EN |= USBHS_UIE_SOF_ACT;
-}
+void CH32USBOtgHS::OnControlReady() { USBHSD->UEP0_RX_CTRL = USBHS_UEP_R_RES_ACK; }
 
 void CH32USBOtgHS::Start(bool)
 {
@@ -420,8 +415,8 @@ void CH32USBOtgHS::Start(bool)
   USBHSD->CONTROL &= ~USBHS_UC_RESET_SIE;
   USBHSD->HOST_CTRL = USBHS_UH_PHY_SUSPENDM;
   USBHSD->CONTROL = USBHS_UC_DMA_EN | USBHS_UC_INT_BUSY | USBHS_UC_SPEED_HIGH;
-  USBHSD->INT_EN =
-      USBHS_UIE_SETUP_ACT | USBHS_UIE_TRANSFER | USBHS_UIE_DETECT | USBHS_UIE_SUSPEND;
+  USBHSD->INT_EN = USBHS_UIE_SETUP_ACT | USBHS_UIE_TRANSFER | USBHS_UIE_DETECT |
+                   USBHS_UIE_SUSPEND | USBHS_UIE_SOF_ACT;
   USBHSD->CONTROL |= USBHS_UC_DEV_PU_EN;
   NVIC_EnableIRQ(USBHS_IRQn);
   self_ = this;
@@ -429,6 +424,7 @@ void CH32USBOtgHS::Start(bool)
 
 void CH32USBOtgHS::Stop(bool)
 {
+  USBHSD->INT_EN &= static_cast<uint8_t>(~USBHS_UIE_SOF_ACT);
   USBHSD->CONTROL = USBHS_UC_CLR_ALL | USBHS_UC_RESET_SIE;
   USBHSD->CONTROL = 0;
   NVIC_DisableIRQ(USBHS_IRQn);

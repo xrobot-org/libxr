@@ -1,8 +1,8 @@
-// CH32 USBFS bulk endpoints (driver/ch/ch32_usb_endpoint_otgfs.cpp) against a fake register
-// block: the real endpoint and endpoint core, with the test playing the controller. The
-// cases cover a shared bidirectional endpoint (one 128 byte block: OUT in the first 64
-// bytes, IN fixed at +64), the receive of a multi-packet request and a control write on
-// EP0.
+// CH32 USBFS bulk endpoints (driver/ch/ch32_usb_endpoint_otgfs.cpp) against a fake
+// register block: the real endpoint and endpoint core, with the test playing the
+// controller. The cases cover a shared bidirectional endpoint (one 128 byte block: OUT in
+// the first 64 bytes, IN fixed at +64), the receive of a multi-packet request and a
+// control write on EP0.
 
 #include <cstdint>
 #include <cstdio>

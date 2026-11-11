@@ -108,23 +108,29 @@ class Endpoint
     PENDING  ///< 等硬件事件后调用 OnHardwareStopped / OnHardwareStopped follows later
   };
 
+  /// 端点号转为整数 / Endpoint number as an integer
   static constexpr uint8_t EPNumberToInt8(EPNumber ep)
   {
     return static_cast<uint8_t>(ep);
   }
 
+  /// 端点号和方向合成端点地址（IN 置 bit7）/ Combine endpoint number and direction into
+  /// an endpoint address (bit 7 set for IN)
   static constexpr uint8_t EPNumberToAddr(EPNumber ep, Direction dir)
   {
     ASSERT(dir == Direction::IN || dir == Direction::OUT);
     return static_cast<uint8_t>(ep) | (dir == Direction::IN ? 0x80 : 0x00);
   }
 
+  /// 拆分端点地址：返回端点号，方向写入 dir / Split an endpoint address: returns the
+  /// endpoint number and stores the direction in dir
   static constexpr EPNumber AddrToEPNumber(uint8_t addr, Direction& dir)
   {
     dir = addr & 0x80 ? Direction::IN : Direction::OUT;
     return static_cast<EPNumber>(addr & 0x7F);
   }
 
+  /// 下一个端点号；ep 不得超过 EP15 / The next endpoint number; ep must not exceed EP15
   static constexpr EPNumber NextEPNumber(EPNumber ep)
   {
     ASSERT(ep <= EPNumber::EP15);
@@ -134,7 +140,9 @@ class Endpoint
   /// 端点配置 / Endpoint configuration
   struct Config
   {
+    /// 配置后的方向，必须是 IN 或 OUT / Direction to use; must be IN or OUT
     Direction direction = Direction::OUT;
+    /// 传输类型 / Transfer type
     Type type = Type::BULK;
     /// 最大包长，必须是该类型在当前速度下的合法值；0 无效 / Max packet size; must be
     /// legal for the type at the current speed; 0 is invalid
@@ -156,8 +164,10 @@ class Endpoint
   struct Slot
   {
     RawData data{nullptr, 0};  ///< IN：可写区域；OUT 租约：收到的字节
-    uint8_t index = 0xFF;
-    uint8_t token = 0;  ///< 借出戳，由核心填写 / Lend stamp, written by the core
+    uint8_t index = 0xFF;  ///< 槽号；0xFF 为无效句柄 / Slot index; 0xFF = invalid handle
+    uint8_t token = 0;     ///< 借出戳，由核心填写 / Lend stamp, written by the core
+    /// 句柄是否指向某个槽（index 不是 0xFF）/ Whether the handle refers to a slot (index
+    /// is not 0xFF)
     bool Valid() const { return index != 0xFF; }
   };
 
@@ -184,29 +194,40 @@ class Endpoint
   Endpoint(const Endpoint&) = delete;
   Endpoint& operator=(const Endpoint&) = delete;
 
+  /// 端点号 / Endpoint number
   EPNumber GetNumber() const { return number_; }
+  /// 硬件支持的方向（可为 BOTH）/ Directions the hardware supports (may be BOTH)
   Direction AvailableDirection() const { return avail_direction_; }
+  /// 当前方向；未启用时为可用方向 / Current direction; the available direction while
+  /// disabled
   Direction GetDirection() const
   {
     return GetState() == State::DISABLED ? avail_direction_ : config_.direction;
   }
+  /// 当前端点地址（含方向位）；未启用时只有端点号 / Current endpoint address with the
+  /// direction bit; only the number while disabled
   uint8_t GetAddress() const
   {
     return GetState() == State::DISABLED ? EPNumberToInt8(number_)
                                          : EPNumberToAddr(number_, config_.direction);
   }
+  /// 当前状态（acquire 读取，任何上下文）/ Current state (acquire load, any context)
   [[gnu::always_inline]] State GetState() const
   {
     return state_.load(std::memory_order_acquire);
   }
+  /// 当前配置的传输类型 / Configured transfer type
   Type GetType() const { return config_.type; }
+  /// 当前配置的最大包长 / Configured max packet size
   uint16_t MaxPacketSize() const { return config_.max_packet_size; }
   /// 当前速度下槽和后端都放得下的最大合法包长；没有时为 0。只读查询，Configure 仍须显式
   /// 指定包长 / Largest packet size legal at the current speed that the slot and the
   /// backend hold, 0 when there is none. A query only: Configure still takes an explicit
   /// size
   uint16_t LargestPacketSize(Type type) const;
+  /// 是否处于 STALLED 状态 / Whether the state is STALLED
   bool IsStalled() const { return GetState() == State::STALLED; }
+  /// 最近一次 Configure 的授予结果 / Result granted by the latest Configure
   const Granted& GetGranted() const { return granted_; }
 
   // ---- 配置与生命周期：只在 owner 中调用 / Owner only ----
@@ -219,6 +240,8 @@ class Endpoint
   void Flush(bool in_isr);
   /// 先结束待决请求再置 STALL / End pending requests, then halt
   [[nodiscard]] ErrorCode Stall(bool in_isr);
+  /// 清除 STALL 回到 IDLE。OK / STATE_ERR（未启用或配置失败）/ 后端错误码 / Clear the
+  /// halt and return to IDLE. OK / STATE_ERR (disabled or ERROR) / the backend's error
   [[nodiscard]] ErrorCode ClearStall(bool in_isr);
   /// 停止确认之前为 true / True until the hardware stop is confirmed
   bool IsStopping() const { return stopping_; }
@@ -278,7 +301,9 @@ class Endpoint
   virtual StopResult StopHardware(bool in_isr) = 0;
   /// 停止确认后读硬件事实 / Read the hardware facts after a confirmed stop
   virtual size_t ReapProgress(const HwRequest& request, bool& retired) = 0;
+  /// 在硬件上置 STALL / Halt the endpoint in hardware
   virtual ErrorCode StallHardware(bool in_isr) = 0;
+  /// 在硬件上清除 STALL / Clear the halt in hardware
   virtual ErrorCode ClearStallHardware(bool in_isr) = 0;
   /// 后端能接受的最大包长（FIFO/PMA）/ Largest packet the backend accepts
   virtual size_t MaxPacketSizeLimit(Type type) const
@@ -292,10 +317,17 @@ class Endpoint
   /// 只接受当前在途请求的标签 / Accepts only the current in-flight tag
   void OnHardwareComplete(bool in_isr, uint32_t tag, size_t actual,
                           ErrorCode result = ErrorCode::OK);
+  /// 后端确认停止（StopHardware 返回 PENDING 之后）；记录确认并通知 owner / The
+  /// backend confirms the stop (after StopHardware returned PENDING); records it and
+  /// notifies the owner
   void OnHardwareStopped(bool in_isr);
 
+  /// 所属端点池是否正在规划配置；未挂接端点池时为 false / Whether the owning pool is
+  /// planning a configuration; false when not attached to a pool
   bool IsPlanning() const;
+  /// 当前配置 / Current configuration
   const Config& GetConfig() const { return config_; }
+  /// 构造时提供的整块槽内存 / The whole slot memory given at construction
   RawData SlotMemory() const { return memory_; }
 
  private:

@@ -763,16 +763,16 @@ void DeviceComposition::Notify(bool in_isr, DeviceEvent event, uint8_t endpoint)
   }
 }
 
-bool DeviceComposition::WantsBusTime() const
+bool DeviceComposition::NeedsFrameTick() const
 {
   for (size_t i = 0; i < class_count_; ++i)
-    if (classes_[i]->WantsBusTime()) return true;
+    if (classes_[i]->NeedsFrameTick()) return true;
   return false;
 }
 
-void DeviceComposition::NotifyBusTime(bool in_isr, const BusTime& time)
+void DeviceComposition::NotifyFrameTick(bool in_isr, const FrameTick& time)
 {
   for (size_t i = 0; i < class_count_; ++i)
-    if (ContainsActiveClass(classes_[i]) && classes_[i]->WantsBusTime())
-      classes_[i]->OnBusTime(in_isr, time);
+    if (ContainsActiveClass(classes_[i]) && classes_[i]->NeedsFrameTick())
+      classes_[i]->OnFrameTick(in_isr, time);
 }

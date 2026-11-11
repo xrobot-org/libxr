@@ -7,6 +7,8 @@
 namespace LibXR
 {
 
+/// 本芯片的 GPIO 端口数（按 GPIOx_BASE 是否定义推得）/ Number of GPIO ports on this
+/// device (derived from which GPIOx_BASE macros exist)
 #ifdef GPIOC_BASE
 constexpr uint8_t MAX_PORTS = 3;
 #elif defined(GPIOB_BASE)
@@ -25,6 +27,14 @@ constexpr uint8_t MAX_PORTS = 1;
 class MSPM0GPIO : public GPIO
 {
  public:
+  /**
+   * @brief 构造 GPIO 对象并登记到端口中断分发表 / Construct a GPIO object and register
+   *        it in the port interrupt dispatch table
+   * @param port GPIO 端口寄存器（GPIOA/GPIOB/GPIOC）/ GPIO port registers
+   * @param pin_mask 单个引脚的位掩码，只能有一位置位 / Single-pin bit mask, exactly one
+   *        bit set
+   * @param pincm 该引脚的 IOMUX PINCM 索引 / IOMUX PINCM index of the pin
+   */
   explicit MSPM0GPIO(GPIO_Regs* port, uint32_t pin_mask, uint32_t pincm);
 
   bool Read() override;
@@ -37,6 +47,11 @@ class MSPM0GPIO : public GPIO
 
   ErrorCode SetConfig(Configuration config) override;
 
+  /**
+   * @brief 端口中断入口：清除挂起位并回调对应引脚 / Port interrupt entry: clear the
+   *        pending bits and run the callback of each pending pin
+   * @param port 触发中断的 GPIO 端口 / GPIO port that raised the interrupt
+   */
   static inline void OnInterrupt(GPIO_Regs* port)
   {
     const int idx = GetPortIndex(reinterpret_cast<uint32_t>(port));  // NOLINT

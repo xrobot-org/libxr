@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "../../mock_endpoint.hpp"
+#include "../../thread_wait.hpp"
 #include "daplink_v2.hpp"
 #include "debug/swd.hpp"
 #include "device_composition.hpp"
@@ -55,12 +56,16 @@ class FakeSwd : public LibXR::Debug::Swd
  public:
   unsigned enters = 0, closes = 0, sequences = 0;
   uint32_t clock_hz = 0;
+  /// SetClockHz calls, readable from another thread. The Step thread's session start ends
+  /// with one, so a test that waits for it knows Step has begun the command it holds.
+  std::atomic<unsigned> clock_calls{0};
   std::vector<std::thread::id> callers;
 
   ErrorCode SetClockHz(uint32_t hz) override
   {
     Note();
     clock_hz = hz;
+    clock_calls.fetch_add(1);
     return ErrorCode::OK;
   }
   void Close() override
@@ -112,10 +117,10 @@ class TestDap2 : public DapV2
 {
  public:
   using DapV2::BindEndpoints;
-  using DapV2::OnControlData;
-  using DapV2::OnControlRequest;
   using DapV2::ControlTransferResult;
   using DapV2::DapV2;
+  using DapV2::OnControlData;
+  using DapV2::OnControlRequest;
   using DapV2::OnService;
   using DapV2::UnbindEndpoints;
 };
@@ -309,10 +314,22 @@ void TestUnbindWhileHoldingInSlot()
   DapFixture f;
   f.dap.BindEndpoints(f.pool, 0, false);
 
-  f.out.HostSends({DELAY, 0x10, 0x27});  // 10000 us
-  std::thread dap_thread([&f]() { (void)f.dap.Step(1000); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  // The longest DAP_Delay, 65535 us, so that the unbind lands inside it. Step ends its
+  // session start with SetClockHz and then takes an IN slot for the response: waiting for
+  // that call means Step holds the command, and the unbind follows within microseconds.
+  // The test then checks that Step had not finished yet, so a missed window is a failure,
+  // not a silent loss of coverage.
+  f.out.HostSends({DELAY, 0xFF, 0xFF});
+  std::atomic<bool> step_returned{false};
+  std::thread dap_thread(
+      [&]()
+      {
+        (void)f.dap.Step(1000);
+        step_returned.store(true);
+      });
+  TEST_ASSERT(WaitUntil([&]() { return f.swd.clock_calls.load() != 0U; }));
   f.dap.UnbindEndpoints(f.pool, false);
+  TEST_ASSERT(!step_returned.load());
   dap_thread.join();
   TEST_ASSERT(f.in.starts.empty());
   // The application's loop steps again; unbound, Step gives back what it holds.
@@ -398,13 +415,23 @@ void TestNextCommandReceivedDuringDelay()
   DapFixture f;
   f.dap.BindEndpoints(f.pool, 0, false);
 
-  f.out.HostSends({DELAY, 0x10, 0x27});  // 10000 us
-  std::thread dap_thread([&f]() { (void)f.dap.Step(1000); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  // The longest DAP_Delay (65535 us); the second command goes in after Step has begun the
+  // first one (see TestUnbindWhileHoldingInSlot), and the test checks that Step had not
+  // finished by then.
+  f.out.HostSends({DELAY, 0xFF, 0xFF});
+  std::atomic<bool> step_returned{false};
+  std::thread dap_thread(
+      [&]()
+      {
+        (void)f.dap.Step(1000);
+        step_returned.store(true);
+      });
+  TEST_ASSERT(WaitUntil([&]() { return f.swd.clock_calls.load() != 0U; }));
 
   // The host sends the next command while the delay is pending: it is received (the USB
   // side does not wait for the DAP thread) but not executed, and nothing answers.
   f.out.HostSends({INFO, PACKET_SIZE_ID});
+  TEST_ASSERT(!step_returned.load());
   dap_thread.join();
 
   // The delay response goes first; the received command answers after it.
@@ -552,6 +579,33 @@ void TestQueueAndExecuteAnswerPerPacket()
   f.in.Complete();
 }
 
+/// A WinUSB client pads requests with zeros to the DAP packet size: the padding after the
+/// sub-commands of an atomic group is not a format error, and a group whose count is 0
+/// answers with no responses.
+void TestPaddedAtomicGroups()
+{
+  DapFixture f;
+  f.dap.BindEndpoints(f.pool, 0, false);
+  const uint8_t EXECUTE = static_cast<uint8_t>(CommandId::EXECUTE_COMMANDS);
+
+  for (const uint8_t id : {static_cast<uint8_t>(CommandId::QUEUE_COMMANDS), EXECUTE})
+  {
+    std::vector<uint8_t> group{id, 1, INFO, PACKET_COUNT_ID};
+    group.resize(64, 0);
+    Host(f, group);
+    TEST_ASSERT(f.in.active);
+    TEST_ASSERT(f.in.Last().data == std::vector<uint8_t>({EXECUTE, 1, INFO, 1, 0x04}));
+    f.in.Complete();
+  }
+
+  std::vector<uint8_t> empty{EXECUTE, 0};
+  empty.resize(64, 0);
+  Host(f, empty);
+  TEST_ASSERT(f.in.active);
+  TEST_ASSERT(f.in.Last().data == std::vector<uint8_t>({EXECUTE, 0}));
+  f.in.Complete();
+}
+
 /// Test vendor command 0x81 [0x81, x] answers [0x81, x + 1]; its length is 2.
 constexpr uint8_t VENDOR_ID = 0x81;
 
@@ -643,8 +697,8 @@ class EchoPort final : public DapV2::VendorPort
 
 void TestVendorPort()
 {
-  // Vendor requests reach the port; without one they are NOT_SUPPORT; DAP commands are not
-  // affected.
+  // Vendor requests reach the port; without one they are NOT_SUPPORT; DAP commands are
+  // not affected.
   DapFixture f;
   f.dap.BindEndpoints(f.pool, 0, false);
   Run(f);
@@ -680,18 +734,22 @@ void TestWakeStep()
   TEST_ASSERT(f.dap.WaitForWork(0) == ErrorCode::TIMEOUT);
 
   std::atomic<bool> woke{false};
+  std::atomic<long> waiter_tid{0};
   std::thread waiter(
       [&]()
       {
+        waiter_tid.store(CurrentTid());
         woke.store(f.dap.WaitForWork(2000) == ErrorCode::OK);
       });
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  // Wake it once the kernel shows it blocked in WaitForWork, not after a fixed sleep.
+  TEST_ASSERT(WaitUntil([&]() { return waiter_tid.load() != 0; }));
+  TEST_ASSERT(WaitUntilBlocked(waiter_tid.load()));
   f.dap.WakeStep(false);
   waiter.join();
   TEST_ASSERT(woke.load());
   TEST_ASSERT(!f.in.active);
   TEST_ASSERT(f.dap.Step(0) == ErrorCode::OK);
-  TEST_ASSERT(!f.in.active);  // nothing was executed
+  TEST_ASSERT(!f.in.active);                                // nothing was executed
   TEST_ASSERT(f.dap.WaitForWork(0) == ErrorCode::TIMEOUT);  // the wake-up was absorbed
 
   // A command that arrives together with a wake-up is still executed by one Step(0).
@@ -743,14 +801,19 @@ void TestWaitForWork()
     TEST_ASSERT(f.dap.WaitForWork(0) == ErrorCode::TIMEOUT);
 
     std::atomic<bool> returned{false};
+    std::atomic<long> waiter_tid{0};
     ErrorCode result = ErrorCode::FAILED;
     std::thread waiter(
         [&]()
         {
+          waiter_tid.store(CurrentTid());
           result = f.dap.WaitForWork(2000);
           returned.store(true);
         });
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // It must still be blocked when the host has taken nothing: wait for the kernel to
+    // show it blocked, then check that WaitForWork has not returned.
+    TEST_ASSERT(WaitUntil([&]() { return waiter_tid.load() != 0; }));
+    TEST_ASSERT(WaitUntilBlocked(waiter_tid.load()));
     TEST_ASSERT(!returned.load());
     f.in.Complete();
     waiter.join();
@@ -967,16 +1030,16 @@ void TestHostAboveAdvertisedPacketCountThreaded()
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
   while (answered < TOTAL && std::chrono::steady_clock::now() < deadline)
   {
-    if (sent < TOTAL && sent - answered < DEPTH && f.out.active)
+    if (sent < TOTAL && sent - answered < DEPTH && f.out.IsActive())
     {
       f.out.HostSends(sent % 2u == 0u ? TAR : BLOCK);
       ++sent;
       continue;
     }
-    if (f.in.active)
+    if (f.in.IsActive())
     {
       const size_t want = (answered % 2u == 0u) ? 3U : 516U;
-      if (f.in.Last().length != want) order_ok = false;
+      if (f.in.LastLength() != want) order_ok = false;
       f.in.Complete();
       ++answered;
       continue;
@@ -1068,11 +1131,19 @@ void TestRebindDuringBatchThenDelay()
   f.dap.BindEndpoints(f.pool, 0, false);
   const uint8_t EXECUTE = static_cast<uint8_t>(CommandId::EXECUTE_COMMANDS);
 
-  // [EXECUTE, 2, DAP_Delay 20000 us, DAP_Info(PACKET_SIZE)].
-  f.out.HostSends({EXECUTE, 2, DELAY, 0x20, 0x4E, INFO, PACKET_SIZE_ID});
-  std::thread dap_thread([&f]() { (void)f.dap.Step(1000); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  // [EXECUTE, 2, DAP_Delay 65535 us, DAP_Info(PACKET_SIZE)]; the unbind goes in once Step
+  // has begun the batch (see TestUnbindWhileHoldingInSlot).
+  f.out.HostSends({EXECUTE, 2, DELAY, 0xFF, 0xFF, INFO, PACKET_SIZE_ID});
+  std::atomic<bool> step_returned{false};
+  std::thread dap_thread(
+      [&]()
+      {
+        (void)f.dap.Step(1000);
+        step_returned.store(true);
+      });
+  TEST_ASSERT(WaitUntil([&]() { return f.swd.clock_calls.load() != 0U; }));
   f.dap.UnbindEndpoints(f.pool, false);
+  TEST_ASSERT(!step_returned.load());
   dap_thread.join();
   Run(f);  // the application's loop goes on stepping while unbound
   f.dap.BindEndpoints(f.pool, 0, false);
@@ -1119,6 +1190,47 @@ void TestHeldCommandDroppedAfterRebind()
   TEST_ASSERT(f.in.starts.size() == answered + 1);
   TEST_ASSERT(f.in.Last().data[0] == INFO);
   f.in.Complete();
+}
+
+/// DAP_SWD_Configure reaches the SWD driver's transfer policy: turnaround (cfg & 3) + 1
+/// cycles and the data phase flag (cfg & 4). A request without the configuration byte is
+/// an error and changes nothing; a new session starts from the defaults again.
+void TestSwdConfigureReachesThePolicy()
+{
+  DapFixture f;
+  f.dap.BindEndpoints(f.pool, 0, false);
+  const uint8_t CONFIGURE = static_cast<uint8_t>(CommandId::SWD_CONFIGURE);
+  TEST_ASSERT(f.swd.GetTransferPolicy().turnaround == 1);
+  TEST_ASSERT(!f.swd.GetTransferPolicy().data_phase);
+
+  Send(f, {CONFIGURE, 0x06});
+  TEST_ASSERT(f.in.active);
+  TEST_ASSERT(f.in.Last().data == std::vector<uint8_t>({CONFIGURE, 0x00}));
+  f.in.Complete();
+  TEST_ASSERT(f.swd.GetTransferPolicy().turnaround == 3);
+  TEST_ASSERT(f.swd.GetTransferPolicy().data_phase);
+
+  Send(f, {CONFIGURE, 0x03});
+  f.in.Complete();
+  TEST_ASSERT(f.swd.GetTransferPolicy().turnaround == 4);
+  TEST_ASSERT(!f.swd.GetTransferPolicy().data_phase);
+
+  Send(f, {CONFIGURE});
+  TEST_ASSERT(f.in.active);
+  TEST_ASSERT(f.in.Last().data == std::vector<uint8_t>({CONFIGURE, 0xFF}));
+  f.in.Complete();
+  TEST_ASSERT(f.swd.GetTransferPolicy().turnaround == 4);
+
+  Send(f, {CONFIGURE, 0x04});
+  f.in.Complete();
+  TEST_ASSERT(f.swd.GetTransferPolicy().turnaround == 1);
+  TEST_ASSERT(f.swd.GetTransferPolicy().data_phase);
+
+  f.dap.UnbindEndpoints(f.pool, false);
+  f.dap.BindEndpoints(f.pool, 0, false);
+  Run(f);
+  TEST_ASSERT(f.swd.GetTransferPolicy().turnaround == 1);
+  TEST_ASSERT(!f.swd.GetTransferPolicy().data_phase);
 }
 
 /// SWD belongs to the thread that runs Step: bind and unbind (the USB owner context, here
@@ -1337,6 +1449,7 @@ int main()
   TestZeroPaddedTransferIsDropped();
   TestTransferAbortHasNoResponse();
   TestQueueAndExecuteAnswerPerPacket();
+  TestPaddedAtomicGroups();
   TestVendorCommandsInBatch();
   TestWaitForWork();
   TestWakeStep();
@@ -1349,6 +1462,7 @@ int main()
   TestRebindDuringBatchThenDelay();
   TestHeldCommandDroppedAfterRebind();
   TestBindAndUnbindLeaveSwdToStep();
+  TestSwdConfigureReachesThePolicy();
   TestPaddedRequestsAndAFifthCommandDrain();
   TestStandaloneDeviceUsesDeviceLevelWinUsbSet();
   TestCompositeDeviceUsesFunctionSubsets();

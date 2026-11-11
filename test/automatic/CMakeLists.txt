@@ -308,6 +308,88 @@ target_compile_definitions(
 add_test(NAME ch32_usbfs COMMAND test_ch32_usbfs)
 set_tests_properties(ch32_usbfs PROPERTIES TIMEOUT 30)
 
+# STM32 OTG backend against a model of the DWC2 device controller: the real backend
+# source with a fake CubeMX main.h, its register accesses trapped at the OTG addresses
+# (Linux x86-64 only).
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+  add_executable(
+    test_stm32_usb_otg
+    driver/usb/dwc2/stm32/test_stm32_usb_otg.cpp driver/usb/dwc2/stm32/fake_stm32_hal.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/st/stm32_usb_otg.cpp"
+  )
+  target_link_libraries(test_stm32_usb_otg PRIVATE xr)
+  target_include_directories(
+    test_stm32_usb_otg
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/dwc2"
+            "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/dwc2/stm32"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/st"
+  )
+  add_test(NAME stm32_usb_otg COMMAND test_stm32_usb_otg)
+  # The register traps run the controller model inside the SIGSEGV handler, which
+  # allocates; ThreadSanitizer would report every trapped access as a signal-unsafe call.
+  set_tests_properties(stm32_usb_otg PROPERTIES TIMEOUT 120 ENVIRONMENT
+                                                "TSAN_OPTIONS=report_signal_unsafe=0")
+  # The cases that check behaviour the backend does not have yet stay out of the run
+  # above (usb/dwc2/README.md, "Findings"). This test runs each of them in a child
+  # process and fails when one starts to pass or fails for another reason.
+  add_test(NAME stm32_usb_otg_findings COMMAND test_stm32_usb_otg --check-findings)
+  set_tests_properties(
+    stm32_usb_otg_findings PROPERTIES TIMEOUT 120 LABELS findings ENVIRONMENT
+                                                                  "TSAN_OPTIONS=report_signal_unsafe=0"
+  )
+
+  # ESP32-S2/S3 USB backend against the same controller model: the real backend source
+  # with fake ESP-IDF headers for an ESP32-S3. The register bit-fields are accessed as
+  # whole words, as ESP-IDF builds them; that needs -fstrict-volatile-bitfields, which
+  # only GCC has. Without it the fake register accesses would be narrower or wider than
+  # on the chip, so the test is not built.
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag(
+    "-fstrict-volatile-bitfields" LIBXR_TEST_HAS_STRICT_VOLATILE_BITFIELDS
+  )
+  if(LIBXR_TEST_HAS_STRICT_VOLATILE_BITFIELDS)
+    set(_esp_usb_backend
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp/esp_usb.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp/esp_usb_dev.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp/esp_usb_ep.cpp"
+    )
+    set_source_files_properties(
+      ${_esp_usb_backend} PROPERTIES COMPILE_OPTIONS "-fstrict-volatile-bitfields"
+    )
+    add_executable(
+      test_esp_usb driver/usb/dwc2/esp/test_esp_usb.cpp driver/usb/dwc2/esp/fake_esp_idf.cpp
+                   ${_esp_usb_backend}
+    )
+    target_link_libraries(test_esp_usb PRIVATE xr)
+    target_include_directories(
+      test_esp_usb
+      PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/dwc2"
+              "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/dwc2/esp"
+              "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/esp"
+    )
+    add_test(NAME esp_usb COMMAND test_esp_usb)
+    # Same register traps as stm32_usb_otg.
+    set_tests_properties(esp_usb PROPERTIES TIMEOUT 120 ENVIRONMENT
+                                            "TSAN_OPTIONS=report_signal_unsafe=0")
+    # The findings of the ESP backend, as for stm32_usb_otg_findings.
+    add_test(NAME esp_usb_findings COMMAND test_esp_usb --check-findings)
+    set_tests_properties(
+      esp_usb_findings PROPERTIES TIMEOUT 120 LABELS findings ENVIRONMENT
+                                                              "TSAN_OPTIONS=report_signal_unsafe=0"
+    )
+  else()
+    message(
+      STATUS
+      "test_esp_usb skipped: ${CMAKE_CXX_COMPILER_ID} has no -fstrict-volatile-bitfields"
+    )
+  endif()
+else()
+  message(
+    STATUS
+    "test_stm32_usb_otg and test_esp_usb skipped: the register traps of the DWC2 tests are for x86-64 only (this is ${CMAKE_SYSTEM_PROCESSOR})"
+  )
+endif()
+
 # cdc_test classes: lease return, DTR-triggered packet and the read re-arm.
 add_executable(test_usb_cdc_test driver/usb/device/cdc/test_cdc_test.cpp)
 target_link_libraries(test_usb_cdc_test PRIVATE xr)
@@ -321,7 +403,8 @@ target_link_libraries(test_usb_cdc_uart PRIVATE xr)
 target_include_directories(test_usb_cdc_uart PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 add_test(NAME usb_cdc_uart COMMAND test_usb_cdc_uart)
 set_tests_properties(usb_cdc_uart PROPERTIES TIMEOUT 30)
-# gs_usb device class: per-channel queues, echo priority, backpressure and USER_ID.
+# gs_usb device class: per-channel queues, echo and RX alternation, backpressure and
+# USER_ID.
 add_executable(test_usb_gsusb driver/usb/device/gsusb/test_gsusb.cpp)
 target_link_libraries(test_usb_gsusb PRIVATE xr)
 target_include_directories(test_usb_gsusb PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
@@ -333,3 +416,72 @@ target_link_libraries(test_uac_mic PRIVATE xr)
 target_include_directories(test_uac_mic PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 add_test(NAME usb_uac_mic COMMAND test_uac_mic)
 set_tests_properties(usb_uac_mic PROPERTIES TIMEOUT 30)
+
+# Simulation USB backend: backend contract tests on the real endpoint core and DeviceCore,
+# driven packet by packet by a simulated host.
+add_executable(test_usb_sim_contract driver/usb/sim/test_usb_sim_contract.cpp)
+target_link_libraries(test_usb_sim_contract PRIVATE xr)
+target_include_directories(test_usb_sim_contract PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME usb_sim_contract COMMAND test_usb_sim_contract)
+set_tests_properties(usb_sim_contract PROPERTIES TIMEOUT 60)
+
+# Hardware profiles of the simulation backend (FSDEV, STM32 OTG FS, ESP32-S3, CH32 OTG FS):
+# the BSP compositions, the controller limits and the frame interrupt.
+add_executable(test_usb_sim_profiles driver/usb/sim/test_usb_sim_profiles.cpp)
+target_link_libraries(test_usb_sim_profiles PRIVATE xr)
+target_include_directories(
+  test_usb_sim_profiles PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.."
+                                "${CMAKE_CURRENT_SOURCE_DIR}/driver/debug/sim")
+add_test(NAME usb_sim_profiles COMMAND test_usb_sim_profiles)
+set_tests_properties(usb_sim_profiles PROPERTIES TIMEOUT 120)
+
+# The simulated device over USB/IP for a real host stack (manual and nightly use on a
+# Linux machine with vhci-hcd; not a ctest).
+add_executable(usb_sim_usbip driver/usb/sim/usb_sim_usbip.cpp)
+target_link_libraries(usb_sim_usbip PRIVATE xr pthread)
+target_include_directories(usb_sim_usbip PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# HID, gs_usb, DFU and UAC over USB/IP for the kernel drivers (manual and nightly use).
+add_executable(usb_sim_classes driver/usb/sim/usb_sim_classes.cpp)
+target_link_libraries(usb_sim_classes PRIVATE xr pthread)
+target_include_directories(usb_sim_classes PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# SWD target simulation: ADIv5 SW-DP and MEM-AP at the pin level, through the Swd
+# interface and through SwdGeneralGPIO with simulated pins.
+add_executable(test_swd_target driver/debug/sim/test_swd_target.cpp)
+target_link_libraries(test_swd_target PRIVATE xr)
+target_include_directories(test_swd_target PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME swd_target COMMAND test_swd_target)
+set_tests_properties(swd_target PROPERTIES TIMEOUT 30)
+
+# remote_bitbang server for the simulated SWD target, so that real OpenOCD can drive it
+# (manual and nightly use; not a ctest).
+add_executable(swd_target_bitbang driver/debug/sim/swd_target_bitbang.cpp)
+target_link_libraries(swd_target_bitbang PRIVATE xr)
+target_include_directories(swd_target_bitbang PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# End to end: a real debugger over USB/IP to the DAP v2 class, the SwdGeneralGPIO engine
+# and the simulated SWD target (manual and nightly use; not a ctest).
+add_executable(dap_sim_usbip driver/debug/sim/dap_sim_usbip.cpp)
+target_link_libraries(dap_sim_usbip PRIVATE xr pthread)
+target_include_directories(dap_sim_usbip PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# DAP v2 randomised test: random commands, packetisation, depth, read timing, injected
+# WAITs and unplugs, through the USB simulation backend to the simulated SWD target.
+add_executable(test_dap_fuzz driver/debug/sim/test_dap_fuzz.cpp)
+target_link_libraries(test_dap_fuzz PRIVATE xr)
+target_include_directories(test_dap_fuzz PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME dap_fuzz COMMAND test_dap_fuzz)
+set_tests_properties(dap_fuzz PROPERTIES TIMEOUT 300)
+
+# Regression baseline: replay of DAP sessions recorded from OpenOCD, pyOCD and probe-rs
+# (dap_record.sh). The expected responses are the output of the implementation on the day
+# of the recording, not a conformance reference.
+add_executable(test_dap_replay driver/debug/sim/test_dap_replay.cpp)
+target_link_libraries(test_dap_replay PRIVATE xr)
+target_include_directories(test_dap_replay PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_definitions(
+  test_dap_replay
+  PRIVATE DAP_REPLAY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/driver/debug/sim/replay")
+add_test(NAME dap_replay COMMAND test_dap_replay)
+set_tests_properties(dap_replay PROPERTIES TIMEOUT 120)

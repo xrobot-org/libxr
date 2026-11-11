@@ -22,7 +22,7 @@ class DeviceCore;
  * All custom USB classes (HID/CDC/MSC, etc.) should derive from this class.
  *
  * 执行上下文：BindEndpoints/UnbindEndpoints、OnDeviceEvent、控制请求回调
- * （OnGetDescriptor、OnControl*、OnClass*、OnVendorRequest）、OnService、OnBusTime 和
+ * （OnGetDescriptor、OnControl*、OnClass*、OnVendorRequest）、OnService、OnFrameTick 和
  * 端点完成回调都在设备的 owner 中执行。owner 由赢得 `SerializedService::Invoke` 的调用者
  * 执行：控制器中断，或者任何调用 Submit/Receive/ReturnSlot/RequestClassService/Init 的
  * 应用线程。所以每个回调都可能在中断里（in_isr=true）运行，也可能在任意应用线程里
@@ -30,7 +30,7 @@ class DeviceCore;
  * 工作，要等这个线程处理。
  * Execution context: BindEndpoints/UnbindEndpoints, OnDeviceEvent, the control request
  * callbacks (OnGetDescriptor, OnControl*, OnClass*, OnVendorRequest), OnService,
- * OnBusTime and the endpoint completions all run in the device's owner. The owner pass
+ * OnFrameTick and the endpoint completions all run in the device's owner. The owner pass
  * runs in whichever caller wins `SerializedService::Invoke`: the controller interrupt,
  * or any application thread that calls Submit/Receive/ReturnSlot/RequestClassService/
  * Init. Every callback can therefore run in an interrupt (in_isr=true) or in an
@@ -90,11 +90,16 @@ class DeviceClass : public ConfigDescriptorItem
   /// owner after RequestClassService (an interrupt or an application thread); must not
   /// block
   virtual void OnService(bool in_isr) { UNUSED(in_isr); }
+  /// 本类需要的控制 OUT 数据阶段缓冲区大小（字节）；核心取所有类的最大值，默认 64 / Size
+  /// in bytes of the control OUT data-stage buffer this class needs; the core uses the
+  /// maximum over all classes, 64 by default
   virtual size_t GetControlReceiveCapacity() const { return 64U; }
-  virtual bool WantsBusTime() const { return false; }
+  /// 本类是否需要 OnFrameTick 回调；为 false 时不会为它发布帧节拍 / Whether this class
+  /// wants OnFrameTick callbacks; no frame ticks are published for it when false
+  virtual bool NeedsFrameTick() const { return false; }
   /// 在 owner 中执行（中断或应用线程），不得阻塞 / Runs in the owner (an interrupt or an
   /// application thread); must not block
-  virtual void OnBusTime(bool in_isr, const BusTime& time)
+  virtual void OnFrameTick(bool in_isr, const FrameTick& time)
   {
     UNUSED(in_isr);
     UNUSED(time);
@@ -142,7 +147,9 @@ class DeviceClass : public ConfigDescriptorItem
     /// received into the core's own buffer and handed over by OnControlData.
     ConstRawData write_data{nullptr, 0};
 
+    /// write_data 的别名：可写的 IN 数据 / Alias of write_data: the writable IN data
     ConstRawData& InData() { return write_data; }
+    /// write_data 的别名：只读的 IN 数据 / Alias of write_data: the read-only IN data
     const ConstRawData& InData() const { return write_data; }
   };
 
@@ -251,6 +258,15 @@ class DeviceClass : public ConfigDescriptorItem
     return ErrorCode::NOT_SUPPORT;
   }
 
+  /// 控制请求的 SETUP 阶段入口：Vendor 请求交给 OnVendorRequest，其余交给
+  /// OnClassRequest / Setup-stage entry of a control request: vendor requests go to
+  /// OnVendorRequest, everything else to OnClassRequest
+  /// @param in_isr 是否在 ISR / Whether in ISR context
+  /// @param setup 完整的 SETUP 包 / The full SETUP packet
+  /// @param result 输出：IN 数据，或空表示 OUT/无数据阶段 / Output: the IN data, or empty
+  /// for an OUT or no-data stage
+  /// @return 错误码；非 OK 时请求被 STALL / Error code; a non-OK result stalls the
+  /// request
   virtual ErrorCode OnControlRequest(bool in_isr, const SetupPacket& setup,
                                      ControlTransferResult& result)
   {
@@ -261,17 +277,36 @@ class DeviceClass : public ConfigDescriptorItem
     return OnClassRequest(in_isr, setup.bRequest, setup.wValue, setup.wLength,
                           setup.wIndex, result);
   }
+  /// OUT 数据阶段收齐后调用；默认对 OUT 请求转给 OnClassData，IN 请求直接返回 OK /
+  /// Called once the OUT data stage has been fully received; by default an OUT request is
+  /// forwarded to OnClassData and an IN request returns OK
+  /// @param in_isr 是否在 ISR / Whether in ISR context
+  /// @param setup 完整的 SETUP 包 / The full SETUP packet
+  /// @param data 收到的全部数据 / All received data
+  /// @return 错误码；非 OK 时请求被 STALL / Error code; a non-OK result stalls the
+  /// request
   virtual ErrorCode OnControlData(bool in_isr, const SetupPacket& setup,
                                   ConstRawData& data)
   {
     if ((setup.bmRequestType & REQ_DIRECTION_MASK) != 0U) return ErrorCode::OK;
     return OnClassData(in_isr, setup.bRequest, data);
   }
+  /// 控制传输正常结束后调用；默认对 IN 请求转给 OnClassInDataStatusComplete / Called
+  /// after a control transfer finished normally; by default an IN request is forwarded to
+  /// OnClassInDataStatusComplete
+  /// @param in_isr 是否在 ISR / Whether in ISR context
+  /// @param setup 已完成传输的 SETUP 包 / SETUP packet of the finished transfer
   virtual void OnControlComplete(bool in_isr, const SetupPacket& setup)
   {
     if ((setup.bmRequestType & REQ_DIRECTION_MASK) != 0U)
       OnClassInDataStatusComplete(in_isr, setup.bRequest);
   }
+  /// 控制传输未正常完成而被中止（反初始化、被新的 SETUP 取代、出错而
+  /// STALL）时调用；默认什么也不做 / Called when a control transfer ends without
+  /// completing (deinitialization, superseded by a new SETUP, or stalled on error); does
+  /// nothing by default
+  /// @param in_isr 是否在 ISR / Whether in ISR context
+  /// @param setup 被中止传输的 SETUP 包 / SETUP packet of the aborted transfer
   virtual void OnControlAbort(bool in_isr, const SetupPacket& setup)
   {
     UNUSED(in_isr);

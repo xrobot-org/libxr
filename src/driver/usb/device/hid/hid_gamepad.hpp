@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "hid.hpp"
+#include "latest_snapshot.hpp"
 
 namespace LibXR::USB
 {
@@ -49,11 +50,7 @@ class HIDGamepadT
   {
     // 初始化上一帧：轴置中，按钮清零 / Initialize last report: axes to mid, buttons
     // cleared
-    last_.x = Mid();
-    last_.y = Mid();
-    last_.z = Mid();
-    last_.rx = Mid();
-    last_.buttons = 0;
+    last_ = Neutral();
   }
 
   /**
@@ -96,6 +93,7 @@ class HIDGamepadT
    * @param z Z 轴 / Z axis
    * @param rx Rx 轴 / Rx axis
    * @param buttons 按钮位掩码 / Button bit mask
+   * @param in_isr 是否在中断中 / Whether in ISR
    * @return 错误码 / Error code
    * @note 轴值会被夹到 [LOG_MIN, LOG_MAX] / Axis values are clamped to [LOG_MIN, LOG_MAX]
    */
@@ -106,7 +104,7 @@ class HIDGamepadT
     last_.z = Clamp(z);
     last_.rx = Clamp(rx);
     last_.buttons = buttons;
-    return SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
+    return Submit(in_isr);
   }
 
   /**
@@ -118,7 +116,7 @@ class HIDGamepadT
   ErrorCode SendButtons(uint8_t buttons, bool in_isr = false)
   {
     last_.buttons = buttons;
-    return SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
+    return Submit(in_isr);
   }
 
   /**
@@ -136,10 +134,38 @@ class HIDGamepadT
     last_.y = Clamp(y);
     last_.z = Clamp(z);
     last_.rx = Clamp(rx);
-    return SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
+    return Submit(in_isr);
   }
 
  protected:
+  /**
+   * @brief GET_REPORT(Input)：返回最近发送的输入报告（9 字节），尚未发送时为构造时的中立
+   *        状态（轴居中、无按钮）；描述符没有 Report ID，非 0 的 ID 不存在，STALL。手柄
+   *        没有 Output / Feature 报告，沿用基类默认（STALL）。
+   * GET_REPORT(Input): the last input report sent (9 bytes); before the first, the
+   * neutral state the class is built in (axes centred, no button). The descriptor has no
+   * report ID, so a non-zero ID does not exist and stalls. The gamepad has no Output or
+   * Feature report and keeps the base default (STALL).
+   */
+  ErrorCode OnGetInputReport(uint8_t report_id,
+                             DeviceClass::ControlTransferResult& result) override
+  {
+    if (report_id != 0U) return ErrorCode::NOT_SUPPORT;
+    // 发送方可能在中断或别的线程里：取一份完整的快照，再把它交给核心。
+    // The sender may be an interrupt or another thread: take one complete snapshot and
+    // hand that to the core.
+    const Report& reply = sent_.Read(Session());
+    result.write_data = ConstRawData{&reply, sizeof(reply)};
+    return ErrorCode::OK;
+  }
+
+  void PublishInputReport(ConstRawData report, uint32_t session) override
+  {
+    sent_.Publish(*static_cast<const Report*>(report.addr_), session);
+  }
+
+  void WithdrawInputReport() override { sent_.Withdraw(); }
+
   /**
    * @brief 写入设备描述符（Per-Interface） / Write device descriptor (Per-Interface)
    * @param header 设备描述符头 / Device descriptor header
@@ -226,7 +252,39 @@ class HIDGamepadT
         (static_cast<int32_t>(LOG_MIN) + static_cast<int32_t>(LOG_MAX)) / 2);
   }
 
-  Report last_{};  ///< 最近一次发送的输入报告 / Last-sent input report
+  /**
+   * @brief 构造时的中立状态：轴居中，无按钮 / The neutral state at construction: axes
+   *        centred, no button
+   */
+  static constexpr Report Neutral()
+  {
+    Report report{};
+    report.x = Mid();
+    report.y = Mid();
+    report.z = Mid();
+    report.rx = Mid();
+    report.buttons = 0;
+    return report;
+  }
+
+  /**
+   * @brief 提交 last_；sent_ 记下的是端点收下的报告（被拒绝的报告主机从未见过）
+   * Submit last_; sent_ keeps the reports the endpoint took (the host never saw a refused
+   * report)
+   */
+  ErrorCode Submit(bool in_isr)
+  {
+    return SendInputReport(ConstRawData{&last_, sizeof(last_)}, in_isr);
+  }
+
+  Report
+      last_{};  ///< 当前状态（部分更新的基准）/ Current state (base of partial updates)
+  /// 最近发送的输入报告。基类保证同一时刻只有一个发送方在发布；last_ 的部分更新仍然要求
+  /// Send / SendButtons / SendAxes 一次只在一个上下文里调用。
+  /// Last input report sent. The base class lets one sender at a time publish; the
+  /// partial updates of last_ still require Send / SendButtons / SendAxes to be called
+  /// from one context at a time.
+  LastInputReport<Report> sent_{Neutral()};
 };
 
 /**

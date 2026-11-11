@@ -77,19 +77,30 @@ class STM32SPI : public SPI
 
   ErrorCode Transfer(size_t size, OperationRW& op, bool in_isr) override;
 
+  /// HAL SPI 句柄 / HAL SPI handle
   SPI_HandleTypeDef* spi_handle_;
 
+  /// 外设编号，同时是 map 的下标 / Peripheral ID, also the index into map
   stm32_spi_id_t id_ = STM32_SPI_ID_ERROR;
 
+  /// 传输长度大于该值时使用 DMA（字节）/ Transfers longer than this many bytes use DMA
   uint32_t dma_enable_min_size_ = 3;
 
+  /// 进行中传输的完成通知 / Completion operation of the transfer in flight
   OperationRW rw_op_;
 
+  /// 调用者的读目标缓冲区，DMA 完成后从接收缓冲区拷入；无读目标时为空 / Caller's read
+  /// destination, filled from the RX buffer when the DMA completes; empty without one
   RawData read_buff_;
 
+  /// 进行中的传输是寄存器读（接收数据前带一个地址字节）/ The transfer in flight is a
+  /// register read (one address byte precedes the received data)
   bool mem_read_ = false;
+  /// 阻塞模式下等待完成的同步对象 / Synchronization for waiting in blocking mode
   AsyncBlockWait block_wait_{};
 
+  /// 外设编号到实例的映射，供 HAL 回调找回对象 / Instance table by peripheral ID, used
+  /// by HAL callbacks to find the object
   static STM32SPI* map[STM32_SPI_NUMBER];  // NOLINT
 
  private:

@@ -32,36 +32,96 @@ namespace LibXR::USB
  *
  * 接收路径：每个 CAN 源一个 SPSC 队列（rx_queue_size 为每通道容量），echo 单独一个
  * SPSC 队列（生产者是 USB OUT 处理）。CAN 回调与 OUT 处理只入队并请求类服务，
- * 服务里取槽、打包、提交。echo 总是优先，其后通道间轮流发送；RX 队列满时丢帧并
- * 按通道计数，溢出标志随该通道发往主机的下一帧（RX、错误帧或 echo）上报。
+ * 服务里取槽、打包、提交。echo 与接收帧在两者都有待发时轮流发送，只有一类时直接发送；
+ * 接收帧在通道间轮流；RX 队列满时丢帧并按通道计数，溢出标志随该通道发往主机的下一帧
+ * （RX、错误帧或 echo）上报。
  *
  * Receive path: one SPSC queue per CAN source (rx_queue_size is the per-channel
  * capacity) plus one echo SPSC queue whose producer is the USB OUT handling. CAN
  * callbacks and the OUT handler only enqueue and request the class service; the
- * service acquires slots, packs and submits. Echo frames always go first, then the
- * channels are drained round-robin; a full RX queue drops the frame and counts it
- * per channel, and the overflow flag rides on that channel's next frame to the host
- * (RX, error or echo).
+ * service acquires slots, packs and submits. Echo frames and received frames alternate
+ * while both are pending and go out directly when only one kind is; received frames
+ * are drained round-robin across the channels; a full RX queue drops the frame and
+ * counts it per channel, and the overflow flag rides on that channel's next frame to
+ * the host (RX, error or echo).
+ *
+ * 会话边界：主机在通道停止时释放这个通道的 tx 上下文，所以通道复位（MODE RESET）丢弃
+ * 它排着队的接收帧、错误帧、echo 和被 echo 队列压住的 echo，没有启动的通道的帧不再交给
+ * IN 端点。最后一个通道复位时，主机已经杀掉所有 RX URB，打包进两个槽里的帧要等到下一
+ * 次打开才会被读走，所以此时还要 Flush 共享 IN 端点并清空所有队列；还有通道在运行时
+ * 不能这样做，会丢掉它们的帧和 echo。通道启动（MODE START）再清理一次，覆盖总线复位
+ * 后重新绑定、没有收到 MODE RESET 的情况，以及 CAN 回调在复位清理之后才入队的竞争。
+ * Session boundary: the host frees a channel's tx contexts when it stops the channel,
+ * so a channel reset (MODE RESET) drops the channel's queued receive frames, error
+ * frames, echoes and the echo held by echo-queue back-pressure, and the frames of a
+ * channel that is not started are never handed to the IN endpoint. When the last
+ * channel is reset the host has killed all RX URBs and the frames packed into the two
+ * slots would wait for the next open, so the shared IN endpoint is flushed and every
+ * queue is emptied; with another channel still started this must not be done, it would
+ * lose that channel's frames and echoes. A channel start (MODE START) cleans up once
+ * more, for a rebind after a bus reset that got no MODE RESET and for a CAN callback
+ * that enqueued only after the reset cleanup.
+ *
+ * 发送路径：echo 的含义是“设备的 CAN 驱动已接受这一帧”。OUT 帧交给 CAN 驱动；驱动的
+ * 发送队列满（FULL）时，帧进入该通道自己的暂存队列，不回 echo，OUT 租约立即归还，
+ * 另一个通道不受影响。暂存队列非空期间，该通道的新帧排在队尾，保持顺序。服务和 SOF
+ * 节拍（只在有暂存帧时请求）按顺序重试，驱动接受一帧才回它的 echo。每通道的流控靠
+ * 主机每通道的在途帧上限（Linux gs_usb 驱动为 10 帧，等于默认的暂存容量）：主机收到
+ * echo 才继续发，所以暂存队列不会溢出。超过容量时（主机不遵守该上限）这一帧被丢弃，
+ * 仍然回 echo。通道复位、重新启动或端点解绑时，该通道的暂存帧被丢弃：还没交给 CAN
+ * 驱动的帧不会发送，也不回 echo；队头那一帧如果驱动已经接受（只差 echo 队列腾位），
+ * 已经交给了驱动，仍可能发到总线上，只是它的 echo 不再回。
+ *
+ * Transmit path: an echo means "the device's CAN driver accepted this frame". An OUT
+ * frame goes to the CAN driver; when the driver's transmit queue is full (FULL) the
+ * frame goes to that channel's own staging queue, gets no echo yet, and the OUT lease
+ * goes back at once, so the other channel is not held up. While a channel's staging
+ * queue is not empty, its new frames go to the end of it to keep the order. The
+ * service and the SOF tick (requested only while something is staged) retry in order,
+ * and a frame's echo is sent when the driver accepts it. Per-channel flow control rests
+ * on the host's per-channel in-flight limit (10 frames in the Linux gs_usb driver,
+ * equal to the default staging capacity): the host sends on only after an echo, so the
+ * staging queue does not overflow. Beyond the capacity (a host that ignores that limit)
+ * the frame is dropped and still echoed. A channel reset, a restart of the channel or
+ * an endpoint unbind drops the channel's staged frames: a frame not yet handed to the
+ * CAN driver is never sent and gets no echo; the head frame, if the driver already
+ * accepted it (only room in the echo queue is missing), has been handed over and may
+ * still go out on the bus, only its echo is not sent.
  */
 template <std::size_t CanChNum>
 class GsUsbClass : public DeviceClass
 {
  public:
   static_assert(CanChNum > 0 && CanChNum <= 255, "CanChNum must be in (0, 255]");
+  /// CAN 通道数 / Number of CAN channels
   static constexpr uint8_t CAN_CH_NUM = static_cast<uint8_t>(CanChNum);
-  // GS USB 功能的默认接口字符串。
-  // Default interface string for the GS USB function.
+  /// GS USB 功能的默认接口字符串。
+  /// Default interface string for the GS USB function.
   static constexpr const char* DEFAULT_INTERFACE_STRING = "XRUSB GS USB";
 
-  // SET_USER_ID 落库周期（暂定 100 ms）。
-  // USER_ID write-back period (tentatively 100 ms).
+  /// SET_USER_ID 落库周期（暂定 100 ms）。
+  /// USER_ID write-back period (tentatively 100 ms).
   static constexpr uint32_t USER_ID_WRITE_PERIOD_MS = 100;
 
-  // 每通道错误帧队列容量。
-  // Per-channel error-frame queue capacity.
+  /// 每通道错误帧队列容量。
+  /// Per-channel error-frame queue capacity.
   static constexpr std::size_t ERR_QUEUE_SIZE = 8;
 
+  /// 每通道暂存队列的默认容量：Linux gs_usb 驱动每通道最多 10 帧在途（GS_MAX_TX_URBS）。
+  /// Default per-channel staging capacity: the Linux gs_usb driver keeps at most 10
+  /// frames in flight per channel (GS_MAX_TX_URBS).
+  static constexpr std::size_t DEFAULT_TX_STAGE_SIZE = 10;
+
  private:
+  /// 暂存容量至少为 1：0 在构造时被拒绝（release 构建里同样检查）。
+  /// The staging capacity is at least 1: 0 is rejected at construction (checked in
+  /// release builds too).
+  static std::size_t CheckedStageSize(std::size_t tx_stage_size)
+  {
+    REQUIRE(tx_stage_size >= 1U);
+    return tx_stage_size;
+  }
+
   // ===== Linux gs_usb 线缆格式（固定 12 字节头） / Linux gs_usb wire format
   // (fixed 12-byte header) =====
   LIBXR_PACKED_BEGIN
@@ -117,13 +177,18 @@ class GsUsbClass : public DeviceClass
    * @param database 数据库存储（可选，用于 USER_ID） / Database storage (optional, used
    * by USER_ID)
    * @param interface_string 接口字符串 / Interface string
+   * @param tx_stage_size 每通道暂存队列容量（至少 1），默认 10（Linux gs_usb 驱动每通道
+   * 在途帧上限）/ Per-channel staging capacity (at least 1) for host frames while the CAN
+   * transmit queue is full; default 10 (the per-channel in-flight limit of the Linux
+   * gs_usb driver)
    */
   GsUsbClass(Endpoint::EPNumber data_in_ep_num, Endpoint::EPNumber data_out_ep_num,
              std::initializer_list<LibXR::CAN*> cans, size_t rx_queue_size = 32,
              size_t echo_queue_size = 32, LibXR::GPIO* identify_gpio = nullptr,
              std::initializer_list<LibXR::GPIO*> termination_gpios = {},
              LibXR::Database* database = nullptr,
-             const char* interface_string = DEFAULT_INTERFACE_STRING)
+             const char* interface_string = DEFAULT_INTERFACE_STRING,
+             size_t tx_stage_size = DEFAULT_TX_STAGE_SIZE)
       : data_in_ep_num_(data_in_ep_num),
         data_out_ep_num_(data_out_ep_num),
         interface_string_(interface_string),
@@ -131,7 +196,8 @@ class GsUsbClass : public DeviceClass
         database_(database),
         echo_queue_(echo_queue_size),
         rx_queues_(rx_queue_size),
-        err_queues_(ERR_QUEUE_SIZE)
+        err_queues_(ERR_QUEUE_SIZE),
+        stage_queues_(CheckedStageSize(tx_stage_size))
   {
     ASSERT(cans.size() == CAN_CH_NUM);
     std::size_t i = 0;
@@ -173,13 +239,18 @@ class GsUsbClass : public DeviceClass
    * @param database 数据库存储（可选，用于 USER_ID） / Database storage (optional, used
    * by USER_ID)
    * @param interface_string 接口字符串 / Interface string
+   * @param tx_stage_size 每通道暂存队列容量（至少 1），默认 10（Linux gs_usb 驱动每通道
+   * 在途帧上限）/ Per-channel staging capacity (at least 1) for host frames while the CAN
+   * transmit queue is full; default 10 (the per-channel in-flight limit of the Linux
+   * gs_usb driver)
    */
   GsUsbClass(Endpoint::EPNumber data_in_ep_num, Endpoint::EPNumber data_out_ep_num,
              std::initializer_list<LibXR::FDCAN*> fd_cans, size_t rx_queue_size = 32,
              size_t echo_queue_size = 32, LibXR::GPIO* identify_gpio = nullptr,
              std::initializer_list<LibXR::GPIO*> termination_gpios = {},
              LibXR::Database* database = nullptr,
-             const char* interface_string = DEFAULT_INTERFACE_STRING)
+             const char* interface_string = DEFAULT_INTERFACE_STRING,
+             size_t tx_stage_size = DEFAULT_TX_STAGE_SIZE)
       : fd_supported_(true),
         data_in_ep_num_(data_in_ep_num),
         data_out_ep_num_(data_out_ep_num),
@@ -188,7 +259,8 @@ class GsUsbClass : public DeviceClass
         database_(database),
         echo_queue_(echo_queue_size),
         rx_queues_(rx_queue_size),
-        err_queues_(ERR_QUEUE_SIZE)
+        err_queues_(ERR_QUEUE_SIZE),
+        stage_queues_(CheckedStageSize(tx_stage_size))
   {
     ASSERT(fd_cans.size() == CAN_CH_NUM);
     std::size_t i = 0;
@@ -237,7 +309,15 @@ class GsUsbClass : public DeviceClass
     // OUT lease back (the host resumes).
     if (out_hold_)
     {
-      if (echo_queue_.Push(out_hold_item_) == ErrorCode::OK)
+      const uint8_t hold_ch = out_hold_item_.hdr.channel;
+      if (hold_ch >= can_count_ || !can_enabled_[hold_ch].load(std::memory_order_relaxed))
+      {
+        // 通道已经停止（复位清理没碰到它的话）：不回 echo，只归还租约。
+        // The channel is not started any more: no echo, just give the lease back.
+        out_hold_ = false;
+        ReturnLease(in_isr, out_hold_slot_);
+      }
+      else if (echo_queue_.Push(out_hold_item_) == ErrorCode::OK)
       {
         out_hold_ = false;
         ReturnLease(in_isr, out_hold_slot_);
@@ -245,6 +325,11 @@ class GsUsbClass : public DeviceClass
       // echo 队列仍满：继续持有租约背压，等下一次服务。
       // Echo queue still full: keep holding the lease and wait for the next service.
     }
+
+    // CAN 发送队列曾经满而暂存的主机帧：按顺序重试提交，驱动接受后回 echo。
+    // Host frames staged while a CAN transmit queue was full: retry their submission in
+    // order and send the echo once the driver accepts a frame.
+    ServiceStagedFrames();
 
     // 取槽 → 选帧 → 打包 → 提交；IN 槽都在途时停下，完成回调再请求服务。
     // Acquire a slot, pick a frame, pack and submit; stop when no IN slot is free, the
@@ -284,6 +369,30 @@ class GsUsbClass : public DeviceClass
         break;
       }
     }
+  }
+
+  /**
+   * @brief 只在有帧暂存时要 SOF 节拍 / The SOF tick is wanted only while frames are
+   *        staged
+   *
+   * CAN 驱动没有发送完成通知，队列腾位只能轮询。有暂存帧时每个 SOF 重试一次（全速
+   * 1 ms，高速 125 us），没有时不占 SOF 中断。
+   * The CAN driver has no transmit-complete notification, so freed room can only be
+   * polled for. While frames are staged the retry runs once per SOF (1 ms at full
+   * speed, 125 us at high speed); with nothing staged the class costs no SOF interrupt.
+   */
+  bool NeedsFrameTick() const override
+  {
+    return stage_pending_.load(std::memory_order_relaxed);
+  }
+
+  void OnFrameTick(bool in_isr, const FrameTick& time) override
+  {
+    UNUSED(time);
+    // 直接走服务：重试成功后要推 echo，并把 echo 发给主机。
+    // Run the service itself: after a successful retry the echo is queued and sent to
+    // the host.
+    if (stage_pending_.load(std::memory_order_relaxed)) OnService(in_isr);
   }
 
  protected:
@@ -401,6 +510,16 @@ class GsUsbClass : public DeviceClass
       out_hold_ = false;
     }
     out_armed_ = false;
+
+    // 暂存的主机帧同样属于这次绑定：没交给 CAN 驱动的不再发送也不回 echo；驱动已接受
+    // 的队头已经交出，仍可能上总线，只是不回它的 echo。
+    // The staged host frames belong to this binding too: those not yet handed to the CAN
+    // driver are never sent and get no echo; an accepted head frame has been handed over
+    // and may still go out on the bus, only its echo is not sent.
+    for (uint8_t i = 0; i < can_count_; ++i)
+    {
+      DropStagedFrames(i);
+    }
 
     for (uint8_t i = 0; i < can_count_; ++i)
     {
@@ -734,8 +853,6 @@ class GsUsbClass : public DeviceClass
    */
   ErrorCode OnClassData(bool in_isr, uint8_t bRequest, LibXR::ConstRawData& data) override
   {
-    UNUSED(in_isr);
-
     auto req = static_cast<GsUsb::BReq>(bRequest);
 
     switch (req)
@@ -774,7 +891,7 @@ class GsUsbClass : public DeviceClass
           return ErrorCode::ARG_ERR;
         }
         Memory::FastCopy(&ctrl_buf_.mode, data.addr_, sizeof(GsUsb::DeviceMode));
-        return HandleMode(ctrl_target_channel_, ctrl_buf_.mode);
+        return HandleMode(in_isr, ctrl_target_channel_, ctrl_buf_.mode);
 
       case GsUsb::BReq::BERR:
         if (data.size_ != sizeof(uint32_t))
@@ -1120,10 +1237,27 @@ class GsUsbClass : public DeviceClass
   // interrupt, whose priorities need not be equal, so error frames get their own queue
   // and every queue keeps one producer context.
   RxQueueArray err_queues_;
+  /// 每通道暂存队列：CAN 发送队列满时的主机帧，只在 owner 里读写 / Per-channel staging
+  /// queue for host frames while the CAN transmit queue is full; owner context only
+  RxQueueArray stage_queues_;
+
+  // 暂存队列队头的状态，只在 owner 访问：队头帧已被 CAN 驱动接受、只等 echo 队列腾位时
+  // stage_accepted_ 为真（不会再次提交）；stage_ts_ 是驱动接受它的时间戳。
+  // State of the head of each staging queue, owner only: stage_accepted_ is set when the
+  // CAN driver already accepted the head frame and only room in the echo queue is
+  // missing (it is never submitted again); stage_ts_ is the time it was accepted.
+  bool stage_accepted_[CanChNum]{};
+  uint32_t stage_ts_[CanChNum]{};
+  /// 有帧在暂存队列里（给 SOF 中断里的 NeedsFrameTick 读）/ Some frame is staged (read
+  /// from the SOF interrupt path by NeedsFrameTick)
+  std::atomic<bool> stage_pending_{false};
 
   // 发往主机的调度状态，只在 owner（完成回调与服务）上下文访问。
   // Host-send scheduling state, accessed only in the owner (completions and service).
   uint8_t rr_ = 0;  ///< 通道轮流游标 / Round-robin channel cursor
+  /// 下一帧先取接收帧（刚发过 echo）/ The next pick tries a received frame first (an
+  /// echo went out last)
+  bool rx_turn_ = false;
 
   // echo 背压：OUT 租约被持有，echo 帧暂存，服务补推后归还租约。
   // Echo backpressure: the OUT lease is held with the frame stashed until the service
@@ -1300,20 +1434,69 @@ class GsUsbClass : public DeviceClass
   }
 
   /**
-   * @brief 选下一帧发往主机：echo 优先，通道间轮流，通道内 FIFO /
-   *        Pick the next frame for the host: echo first, channels round-robin, FIFO
-   *        within a channel
+   * @brief 选下一帧发往主机：echo 与接收帧都有待发时轮流，只有一类时直接发；接收帧通道间
+   *        轮流，通道内 FIFO /
+   *        Pick the next frame for the host: echoes and received frames alternate while
+   *        both are pending and a lone kind goes out directly; received frames go round
+   *        robin across channels, FIFO within a channel
+   *
+   * echo 一律优先会让突发期间的接收帧得不到发送机会，RX 队列溢出。
+   * Serving echoes first would starve the received frames during a host burst until
+   * their queue overflows.
    */
   bool PickFrame(QueueItem& item)
   {
-    if (echo_queue_.Pop(item) == ErrorCode::OK)
+    if (rx_turn_)
     {
+      if (PickReceived(item))
+      {
+        rx_turn_ = false;
+        return true;
+      }
+      return PickEcho(item);
+    }
+    if (PickEcho(item))
+    {
+      rx_turn_ = true;
       return true;
     }
+    return PickReceived(item);
+  }
 
+  /**
+   * @brief 取下一个 echo；没有启动的通道的 echo 丢弃，不交给端点 /
+   *        Take the next echo; the echo of a channel that is not started is dropped
+   *        and never handed to the endpoint
+   *
+   * 主机在通道停止时已经释放了这个通道的 tx 上下文，这样的 echo 它只会报
+   * “Unexpected unused echo id”。
+   * The host freed the channel's tx contexts when it stopped the channel, so it could
+   * only report such an echo as "Unexpected unused echo id".
+   */
+  bool PickEcho(QueueItem& item)
+  {
+    while (echo_queue_.Pop(item) == ErrorCode::OK)
+    {
+      if (item.hdr.channel < can_count_ &&
+          can_enabled_[item.hdr.channel].load(std::memory_order_relaxed))
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// 通道间轮流取一帧接收帧（错误帧先于同通道的数据帧）/ Take one received frame,
+  /// channels round-robin (an error frame before the channel's data frames)
+  bool PickReceived(QueueItem& item)
+  {
     for (std::size_t k = 0; k < can_count_; ++k)
     {
       const uint8_t ch = static_cast<uint8_t>((rr_ + k) % can_count_);
+      // 没有启动的通道不发：它的帧属于已经结束的会话（错误帧不看通道是否启动入队）。
+      // A channel that is not started sends nothing: its frames belong to a session
+      // that ended (error frames are queued whether or not the channel is started).
+      if (!can_enabled_[ch].load(std::memory_order_relaxed)) continue;
       if (err_queues_[ch].Pop(item) == ErrorCode::OK ||
           rx_queues_[ch].Pop(item) == ErrorCode::OK)
       {
@@ -1355,9 +1538,11 @@ class GsUsbClass : public DeviceClass
    */
   void ReturnLease(bool in_isr, const Endpoint::Slot& slot)
   {
-    // OK：租约重新挂接收；ABORTED：槽随解绑作废，无需处理。
-    // OK: the lease rearms the receive; ABORTED: the slot went stale, nothing to do.
-    (void)ep_data_out_->ReturnSlot(slot, in_isr);
+    // OK：租约重新挂接收，这条接收算作在途，RearmOut 不再挂第二条；ABORTED：槽随
+    // 解绑作废，无需处理。
+    // OK: the lease rearms the receive, which counts as in flight so RearmOut arms no
+    // second one; ABORTED: the slot went stale, nothing to do.
+    if (ep_data_out_->ReturnSlot(slot, in_isr) == ErrorCode::OK) out_armed_ = true;
   }
 
   /**
@@ -1606,10 +1791,231 @@ class GsUsbClass : public DeviceClass
     return fdcans_[ch]->SetConfig(fd_cfg);
   }
 
+  /// 暂存队列里有没有帧 / Whether any staging queue holds a frame
+  bool AnyStaged()
+  {
+    for (uint8_t i = 0; i < can_count_; ++i)
+    {
+      if (stage_queues_[i].Size() != 0U) return true;
+    }
+    return false;
+  }
+
+  /**
+   * @brief 把一帧提交给 CAN 驱动 / Submit one frame to the CAN driver
+   * @return 驱动的返回值；FULL 表示发送队列满、帧没有被接受 / The driver's result; FULL
+   *         means the transmit queue is full and the frame was not accepted
+   */
+  ErrorCode SubmitToCan(uint8_t ch, bool is_fd, const WireHeader& hdr,
+                        const uint8_t* payload)
+  {
+    if (is_fd)
+    {
+      LibXR::FDCAN::FDPack fd{};
+      HostWireToFdPack(hdr, payload, fd);
+      return fdcans_[ch]->AddMessage(fd);
+    }
+    LibXR::CAN::ClassicPack classic{};
+    HostWireToClassicPack(hdr, payload, classic);
+    return cans_[ch]->AddMessage(classic);
+  }
+
+  /**
+   * @brief 丢弃该通道暂存的主机帧，一律不回 echo / Drop the host frames staged for this
+   *        channel; none of them is echoed
+   *
+   * 还没交给 CAN 驱动的帧因此不会发送。队头如果已被驱动接受（stage_accepted_，只差
+   * echo 队列腾位），它已经交给了驱动，不会被撤回，仍可能发到总线上，只是不再回它的
+   * echo。
+   * A frame not yet handed to the CAN driver is therefore never sent. A head frame the
+   * driver already accepted (stage_accepted_, only room in the echo queue is missing)
+   * has been handed over and is not withdrawn: it may still go out on the bus, only its
+   * echo is not sent.
+   *
+   * 只在 owner 中调用，owner 是暂存队列唯一的生产者和消费者。
+   * Owner only: the owner is the only producer and consumer of the staging queues.
+   */
+  void DropStagedFrames(uint8_t ch)
+  {
+    QueueItem item;
+    while (stage_queues_[ch].Pop(item) == ErrorCode::OK)
+    {
+    }
+    stage_accepted_[ch] = false;
+    stage_pending_.store(AnyStaged(), std::memory_order_relaxed);
+  }
+
+  /**
+   * @brief 按顺序重试各通道暂存的主机帧；驱动接受一帧后才回它的 echo /
+   *        Retry the staged host frames of every channel in order; a frame's echo is
+   *        sent only after the driver accepted it
+   *
+   * 每个通道只看自己的队头：一个通道的发送队列还是满的，只停下这个通道，其他通道照常。
+   * 帧被驱动接受后 echo 队列恰好满时，队头保留并标记为已接受，下次只补推 echo，不会
+   * 再次提交。
+   * Each channel looks at its own head only: a channel whose transmit queue is still full
+   * stops that channel alone. When the echo queue happens to be full right after the
+   * driver accepted a frame, the head stays, marked as accepted, and only its echo is
+   * pushed next time; the frame is never submitted again.
+   */
+  void ServiceStagedFrames()
+  {
+    if (!stage_pending_.load(std::memory_order_relaxed)) return;
+
+    for (uint8_t ch = 0; ch < can_count_; ++ch)
+    {
+      QueueItem item;
+      while (stage_queues_[ch].Peek(item) == ErrorCode::OK)
+      {
+        if (!stage_accepted_[ch])
+        {
+          // 正常情况下通道停止时已经丢弃了暂存帧；这里是兜底，通道已停就不再发送。
+          // The staged frames are normally dropped when the channel stops; this is a
+          // safety net so that a stopped channel never sends them.
+          if (!can_enabled_[ch].load(std::memory_order_relaxed) ||
+              (item.is_fd && !fd_enabled_[ch].load(std::memory_order_relaxed)))
+          {
+            DropStagedFrames(ch);
+            break;
+          }
+
+          // 仍然满：这个通道停在队头，下一次服务或 SOF 节拍再试。
+          // Still full: this channel stays at its head until the next service or SOF
+          // tick.
+          if (SubmitToCan(ch, item.is_fd, item.hdr, item.data.data()) == ErrorCode::FULL)
+          {
+            break;
+          }
+          // 其他结果（OK 或别的错误码）与直接提交时一样处理：这一帧不再提交。
+          // Any other result (OK or another error code) is handled as for a direct
+          // submission: the frame is not submitted again.
+          stage_accepted_[ch] = true;
+          stage_ts_[ch] = MakeTimestampUs(ch);
+        }
+
+        if (item.hdr.echo_id != ECHO_ID_RX)
+        {
+          item.timestamp_us = stage_ts_[ch];
+          // echo 队列满：队头保持“已接受”，下次服务只补推 echo。
+          // Echo queue full: the head stays "accepted" and the next service only pushes
+          // the echo.
+          if (echo_queue_.Push(item) != ErrorCode::OK) break;
+        }
+        stage_accepted_[ch] = false;
+        (void)stage_queues_[ch].Pop(item);
+      }
+    }
+    stage_pending_.store(AnyStaged(), std::memory_order_relaxed);
+  }
+
+  /**
+   * @brief 丢弃一个通道排着队、还没交给端点的帧：接收帧、错误帧、它的 echo，以及被
+   *        echo 队列满压住的它的那个 echo /
+   *        Drop the frames of one channel that wait in the class and are not yet handed
+   *        to the endpoint: its receive frames, error frames and echoes, and its echo
+   *        held by echo-queue back-pressure
+   *
+   * 其他通道的 echo 保留，顺序不变。被压住的 echo 属于结束的会话：丢弃它，归还 OUT
+   * 租约，主机恢复收发；帧本身已经交给了 CAN 驱动，仍可能上总线。在 owner 里执行：
+   * owner 是接收队列和错误队列的消费者，也是回显队列唯一的生产者和消费者。已经交给
+   * IN 端点的帧不在这里处理（见 FlushInEndpoint）。
+   * The echoes of other channels stay, in order. A held echo belongs to the session
+   * that ends: it is dropped and the OUT lease goes back, so the host resumes; the frame
+   * itself was handed to the CAN driver and may still go out on the bus. Runs in the
+   * owner, which consumes the receive and error queues and is the only producer and
+   * consumer of the echo queue. Frames already handed to the IN endpoint are not
+   * handled here (see FlushInEndpoint).
+   */
+  void DropChannelFrames(bool in_isr, uint8_t ch)
+  {
+    QueueItem item;
+    while (rx_queues_[ch].Pop(item) == ErrorCode::OK)
+    {
+    }
+    while (err_queues_[ch].Pop(item) == ErrorCode::OK)
+    {
+    }
+    for (size_t n = echo_queue_.Size(); n != 0U; --n)
+    {
+      if (echo_queue_.Pop(item) != ErrorCode::OK) break;
+      if (item.hdr.channel != ch) (void)echo_queue_.Push(item);
+    }
+    if (out_hold_ && out_hold_item_.hdr.channel == ch)
+    {
+      out_hold_ = false;
+      ReturnLease(in_isr, out_hold_slot_);
+    }
+  }
+
+  /// 有通道在运行（已启动）/ Some channel is started
+  bool AnyChannelStarted() const
+  {
+    for (uint8_t ch = 0; ch < can_count_; ++ch)
+    {
+      if (can_enabled_[ch].load(std::memory_order_relaxed)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * @brief 最后一个通道复位：结束共享 IN 端点上排队和在途的传输，丢弃所有队列 /
+   *        The last channel was reset: end the queued and in-flight transfers of the
+   *        shared IN endpoint and drop every queue
+   *
+   * 主机在最后一个通道关闭时杀掉所有 RX URB，此后不再读 IN 端点，直到下一次打开；
+   * 已经打包进两个槽里的帧（一个在途、一个排队）会一直等到那时，在 BITTIMING 和
+   * MODE START 之前就交给刚提交的 URB。没有通道在运行，所以没有谁的帧需要保留。
+   * Flush 结束这些传输（各一次 ABORTED 完成，类只是请求服务），端点保持启用，下次
+   * 提交照常开始。在 owner 里执行，此时没有借出的 IN 槽（取槽和提交在同一次服务里）。
+   * 其他通道还在运行时不能这样做：会丢掉它们的帧和 echo。
+   * When the last channel closes the host kills all RX URBs and does not read the IN
+   * endpoint until the next open; the frames already packed into the two slots (one in
+   * flight, one queued) wait until then and go to the freshly submitted URBs before
+   * BITTIMING and MODE START. No channel is started, so nobody's frames need to be
+   * kept. Flush ends these transfers (one ABORTED completion each, which the class
+   * only answers with a service request); the endpoint stays enabled and the next
+   * submission starts as usual. Runs in the owner, where no IN slot is lent (acquire
+   * and submit happen in one service pass). With another channel still started this
+   * must not be done: its frames and echoes would be lost.
+   */
+  void FlushInEndpoint(bool in_isr)
+  {
+    for (uint8_t ch = 0; ch < can_count_; ++ch)
+    {
+      DropChannelFrames(in_isr, ch);
+    }
+    if (ep_data_in_ != nullptr) ep_data_in_->Flush(in_isr);
+  }
+
+  /**
+   * @brief 通道启动：丢弃上一次会话留下的帧（见 DropChannelFrames）和这个通道暂存的
+   *        主机帧 /
+   *        Channel start: drop what the previous session left (see DropChannelFrames)
+   *        and the host frames staged for this channel
+   *
+   *        通道复位时已经做过同样的清理，这里是兜底：CAN 回调在另一个上下文里检查完
+   *        可用标志后，可能在复位清理之后才入队。
+   *        The channel reset did the same cleanup; this is the safety net for a CAN
+   *        callback that checked the enable flag in its own context and enqueued only
+   *        after the reset cleanup.
+   *
+   *        暂存的主机帧也在这里丢弃（DropStagedFrames）：还没交给 CAN 驱动的不发送、
+   *        不回 echo；驱动已接受的队头已经交出，可能仍会上总线，只是不回它的 echo。
+   *        The host frames staged for this channel are dropped here too
+   *        (DropStagedFrames): those not yet handed to the CAN driver are never sent and
+   *        get no echo; an accepted head frame has been handed over and may still go out
+   *        on the bus, only its echo is not sent.
+   */
+  void DropStaleFrames(bool in_isr, uint8_t ch)
+  {
+    DropStagedFrames(ch);
+    DropChannelFrames(in_isr, ch);
+  }
+
   /**
    * @brief 处理 MODE（启动/复位 + 标志位） / Handle MODE (start/reset + flags)
    */
-  ErrorCode HandleMode(uint8_t ch, const GsUsb::DeviceMode& mode)
+  ErrorCode HandleMode(bool in_isr, uint8_t ch, const GsUsb::DeviceMode& mode)
   {
     if (!host_format_ok_ || ch >= can_count_ || !cans_[ch])
     {
@@ -1621,9 +2027,23 @@ class GsUsbClass : public DeviceClass
       case GsUsb::CanMode::RESET:
         can_enabled_[ch] = false;
         fd_enabled_[ch] = false;
+        // 这个通道暂存的主机帧属于要结束的会话：丢弃，都不回 echo；没交给 CAN 驱动的
+        // 不发送，驱动已接受的队头已经交出，仍可能上总线。
+        // The host frames staged for this channel belong to the session that ends: drop
+        // them, none is echoed; those not yet handed to the CAN driver are never sent, an
+        // accepted head frame has been handed over and may still go out on the bus.
+        DropStagedFrames(ch);
+        // 这个通道排着队的帧和它的 echo 也属于结束的会话（主机在关闭时已经释放了
+        // tx 上下文）；没有通道在运行时，共享 IN 端点上排队和在途的帧也一起结束。
+        // The channel's queued frames and its echoes belong to the session that ends
+        // too (the host freed its tx contexts at close); with no channel left started
+        // the frames queued and in flight on the shared IN endpoint end with it.
+        DropChannelFrames(in_isr, ch);
+        if (!AnyChannelStarted()) FlushInEndpoint(in_isr);
         break;
 
       case GsUsb::CanMode::START:
+        DropStaleFrames(in_isr, ch);
         can_enabled_[ch] = true;
         if (fd_supported_ && fdcans_[ch] && (mode.flags & GsUsb::GSCAN_MODE_FD))
         {
@@ -1769,31 +2189,58 @@ class GsUsbClass : public DeviceClass
       return;
     }
 
-    // CAN TX 先提交，且只提交一次：echo 队列满时只把 echo 与租约暂存下来，
-    // 服务补推 echo 后归还租约，不会再次提交 CAN。
-    // Submit the CAN TX first and exactly once: a full echo queue only holds the echo
-    // and the lease, and the service returns the lease after pushing the echo without
-    // submitting the CAN frame again.
-    if (IS_FD)
+    // echo 的含义是“CAN 驱动已接受这一帧”。CAN TX 先提交，且只提交一次。
+    // 该通道的暂存队列非空时，新帧不直接交给驱动，而是排到暂存队列末尾，保持顺序。
+    // CAN 发送队列满（FULL）时驱动没有接受这一帧：把它暂存到该通道自己的队列，现在不回
+    // echo，OUT 租约立即归还（不阻塞另一个通道，两个通道共用同一条 OUT 端点）；服务和
+    // SOF 节拍按顺序重试，驱动接受后才回 echo（见 ServiceStagedFrames）。每通道的流控靠
+    // 主机每通道的在途帧上限：Linux gs_usb 驱动每通道最多 10 帧在途，收到 echo 才发下
+    // 一帧，所以默认容量的暂存队列不会满。暂存队列满了（主机不遵守该上限）时，这一帧
+    // 被丢弃，仍然回 echo。
+    // The echo means "the CAN driver accepted this frame". Submit the CAN TX first and
+    // exactly once. While the channel's staging queue is not empty a new frame is not
+    // handed to the driver but goes to the end of that queue, to keep the order. When
+    // the CAN transmit queue is full (FULL) the driver did not accept the frame: it is
+    // staged in the channel's own queue, no echo is sent yet, and the OUT lease goes
+    // back at once (the other channel is not held up, both share one OUT endpoint); the
+    // service and the SOF tick retry in order, and the echo is sent after the driver
+    // accepted the frame (see ServiceStagedFrames). Per-channel flow control rests on
+    // the host's per-channel in-flight limit: the Linux gs_usb driver keeps at most 10
+    // frames per channel in flight and sends the next only after an echo, so a staging
+    // queue of the default capacity does not fill up. When it is full (a host that
+    // ignores that limit) the frame is dropped and still echoed.
+    const bool NEED_ECHO = wh.echo_id != ECHO_ID_RX;
+    QueueItem qi;
+    qi.hdr = wh;
+    qi.is_fd = IS_FD;
+    qi.data_len = IS_FD ? 64u : 8u;
+    qi.timestamp_us = 0U;
+    Memory::FastCopy(qi.data.data(), payload, qi.data_len);
+
+    auto& stage = stage_queues_[CH];
+    if (stage.Size() != 0U || (IS_FD ? fdcans_[CH]->AddMessage(fd)
+                                     : cans_[CH]->AddMessage(classic)) == ErrorCode::FULL)
     {
-      (void)fdcans_[CH]->AddMessage(fd);
-    }
-    else
-    {
-      (void)cans_[CH]->AddMessage(classic);
+      if (stage.Push(qi) == ErrorCode::OK)
+      {
+        stage_pending_.store(true, std::memory_order_relaxed);
+        // 请求服务：先重试一次，并让 owner 在这一轮之后打开 SOF 节拍。
+        // Request the service: it retries once now and makes the owner switch the SOF
+        // tick on after this pass.
+        RequestClassService(in_isr);
+        ReturnLease(in_isr, completion.slot);
+        return;
+      }
+      // 暂存队列满：丢弃这一帧，下面照常回 echo（原行为）。
+      // The staging queue is full: the frame is dropped and echoed below as before.
     }
 
     // TX echo：host 通过 echo_id 跟踪 TX buffer；设备需回送 echo_id。
     // TX echo: the host tracks TX buffers via echo_id, and the device should echo it
     // back.
-    if (wh.echo_id != ECHO_ID_RX)
+    if (NEED_ECHO)
     {
-      QueueItem qi;
-      qi.hdr = wh;
-      qi.is_fd = IS_FD;
-      qi.data_len = IS_FD ? 64u : 8u;
       qi.timestamp_us = MakeTimestampUs(CH);
-      Memory::FastCopy(qi.data.data(), payload, qi.data_len);
 
       if (echo_queue_.Push(qi) != ErrorCode::OK)
       {

@@ -6,16 +6,25 @@
 namespace LibXR
 {
 
+/**
+ * @brief MSPM0 通用定时器 PWM 输出 / MSPM0 general-purpose timer PWM output
+ */
 class MSPM0PWM : public PWM
 {
  public:
+  /// 一个 PWM 通道的硬件资源描述 / Hardware resources of one PWM channel
   struct Resources
   {
-    GPTIMER_Regs* timer;
-    DL_TIMER_CC_INDEX channel;
-    uint32_t clock_freq;
+    GPTIMER_Regs* timer;        ///< 定时器寄存器 / Timer registers
+    DL_TIMER_CC_INDEX channel;  ///< 捕获比较通道 / Capture/compare channel
+    uint32_t clock_freq;  ///< 分频前的定时器时钟（Hz，必须大于 0）/ Timer clock before
+                          ///< the dividers (Hz, > 0)
   };
 
+  /**
+   * @brief 构造 PWM 通道 / Construct a PWM channel
+   * @param res 硬件资源 / Hardware resources
+   */
   MSPM0PWM(Resources res);
 
   /**

@@ -29,15 +29,27 @@
 
 #if defined(HPMSOC_HAS_HPMSDK_I2C) && __has_include("hpm_i2c_drv.h")
 #include "hpm_i2c_drv.h"
+/// SDK 提供 I2C 驱动时为 1，否则为 0 / 1 when the SDK provides the I2C driver, else 0
 #define LIBXR_HPM_I2C_SUPPORTED 1
+/// SDK 的 I2C 寄存器类型；SDK 不支持 I2C 时为 void / The SDK I2C register type; void when
+/// the SDK has no I2C support
 using LibXRHpmI2cType = I2C_Type;
 #else
+/// SDK 提供 I2C 驱动时为 1，否则为 0 / 1 when the SDK provides the I2C driver, else 0
 #define LIBXR_HPM_I2C_SUPPORTED 0
+/// SDK 的 I2C 寄存器类型；SDK 不支持 I2C 时为 void / The SDK I2C register type; void when
+/// the SDK has no I2C support
 using LibXRHpmI2cType = void;
 #endif
 
 #include "hpm_dma.hpp"
 
+/**
+ * @brief I2C 中断处理入口：把中断分发给与 ptr 对应的 HPMI2C 实例 / I2C interrupt entry:
+ * dispatches the interrupt to the HPMI2C instance that owns ptr
+ * @param ptr 触发中断的 I2C 控制器（如 HPM_I2C0）；没有对应实例时忽略 / The I2C
+ * controller that raised the interrupt (e.g. HPM_I2C0); ignored when no instance owns it
+ */
 extern "C" void libxr_hpm_i2c_process_interrupt(LibXRHpmI2cType* ptr);
 
 namespace LibXR
@@ -209,10 +221,11 @@ class HPMI2C final : public I2C
    */
   struct WaitPolicy
   {
-    uint64_t addr_hit_timeout_us;
-    uint64_t stop_timeout_us;
-    uint64_t bus_idle_timeout_us;
-    uint64_t transfer_timeout_us;
+    uint64_t addr_hit_timeout_us;  ///< 等待地址命中的超时（微秒）/ Address-hit wait (us)
+    uint64_t stop_timeout_us;  ///< 等待 STOP 完成的超时（微秒）/ STOP-complete wait (us)
+    uint64_t bus_idle_timeout_us;  ///< 等待总线空闲的超时（微秒）/ Bus-idle wait (us)
+    uint64_t transfer_timeout_us;  ///< 单笔传输阶段完成的超时（微秒）/ Transfer-stage
+                                   ///< wait (us)
   };
 
   /**

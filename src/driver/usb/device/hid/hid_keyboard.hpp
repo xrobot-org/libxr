@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "hid.hpp"
+#include "latest_snapshot.hpp"
 
 namespace LibXR::USB
 {
@@ -10,38 +11,38 @@ namespace LibXR::USB
 // 标准 HID Boot 键盘报告描述符
 // Standard HID Boot keyboard report descriptor.
 static const constexpr uint8_t HID_KEYBOARD_REPORT_DESC[] = {
-    0x05, 0x01,  // Usage Page (Generic Desktop)
-    0x09, 0x06,  // Usage (Keyboard)
-    0xA1, 0x01,  // Collection (Application)
-    0x05, 0x07,  //   Usage Page (Keyboard/Keypad)
-    0x19, 0xE0,  //   Usage Minimum (LeftControl)
-    0x29, 0xE7,  //   Usage Maximum (Right GUI)
-    0x15, 0x00,  //   Logical Minimum (0)
-    0x25, 0x01,  //   Logical Maximum (1)
-    0x75, 0x01,  //   Report Size (1)
-    0x95, 0x08,  //   Report Count (8)
-    0x81, 0x02,  //   Input (Data, Variable, Absolute) ; 8 bits: Modifier keys
-    0x95, 0x01,  //   Report Count (1)
-    0x75, 0x08,  //   Report Size (8)
-    0x81, 0x03,  //   Input (Constant, Variable, Absolute) ; 8 bits: Reserved
-    0x95, 0x05,  //   Report Count (5)
-    0x75, 0x01,  //   Report Size (1)
-    0x05, 0x08,  //   Usage Page (LEDs)
-    0x19, 0x01,  //   Usage Minimum (Num Lock)
-    0x29, 0x05,  //   Usage Maximum (Kana)
-    0x91, 0x02,  //   Output (Data, Variable, Absolute) ; 5 bits: LED report
-    0x95, 0x01,  //   Report Count (1)
-    0x75, 0x03,  //   Report Size (3)
-    0x91, 0x03,  //   Output (Constant, Variable, Absolute) ; 3 bits: Padding
-    0x95, 0x06,  //   Report Count (6)
-    0x75, 0x08,  //   Report Size (8)
-    0x15, 0x00,  //   Logical Minimum (0)
-    0x25, 0x65,  //   Logical Maximum (101)
-    0x05, 0x07,  //   Usage Page (Keyboard/Keypad)
-    0x19, 0x00,  //   Usage Minimum (Reserved (no event))
-    0x29, 0x65,  //   Usage Maximum (Keyboard Application)
-    0x81, 0x00,  //   Input (Data, Array) ; 6 x KeyCode
-    0xC0         // End Collection
+    0x05, 0x01,        // Usage Page (Generic Desktop)
+    0x09, 0x06,        // Usage (Keyboard)
+    0xA1, 0x01,        // Collection (Application)
+    0x05, 0x07,        //   Usage Page (Keyboard/Keypad)
+    0x19, 0xE0,        //   Usage Minimum (LeftControl)
+    0x29, 0xE7,        //   Usage Maximum (Right GUI)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x01,        //   Logical Maximum (1)
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0x08,        //   Report Count (8)
+    0x81, 0x02,        //   Input (Data, Variable, Absolute) ; 8 bits: Modifier keys
+    0x95, 0x01,        //   Report Count (1)
+    0x75, 0x08,        //   Report Size (8)
+    0x81, 0x03,        //   Input (Constant, Variable, Absolute) ; 8 bits: Reserved
+    0x95, 0x05,        //   Report Count (5)
+    0x75, 0x01,        //   Report Size (1)
+    0x05, 0x08,        //   Usage Page (LEDs)
+    0x19, 0x01,        //   Usage Minimum (Num Lock)
+    0x29, 0x05,        //   Usage Maximum (Kana)
+    0x91, 0x02,        //   Output (Data, Variable, Absolute) ; 5 bits: LED report
+    0x95, 0x01,        //   Report Count (1)
+    0x75, 0x03,        //   Report Size (3)
+    0x91, 0x03,        //   Output (Constant, Variable, Absolute) ; 3 bits: Padding
+    0x95, 0x06,        //   Report Count (6)
+    0x75, 0x08,        //   Report Size (8)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x26, 0xA4, 0x00,  //   Logical Maximum (164; two bytes, one byte would read signed)
+    0x05, 0x07,        //   Usage Page (Keyboard/Keypad)
+    0x19, 0x00,        //   Usage Minimum (Reserved (no event))
+    0x29, 0xA4,        //   Usage Maximum (Keyboard ExSel)
+    0x81, 0x00,        //   Input (Data, Array) ; 6 x KeyCode
+    0xC0               // End Collection
 };
 
 /**
@@ -50,7 +51,7 @@ static const constexpr uint8_t HID_KEYBOARD_REPORT_DESC[] = {
  *        Standard USB HID Keyboard derived class
  *
  */
-class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
+class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1, 1>
 {
  public:
   /**
@@ -66,8 +67,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
   HIDKeyboard(Endpoint::EPNumber in_ep_num, Endpoint::EPNumber out_ep_num,
               bool enable_out_endpoint = false, uint8_t in_ep_interval = 1,
               uint8_t out_ep_interval = 1,
-              const char* interface_string =
-                  HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>::DEFAULT_INTERFACE_STRING)
+              const char* interface_string = DEFAULT_INTERFACE_STRING)
       : HID(in_ep_num, out_ep_num, enable_out_endpoint, in_ep_interval, out_ep_interval,
             interface_string)
   {
@@ -363,19 +363,25 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
    * @brief 按下指定按键 / Press the specified key(s)
    * @param keys 按键列表（最多 6 个）/ List of keys (max 6)
    * @param mods 修饰键 / Modifiers
-   * @note 标准 HID Boot 协议只支持最多 6 键 / Boot protocol supports up to 6 keys
+   * @param in_isr 是否在中断中 / Whether in ISR
+   * @note 标准 HID Boot 协议只支持最多 6 键。超过 6 个键时按 HID 规范报告幻影状态：六个
+   *       键位全部填 ErrorRollOver（0x01），修饰键照常上报。
+   *       Boot protocol supports up to 6 keys. With more than 6 keys the phantom state of
+   *       the HID specification is reported: all six key slots hold ErrorRollOver
+   *       (0x01), the modifiers are reported as usual.
    */
   void PressKey(std::initializer_list<KeyCode> keys, uint8_t mods = Modifier::NONE,
                 bool in_isr = false)
   {
-    ASSERT(keys.size() <= 6);
-    report_ = {static_cast<uint8_t>(mods), 0, {0}};
+    Report report = {static_cast<uint8_t>(mods), 0, {0}};
+    const bool phantom = keys.size() > sizeof(report.keys);
     size_t i = 0;
     for (auto k : keys)
     {
-      report_.keys[i++] = static_cast<uint8_t>(k);
+      if (i >= sizeof(report.keys)) break;
+      report.keys[i++] = static_cast<uint8_t>(phantom ? KeyCode::ERROR_ROLLOVER : k);
     }
-    SendInputReport(ConstRawData{&report_, sizeof(report_)}, in_isr);
+    Send(report, in_isr);
   }
 
   /**
@@ -384,20 +390,34 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
   void ReleaseAll(bool in_isr = false)
   {
     Report report = {0, 0, {0}};
-    SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr);
+    Send(report, in_isr);
+  }
+
+ private:
+  /**
+   * @brief 发送一条输入报告；主机收下之前不能再发，被端点拒绝的报告不算已发送
+   * Send one input report; a report the endpoint refused (one already in flight) was not
+   * sent and is not remembered for GET_REPORT
+   */
+  void Send(const Report& report, bool in_isr)
+  {
+    (void)SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr);
   }
 
  protected:
   /**
-   * @brief 写入设备描述符 / Write device descriptor
+   * @brief 写入设备描述符：类代码为 0，由接口描述符给出（HID 1.11 4.1）；boot 子类和键盘
+   *        协议在接口描述符里
+   * Write the device descriptor: class code 0, the class is given per interface (HID 1.11
+   * 4.1); the boot subclass and the keyboard protocol are in the interface descriptor
    * @param header 设备描述符头指针 / Device descriptor header pointer
    * @return ErrorCode 返回 OK / Always returns OK
    */
   ErrorCode WriteDeviceDescriptor(DeviceDescriptor& header) override
   {
-    header.data_.bDeviceClass = DeviceDescriptor::ClassID::HID;
-    header.data_.bDeviceSubClass = 1;
-    header.data_.bDeviceProtocol = 1;
+    header.data_.bDeviceClass = DeviceDescriptor::ClassID::PER_INTERFACE;
+    header.data_.bDeviceSubClass = 0;
+    header.data_.bDeviceProtocol = 0;
     return ErrorCode::OK;
   }
 
@@ -421,7 +441,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
   {
     if (completion.slot.Valid() && completion.slot.data.size_ >= 1)
     {
-      led_state_ = *(static_cast<const uint8_t*>(completion.slot.data.addr_));
+      led_state_ = *(static_cast<const uint8_t*>(completion.slot.data.addr_)) & LED_MASK;
       on_led_change_cb_.Run(in_isr, GetNumLock(), GetCapsLock(), GetScrollLock());
     }
   }
@@ -453,12 +473,54 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
   {
     if (data.size_ >= 1)
     {
-      led_state_ = *(static_cast<const uint8_t*>(data.addr_));
+      led_state_ = *(static_cast<const uint8_t*>(data.addr_)) & LED_MASK;
       on_led_change_cb_.Run(in_isr, GetNumLock(), GetCapsLock(), GetScrollLock());
       return ErrorCode::OK;
     }
 
     return ErrorCode::NOT_SUPPORT;
+  }
+
+  /**
+   * @brief GET_REPORT(Input)：返回最近发送的输入报告，尚未发送时为全 0（无按键）；描述符
+   *        没有 Report ID，非 0 的 ID 不存在，STALL
+   * GET_REPORT(Input): the last input report sent, all zero (no key) before the first;
+   * the descriptor has no report ID, so a non-zero ID does not exist and stalls
+   */
+  ErrorCode OnGetInputReport(uint8_t report_id,
+                             DeviceClass::ControlTransferResult& result) override
+  {
+    if (report_id != 0U) return ErrorCode::NOT_SUPPORT;
+    // 发送方可能在中断或别的线程里：取一份完整的快照，再把它交给核心。
+    // The sender may be an interrupt or another thread: take one complete snapshot and
+    // hand that to the core.
+    const Report& reply = last_input_.Read(Session());
+    result.write_data = ConstRawData{&reply, sizeof(reply)};
+    return ErrorCode::OK;
+  }
+
+  void PublishInputReport(ConstRawData report, uint32_t session) override
+  {
+    last_input_.Publish(*static_cast<const Report*>(report.addr_), session);
+  }
+
+  void WithdrawInputReport() override { last_input_.Withdraw(); }
+
+  /// 新会话不带上一次会话的 LED 报告；LED 字节只由 owner 写，绑定也在 owner 里。
+  /// A new session does not keep the LED report of the previous one; the LED byte is
+  /// written by the owner only, and bind runs in the owner.
+  void OnSessionStart() override { led_state_ = 0; }
+
+  /**
+   * @brief GET_REPORT(Output)：返回最近收到的 LED 输出报告（1 字节），尚未收到时为 0
+   * GET_REPORT(Output): the last LED output report received (1 byte), 0 before the first
+   */
+  ErrorCode OnGetLastOutputReport(uint8_t report_id,
+                                  DeviceClass::ControlTransferResult& result) override
+  {
+    if (report_id != 0U) return ErrorCode::NOT_SUPPORT;
+    result.write_data = ConstRawData{&led_state_, sizeof(led_state_)};
+    return ErrorCode::OK;
   }
 
  public:
@@ -491,8 +553,14 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
   }
 
  private:
+  /// 五个 LED 位；高三位是常量填充 / The five LED bits; the upper three are padding
+  static constexpr uint8_t LED_MASK = 0x1F;
   uint8_t led_state_ = 0;  ///< LED 状态/ LED state
-  Report report_;          ///< 当前输入报告 / Current input report
+  /// 最近发送的输入报告。PressKey / ReleaseAll 可以在任何上下文、同时调用：基类保证同一
+  /// 时刻只有一个发送方在发布。
+  /// Last input report sent. PressKey / ReleaseAll may be called from any context and at
+  /// the same time: the base class lets one sender at a time publish.
+  LastInputReport<Report> last_input_{Report{}};
   LibXR::Callback<bool, bool, bool>
       on_led_change_cb_;  ///< LED 状态变化回调 / LED state change callback
 };

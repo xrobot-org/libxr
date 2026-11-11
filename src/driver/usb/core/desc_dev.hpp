@@ -38,6 +38,8 @@ enum class DescriptorType : uint8_t
 class DeviceDescriptor
 {
  public:
+  /// USB 设备/接口类代码（bDeviceClass 取值）/ USB device or interface class codes
+  /// (values of bDeviceClass)
   enum class ClassID : uint8_t
   {
     PER_INTERFACE = 0x00,         ///< 每个接口自定义类 / Per-interface
@@ -83,6 +85,8 @@ class DeviceDescriptor
       18;  ///< 设备描述符长度（固定18字节）/ Device descriptor length (18 bytes)
 
   LIBXR_PACKED_BEGIN
+  /// 设备描述符线上格式（18 字节，字段按 USB 2.0 表 9-8）/ Device descriptor wire
+  /// layout (18 bytes, fields per USB 2.0 table 9-8)
   struct Data
   {
     uint8_t bLength;  ///< 描述符长度（固定18）/ Descriptor length (always 18)

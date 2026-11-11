@@ -7,12 +7,18 @@
 
 namespace LibXR
 {
+/// 互斥锁句柄：POSIX 互斥锁 / Mutex handle: a POSIX mutex
 typedef pthread_mutex_t libxr_mutex_handle;
+/// 基于 futex 的信号量，状态仅为一个原子计数 / Futex-based semaphore whose state is one
+/// atomic count
 struct libxr_linux_futex_semaphore
 {
-  std::atomic<uint32_t> count;
+  std::atomic<uint32_t> count;  ///< 当前可用的信号量计数 / Currently available count
 };
+/// 信号量句柄：指向 futex 信号量的指针，由 Semaphore 构造时分配 / Semaphore handle: a
+/// pointer to the futex semaphore, allocated when the Semaphore is constructed
 typedef libxr_linux_futex_semaphore* libxr_semaphore_handle;
+/// 线程句柄：POSIX 线程 ID / Thread handle: a POSIX thread id
 typedef pthread_t libxr_thread_handle;
 
 /**
