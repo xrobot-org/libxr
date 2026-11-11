@@ -12,6 +12,11 @@
 namespace LibXR
 {
 
+/**
+ * @brief CH32 通用 USB 设备核心：端点池加全速设备核心，本身不含硬件访问 / Generic CH32
+ * USB device core: an endpoint pool plus a full-speed device core, with no hardware
+ * access of its own
+ */
 class CH32USBDevice : public USB::EndpointPool,
                       public USB::DeviceCore<USB::FullSpeedCapabilities>
 {
@@ -43,6 +48,8 @@ class CH32USBDevice : public USB::EndpointPool,
     USB::DeviceCore<USB::FullSpeedCapabilities>::Deinit(in_isr);
   }
 
+  /// 构造时传入的 USB 设备编号（ch32_usb_dev_id_t），仅保存 / USB device id (a
+  /// ch32_usb_dev_id_t value) given at construction; only stored
   uint8_t id_;
 };
 
@@ -63,6 +70,8 @@ class CH32USBDevice : public USB::EndpointPool,
 class CH32USBDeviceFS : public USB::FSDevDevice<Ch32DevFsHw>
 {
  public:
+  /// 端点配置，同 FSDevDevice::EPConfig / Endpoint configuration, same as
+  /// FSDevDevice::EPConfig
   using EPConfig = typename USB::FSDevDevice<Ch32DevFsHw>::EPConfig;
 
   /**
@@ -84,7 +93,13 @@ class CH32USBDeviceFS : public USB::FSDevDevice<Ch32DevFsHw>
     CH32UsbCanShared::usb_pma_configured.store(true, std::memory_order_release);
   }
 
+  /// 注册共享 USB/CAN 中断并使能向量，再启动 FSDEV 运行期 / Register the shared USB/CAN
+  /// interrupt and enable the vectors, then start the FSDEV runtime
   void Start(bool in_isr) override;
+
+  /// 先停止 FSDEV 运行期，再注销共享中断；CAN1 仍在使用时保留其向量 / Stop the FSDEV
+  /// runtime, then unregister the shared interrupt; the CAN1 vectors stay enabled while
+  /// CAN1 is active
   void Stop(bool in_isr) override;
 };
 
@@ -124,13 +139,25 @@ class CH32USBOtgFS : public USB::EndpointPool,
           CONFIGS,
       ConstRawData uid = {nullptr, 0});
 
+  /// 在状态阶段 IN 完成时写入 DEV_ADDR（保留 UDA_GP 位）并让 EP0 回到 RX ACK / TX NAK；
+  /// 其余阶段不做事 / At STATUS_IN_COMPLETE writes DEV_ADDR (keeping the UDA_GP bits) and
+  /// sets EP0 to RX ACK / TX NAK; does nothing in other phases
   ErrorCode SetAddress(uint8_t address, USB::ControlContext context) override;
 
+  /// 将 EP0 RX 置为 ACK，准备接收下一个 SETUP / Set EP0 RX to ACK to receive the next
+  /// SETUP
   void OnControlReady() override;
 
+  /// 配置 48 MHz 时钟、复位 SIE、使能中断与上拉并打开 USBFS_IRQn / Configure the 48 MHz
+  /// clock, reset the SIE, enable interrupts and the pull-up, and enable USBFS_IRQn
   void Start(bool in_isr) override;
+
+  /// 复位 SIE、关闭控制器与 USBFS_IRQn / Reset the SIE, switch the controller off and
+  /// disable USBFS_IRQn
   void Stop(bool in_isr) override;
 
+  /// 当前已启动的实例，供中断服务函数使用；Stop() 后为空 / Started instance used by the
+  /// ISR; null after Stop()
   static inline CH32USBOtgFS* self_ = nullptr;
 };
 
@@ -168,8 +195,12 @@ class CH32USBOtgHS : public USB::EndpointPool,
           CONFIGS,
       ConstRawData uid = {nullptr, 0});
 
+  /// 在状态阶段 IN 完成时写入 DEV_AD；其余阶段不做事 / Writes DEV_AD at
+  /// STATUS_IN_COMPLETE; does nothing in other phases
   ErrorCode SetAddress(uint8_t address, USB::ControlContext context) override;
 
+  /// 读取 SPEED_TYPE 得到总线复位后协商的速度 / Read SPEED_TYPE for the speed negotiated
+  /// after bus reset
   USB::Speed ReadBusSpeed() const override
   {
     return (USBHSD->SPEED_TYPE & USBHS_USB_SPEED_TYPE) == USBHS_USB_SPEED_HIGH
@@ -177,11 +208,21 @@ class CH32USBOtgHS : public USB::EndpointPool,
                : USB::Speed::FULL;
   }
 
+  /// 将 EP0 RX 置为 ACK，准备接收下一个 SETUP / Set EP0 RX to ACK to receive the next
+  /// SETUP
   void OnControlReady() override;
 
+  /// 配置 48 MHz 时钟、复位 SIE、以高速使能 DMA/中断/上拉并打开 USBHS_IRQn / Configure
+  /// the 48 MHz clock, reset the SIE, enable DMA, interrupts and the pull-up at high
+  /// speed, and enable USBHS_IRQn
   void Start(bool in_isr) override;
+
+  /// 复位 SIE、关闭控制器与 USBHS_IRQn / Reset the SIE, switch the controller off and
+  /// disable USBHS_IRQn
   void Stop(bool in_isr) override;
 
+  /// 当前已启动的实例，供中断服务函数使用；Stop() 后为空 / Started instance used by the
+  /// ISR; null after Stop()
   static inline CH32USBOtgHS* self_ = nullptr;
 };
 

@@ -140,6 +140,8 @@ static inline void flash_clear_flags_once()
 // Only program and erase do that here; reads are not divided. It is halved after
 // interrupts are disabled and restored before they are enabled again; meanwhile the
 // peripherals clocked from HCLK (SysTick, the APB peripherals) run at half speed too.
+/// Flash 擦写会话（RAII）：构造时进入擦写状态，析构时恢复 / RAII flash program/erase
+/// session: enters the state on construction and restores it on destruction
 class FlashAccessSession
 {
  public:
