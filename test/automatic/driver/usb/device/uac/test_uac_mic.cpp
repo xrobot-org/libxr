@@ -545,6 +545,61 @@ void TestUacSetInterfaceSlowStop()
 }
 
 // ---------------------------------------------------------------------------
+// The frame tick is wanted only while the host streams or a streaming start is pending
+// ---------------------------------------------------------------------------
+
+void TestUacFrameTickOnlyWhileStreaming()
+{
+  UacFixture f;
+  TEST_ASSERT(!f.uac.NeedsFrameTick());  // 未绑定 / unbound
+  f.uac.BindEndpoints(f.pool, 0, false);
+  TEST_ASSERT(!f.uac.NeedsFrameTick());  // 已配置但在 alt 0 / configured, alt 0
+
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.NeedsFrameTick());  // alt 1 / streaming
+
+  // 请求失败：恢复由下一拍执行，期间仍要拍。
+  // A failed request: the recovery runs on the next tick, which must still come.
+  FrameTick tick;
+  f.iso.CompleteWith(0, ErrorCode::FAILED);
+  TEST_ASSERT(f.uac.NeedsFrameTick());
+  f.uac.OnFrameTick(false, tick);
+  TEST_ASSERT(f.iso.active && f.uac.NeedsFrameTick());
+  f.iso.Complete();
+
+  TEST_ASSERT(f.uac.SetAltSetting(1, 0) == ErrorCode::OK);
+  TEST_ASSERT(!f.uac.NeedsFrameTick());  // 回到 alt 0 / back at alt 0
+
+  // 停止未确认：激活挂起，仍要拍来推进它。
+  // Stop unconfirmed: the activation is pending and needs the tick to advance.
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);
+  f.iso.Complete();
+  f.uac.OnFrameTick(false, tick);
+  TEST_ASSERT(f.iso.active);
+  f.iso.pending_stop = true;
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);
+  TEST_ASSERT(f.iso.IsStopping() && f.uac.NeedsFrameTick());
+  f.iso.ConfirmStop();
+  f.iso.pending_stop = false;
+  f.uac.OnFrameTick(false, tick);
+  TEST_ASSERT(f.iso.active && f.uac.NeedsFrameTick());
+  f.iso.Complete();
+
+  // Configure 失败：流保持关闭，不再要拍。
+  // Configure fails: streaming stays off and no tick is wanted.
+  TEST_ASSERT(f.uac.SetAltSetting(1, 0) == ErrorCode::OK);
+  f.iso.configure_result = ErrorCode::NOT_SUPPORT;
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::NOT_SUPPORT);
+  TEST_ASSERT(!f.uac.NeedsFrameTick());
+  f.iso.configure_result = ErrorCode::OK;
+
+  TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);
+  TEST_ASSERT(f.uac.NeedsFrameTick());
+  f.uac.UnbindEndpoints(f.pool, false);
+  TEST_ASSERT(!f.uac.NeedsFrameTick());  // 解绑 / unbound
+}
+
+// ---------------------------------------------------------------------------
 // speed_ is cleared on unbind
 // ---------------------------------------------------------------------------
 
@@ -733,6 +788,7 @@ int main()
   TestUacFailedRecovery();
   TestUacSetInterfaceFlow();
   TestUacSetInterfaceSlowStop();
+  TestUacFrameTickOnlyWhileStreaming();
   TestUacSpeedClearedOnUnbind();
   TestUacUnsupportedBackend();
   TestUacClassRequests();

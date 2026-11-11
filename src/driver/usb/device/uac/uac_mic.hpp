@@ -503,6 +503,7 @@ class UAC1MicrophoneQ : public DeviceClass
     activate_pending_ = false;
     acc_rem_ = 0;
     micro_debt_ = 0;
+    UpdateFrameTickWanted();
     speed_ = endpoint_pool.GetSpeed();
     RecomputeTiming();
 
@@ -648,6 +649,7 @@ class UAC1MicrophoneQ : public DeviceClass
 
     ep_iso_in_->Close(in_isr);  // Alternate zero does not activate a data endpoint.
     inited_ = true;
+    UpdateFrameTickWanted();  // 仍为假：绑定后在 alt 0 / still false: bound at alt 0
   }
 
   /**
@@ -664,6 +666,7 @@ class UAC1MicrophoneQ : public DeviceClass
     activate_pending_ = false;
     acc_rem_ = 0;
     micro_debt_ = 0;
+    UpdateFrameTickWanted();
     if (ep_iso_in_ != nullptr)
     {
       ep_iso_in_->Close(in_isr);
@@ -909,6 +912,7 @@ class UAC1MicrophoneQ : public DeviceClass
         activate_pending_ = false;
         acc_rem_ = 0;
         micro_debt_ = 0;
+        UpdateFrameTickWanted();
         ep_iso_in_->Close(false);
         return ErrorCode::OK;
 
@@ -927,11 +931,13 @@ class UAC1MicrophoneQ : public DeviceClass
         micro_debt_ = 0;
         DropStalePcm();
         activate_pending_ = true;
+        UpdateFrameTickWanted();
         ep_iso_in_->Close(false);
         const ErrorCode result = ActivateStreaming(false);
         if (result != ErrorCode::OK)
         {
           activate_pending_ = false;
+          UpdateFrameTickWanted();
           return result;
         }
         return ErrorCode::OK;  // 已开启，或等停止确认后由下一拍开启 / On, or waiting
@@ -966,10 +972,17 @@ class UAC1MicrophoneQ : public DeviceClass
   }
 
   // ===== SOF 节拍 / Bus tick =====
-  // 绑定后即需要 SOF（帧节奏、挂起激活推进都靠它）；未绑定不再空转。
-  // SOF is needed while bound (frame pacing and deferred activation rely on it);
-  // an unbound device no longer wakes the owner.
-  bool NeedsFrameTick() const override { return inited_; }
+  // 只在主机选择了 alt 1（流在跑）或流的开启还挂起时要 SOF 节拍（帧节奏、挂起激活
+  // 的推进、失败恢复都靠它）；绑定后停在 alt 0 时不占 SOF 中断。该状态在 owner 里
+  // 写、在 SOF 中断里读，所以用原子量。
+  // The SOF tick is wanted only while the host has selected alt 1 (streaming) or a
+  // streaming start is pending (frame pacing, the deferred activation and the failure
+  // recovery rely on it); bound at alt 0 the class costs no SOF interrupt. The flag is
+  // written in the owner and read from the SOF interrupt path, hence atomic.
+  bool NeedsFrameTick() const override
+  {
+    return tick_wanted_.load(std::memory_order_relaxed);
+  }
 
   void OnFrameTick(bool in_isr, const FrameTick& time) override
   {
@@ -1084,6 +1097,7 @@ class UAC1MicrophoneQ : public DeviceClass
     acc_rem_ = 0;
     micro_debt_ = 0;
     activate_pending_ = true;
+    UpdateFrameTickWanted();
   }
 
   /// 开始推流：丢弃队列里开始推流之前写入的 PCM（拔插、复位或上一次录音留下的），录音
@@ -1150,11 +1164,13 @@ class UAC1MicrophoneQ : public DeviceClass
     activate_pending_ = false;
     if (result != ErrorCode::OK)
     {
+      UpdateFrameTickWanted();
       return result;  // 保持非流态（NO_BUFF / ARG_ERR / NOT_SUPPORT） / Streaming off
     }
     acc_rem_ = 0;
     micro_debt_ = 0;
     active_ = true;
+    UpdateFrameTickWanted();
     KickOneFrame(in_isr);
     return ErrorCode::OK;
   }
@@ -1264,7 +1280,16 @@ class UAC1MicrophoneQ : public DeviceClass
   bool active_ = false;  ///< alt 1 已生效，等时端点在跑 / alt 1 active, EP running
   bool activate_pending_ = false;  ///< 等端点停止确认后进入流态 / Activation waits for
                                    ///< the stop confirmation
+  std::atomic<bool> tick_wanted_{false};  ///< NeedsFrameTick 的值 / NeedsFrameTick value
   PendingControl pending_control_ = PendingControl::NONE;
+
+  /// 在 inited_/active_/activate_pending_ 变化后调用 / Call after inited_, active_ or
+  /// activate_pending_ changes
+  void UpdateFrameTickWanted()
+  {
+    tick_wanted_.store(inited_ && (active_ || activate_pending_),
+                       std::memory_order_relaxed);
+  }
 
   // 音量与静音状态。
   // Volume and mute state.
