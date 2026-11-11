@@ -1364,6 +1364,46 @@ void TestStoppedChannelFramesNeverReachTheEndpoint()
   TEST_ASSERT(rx1 == std::vector<uint32_t>({0x200u, 0x201u, 0x202u}));
 }
 
+/// 最后一个通道复位时，共享 IN 端点上排队和在途的帧一起结束，所有队列清空：下一次打开
+/// 之后到达主机的只有新会话的帧。
+/// When the last channel is reset, the frames queued and in flight on the shared IN
+/// endpoint end with it and every queue is emptied: after the next open only frames of
+/// the new session reach the host.
+void TestLastChannelResetFlushesTheSlots()
+{
+  for (unsigned asynchronous = 0; asynchronous < 2; ++asynchronous)
+  {
+    FreshTimerList();
+    GsFixture f;
+    f.in.pending_stop = asynchronous != 0U;  // the controller confirms the stop later
+    f.gs.BindEndpoints(f.pool, 0, false);
+    Configure(f, true, false);  // channel 0 is the only channel started
+
+    // Six frames: one in flight, one queued in the slots, four in the RX queue.
+    for (uint32_t i = 0; i < 6; ++i) f.can0.Inject(0x100u + i, {static_cast<uint8_t>(i)});
+    f.can0.Inject(LibXR::CAN::FromErrorID(LibXR::CAN::ErrorID::CAN_ERROR_ID_BUS_OFF), {},
+                  LibXR::CAN::Type::ERROR);
+    TEST_ASSERT(f.in.active);
+
+    SetMode(f, 0, 0u);  // the last channel goes down
+    if (asynchronous != 0U)
+    {
+      TEST_ASSERT(f.in.stop_requested);
+      f.in.ConfirmStop();
+    }
+    TEST_ASSERT(!f.in.active);  // nothing is armed for the next open to collect
+    TEST_ASSERT(f.in.sent.empty());
+
+    // The next open: nothing of the old session arrives, a new frame does.
+    SetMode(f, 0, 1u);
+    f.can0.Inject(0x500u, {0x50});
+    for (unsigned i = 0; i < 32 && f.in.active; ++i) f.in.Complete();
+    TEST_ASSERT(f.in.sent.size() == 1);
+    TEST_ASSERT(ReadU32(f.in.sent[0], 0) == 0xFFFFFFFFu);
+    TEST_ASSERT(ReadU32(f.in.sent[0], 4) == 0x500u);
+  }
+}
+
 /// 只复位一个通道时共享 IN 端点不动：另一个通道已经打包的帧、排队的帧和 echo 都照常按
 /// 顺序发出。
 /// Resetting one channel leaves the shared IN endpoint alone: the other channel's frames
@@ -1380,7 +1420,9 @@ void TestOneChannelResetKeepsTheOtherChannelsFramesAndEchoes()
   for (uint32_t i = 0; i < 2; ++i)
     f.out.HostSends(ClassicFrame(0x4000u + i, 0x400u + i, 1, 1, 0, {0x5B}));
 
-  SetMode(f, 0, 0u);  // channel 1 is still started
+  SetMode(f, 0, 0u);         // channel 1 is still started
+  TEST_ASSERT(f.in.active);  // the slots are still armed
+
   for (unsigned i = 0; i < 64 && f.in.active; ++i) f.in.Complete();
   std::vector<uint32_t> rx1, echo1;
   for (const auto& frame : f.in.sent)
@@ -1481,6 +1523,7 @@ int main()
   TestStagedFdFrameAndFrameWithoutEcho();
   TestStagingSizeOfZeroIsRejected();
   TestStoppedChannelFramesNeverReachTheEndpoint();
+  TestLastChannelResetFlushesTheSlots();
   TestOneChannelResetKeepsTheOtherChannelsFramesAndEchoes();
   TestEchoCountMatchesAcceptedFrames();
   std::puts(

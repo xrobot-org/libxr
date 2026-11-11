@@ -47,14 +47,20 @@ namespace LibXR::USB
  *
  * 会话边界：主机在通道停止时释放这个通道的 tx 上下文，所以通道复位（MODE RESET）丢弃
  * 它排着队的接收帧、错误帧、echo 和被 echo 队列压住的 echo，没有启动的通道的帧不再交给
- * IN 端点。通道启动（MODE START）再清理一次，覆盖总线复位后重新绑定、没有收到 MODE
- * RESET 的情况，以及 CAN 回调在复位清理之后才入队的竞争。
+ * IN 端点。最后一个通道复位时，主机已经杀掉所有 RX URB，打包进两个槽里的帧要等到下一
+ * 次打开才会被读走，所以此时还要 Flush 共享 IN 端点并清空所有队列；还有通道在运行时
+ * 不能这样做，会丢掉它们的帧和 echo。通道启动（MODE START）再清理一次，覆盖总线复位
+ * 后重新绑定、没有收到 MODE RESET 的情况，以及 CAN 回调在复位清理之后才入队的竞争。
  * Session boundary: the host frees a channel's tx contexts when it stops the channel,
  * so a channel reset (MODE RESET) drops the channel's queued receive frames, error
  * frames, echoes and the echo held by echo-queue back-pressure, and the frames of a
- * channel that is not started are never handed to the IN endpoint. A channel start
- * (MODE START) cleans up once more, for a rebind after a bus reset that got no MODE
- * RESET and for a CAN callback that enqueued only after the reset cleanup.
+ * channel that is not started are never handed to the IN endpoint. When the last
+ * channel is reset the host has killed all RX URBs and the frames packed into the two
+ * slots would wait for the next open, so the shared IN endpoint is flushed and every
+ * queue is emptied; with another channel still started this must not be done, it would
+ * lose that channel's frames and echoes. A channel start (MODE START) cleans up once
+ * more, for a rebind after a bus reset that got no MODE RESET and for a CAN callback
+ * that enqueued only after the reset cleanup.
  *
  * 发送路径：echo 的含义是“设备的 CAN 驱动已接受这一帧”。OUT 帧交给 CAN 驱动；驱动的
  * 发送队列满（FULL）时，帧进入该通道自己的暂存队列，不回 echo，OUT 租约立即归还，
@@ -1912,13 +1918,13 @@ class GsUsbClass : public DeviceClass
    * 其他通道的 echo 保留，顺序不变。被压住的 echo 属于结束的会话：丢弃它，归还 OUT
    * 租约，主机恢复收发；帧本身已经交给了 CAN 驱动，仍可能上总线。在 owner 里执行：
    * owner 是接收队列和错误队列的消费者，也是回显队列唯一的生产者和消费者。已经交给
-   * IN 端点的帧不在这里处理。
+   * IN 端点的帧不在这里处理（见 FlushInEndpoint）。
    * The echoes of other channels stay, in order. A held echo belongs to the session
    * that ends: it is dropped and the OUT lease goes back, so the host resumes; the frame
    * itself was handed to the CAN driver and may still go out on the bus. Runs in the
    * owner, which consumes the receive and error queues and is the only producer and
    * consumer of the echo queue. Frames already handed to the IN endpoint are not
-   * handled here.
+   * handled here (see FlushInEndpoint).
    */
   void DropChannelFrames(bool in_isr, uint8_t ch)
   {
@@ -1939,6 +1945,46 @@ class GsUsbClass : public DeviceClass
       out_hold_ = false;
       ReturnLease(in_isr, out_hold_slot_);
     }
+  }
+
+  /// 有通道在运行（已启动）/ Some channel is started
+  bool AnyChannelStarted() const
+  {
+    for (uint8_t ch = 0; ch < can_count_; ++ch)
+    {
+      if (can_enabled_[ch].load(std::memory_order_relaxed)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * @brief 最后一个通道复位：结束共享 IN 端点上排队和在途的传输，丢弃所有队列 /
+   *        The last channel was reset: end the queued and in-flight transfers of the
+   *        shared IN endpoint and drop every queue
+   *
+   * 主机在最后一个通道关闭时杀掉所有 RX URB，此后不再读 IN 端点，直到下一次打开；
+   * 已经打包进两个槽里的帧（一个在途、一个排队）会一直等到那时，在 BITTIMING 和
+   * MODE START 之前就交给刚提交的 URB。没有通道在运行，所以没有谁的帧需要保留。
+   * Flush 结束这些传输（各一次 ABORTED 完成，类只是请求服务），端点保持启用，下次
+   * 提交照常开始。在 owner 里执行，此时没有借出的 IN 槽（取槽和提交在同一次服务里）。
+   * 其他通道还在运行时不能这样做：会丢掉它们的帧和 echo。
+   * When the last channel closes the host kills all RX URBs and does not read the IN
+   * endpoint until the next open; the frames already packed into the two slots (one in
+   * flight, one queued) wait until then and go to the freshly submitted URBs before
+   * BITTIMING and MODE START. No channel is started, so nobody's frames need to be
+   * kept. Flush ends these transfers (one ABORTED completion each, which the class
+   * only answers with a service request); the endpoint stays enabled and the next
+   * submission starts as usual. Runs in the owner, where no IN slot is lent (acquire
+   * and submit happen in one service pass). With another channel still started this
+   * must not be done: its frames and echoes would be lost.
+   */
+  void FlushInEndpoint(bool in_isr)
+  {
+    for (uint8_t ch = 0; ch < can_count_; ++ch)
+    {
+      DropChannelFrames(in_isr, ch);
+    }
+    if (ep_data_in_ != nullptr) ep_data_in_->Flush(in_isr);
   }
 
   /**
@@ -1988,10 +2034,12 @@ class GsUsbClass : public DeviceClass
         // accepted head frame has been handed over and may still go out on the bus.
         DropStagedFrames(ch);
         // 这个通道排着队的帧和它的 echo 也属于结束的会话（主机在关闭时已经释放了
-        // tx 上下文）。
+        // tx 上下文）；没有通道在运行时，共享 IN 端点上排队和在途的帧也一起结束。
         // The channel's queued frames and its echoes belong to the session that ends
-        // too (the host freed its tx contexts at close).
+        // too (the host freed its tx contexts at close); with no channel left started
+        // the frames queued and in flight on the shared IN endpoint end with it.
         DropChannelFrames(in_isr, ch);
+        if (!AnyChannelStarted()) FlushInEndpoint(in_isr);
         break;
 
       case GsUsb::CanMode::START:
