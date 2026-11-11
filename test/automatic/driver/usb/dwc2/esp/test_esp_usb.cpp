@@ -20,6 +20,7 @@
 #include "esp_usb.hpp"
 #include "esp_usb_dev.hpp"
 #include "esp_usb_ep.hpp"
+#include "lsan_suppressions.hpp"
 #include "test_assert.hpp"
 #include "test_findings.hpp"
 #include "uac_mic.hpp"

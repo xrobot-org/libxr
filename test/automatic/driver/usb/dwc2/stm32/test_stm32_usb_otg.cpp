@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "dwc2_host.hpp"
+#include "lsan_suppressions.hpp"
 #include "stm32_usb_dev.hpp"
 #include "test_assert.hpp"
 #include "test_findings.hpp"

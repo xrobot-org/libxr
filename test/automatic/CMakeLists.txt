@@ -369,6 +369,11 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
       "test_esp_usb skipped: ${CMAKE_CXX_COMPILER_ID} has no -fstrict-volatile-bitfields"
     )
   endif()
+else()
+  message(
+    STATUS
+    "test_stm32_usb_otg and test_esp_usb skipped: the register traps of the DWC2 tests are for x86-64 only (this is ${CMAKE_SYSTEM_PROCESSOR})"
+  )
 endif()
 
 # cdc_test classes: lease return, DTR-triggered packet and the read re-arm.

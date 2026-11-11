@@ -20,9 +20,11 @@ sends tokens on the bus and the endpoint contract the device classes rely on is 
 | `stm32/` | 假的 CubeMX `main.h`、后端用到的 LL HAL 函数、`test_stm32_usb_otg` / fake CubeMX `main.h`, the LL HAL functions the backend calls, `test_stm32_usb_otg` |
 | `esp/` | 假的 ESP-IDF 头文件（ESP32-S3，IDF 5.3–5.5 的接口）、`test_esp_usb` / fake ESP-IDF headers (ESP32-S3, the IDF 5.3 to 5.5 API), `test_esp_usb` |
 
-两个测试程序都在默认的 `ctest` 里（`stm32_usb_otg`、`esp_usb`），只在 Linux x86-64 上构建。
+两个测试程序都在默认的 `ctest` 里（`stm32_usb_otg`、`esp_usb`），只在 Linux x86-64 上构建；其他平台和不支持
+`-fstrict-volatile-bitfields` 的编译器（`test_esp_usb`）在 CMake 配置时打印一行 STATUS 说明跳过了它们。
 Both programs are in the default `ctest` (`stm32_usb_otg`, `esp_usb`) and are built on Linux x86-64
-only.
+only; on other platforms, and with a compiler that lacks `-fstrict-volatile-bitfields` (`test_esp_usb`),
+CMake prints a STATUS line at configure time saying they are skipped.
 
 ## 控制器模型 / The controller model
 
@@ -146,6 +148,18 @@ returns 0 and the case belongs among the regular ones.
 | `test_esp_usb` | `interrupt_clear_loses_reset` | 中断状态位写 1 清除 / interrupt status bits are cleared by writing 1 | 用位域赋值清一个位，读改写把此刻挂起的其他位一起清掉：处理挂起中断时到来的总线复位丢失 / clears one bit with a bit-field assignment; the read-modify-write clears every other pending bit: a bus reset that arrives while the suspend interrupt is handled is lost |
 
 运行 / Run: `build/test/test_esp_usb --finding uac_streams`
+
+## 内存检查 / Memory checking
+
+两个测试在 AddressSanitizer 的默认设置下（含 LeakSanitizer）通过。后端和 `DeviceCore` 在构造和初始化时
+创建的端点对象、描述符和回调块库里没有释放接口（初始化期分配、长期持有），`lsan_suppressions.hpp` 只
+抑制这几个分配点；测试自己的对象在用例结束时释放，泄漏仍会被报告。
+
+Both tests pass under the default AddressSanitizer settings, LeakSanitizer included. The endpoint
+objects, descriptors and callback blocks that the backend and `DeviceCore` create at construction and
+initialization have no release interface in the library (allocated once at initialization and kept);
+`lsan_suppressions.hpp` suppresses just those allocation sites, and the objects of the test itself are
+released at the end of a case, so a leak of theirs is still reported.
 
 ## 诊断输出 / Diagnostic output
 
