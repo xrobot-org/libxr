@@ -67,9 +67,10 @@ class BosCapability
   /**
    * @brief 处理该能力相关 Vendor 请求 / Handle vendor request for this capability
    *
-   * @param in_isr ISR 上下文标志 / ISR context flag
-   * @param setup  Setup 包 / Setup packet
-   * @param result 输出结果 / Output result
+   * 参数依次为：ISR 上下文标志、Setup 包、输出结果（默认实现不使用，参数未命名）。
+   * Parameters are, in order: ISR context flag, setup packet, output result (unused by
+   * the default implementation, hence unnamed).
+   *
    * @return OK：匹配且处理；NOT_SUPPORT：不匹配；其他：匹配但失败（上层应 STALL）
    */
   virtual ErrorCode OnVendorRequest(bool /*in_isr*/, const SetupPacket* /*setup*/,

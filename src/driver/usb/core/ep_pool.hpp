@@ -116,8 +116,18 @@ class EndpointPool
    */
   void SetEndpoint0(Endpoint* ep0_in, Endpoint* ep0_out);
 
+  /// 进入硬件临界区的回调，返回的令牌原样交给 HardwareLeave / Callback that enters the
+  /// hardware critical region; the returned token is passed back to HardwareLeave
   using HardwareEnter = uintptr_t (*)(void*);
+  /// 离开硬件临界区的回调，参数为 context 与 HardwareEnter 返回的令牌 / Callback that
+  /// leaves the critical region, given the context and the token from HardwareEnter
   using HardwareLeave = void (*)(void*, uintptr_t);
+  /**
+   * @brief 设置后端的硬件临界区回调 / Set the backend's hardware critical-region hooks
+   * @param context 回调的用户指针 / User pointer passed to both callbacks
+   * @param enter 进入回调，可为空（不加保护）/ Enter callback, may be null (no guard)
+   * @param leave 离开回调，可为空 / Leave callback, may be null
+   */
   void SetHardwareGuard(void* context, HardwareEnter enter, HardwareLeave leave)
   {
     hardware_context_ = context;
@@ -125,10 +135,15 @@ class EndpointPool
     hardware_leave_ = leave;
   }
 
-  // Short hardware/control-mailbox critical region; never class callbacks or blocking
-  // work. Backends mask local IRQs in every context (the owner may run inside an
-  // unrelated ISR that the controller IRQ can preempt) and, on SMP, also serialize
-  // register access.
+  /**
+   * @brief 硬件/控制邮箱临界区（RAII）/ Hardware and control-mailbox critical region
+   *
+   * 临界区必须很短，不得运行类回调或阻塞。后端在任何上下文都屏蔽本地中断（owner 可能
+   * 运行在无关的中断里，而控制器中断可抢占它），SMP 下还要串行化寄存器访问。
+   * Keep it short; never run class callbacks or blocking work. Backends mask local IRQs
+   * in every context (the owner may run inside an unrelated ISR that the controller IRQ
+   * can preempt) and, on SMP, also serialize register access.
+   */
   class HardwareScope
   {
    public:
@@ -139,6 +154,8 @@ class EndpointPool
     {
       if (pool.hardware_enter_) token_ = pool.hardware_enter_(pool.hardware_context_);
     }
+    /// 指针版本；pool 为空或未设置回调时不做任何事 / Pointer overload; does nothing when
+    /// pool is null or no hook is set
     [[gnu::always_inline]] explicit HardwareScope(EndpointPool* pool) : pool_(pool)
     {
       if (pool_ && pool_->hardware_enter_)
@@ -147,6 +164,8 @@ class EndpointPool
     [[gnu::always_inline]] ~HardwareScope() { Release(); }
     HardwareScope(const HardwareScope&) = delete;
     HardwareScope& operator=(const HardwareScope&) = delete;
+    /// 提前离开临界区；重复调用无效，析构时不会再离开一次 / Leave early; repeated calls
+    /// are no-ops and the destructor will not leave again
     [[gnu::always_inline]] void Release()
     {
       if (pool_ && pool_->hardware_leave_)
@@ -159,11 +178,17 @@ class EndpointPool
     uintptr_t token_ = 0;
   };
 
-  // Marks one controller IRQ batch. Callbacks inside it only record facts; the owner
-  // is requested once the outermost batch ends. It does not mask interrupts.
+  /**
+   * @brief 标记一次控制器中断批次（RAII）/ Marks one controller IRQ batch (RAII)
+   *
+   * 批次内的回调只记录事实，最外层批次结束时才请求 owner；不屏蔽中断。
+   * Callbacks inside it only record facts; the owner is requested once the outermost
+   * batch ends. It does not mask interrupts.
+   */
   class InterruptScope
   {
    public:
+    /// 进入批次，嵌套深度加一 / Enter a batch; increments the nesting depth
     explicit InterruptScope(EndpointPool& pool) : pool_(pool)
     {
       pool_.interrupt_depth_.fetch_add(1U, std::memory_order_acq_rel);
@@ -182,20 +207,36 @@ class EndpointPool
     EndpointPool& pool_;
   };
 
-  /// Owner event bits. The device core owns the low byte; the pool owns the rest.
+  // Owner 事件位：设备核心使用低字节，其余归 pool / Owner event bits. The device core
+  // owns the low byte; the pool owns the rest.
+  /// 请求初始化（使能）/ Init (enable) requested
   static constexpr uint32_t INIT_EVENT = 1U;
+  /// 请求反初始化（禁用）/ Deinit (disable) requested
   static constexpr uint32_t DEINIT_EVENT = 2U;
+  /// 总线复位 / Bus reset
   static constexpr uint32_t RESET_EVENT = 4U;
+  /// 总线断开 / Bus disconnect
   static constexpr uint32_t DISCONNECT_EVENT = 8U;
+  /// 端点 0 收到 Setup 包 / A setup packet arrived on endpoint 0
   static constexpr uint32_t SETUP_EVENT = 16U;
+  /// 挂起/恢复状态变化 / Suspend or resume state changed
   static constexpr uint32_t POWER_EVENT = 32U;
+  /// 需要向类投递帧节拍 / A frame tick must be delivered to the classes
   static constexpr uint32_t FRAME_TICK_EVENT = 64U;
+  /// 某个类请求了 owner 服务 / A class requested owner service
   static constexpr uint32_t CLASS_EVENT = 128U;
+  /// 至少一个端点有待处理的工作 / At least one endpoint has pending work
   static constexpr uint32_t ENDPOINT_EVENT = 256U;
+  /// 最后一个未确认的端点停止已确认 / The last unconfirmed endpoint stop was confirmed
   static constexpr uint32_t STOP_DONE_EVENT = 512U;
+  /// 端点停止等待超过 STOP_FRAME_LIMIT 帧 / An endpoint stop waited STOP_FRAME_LIMIT
+  /// frames without confirmation
   static constexpr uint32_t STOP_TIMEOUT_EVENT = 1024U;
   /// Frames an unconfirmed stop may wait before the controller is reset.
   static constexpr uint32_t STOP_FRAME_LIMIT = 8U;
+  /// 生命周期事件掩码（Init/Deinit/Reset/Disconnect）；挂起时端点不得启动硬件 /
+  /// Lifecycle event mask (Init/Deinit/Reset/Disconnect); while one is pending no
+  /// endpoint may start hardware
   static constexpr uint32_t LIFECYCLE_EVENTS =
       INIT_EVENT | DEINIT_EVENT | RESET_EVENT | DISCONNECT_EVENT;
 
@@ -220,24 +261,34 @@ class EndpointPool
    * ends.
    */
   void RequestService(bool in_isr);
+  /// 设置 owner 处理控制事件（除 ENDPOINT_EVENT 外的位）的回调，参数为事件位掩码 /
+  /// Set the owner's handler for control events (every bit except ENDPOINT_EVENT); the
+  /// argument is the event mask
   void SetControlHandler(Callback<uint32_t> callback) { control_handler_ = callback; }
   // Publish atomically with a hardware/mailbox change, then RequestService after
   // releasing the short guard. Publication itself never invokes callbacks.
+  /// 只发布事件位，不请求 owner，不调用回调 / Publish event bits only; neither requests
+  /// the owner nor runs callbacks
   void PublishControl(uint32_t events)
   {
     control_pending_.fetch_or(events, std::memory_order_release);
   }
+  /// 发布事件位并请求 owner（PublishControl + RequestService）/ Publish event bits and
+  /// request the owner (PublishControl + RequestService)
   void PostControl(uint32_t events, bool in_isr);
+  /// 是否有 mask 内的控制事件待处理 / Whether any control event within mask is pending
   [[gnu::always_inline]] bool HasPendingControl(uint32_t mask = UINT32_MAX) const
   {
     return (control_pending_.load(std::memory_order_acquire) & mask) != 0U;
   }
-  /// An endpoint has work: a submit, a completion or a stop confirmation.
   /// Owner: clear an endpoint's pending bit; true if it was set.
   bool TakeEndpointBit(uint32_t bit)
   {
     return (endpoint_pending_.fetch_and(~bit, std::memory_order_acq_rel) & bit) != 0U;
   }
+  /// 端点有工作（提交、完成或停止确认）：置位其待处理位并投递 ENDPOINT_EVENT /
+  /// An endpoint has work (a submit, a completion or a stop confirmation): set its
+  /// pending bit and post ENDPOINT_EVENT
   [[gnu::always_inline]] void NotifyEndpoint(uint32_t bit, bool in_isr)
   {
     endpoint_pending_.fetch_or(bit, std::memory_order_release);
@@ -251,11 +302,13 @@ class EndpointPool
     return !planning_ && !suspended_ && !lifecycle_hold_ &&
            !HasPendingControl(LIFECYCLE_EVENTS) && (ep0 || data_enabled_);
   }
-  /// Owner: count of endpoints whose hardware stop is not yet confirmed.
+  /// Owner: whether any endpoint's hardware stop is not yet confirmed.
   bool AnyStopping() const
   {
     return stopping_count_.load(std::memory_order_relaxed) != 0U;
   }
+  /// 登记一个等待硬件确认的端点停止；第一个登记时重置帧计数 / Register one endpoint
+  /// stop awaiting hardware confirmation; the first one resets the frame counter
   void AddStopping()
   {
     if (stopping_count_.fetch_add(1U, std::memory_order_relaxed) == 0U)
@@ -278,16 +331,31 @@ class EndpointPool
   }
   /// Owner: a lifecycle event is held back; no endpoint may start meanwhile.
   void SetLifecycleHold(bool hold) { lifecycle_hold_ = hold; }
+  /// 一个端点的停止已确认；最后一个确认时投递 STOP_DONE_EVENT / One endpoint's stop was
+  /// confirmed; the last one posts STOP_DONE_EVENT
   void StopFinished(bool in_isr);
 
+  /// 数据端点（非端点 0）是否允许启动 / Whether data endpoints (not EP0) may start
   bool DataEnabled() const { return data_enabled_; }
+  /// 设置数据端点允许启动；置 true 时唤醒所有端点重新检查队列 / Allow or forbid data
+  /// endpoints to start; true makes every endpoint recheck its queue
   void SetDataEnabled(bool enabled, bool in_isr);
+  /// 是否正在规划配置（此时端点不得启动）/ Whether a configuration is being planned
+  /// (endpoints may not start meanwhile)
   bool IsPlanning() const { return planning_; }
+  /// 设置配置规划标志 / Set the configuration-planning flag
   void SetPlanning(bool planning) { planning_ = planning; }
+  /// 当前总线速度 / Current bus speed
   Speed GetSpeed() const { return speed_; }
+  /// 记录当前总线速度 / Record the current bus speed
   void SetSpeed(Speed speed) { speed_ = speed; }
+  /// 已分配的数据端点中是否没有处于 ERROR 状态者 / Whether no allocated data endpoint
+  /// is in the ERROR state
   bool ConfigurationValid() const;
+  /// 总线是否处于挂起 / Whether the bus is suspended
   bool IsSuspended() const { return suspended_; }
+  /// 设置挂起标志；退出挂起时唤醒所有端点重新检查队列 / Set the suspend flag; leaving
+  /// suspend makes every endpoint recheck its queue
   void SetSuspended(bool suspended, bool in_isr);
 
  private:

@@ -34,7 +34,10 @@ class DescriptorStrings
     ZH_CN = 0x0804   ///< 简体中文 / Simplified Chinese
   };
 
+  /// 指向静态 UTF-16LE 字符串数据的指针 / Pointer to static UTF-16LE string data
   typedef const char* StringData;
+  /// 每种语言登记的字符串数量（厂商、产品、序列号）/ Strings registered per language
+  /// (manufacturer, product, serial number)
   static constexpr size_t STRING_LIST_SIZE = 3;
 
   /**
