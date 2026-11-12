@@ -416,7 +416,7 @@ class SwdGeneralGPIO final : public Swd
   /// 带延时的路径上忙等半个 SWCLK 周期，无延时路径上为空
   /// Busy-waits for half an SWCLK period on the delayed path; empty on the other.
   template <bool DELAYED>
-  [[gnu::always_inline]] inline void DelayHalf()
+  LIBXR_ALWAYS_INLINE void DelayHalf()
   {
     if constexpr (DELAYED)
     {
@@ -427,7 +427,7 @@ class SwdGeneralGPIO final : public Swd
   /// 一个 SWCLK 周期：先低半周期，再高半周期
   /// One SWCLK period: the low half, then the high half.
   template <bool DELAYED>
-  [[gnu::always_inline]] inline void GenOneClk()
+  LIBXR_ALWAYS_INLINE void GenOneClk()
   {
     swclk_.Write(false);
     DelayHalf<DELAYED>();
@@ -438,7 +438,7 @@ class SwdGeneralGPIO final : public Swd
   /// 输出一位：先设置 SWDIO，再打一个时钟
   /// Sends one bit: sets SWDIO, then one clock.
   template <bool DELAYED>
-  [[gnu::always_inline]] inline void WriteBit(bool bit)
+  LIBXR_ALWAYS_INLINE void WriteBit(bool bit)
   {
     swdio_.Write(bit);
     GenOneClk<DELAYED>();
@@ -467,7 +467,7 @@ class SwdGeneralGPIO final : public Swd
   /// 读一位：在低半周期结束时采样 SWDIO，再把 SWCLK 拉高
   /// Reads one bit: samples SWDIO at the end of the low half, then raises SWCLK.
   template <bool DELAYED>
-  [[gnu::always_inline]] inline bool ReadBitAndClock()
+  LIBXR_ALWAYS_INLINE bool ReadBitAndClock()
   {
     swclk_.Write(false);
     DelayHalf<DELAYED>();
@@ -499,7 +499,7 @@ class SwdGeneralGPIO final : public Swd
    *        路径时产生 0 / Iteration count, must be >= 1: only the delayed path calls it,
    *        and SetClockHz produces 0 only for the path without delay.
    */
-  [[gnu::always_inline]] static inline void BusyLoop(uint32_t loops)
+  LIBXR_ALWAYS_INLINE static void BusyLoop(uint32_t loops)
   {
     DEV_ASSERT(loops >= 1u);
 #if defined(__thumb2__)

@@ -22,17 +22,20 @@
 
 #if defined(_MSC_VER)
 #define LIBXR_NOINLINE __declspec(noinline)
+#define LIBXR_ALWAYS_INLINE __forceinline
 #define LIBXR_PACKED_BEGIN __pragma(pack(push, 1))
 #define LIBXR_PACKED_END __pragma(pack(pop))
 #define LIBXR_PACKED
 #elif defined(__clang__) || defined(__GNUC__)
 #define LIBXR_NOINLINE __attribute__((noinline))
+#define LIBXR_ALWAYS_INLINE inline __attribute__((always_inline))
 #define LIBXR_PACKED_BEGIN _Pragma("pack(push, 1)")
 #define LIBXR_PACKED_END _Pragma("pack(pop)")
 #define LIBXR_PACKED __attribute__((packed))
 #else
 #warning "LibXR compiler compatibility macros fallback to no-op on unknown compiler"
 #define LIBXR_NOINLINE
+#define LIBXR_ALWAYS_INLINE inline
 #define LIBXR_PACKED_BEGIN
 #define LIBXR_PACKED_END
 #define LIBXR_PACKED
