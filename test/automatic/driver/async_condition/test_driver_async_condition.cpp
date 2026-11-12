@@ -20,7 +20,7 @@ struct Probe
   bool ready = false;
   int checks = 0;
   std::vector<ErrorCode> results;
-  DriverAsyncCondition* next = nullptr;  ///< Waited for from done when set.
+  DriverAsyncCondition* next = nullptr;  ///< Started from done when set.
 };
 
 bool Check(void* arg)
@@ -36,7 +36,7 @@ void Done(void* arg, ErrorCode result)
   probe->results.push_back(result);
   if (probe->next != nullptr)
   {
-    TEST_ASSERT(probe->next->Wait(2, 2) == ErrorCode::OK);
+    TEST_ASSERT(probe->next->Start(2, 2) == ErrorCode::OK);
   }
 }
 
@@ -53,9 +53,9 @@ void TestHoldingCheckLastsAtLeastMin()
   Probe probe;
   probe.ready = true;
   DriverAsyncCondition delay(Check, Done, &probe);
-  TEST_ASSERT(delay.Wait(25, 25) == ErrorCode::OK);
-  TEST_ASSERT(delay.Wait(25, 25) == ErrorCode::BUSY);
-  // The first tick may come right after Wait(): 25 more ticks are needed.
+  TEST_ASSERT(delay.Start(25, 25) == ErrorCode::OK);
+  TEST_ASSERT(delay.Start(25, 25) == ErrorCode::BUSY);
+  // The first tick may come right after Start(): 25 more ticks are needed.
   Ticks(25);
   TEST_ASSERT(probe.results.empty() && probe.checks == 0);
   Ticks(1);
@@ -68,7 +68,7 @@ void TestCheckStartsAfterMinAndTimesOutAtMax()
 {
   Probe probe;
   DriverAsyncCondition condition(Check, Done, &probe);
-  TEST_ASSERT(condition.Wait(3, 6) == ErrorCode::OK);
+  TEST_ASSERT(condition.Start(3, 6) == ErrorCode::OK);
   Ticks(3);
   TEST_ASSERT(probe.checks == 0);
   Ticks(1);
@@ -79,7 +79,7 @@ void TestCheckStartsAfterMinAndTimesOutAtMax()
   TEST_ASSERT(probe.results == std::vector<ErrorCode>{ErrorCode::TIMEOUT});
   // A condition that holds finishes on the first check.
   probe = Probe{};
-  TEST_ASSERT(condition.Wait(0, 100) == ErrorCode::OK);
+  TEST_ASSERT(condition.Start(0, 100) == ErrorCode::OK);
   probe.ready = true;
   Ticks(1);
   TEST_ASSERT(probe.results == std::vector<ErrorCode>{ErrorCode::OK} &&
@@ -90,9 +90,9 @@ void TestBusyAndArguments()
 {
   Probe probe;
   DriverAsyncCondition condition(Check, Done, &probe);
-  TEST_ASSERT(condition.Wait(5, 4) == ErrorCode::ARG_ERR);
-  TEST_ASSERT(condition.Wait(1, 5) == ErrorCode::OK);
-  TEST_ASSERT(condition.Wait(1, 5) == ErrorCode::BUSY);
+  TEST_ASSERT(condition.Start(5, 4) == ErrorCode::ARG_ERR);
+  TEST_ASSERT(condition.Start(1, 5) == ErrorCode::OK);
+  TEST_ASSERT(condition.Start(1, 5) == ErrorCode::BUSY);
 }
 
 void TestDoneChainsTheNextCondition()
@@ -106,9 +106,9 @@ void TestDoneChainsTheNextCondition()
   first_probe.ready = true;
   first_probe.next = &second;
   DriverAsyncCondition first(Check, Done, &first_probe);
-  TEST_ASSERT(first.Wait(1, 1) == ErrorCode::OK);
+  TEST_ASSERT(first.Start(1, 1) == ErrorCode::OK);
   Ticks(2);
-  TEST_ASSERT(first_probe.results.size() == 1 && second.Wait(0, 0) == ErrorCode::BUSY);
+  TEST_ASSERT(first_probe.results.size() == 1 && second.Start(0, 0) == ErrorCode::BUSY);
   // The second stage waits at least its own 2 ms after the first finished: two more
   // ticks, or three when the list visits it before the first in each pass.
   Ticks(1);
@@ -127,9 +127,9 @@ void TestDoneChainsTheNextCondition()
   self_probe.ready = true;
   DriverAsyncCondition self(Check, Done, &self_probe);
   self_probe.next = &self;
-  TEST_ASSERT(self.Wait(0, 0) == ErrorCode::OK);
+  TEST_ASSERT(self.Start(0, 0) == ErrorCode::OK);
   Ticks(1);
-  TEST_ASSERT(self_probe.results.size() == 1 && self.Wait(0, 0) == ErrorCode::BUSY);
+  TEST_ASSERT(self_probe.results.size() == 1 && self.Start(0, 0) == ErrorCode::BUSY);
   self_probe.next = nullptr;
   Ticks(3);
   TEST_ASSERT(self_probe.results.size() == 2);
@@ -143,7 +143,7 @@ void TestCoarseTick()
   Probe probe;
   probe.ready = true;
   DriverAsyncCondition delay(Check, Done, &probe);
-  TEST_ASSERT(delay.Wait(25, 25) == ErrorCode::OK);
+  TEST_ASSERT(delay.Start(25, 25) == ErrorCode::OK);
   Ticks(3, 10);
   TEST_ASSERT(probe.results.empty());
   Ticks(1, 10);

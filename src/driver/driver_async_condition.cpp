@@ -19,7 +19,7 @@ DriverAsyncCondition::DriverAsyncCondition(Check check, Done done, void* arg)
 
 DriverAsyncCondition::~DriverAsyncCondition()
 {
-  // Drivers are never destroyed; tests destroy theirs while no tick runs.
+  // Host tests only, while no tick runs.
   DriverAsyncCondition* node = head_.load(std::memory_order_acquire);
   if (node == this)
   {
@@ -36,7 +36,7 @@ DriverAsyncCondition::~DriverAsyncCondition()
   }
 }
 
-ErrorCode DriverAsyncCondition::Wait(uint32_t min_ms, uint32_t max_ms)
+ErrorCode DriverAsyncCondition::Start(uint32_t min_ms, uint32_t max_ms)
 {
   if (max_ms < min_ms)
   {
@@ -75,7 +75,7 @@ void DriverAsyncCondition::Tick(uint32_t elapsed_ms)
   {
     counted = COUNT_MASK;
   }
-  // The first tick may come right after Wait(): one more tick keeps "at least min_ms".
+  // The first tick may come right after Start(): one more tick keeps "at least min_ms".
   bool finished = false;
   ErrorCode result = ErrorCode::OK;
   if (counted >= static_cast<uint64_t>(min_ms_) + elapsed_ms)
@@ -98,7 +98,7 @@ void DriverAsyncCondition::Tick(uint32_t elapsed_ms)
                                          std::memory_order_relaxed);
     return;
   }
-  // Idle before done: done may Wait() again on this object.
+  // Idle before done: done may Start() again on this object.
   if (state_.compare_exchange_strong(state, IDLE, std::memory_order_acq_rel,
                                      std::memory_order_relaxed))
   {
