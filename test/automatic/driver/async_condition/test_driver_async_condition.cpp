@@ -1,10 +1,13 @@
 /**
  * @file test_driver_async_condition.cpp
- * @brief DriverAsyncCondition：等待下限、检查、超时与链式等待 /
- * DriverAsyncCondition: the lower bound, checks, timeouts and chained waits.
+ * @brief DriverAsyncCondition：等待下限、检查、超时、链式等待、粗节拍与并发 Start /
+ * DriverAsyncCondition: the lower bound, checks, timeouts, chained waits, coarse ticks
+ * and concurrent Start.
  */
 
+#include <atomic>
 #include <cstdio>
+#include <thread>
 #include <vector>
 
 #include "driver_async_condition.hpp"
@@ -149,6 +152,84 @@ void TestCoarseTick()
   Ticks(1, 10);
   TEST_ASSERT(probe.results.size() == 1);
 }
+
+void TestCoarseTickBounds()
+{
+  // With 10 ms ticks, a check or timeout due after N ms comes on the tick that counts N
+  // rounded up to 10, plus 10: never before N ms have passed, never later than that.
+  Probe probe;
+  DriverAsyncCondition condition(Check, Done, &probe);
+  TEST_ASSERT(condition.Start(25, 25) == ErrorCode::OK);
+  Ticks(3, 10);
+  TEST_ASSERT(probe.checks == 0 && probe.results.empty());
+  Ticks(1, 10);
+  TEST_ASSERT(probe.results == std::vector<ErrorCode>{ErrorCode::TIMEOUT});
+
+  probe = Probe{};
+  TEST_ASSERT(condition.Start(20, 40) == ErrorCode::OK);
+  Ticks(2, 10);
+  TEST_ASSERT(probe.checks == 0);
+  Ticks(1, 10);
+  TEST_ASSERT(probe.checks == 1 && probe.results.empty());
+  Ticks(1, 10);
+  TEST_ASSERT(probe.checks == 2 && probe.results.empty());
+  Ticks(1, 10);
+  TEST_ASSERT(probe.results == std::vector<ErrorCode>{ErrorCode::TIMEOUT});
+}
+
+struct RaceProbe
+{
+  std::atomic<uint32_t> finished{0};
+  std::atomic<uint32_t> timeouts{0};
+};
+
+bool NeverHolds(void*) { return false; }
+
+void CountDone(void* arg, ErrorCode result)
+{
+  auto* probe = static_cast<RaceProbe*>(arg);
+  if (result == ErrorCode::TIMEOUT)
+  {
+    probe->timeouts.fetch_add(1, std::memory_order_relaxed);
+  }
+  probe->finished.fetch_add(1, std::memory_order_release);
+}
+
+void TestStartRacesTheTick()
+{
+  // Start() on one thread while OnTick() runs on another: every accepted wait ends
+  // exactly once, with TIMEOUT. Run under ThreadSanitizer, this also checks that the
+  // limits are published by the state word.
+  constexpr uint32_t STARTS = 20000U;
+  RaceProbe probe;
+  DriverAsyncCondition condition(NeverHolds, CountDone, &probe);
+  std::atomic<bool> stop{false};
+  std::thread ticker(
+      [&stop]()
+      {
+        while (!stop.load(std::memory_order_relaxed))
+        {
+          DriverAsyncCondition::OnTick(1);
+        }
+      });
+  uint32_t busy = 0;
+  for (uint32_t i = 0; i < STARTS; ++i)
+  {
+    const uint32_t limit = i % 4U;
+    while (condition.Start(limit, limit) == ErrorCode::BUSY)
+    {
+      ++busy;
+    }
+  }
+  while (probe.finished.load(std::memory_order_acquire) != STARTS)
+  {
+    std::this_thread::yield();
+  }
+  stop.store(true, std::memory_order_relaxed);
+  ticker.join();
+  TEST_ASSERT(probe.timeouts.load() == STARTS);
+  TEST_ASSERT(busy > 0U);
+}
 }  // namespace
 
 int main()
@@ -158,5 +239,9 @@ int main()
   TestBusyAndArguments();
   TestDoneChainsTheNextCondition();
   TestCoarseTick();
-  std::puts("DriverAsyncCondition lower bound, checks, timeout and chains passed");
+  TestCoarseTickBounds();
+  TestStartRacesTheTick();
+  std::puts(
+      "DriverAsyncCondition lower bound, checks, timeout, chains, coarse ticks and "
+      "concurrent Start passed");
 }
