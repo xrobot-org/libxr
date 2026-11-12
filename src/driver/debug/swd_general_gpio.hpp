@@ -12,10 +12,11 @@
 
 namespace LibXR::Debug
 {
+/// SWDIO 在驱动阶段的输出方式 / Output type of SWDIO in the drive phase.
 enum class SwdIoDriveMode : uint8_t
 {
-  PUSH_PULL = 0,  ///< Drive phase uses push-pull output.
-  OPEN_DRAIN = 1  ///< Drive phase uses open-drain output.
+  PUSH_PULL = 0,  ///< 推挽输出 / Push-pull output.
+  OPEN_DRAIN = 1  ///< 开漏输出 / Open-drain output.
 };
 
 /**
@@ -83,7 +84,9 @@ template <typename SwclkGpioType, typename SwdioGpioType,
           SwdIoDriveMode IO_DRIVE_MODE = SwdIoDriveMode::PUSH_PULL>
 class SwdGeneralGPIO final : public Swd
 {
+  /// 最低 SWCLK 频率（Hz） / Lowest SWCLK frequency (Hz).
   static constexpr uint32_t MIN_HZ = 50'000u;
+  /// 最高 SWCLK 频率（Hz） / Highest SWCLK frequency (Hz).
   static constexpr uint32_t MAX_HZ = 100'000'000u;
 
   static_assert(MIN_HZ > 0u);
@@ -91,7 +94,8 @@ class SwdGeneralGPIO final : public Swd
 
  public:
   /**
-   * @brief 构造函数 / Constructor.
+   * @brief 配置两个引脚并设置默认 SWCLK 频率
+   *        Configures the two pins and sets the default SWCLK frequency
    * @param swclk 用作 SWCLK 的 GPIO / GPIO used as SWCLK.
    * @param swdio 用作 SWDIO 的 GPIO / GPIO used as SWDIO.
    * @param cpu_hz 执行本类的 CPU 主频（Hz）；0 表示始终走无延时路径 /
@@ -106,12 +110,12 @@ class SwdGeneralGPIO final : public Swd
                           uint32_t default_hz = DEFAULT_CLOCK_HZ)
       : swclk_(swclk), swdio_(swdio), cpu_hz_(cpu_hz), timing_(timing)
   {
-    // SWCLK baseline
+    // SWCLK 初始为推挽输出、高电平 / SWCLK starts as a push-pull output, high.
     swclk_.SetConfig(
         {SwclkGpioType::Direction::OUTPUT_PUSH_PULL, SwclkGpioType::Pull::NONE});
     swclk_.Write(true);
 
-    // SWDIO baseline
+    // SWDIO 初始为驱动状态、高电平 / SWDIO starts driven, high.
     (void)SetSwdioDriveMode();
     swdio_.Write(true);
 
@@ -123,6 +127,12 @@ class SwdGeneralGPIO final : public Swd
   SwdGeneralGPIO(const SwdGeneralGPIO&) = delete;
   SwdGeneralGPIO& operator=(const SwdGeneralGPIO&) = delete;
 
+  /**
+   * @brief 设置 SWCLK 频率 / Set the SWCLK frequency
+   * @param hz 目标频率（Hz），限制在 MIN_HZ 到 MAX_HZ 之间；0 表示走无延时路径 / Target
+   *        frequency (Hz), clamped to MIN_HZ..MAX_HZ; 0 takes the path without delay.
+   * @return 总是 OK / Always OK.
+   */
   ErrorCode SetClockHz(uint32_t hz) override
   {
     if (hz == 0u)
@@ -317,11 +327,14 @@ class SwdGeneralGPIO final : public Swd
   }
 
  private:
+  /// 两数之差的绝对值 / Absolute difference of two values.
   static constexpr uint64_t AbsDiff(uint64_t x, uint64_t y)
   {
     return x > y ? x - y : y - x;
   }
 
+  /// 32 位数据的奇偶校验位：1 的个数为奇数时是 1
+  /// Parity bit of 32-bit data: 1 for an odd number of ones.
   static inline uint8_t Parity32(uint32_t x)
   {
     x ^= x >> 16;
@@ -347,6 +360,9 @@ class SwdGeneralGPIO final : public Swd
     SAMPLE_IN,    ///< 输入采样阶段 / Sample phase.
   };
 
+  /// 把 SWDIO 切到输出（按 IO_DRIVE_MODE 推挽或开漏）；已是输出时不重复配置
+  /// Switches SWDIO to output (push-pull or open-drain per IO_DRIVE_MODE); it is not
+  /// configured again when it already is one.
   ErrorCode SetSwdioDriveMode()
   {
     if (swdio_mode_ != SwdioMode::DRIVE)
@@ -366,6 +382,9 @@ class SwdGeneralGPIO final : public Swd
     return ErrorCode::OK;
   }
 
+  /// 把 SWDIO 切到上拉输入；已是输入时不重复配置
+  /// Switches SWDIO to a pulled-up input; it is not configured again when it already is
+  /// one.
   ErrorCode SetSwdioSampleMode()
   {
     if (swdio_mode_ != SwdioMode::SAMPLE_IN)
@@ -396,6 +415,8 @@ class SwdGeneralGPIO final : public Swd
   // The bit-level helpers take DELAYED, so one source yields both paths. They are forced
   // inline: under -Os the compiler keeps them out of line, every bit becomes a call, and
   // on MCUs with flash wait states the SWD bit rate drops by more than half.
+  /// 带延时的路径上忙等半个 SWCLK 周期，无延时路径上为空
+  /// Busy-waits for half an SWCLK period on the delayed path; empty on the other.
   template <bool DELAYED>
   [[gnu::always_inline]] inline void DelayHalf()
   {
@@ -405,6 +426,8 @@ class SwdGeneralGPIO final : public Swd
     }
   }
 
+  /// 一个 SWCLK 周期：先低半周期，再高半周期
+  /// One SWCLK period: the low half, then the high half.
   template <bool DELAYED>
   [[gnu::always_inline]] inline void GenOneClk()
   {
@@ -414,6 +437,8 @@ class SwdGeneralGPIO final : public Swd
     DelayHalf<DELAYED>();
   }
 
+  /// 输出一位：先设置 SWDIO，再打一个时钟
+  /// Sends one bit: sets SWDIO, then one clock.
   template <bool DELAYED>
   [[gnu::always_inline]] inline void WriteBit(bool bit)
   {
@@ -429,6 +454,7 @@ class SwdGeneralGPIO final : public Swd
   // (for example the 64-bit prefetch lines of the STM32F1) a target straddling a line
   // costs every bit a few cycles, so the same source runs at different speeds depending
   // on where it is placed.
+  /// 输出一个字节，LSB 在先 / Sends one byte, LSB first.
   template <bool DELAYED>
   inline void WriteByteLSB(uint8_t b)
   {
@@ -442,6 +468,8 @@ class SwdGeneralGPIO final : public Swd
     WriteBit<DELAYED>((b & 0x80u) != 0u);
   }
 
+  /// 读一位：在低半周期结束时采样 SWDIO，再把 SWCLK 拉高
+  /// Reads one bit: samples SWDIO at the end of the low half, then raises SWCLK.
   template <bool DELAYED>
   [[gnu::always_inline]] inline bool ReadBitAndClock()
   {
@@ -453,6 +481,7 @@ class SwdGeneralGPIO final : public Swd
     return BIT;
   }
 
+  /// 读一个字节，LSB 在先 / Reads one byte, LSB first.
   template <bool DELAYED>
   inline uint8_t ReadByteLSB()
   {
@@ -508,6 +537,7 @@ class SwdGeneralGPIO final : public Swd
 #endif
   }
 
+  /// 线复位 / Line reset.
   template <bool DELAYED>
   void LineResetImpl()
   {
@@ -521,6 +551,9 @@ class SwdGeneralGPIO final : public Swd
     }
   }
 
+  /// 线复位、JTAG-to-SWD 序列、再次线复位，最后 SWDIO 为低打 8 个时钟
+  /// Line reset, the JTAG-to-SWD sequence, another line reset, then 8 clocks with SWDIO
+  /// low.
   template <bool DELAYED>
   void EnterSwdImpl()
   {
@@ -532,6 +565,7 @@ class SwdGeneralGPIO final : public Swd
     WriteByteLSB<DELAYED>(0x00);
   }
 
+  /// SWDIO 为低打 cycles 个时钟 / Clocks cycles cycles with SWDIO low.
   template <bool DELAYED>
   void IdleClocksImpl(uint32_t cycles)
   {
@@ -550,12 +584,14 @@ class SwdGeneralGPIO final : public Swd
     swdio_.Write(false);
   }
 
+  /// 驱动 SWDIO 输出 cycles 位，LSB 在先 / Drives SWDIO with cycles bits, LSB first.
   template <bool DELAYED>
   void SeqWriteBitsImpl(uint32_t cycles, const uint8_t* data_lsb_first)
   {
     (void)SetSwdioDriveMode();
 
-    // Keep legacy: start from SWCLK low and end low
+    // 从 SWCLK 低电平开始，也以低电平结束（沿用原有行为）。
+    // Starts from SWCLK low and ends low (as before).
     swclk_.Write(false);
 
     for (uint32_t i = 0; i < cycles; ++i)
@@ -572,28 +608,34 @@ class SwdGeneralGPIO final : public Swd
     swclk_.Write(false);
   }
 
+  /// 采样 SWDIO cycles 位，LSB 在先；调用方已把缓冲区清零
+  /// Samples cycles bits from SWDIO, LSB first; the caller has cleared the buffer.
   template <bool DELAYED>
   void SeqReadBitsImpl(uint32_t cycles, uint8_t* out_lsb_first)
   {
     (void)SetSwdioSampleMode();
 
-    // start from low, end low
+    // 从 SWCLK 低电平开始，也以低电平结束 / Starts from SWCLK low and ends low.
     swclk_.Write(false);
 
     for (uint32_t i = 0; i < cycles; ++i)
     {
-      // Use the updated read phase (CMSIS-style)
+      // 采样相位与 ACK 和读数据相同：低半周期结束时采样。
+      // Same sampling phase as the ACK and the read data: at the end of the low half.
       if (ReadBitAndClock<DELAYED>())
       {
         out_lsb_first[i / 8u] =
             static_cast<uint8_t>(out_lsb_first[i / 8u] | (1u << (i & 7u)));
       }
 
-      // keep legacy end-low for next bit
+      // 每一位结束时 SWCLK 回到低电平（沿用原有行为）。
+      // SWCLK returns low after every bit (as before).
       swclk_.Write(false);
     }
   }
 
+  /// 一次 SWD 传输：请求、转向、ACK，然后是读数据或写数据
+  /// One SWD transfer: request, turnaround, ACK, then the read or the write data.
   template <bool DELAYED>
   ErrorCode TransferImpl(const SwdProtocol::Request& req, SwdProtocol::Response& resp)
   {
@@ -607,9 +649,11 @@ class SwdGeneralGPIO final : public Swd
     WriteByteLSB<DELAYED>(REQUEST_BYTE);
 
     (void)SetSwdioSampleMode();
-    GenOneClk<DELAYED>();  // turnaround Host -> Target
+    // 转向：主机到目标 / Turnaround, host to target.
+    GenOneClk<DELAYED>();
 
-    // ACK: CMSIS SW_READ_BIT phase (sample in low phase)
+    // ACK 三位，LSB 在先，在低半周期采样（与 CMSIS-DAP 的 SW_READ_BIT 相同）。
+    // Three ACK bits, LSB first, sampled in the low half (as SW_READ_BIT of CMSIS-DAP).
     uint8_t ack_raw = 0u;
     for (uint32_t i = 0; i < ACK_BITS; ++i)
     {
@@ -622,7 +666,8 @@ class SwdGeneralGPIO final : public Swd
 
     if (resp.ack != SwdProtocol::Ack::OK)
     {
-      GenOneClk<DELAYED>();  // turnaround Target -> Host (skip data)
+      // 转向：目标到主机；没有数据相 / Turnaround, target to host; no data phase.
+      GenOneClk<DELAYED>();
       (void)SetSwdioDriveMode();
       swdio_.Write(true);
       swclk_.Write(false);
@@ -631,6 +676,8 @@ class SwdGeneralGPIO final : public Swd
 
     if (req.rnw)
     {
+      // 读数据：32 位，LSB 在先，再加一位校验。
+      // Read data: 32 bits, LSB first, then one parity bit.
       uint32_t data = 0u;
       for (uint32_t byte = 0; byte < 4u; ++byte)
       {
@@ -642,6 +689,8 @@ class SwdGeneralGPIO final : public Swd
       resp.rdata = data;
       resp.parity_ok = (static_cast<uint8_t>(PARITY_BIT) == Parity32(data));
 
+      // 转向：目标到主机，主机重新驱动 SWDIO 为高。
+      // Turnaround, target to host; the host drives SWDIO high again.
       (void)SetSwdioDriveMode();
       swdio_.Write(true);
       GenOneClk<DELAYED>();
@@ -650,9 +699,12 @@ class SwdGeneralGPIO final : public Swd
     }
     else
     {
+      // 转向：目标到主机 / Turnaround, target to host.
       (void)SetSwdioDriveMode();
       GenOneClk<DELAYED>();
 
+      // 写数据：32 位，LSB 在先，再加一位校验。
+      // Write data: 32 bits, LSB first, then one parity bit.
       const uint32_t DATA = req.wdata;
       for (uint32_t byte = 0; byte < 4u; ++byte)
       {

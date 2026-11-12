@@ -27,29 +27,47 @@ template <typename TckGpioType, typename TmsGpioType, typename TdiGpioType,
           typename TdoGpioType>
 class JtagGeneralGPIO final : public Jtag
 {
+  /// 最低 TCK 频率（Hz） / Lowest TCK frequency (Hz).
   static constexpr uint32_t MIN_HZ = 10'000u;
+  /// 最高 TCK 频率（Hz） / Highest TCK frequency (Hz).
   static constexpr uint32_t MAX_HZ = 100'000'000u;
 
+  /// 每秒的纳秒数 / Nanoseconds per second.
   static constexpr uint32_t NS_PER_SEC = 1'000'000'000u;
+  /// loops_per_us 乘以半周期纳秒数，再除以它，得到每个半周期的循环次数
+  /// loops_per_us times the half period in ns, divided by this, is the loop count per
+  /// half period.
   static constexpr uint32_t LOOPS_SCALE = 1000u;
+  /// 上述除法向上取整用的偏置 / Bias that rounds this division up.
   static constexpr uint32_t CEIL_BIAS = LOOPS_SCALE - 1u;
 
+  /// 默认 TCK 频率（Hz） / Default TCK frequency (Hz).
   static constexpr uint32_t DEFAULT_CLOCK_HZ = 500'000u;
+  /// TMS 为 1 的时钟数：5 个时钟可从任何状态回到 Test-Logic-Reset
+  /// Clocks with TMS high: five reach Test-Logic-Reset from any state.
   static constexpr uint32_t RESET_CYCLES = 5u;
 
+  /// 最低频率下的半周期（ns，向上取整）
+  /// Half period at the lowest frequency (ns, rounded up).
   static constexpr uint32_t HALF_PERIOD_NS_MAX =
       (NS_PER_SEC + (2u * MIN_HZ) - 1u) / (2u * MIN_HZ);
+  /// loops_per_us 的上限：最低频率下每个半周期的循环次数仍在 uint32_t 范围内
+  /// Upper limit of loops_per_us: the loop count per half period at the lowest frequency
+  /// still fits uint32_t.
   static constexpr uint32_t MAX_LOOPS_PER_US =
       (UINT32_MAX - CEIL_BIAS) / HALF_PERIOD_NS_MAX;
 
  public:
   /**
-   * @brief 构造函数 / Constructor.
+   * @brief 配置四个引脚，设置默认 TCK 频率并复位 TAP
+   *        Configures the four pins, sets the default TCK frequency and resets the TAP
    * @param tck 用作 TCK 的 GPIO / GPIO used as TCK.
    * @param tms 用作 TMS 的 GPIO / GPIO used as TMS.
    * @param tdi 用作 TDI 的 GPIO / GPIO used as TDI.
    * @param tdo 用作 TDO 的 GPIO / GPIO used as TDO.
-   * @param loops_per_us 每个 us 的循延时环次数 / Loops per us of delay.
+   * @param loops_per_us 每微秒的延时循环次数，在目标板上按本类的 BusyLoop 标定；0 表示
+   *        不加延时 / Delay-loop iterations per microsecond, calibrated on the board
+   *        against the BusyLoop of this class; 0 adds no delay.
    * @param default_hz 默认 TCK 频率（Hz） / Default TCK frequency (Hz).
    */
   explicit JtagGeneralGPIO(TckGpioType& tck, TmsGpioType& tms, TdiGpioType& tdi,
@@ -80,6 +98,17 @@ class JtagGeneralGPIO final : public Jtag
   JtagGeneralGPIO(const JtagGeneralGPIO&) = delete;
   JtagGeneralGPIO& operator=(const JtagGeneralGPIO&) = delete;
 
+  /**
+   * @brief 设置 TCK 频率 / Set the TCK frequency
+   *
+   * 每个半周期的循环次数是 loops_per_us 乘以半周期（us），向上取整；不足一次时不加延时。
+   * The loop count per half period is loops_per_us times the half period (us), rounded
+   * up; below one iteration no delay is added.
+   *
+   * @param hz 目标频率（Hz），限制在 MIN_HZ 到 MAX_HZ 之间；0 表示不加延时 / Target
+   *        frequency (Hz), clamped to MIN_HZ..MAX_HZ; 0 adds no delay.
+   * @return 总是 OK / Always OK.
+   */
   ErrorCode SetClockHz(uint32_t hz) override
   {
     if (hz == 0u)
@@ -125,6 +154,8 @@ class JtagGeneralGPIO final : public Jtag
     return ErrorCode::OK;
   }
 
+  /// 引脚回到 TCK 低、TMS 高、TDI 低，仍保持输出
+  /// The pins return to TCK low, TMS high and TDI low and stay outputs.
   void Close() override
   {
     tck_.Write(false);
@@ -132,6 +163,8 @@ class JtagGeneralGPIO final : public Jtag
     tdi_.Write(false);
   }
 
+  /// TMS 保持为 1 打 RESET_CYCLES 个时钟，TAP 回到 Test-Logic-Reset
+  /// RESET_CYCLES clocks with TMS high take the TAP to Test-Logic-Reset.
   ErrorCode ResetTap() override
   {
     tms_.Write(true);
@@ -143,6 +176,12 @@ class JtagGeneralGPIO final : public Jtag
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief 转到目标 TAP 状态 / Move to the target TAP state
+   * @param target 只支持 TEST_LOGIC_RESET、RUN_TEST_IDLE、SHIFT_IR 和 SHIFT_DR / Only
+   *        TEST_LOGIC_RESET, RUN_TEST_IDLE, SHIFT_IR and SHIFT_DR are supported.
+   * @return OK；其他目标返回 NOT_SUPPORT / OK; NOT_SUPPORT for any other target.
+   */
   ErrorCode GotoState(TapState target) override
   {
     if (target == current_state_)
@@ -172,6 +211,8 @@ class JtagGeneralGPIO final : public Jtag
     }
   }
 
+  /// 进入 Shift-IR 移位 bits 位，然后回到 Run-Test/Idle；bits 为 0 时什么都不做
+  /// Enters Shift-IR, shifts the bits and returns to Run-Test/Idle; nothing for 0 bits.
   ErrorCode ShiftIR(uint32_t bits, const uint8_t* in_lsb_first,
                     uint8_t* out_lsb_first) override
   {
@@ -191,6 +232,8 @@ class JtagGeneralGPIO final : public Jtag
     return ErrorCode::OK;
   }
 
+  /// 进入 Shift-DR 移位 bits 位，然后回到 Run-Test/Idle；bits 为 0 时什么都不做
+  /// Enters Shift-DR, shifts the bits and returns to Run-Test/Idle; nothing for 0 bits.
   ErrorCode ShiftDR(uint32_t bits, const uint8_t* in_lsb_first,
                     uint8_t* out_lsb_first) override
   {
@@ -210,6 +253,21 @@ class JtagGeneralGPIO final : public Jtag
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief TMS 固定，打 cycles 个时钟 / Clock cycles cycles with a fixed TMS
+   *
+   * 不更新本类记录的 TAP 状态：调用方用它改变了状态时，之后要自己调用 ResetTap()。
+   * The TAP state tracked by this class is not updated: a caller that changes the state
+   * with it has to call ResetTap() afterwards.
+   *
+   * @param cycles 时钟数 / Number of clocks.
+   * @param tms 这些时钟里的 TMS 电平 / TMS level during these clocks.
+   * @param tdi_lsb_first 要输出的 TDI 位，LSB 在先；为空时输出 0 / TDI bits to send, LSB
+   *        first; null sends zeros.
+   * @param tdo_lsb_first 不为空时存放采到的 TDO 位，LSB 在先 / When not null, receives
+   *        the sampled TDO bits, LSB first.
+   * @return 总是 OK / Always OK.
+   */
   ErrorCode Sequence(uint32_t cycles, bool tms, const uint8_t* tdi_lsb_first,
                      uint8_t* tdo_lsb_first) override
   {
@@ -242,6 +300,8 @@ class JtagGeneralGPIO final : public Jtag
     return ErrorCode::OK;
   }
 
+  /// 先回到 Run-Test/Idle，再以 TMS 为 0 打 cycles 个时钟
+  /// Returns to Run-Test/Idle first, then clocks cycles cycles with TMS low.
   void IdleClocks(uint32_t cycles) override
   {
     if (cycles == 0u)
@@ -257,11 +317,21 @@ class JtagGeneralGPIO final : public Jtag
   }
 
  private:
+  /// 从 Run-Test/Idle 到 Shift-DR 的 TMS 序列：Select-DR-Scan、Capture-DR、Shift-DR
+  /// TMS sequence from Run-Test/Idle to Shift-DR: Select-DR-Scan, Capture-DR, Shift-DR.
   static constexpr uint8_t SEQ_TO_SHIFT_DR[] = {1u, 0u, 0u};
+  /// SEQ_TO_SHIFT_DR 的长度 / Length of SEQ_TO_SHIFT_DR.
   static constexpr uint32_t SEQ_TO_SHIFT_DR_LEN = 3u;
+  /// 从 Run-Test/Idle 到 Shift-IR 的 TMS 序列：Select-DR-Scan、Select-IR-Scan、
+  /// Capture-IR、Shift-IR
+  /// TMS sequence from Run-Test/Idle to Shift-IR: Select-DR-Scan, Select-IR-Scan,
+  /// Capture-IR, Shift-IR.
   static constexpr uint8_t SEQ_TO_SHIFT_IR[] = {1u, 1u, 0u, 0u};
+  /// SEQ_TO_SHIFT_IR 的长度 / Length of SEQ_TO_SHIFT_IR.
   static constexpr uint32_t SEQ_TO_SHIFT_IR_LEN = 4u;
 
+  /// 按序列每个时钟输出一个 TMS 值，TDI 为 0
+  /// Clocks out one TMS value of the sequence per clock, with TDI low.
   void ApplyTmsSequence(const uint8_t* seq, uint32_t len)
   {
     for (uint32_t i = 0; i < len; ++i)
@@ -271,6 +341,8 @@ class JtagGeneralGPIO final : public Jtag
     }
   }
 
+  /// 不在 Run-Test/Idle 时，先复位 TAP，再以 TMS 为 0 打一个时钟进入它
+  /// When not in Run-Test/Idle: resets the TAP, then one clock with TMS low enters it.
   void EnsureIdle()
   {
     if (current_state_ == TapState::RUN_TEST_IDLE)
@@ -281,6 +353,9 @@ class JtagGeneralGPIO final : public Jtag
     ClockCycle(false, false, nullptr);
     current_state_ = TapState::RUN_TEST_IDLE;
   }
+
+  /// 移位结束后从 Exit1 经 Update 回到 Run-Test/Idle
+  /// After a shift, from Exit1 through Update back to Run-Test/Idle.
   void ExitToIdle()
   {
     // EXIT1 -> UPDATE (TMS=1), UPDATE -> IDLE (TMS=0)
@@ -289,6 +364,20 @@ class JtagGeneralGPIO final : public Jtag
     current_state_ = TapState::RUN_TEST_IDLE;
   }
 
+  /**
+   * @brief 在 Shift-IR 或 Shift-DR 状态移位 bits 位
+   *        Shifts bits bits in Shift-IR or Shift-DR
+   *
+   * 前 bits - 1 位 TMS 为 0，最后一位 TMS 为 1，TAP 随最后一位进入 Exit1。
+   * The first bits - 1 bits go out with TMS low and the last one with TMS high, which
+   * takes the TAP to Exit1.
+   *
+   * @param bits 位数 / Number of bits.
+   * @param in_lsb_first 要移入的位，LSB 在先；为空时移入 0 / Bits to shift in, LSB first;
+   *        null shifts in zeros.
+   * @param out_lsb_first 不为空时先清零，再存放移出的位 / When not null, cleared first
+   * and then filled with the bits shifted out.
+   */
   void ShiftBits(uint32_t bits, const uint8_t* in_lsb_first, uint8_t* out_lsb_first)
   {
     if (out_lsb_first != nullptr && bits != 0u)
@@ -321,6 +410,18 @@ class JtagGeneralGPIO final : public Jtag
     }
   }
 
+  /**
+   * @brief 一个 TCK 周期 / One TCK period
+   *
+   * 先设置 TMS 和 TDI，TCK 先低后高；TDO 在 TCK 回到低电平之前采样，目标在下降沿才更新
+   * TDO。周期结束时 TCK 为低。
+   * TMS and TDI are set first, then TCK goes low and high; TDO is sampled before TCK
+   * returns low, since the target updates TDO on the falling edge. TCK ends low.
+   *
+   * @param tms 本周期的 TMS 电平 / TMS level of this period.
+   * @param tdi 本周期的 TDI 电平 / TDI level of this period.
+   * @param tdo 不为空时存放采到的 TDO / When not null, receives the sampled TDO.
+   */
   void ClockCycle(bool tms, bool tdi, bool* tdo)
   {
     tms_.Write(tms);
@@ -350,8 +451,11 @@ class JtagGeneralGPIO final : public Jtag
     }
   }
 
+  /// 忙等半个 TCK 周期 / Busy-wait for half a TCK period.
   inline void DelayHalf() { BusyLoop(half_period_loops_); }
 
+  /// 忙等 loops 次循环，loops 为 0 时立即返回
+  /// Busy-wait for loops iterations; returns at once for 0.
   static void BusyLoop(uint32_t loops)
   {
     // 计数器放在寄存器里；atomic_signal_fence 只约束编译器、不产生指令，使空循环不会被
@@ -366,16 +470,20 @@ class JtagGeneralGPIO final : public Jtag
   }
 
  private:
-  TckGpioType& tck_;
-  TmsGpioType& tms_;
-  TdiGpioType& tdi_;
-  TdoGpioType& tdo_;
+  TckGpioType& tck_;  ///< TCK GPIO / GPIO for TCK.
+  TmsGpioType& tms_;  ///< TMS GPIO / GPIO for TMS.
+  TdiGpioType& tdi_;  ///< TDI GPIO / GPIO for TDI.
+  TdoGpioType& tdo_;  ///< TDO GPIO / GPIO for TDO.
 
-  uint32_t clock_hz_ = 0u;
+  uint32_t clock_hz_ = 0u;  ///< 当前 TCK 频率（Hz） / Current TCK frequency (Hz).
+  /// 每微秒的延时循环次数 / Delay-loop iterations per microsecond.
   uint32_t loops_per_us_ = 0u;
-  uint32_t half_period_ns_ = 0u;
+  uint32_t half_period_ns_ = 0u;  ///< 半周期（ns） / Half period (ns).
+  /// 每个半周期的延时循环次数，0 表示不加延时
+  /// Delay loops per half period; 0 adds no delay.
   uint32_t half_period_loops_ = 0u;
 
+  /// 本类记录的 TAP 状态 / TAP state tracked by this class.
   TapState current_state_ = TapState::TEST_LOGIC_RESET;
 };
 
