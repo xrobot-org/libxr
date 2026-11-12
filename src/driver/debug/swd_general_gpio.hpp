@@ -31,18 +31,17 @@ enum class SwdIoDriveMode : uint8_t
  * delay-loop count per half period (a period has two half periods, so b is the cost
  * of two delay iterations); the path without delay costs c CPU cycles per period.
  *
- * 标定（DWT 周期计数）：固定几个 N，用 DWT_CYCCNT 分别测读数据相、写数据相和请求
- * 字节每个 SWCLK 周期的 CPU 周期数，按 a + b·N 对各路径一起拟合，得到 a 和 b 的典型
- * 值；c 是 N = 0 时各路径每周期周期数的典型值。SetClockHz 只在无延时路径不超速时
- * 用它，否则在 N >= 1 中取周期数最接近请求周期的档位，所以实际时钟与请求值相差不超过
- * 半档（b / 2），可能略快也可能略慢。
- * Calibration (DWT cycle counter): fix a few N and measure the CPU cycles per SWCLK
- * period of the read data phase, the write data phase and the request byte with
- * DWT_CYCCNT; fit a + b·N over all paths together for the typical a and b, and take c
- * as the typical cycles per period of the paths at N = 0. SetClockHz takes the path
- * without delay only when it does not overshoot; otherwise it picks, among N >= 1, the
- * step whose cycles per period are closest to the requested period, so the clock is
- * within half a step (b / 2) of the request, slightly faster or slightly slower.
+ * 标定：固定几个 N，分别测出读数据相、写数据相和请求字节每个 SWCLK 周期的 CPU
+ * 周期数，按 a + b·N 对各路径一起拟合，得到 a 和 b 的典型值；c 是 N = 0 时各路径每周期
+ * 周期数的典型值。SetClockHz 只在无延时路径不超速时用它，否则在 N >= 1 中取周期数最接近
+ * 请求周期的档位，所以实际时钟与请求值相差不超过半档（b / 2），可能略快也可能略慢。
+ * Calibration: fix a few N and measure the CPU cycles per SWCLK period of the read data
+ * phase, the write data phase and the request byte; fit a + b·N over all paths together
+ * for the typical a and b, and take c as the typical cycles per period of the paths at
+ * N = 0. SetClockHz takes the path without delay only when it does not overshoot;
+ * otherwise it picks, among N >= 1, the step whose cycles per period are closest to the
+ * requested period, so the clock is within half a step (b / 2) of the request, slightly
+ * faster or slightly slower.
  *
  * 默认值是保守值（每次延时循环和每个周期 1 个 CPU 周期，截距 0）：未标定的平台上
  * 实际时钟通常明显慢于请求值。
@@ -409,12 +408,11 @@ class SwdGeneralGPIO final : public Swd
   /// 0 only for the path without delay.
   bool Delayed() const { return half_period_loops_ != 0u; }
 
-  // 位级辅助函数以 DELAYED 区分有无延时，同一份源码生成两条路径；强制内联：-Os 下编译器
-  // 不内联它们，每一位都变成一次函数调用，在带 Flash 等待周期的 MCU 上 SWD 位速率下降
-  // 一半以上。
+  // 位级辅助函数以 DELAYED 区分有无延时，同一份源码生成两条路径。它们强制内联：按体积
+  // 优化时编译器可能不内联，每一位就变成一次函数调用。
   // The bit-level helpers take DELAYED, so one source yields both paths. They are forced
-  // inline: under -Os the compiler keeps them out of line, every bit becomes a call, and
-  // on MCUs with flash wait states the SWD bit rate drops by more than half.
+  // inline: when optimising for size a compiler may keep them out of line, and every bit
+  // then becomes a call.
   /// 带延时的路径上忙等半个 SWCLK 周期，无延时路径上为空
   /// Busy-waits for half an SWCLK period on the delayed path; empty on the other.
   template <bool DELAYED>
@@ -447,13 +445,11 @@ class SwdGeneralGPIO final : public Swd
   }
 
   // 按字节收发的函数都展开成 8 位，不留逐位循环：循环的跳转目标落在哪里随代码布局变化，
-  // 在取指要等待的 Flash 上（例如 STM32F1 的 64 位预取行），跨行的跳转目标会让每一位多等
-  // 几个周期，同一份源码换个位置就快慢不同。
+  // 取指需要等待的平台上每一位的耗时会跟着变，同一份源码换个位置就快慢不同。
   // The byte functions are unrolled into 8 bits with no per-bit loop: where a loop's
-  // branch target lands moves with the code layout, and on flash with fetch wait states
-  // (for example the 64-bit prefetch lines of the STM32F1) a target straddling a line
-  // costs every bit a few cycles, so the same source runs at different speeds depending
-  // on where it is placed.
+  // branch target lands moves with the code layout, and on platforms whose instruction
+  // fetch has wait states the time per bit moves with it, so the same source would run at
+  // different speeds depending on where it is placed.
   /// 输出一个字节，LSB 在先 / Sends one byte, LSB first.
   template <bool DELAYED>
   inline void WriteByteLSB(uint8_t b)
