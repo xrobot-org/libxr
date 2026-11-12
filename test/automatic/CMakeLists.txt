@@ -110,6 +110,7 @@ add_executable(
   core/rw/stdio/test_linux_stdio_print.cpp
   core/rw/write_port/test_write_port.cpp
   core/rw/write_stream/test_write_stream.cpp
+  driver/async_condition/test_driver_async_condition.cpp
   driver/power/test_power.cpp
   driver/uart/test_uart.cpp
   driver/usb/test_cdc_uart.cpp
@@ -233,14 +234,3 @@ add_test(
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/xrobot_freshness.cmake"
 )
 set_tests_properties(xrobot_freshness PROPERTIES TIMEOUT 60)
-
-# DriverAsyncCondition driven by OnTick() calls from the test instead of a timebase.
-add_executable(
-  test_driver_async_condition driver/async_condition/test_driver_async_condition.cpp
-)
-target_link_libraries(test_driver_async_condition PRIVATE xr)
-target_include_directories(
-  test_driver_async_condition PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.."
-)
-add_test(NAME driver_async_condition COMMAND test_driver_async_condition)
-set_tests_properties(driver_async_condition PROPERTIES TIMEOUT 30)
