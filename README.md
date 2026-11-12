@@ -303,6 +303,8 @@ layout are described in [test/README.md](https://github.com/xrobot-org/libxr/blo
 - [XRUSB](src/driver/usb/README.md)
 - [LibXR_CppCodeGenerator](https://github.com/xrobot-org/LibXR_CppCodeGenerator)
 - [XRobot](https://github.com/xrobot-org/XRobot)
+- [介绍视频 / Introduction Video (Bilibili)](https://www.bilibili.com/video/BV1BzWS6AEDb/)
+- [介绍视频 / Introduction Video (YouTube)](https://www.youtube.com/watch?v=-JPeltB-Vt0)
 - [视频教程 / Video Tutorial (Bilibili)](https://www.bilibili.com/video/BV1c8XVYLERR/)
 - [Issue Tracker](https://github.com/xrobot-org/libxr/issues)
 
