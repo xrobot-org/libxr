@@ -1,12 +1,12 @@
 #pragma once
 
-#include <atomic>
 #include <cstdint>
 
 #include "gpio.hpp"
 #include "jtag.hpp"
 #include "libxr_def.hpp"
 #include "libxr_mem.hpp"
+#include "timebase.hpp"
 
 namespace LibXR::Debug
 {
@@ -65,9 +65,9 @@ class JtagGeneralGPIO final : public Jtag
    * @param tms 用作 TMS 的 GPIO / GPIO used as TMS.
    * @param tdi 用作 TDI 的 GPIO / GPIO used as TDI.
    * @param tdo 用作 TDO 的 GPIO / GPIO used as TDO.
-   * @param loops_per_us 每微秒的延时循环次数，在目标板上按本类的 BusyLoop 标定；0 表示
-   *        不加延时 / Delay-loop iterations per microsecond, calibrated on the board
-   *        against the BusyLoop of this class; 0 adds no delay.
+   * @param loops_per_us 每微秒的延时循环次数，在目标板上按 Timebase::BusyLoop() 标定；
+   *        0 表示不加延时 / Delay-loop iterations per microsecond, calibrated on the
+   *        board against Timebase::BusyLoop(); 0 adds no delay.
    * @param default_hz 默认 TCK 频率（Hz） / Default TCK frequency (Hz).
    */
   explicit JtagGeneralGPIO(TckGpioType& tck, TmsGpioType& tms, TdiGpioType& tdi,
@@ -452,22 +452,7 @@ class JtagGeneralGPIO final : public Jtag
   }
 
   /// 忙等半个 TCK 周期 / Busy-wait for half a TCK period.
-  inline void DelayHalf() { BusyLoop(half_period_loops_); }
-
-  /// 忙等 loops 次循环，loops 为 0 时立即返回
-  /// Busy-wait for loops iterations; returns at once for 0.
-  static void BusyLoop(uint32_t loops)
-  {
-    // 计数器放在寄存器里；atomic_signal_fence 只约束编译器、不产生指令，使空循环不会被
-    // 优化掉（与 SwdGeneralGPIO 相同）。
-    // The counter lives in a register; atomic_signal_fence constrains only the compiler
-    // and emits no instruction, so the empty loop is not optimised away (same as
-    // SwdGeneralGPIO).
-    while (loops--)
-    {
-      std::atomic_signal_fence(std::memory_order_seq_cst);
-    }
-  }
+  inline void DelayHalf() { Timebase::BusyLoop(half_period_loops_); }
 
  private:
   TckGpioType& tck_;  ///< TCK GPIO / GPIO for TCK.

@@ -1,5 +1,9 @@
 #pragma once
 
+#include <atomic>
+#include <cstdint>
+
+#include "libxr_def.hpp"
 #include "libxr_time.hpp"
 
 namespace LibXR
@@ -73,6 +77,35 @@ class Timebase
     while ((static_cast<uint64_t>(Timebase::GetMicroseconds()) - START) < us)
     {
       // busy-wait
+    }
+  }
+
+  /**
+   * @brief 忙等 loops 次循环，用于比 1 us 更短的延时
+   *        Busy-wait for loops iterations, for delays shorter than 1 us
+   *
+   * 每次循环的耗时由平台和编译结果决定，使用者在自己的平台上标定。平台的时基类可以
+   * 定义同名的静态函数替换它；使用者把时基类作为类型参数、调用
+   * `TimebaseType::BusyLoop()` 时才会用到替换后的版本。
+   * The time per iteration depends on the platform and the generated code; users
+   * calibrate it on their platform. The timebase class of a platform may define a static
+   * function of the same name to replace it; a user reaches the replacement by taking
+   * the timebase class as a type parameter and calling `TimebaseType::BusyLoop()`.
+   *
+   * @param loops 循环次数，必须 >= 1 / Iteration count, must be >= 1.
+   */
+  LIBXR_ALWAYS_INLINE static void BusyLoop(uint32_t loops)
+  {
+    DEV_ASSERT(loops >= 1u);
+    // 计数器放在寄存器里；atomic_signal_fence 只约束编译器、不产生指令，使空循环不会被
+    // 优化掉。volatile 计数器会在每次迭代读写栈并带内存屏障，每次迭代更慢。
+    // The counter lives in a register; atomic_signal_fence constrains only the compiler
+    // and emits no instruction, so the empty loop is not optimised away. A volatile
+    // counter would read and write the stack with a memory barrier on every iteration,
+    // which makes each iteration slower.
+    while (loops--)
+    {
+      std::atomic_signal_fence(std::memory_order_seq_cst);
     }
   }
 

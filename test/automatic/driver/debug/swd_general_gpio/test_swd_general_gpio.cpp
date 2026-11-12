@@ -184,6 +184,55 @@ void TestDelayLoopsNearestStepSweep()
     }
   }
 }
+/// 记录 BusyLoop() 调用的时基类，代替平台的时基类作为类型参数
+/// Timebase class that records the BusyLoop() calls, used as the type parameter in place
+/// of the timebase class of a platform.
+class RecordingTimebase : public Timebase
+{
+ public:
+  static void BusyLoop(uint32_t loops)
+  {
+    ++calls;
+    last_loops = loops;
+  }
+
+  static inline uint32_t calls = 0;  ///< 调用次数 / Number of calls.
+  static inline uint32_t last_loops =
+      0;  ///< 最近一次的循环次数 / Loops of the last call.
+};
+
+/// 带延时的路径每个半周期调用一次所选时基类的 BusyLoop()，循环次数是 DelayLoops()
+/// 的结果； 无延时路径不调用它 The delayed path calls BusyLoop() of the chosen timebase
+/// class once per half period with the count from DelayLoops(); the path without delay
+/// does not call it.
+void TestDelayedPathUsesTheTimebaseClass()
+{
+  using DelayedGpio =
+      Debug::SwdGeneralGPIO<ClockedPin, RecordingPin, Debug::SwdIoDriveMode::PUSH_PULL,
+                            RecordingTimebase>;
+  constexpr uint32_t CPU = 100'000'000u;
+  constexpr Debug::SwdGpioTiming T{100u, 150u, 120u};
+  ClockedPin swclk;
+  RecordingPin swdio;
+  swclk.data = &swdio;
+  DelayedGpio swd(swclk, swdio, CPU, T);
+
+  TEST_ASSERT(swd.SetClockHz(1'000'000u) == ErrorCode::OK);
+  const uint32_t LOOPS = DelayedGpio::DelayLoops(CPU, 1'000'000u, T);
+  TEST_ASSERT(LOOPS >= 1u);
+  RecordingTimebase::calls = 0;
+  swclk.sampled.clear();
+  swd.IdleClocks(4);
+  TEST_ASSERT(swclk.sampled.size() == 4);
+  TEST_ASSERT(RecordingTimebase::calls == 8u);
+  TEST_ASSERT(RecordingTimebase::last_loops == LOOPS);
+
+  // 10 MHz 的请求走无延时路径 / A 10 MHz request takes the path without delay.
+  TEST_ASSERT(swd.SetClockHz(10'000'000u) == ErrorCode::OK);
+  RecordingTimebase::calls = 0;
+  swd.IdleClocks(4);
+  TEST_ASSERT(RecordingTimebase::calls == 0u);
+}
 }  // namespace
 
 void test_swd_general_gpio()
@@ -192,4 +241,5 @@ void test_swd_general_gpio()
   TestRequestOnTheWire();
   TestDelayLoopsPickTheNearestStep();
   TestDelayLoopsNearestStepSweep();
+  TestDelayedPathUsesTheTimebaseClass();
 }

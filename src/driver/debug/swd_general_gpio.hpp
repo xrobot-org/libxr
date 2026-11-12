@@ -1,8 +1,8 @@
 #pragma once
 
-#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <type_traits>
 
 #include "gpio.hpp"
 #include "libxr_def.hpp"
@@ -30,6 +30,11 @@ enum class SwdIoDriveMode : uint8_t
  * On the delayed path one SWCLK period costs a + b·N CPU cycles, where N is the
  * delay-loop count per half period (a period has two half periods, so b is the cost
  * of two delay iterations); the path without delay costs c CPU cycles per period.
+ *
+ * 延时循环是所用时基类的 BusyLoop()，b 由它决定，所以一组参数只对标定时用的那个时基类
+ * 有效。
+ * The delay loop is the BusyLoop() of the timebase class in use and determines b, so a
+ * set of parameters is valid only for the timebase class it was calibrated with.
  *
  * 标定：固定几个 N，分别测出读数据相、写数据相和请求字节每个 SWCLK 周期的 CPU
  * 周期数，按 a + b·N 对各路径一起拟合，得到 a 和 b 的典型值；c 是 N = 0 时各路径每周期
@@ -64,6 +69,12 @@ struct SwdGpioTiming
  *
  * @tparam SwclkGpioType SWCLK GPIO 类型 / SWCLK GPIO type
  * @tparam SwdioGpioType SWDIO GPIO 类型 / SWDIO GPIO type
+ * @tparam IO_DRIVE_MODE SWDIO 在驱动阶段的输出方式 / Output type of SWDIO in the drive
+ *         phase
+ * @tparam TimebaseType 提供 BusyLoop() 的时基类；默认的 Timebase 使用通用循环，平台的
+ *         时基类可以提供自己的循环 / Timebase class that provides BusyLoop(); the default
+ *         Timebase uses the generic loop, and the timebase class of a platform may
+ *         provide its own
  *
  * @note 推荐外围电路：SWCLK/SWDIO 均串联 33Ω 限流电阻，SWDIO 端接 10k 上拉电阻。
  *       Recommended circuit: 33Ω series resistors on SWCLK/SWDIO, 10k pull-up on SWDIO.
@@ -80,9 +91,12 @@ struct SwdGpioTiming
  *       GpioType's SetConfig has to account for it.
  */
 template <typename SwclkGpioType, typename SwdioGpioType,
-          SwdIoDriveMode IO_DRIVE_MODE = SwdIoDriveMode::PUSH_PULL>
+          SwdIoDriveMode IO_DRIVE_MODE = SwdIoDriveMode::PUSH_PULL,
+          typename TimebaseType = Timebase>
 class SwdGeneralGPIO final : public Swd
 {
+  static_assert(std::is_base_of_v<Timebase, TimebaseType>);
+
   /// 最低 SWCLK 频率（Hz） / Lowest SWCLK frequency (Hz).
   static constexpr uint32_t MIN_HZ = 50'000u;
   /// 最高 SWCLK 频率（Hz） / Highest SWCLK frequency (Hz).
@@ -420,7 +434,7 @@ class SwdGeneralGPIO final : public Swd
   {
     if constexpr (DELAYED)
     {
-      BusyLoop(half_period_loops_);
+      TimebaseType::BusyLoop(half_period_loops_);
     }
   }
 
@@ -491,46 +505,6 @@ class SwdGeneralGPIO final : public Swd
     v |= static_cast<uint8_t>(ReadBitAndClock<DELAYED>() ? 0x40u : 0u);
     v |= static_cast<uint8_t>(ReadBitAndClock<DELAYED>() ? 0x80u : 0u);
     return v;
-  }
-
-  /**
-   * @brief 忙等 loops 次延时循环 / Busy-wait for loops delay iterations.
-   * @param loops 循环次数，必须 >= 1：只有带延时的路径调用它，SetClockHz 只在无延时
-   *        路径时产生 0 / Iteration count, must be >= 1: only the delayed path calls it,
-   *        and SetClockHz produces 0 only for the path without delay.
-   */
-  LIBXR_ALWAYS_INLINE static void BusyLoop(uint32_t loops)
-  {
-    DEV_ASSERT(loops >= 1u);
-#if defined(__thumb2__)
-    // Thumb-2：两条 16 位指令的循环，.balign 8 让它落在同一个 64 位取指行里，含它的函数段
-    // 也因此按 8 字节对齐，每次迭代的周期数不再随代码布局变化（编译器生成的循环可能跨行，
-    // 每次迭代多等取指周期）。对齐填充的 nop 只在进入循环前执行一次。
-    // Thumb-2: a loop of two 16-bit instructions; .balign 8 keeps it inside one 64-bit
-    // fetch line and makes the section of the containing function 8-byte aligned, so
-    // the cycles per iteration no longer depend on code layout (a compiler-generated loop
-    // may straddle a line and wait for an extra fetch on every iteration). The alignment
-    // nops run once, before the loop.
-    asm volatile(
-        ".balign 8\n"
-        "1:\n\t"
-        "subs %0, %0, #1\n\t"
-        "bne 1b\n"
-        : "+l"(loops)
-        :
-        : "cc");
-#else
-    // 计数器放在寄存器里；atomic_signal_fence 只约束编译器、不产生指令，使空循环不会被
-    // 优化掉。volatile 计数器会在每次迭代读写栈并带内存屏障，每次迭代更慢。
-    // The counter lives in a register; atomic_signal_fence constrains only the compiler
-    // and emits no instruction, so the empty loop is not optimised away. A volatile
-    // counter would read and write the stack with a memory barrier on every iteration,
-    // which makes each iteration slower.
-    while (loops--)
-    {
-      std::atomic_signal_fence(std::memory_order_seq_cst);
-    }
-#endif
   }
 
   /// 线复位 / Line reset.
