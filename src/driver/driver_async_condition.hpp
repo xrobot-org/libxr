@@ -14,9 +14,10 @@ namespace LibXR
  *        a notification when it holds or times out
  *
  * 代替驱动中"一边查标志一边看超时"的轮询。Wait() 立即返回；min_ms 之前不检查，之后每个
- * 节拍调用一次 check，成立时 done(OK)，过了 max_ms 仍不成立时 done(TIMEOUT)。Wait()
- * 之后可能紧接着来一个节拍，所以检查最早在 min_ms 后开始，超时在 max_ms 之后、最多再晚
- * 一个节拍。min_ms 和 max_ms 须小于 2^29（约 6 天）。
+ * 节拍调用一次 check，成立时 done(OK)，过了 max_ms 仍不成立时 done(TIMEOUT)。节拍的
+ * 间隔固定为 T 毫秒；Wait() 之后可能紧接着来一个节拍，所以检查不早于 min_ms、不晚于
+ * min_ms 向上取整到 T 的整数倍再加 T 开始，超时同样不早于 max_ms、不晚于 max_ms 向上
+ * 取整到 T 的整数倍再加 T。min_ms 和 max_ms 须小于 2^29（约 6 天）。
  *
  * check 和 done 在节拍上下文执行，可能是高于 RTOS 系统调用上限的中断，所以两者都必须是
  * 有界的极短操作：几条寄存器读写，不阻塞、不循环等待、不调用 RTOS 接口。check 只读寄存器
@@ -28,9 +29,11 @@ namespace LibXR
  *
  * Replaces the driver loops that poll a flag while watching a timeout. Wait() returns at
  * once; check is not called before min_ms, then once per tick: done(OK) when it holds,
- * done(TIMEOUT) when it still does not after max_ms. A tick may come right after Wait(),
- * so checking starts no earlier than min_ms and the timeout comes after max_ms, at most
- * one tick later. min_ms and max_ms are below 2^29 (about six days).
+ * done(TIMEOUT) when it still does not after max_ms. Ticks come every T milliseconds, and
+ * one may come right after Wait(), so checking starts no earlier than min_ms and no later
+ * than min_ms rounded up to a multiple of T plus T; the timeout likewise comes no earlier
+ * than max_ms and no later than max_ms rounded up to a multiple of T plus T. min_ms and
+ * max_ms are below 2^29 (about six days).
  *
  * check and done run in the tick context, which may be an interrupt above the RTOS system
  * call ceiling, so both must be short bounded operations: a few register accesses, no
@@ -80,6 +83,7 @@ class DriverAsyncCondition
    * @brief 节拍入口：时基驱动每过 elapsed_ms 毫秒调用一次 / Tick entry: the timebase
    * driver calls it every elapsed_ms milliseconds
    *
+   * 每次调用的 elapsed_ms 相同 / elapsed_ms is the same on every call.
    * 不可重入；每个平台至多一个节拍源，没有使用者的平台不提供节拍。 / Not reentrant;
    * every platform has at most one tick source, and a platform without a user provides
    * none.
