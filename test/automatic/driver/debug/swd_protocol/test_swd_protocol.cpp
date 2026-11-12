@@ -19,6 +19,7 @@ using namespace LibXR::Debug::SwdProtocol;
 
 namespace
 {
+/// 按包格式逐位写出的请求字节，bit0 最先上线
 /// Request bits written out from the packet definition, bit 0 first on the wire.
 constexpr uint8_t Packet(bool apndp, bool rnw, bool a2, bool a3)
 {
@@ -30,6 +31,7 @@ constexpr uint8_t Packet(bool apndp, bool rnw, bool a2, bool a3)
 
 void TestRequestEncoding()
 {
+  // 注释列出各请求中为 1 的位 / The comments list the bits that are set.
   // DP read IDCODE (A = 0x0): Start, RnW, Parity, Park.
   TEST_ASSERT(MakeRequest(make_dp_read_req(DpReadReg::IDCODE)) == 0xA5u);
   // DP read RDBUFF (A = 0xC): Start, RnW, A2, A3, Parity, Park.
@@ -43,6 +45,7 @@ void TestRequestEncoding()
   // AP write, A = 0xC: Start, APnDP, A2, A3, Parity, Park.
   TEST_ASSERT(MakeRequest(make_ap_write_req(3u, 0u)) == 0xBBu);
 
+  // 所有组合都与包格式比较；写数据不影响请求字节。
   // Every combination against the packet definition; the write data does not matter.
   for (unsigned v = 0; v < 16u; ++v)
   {
@@ -62,8 +65,9 @@ void TestAckDecoding()
   TEST_ASSERT(DecodeAck(0x1u) == Ack::OK);
   TEST_ASSERT(DecodeAck(0x2u) == Ack::WAIT);
   TEST_ASSERT(DecodeAck(0x4u) == Ack::FAULT);
-  // No target driving the line.
+  // 没有目标驱动数据线 / No target driving the line.
   TEST_ASSERT(DecodeAck(0x0u) == Ack::NO_ACK);
+  // 其余组合都不是合法的 ACK，包括悬空的线被上拉时读到的全 1。
   // Any other pattern is not a valid ACK, including the all-ones of a floating line
   // pulled high.
   for (unsigned bits : {0x3u, 0x5u, 0x6u, 0x7u})
