@@ -25,6 +25,7 @@ void test_assert();
 void test_linux_database_raw();
 void test_linux_database_sequential();
 void test_def();
+void test_driver_async_condition();
 void test_color();
 void test_crc();
 void test_crc_first_call_race();
@@ -259,6 +260,8 @@ constexpr GroupedTestCase kMainTestCases[] = {
 
     {"system_tests", {"ramfs", &RunVoidEntry<test_ramfs>, false}},
     {"system_tests", {"power", &RunVoidEntry<test_power>, false}},
+    {"system_tests",
+     {"driver_async_condition", &RunVoidEntry<test_driver_async_condition>, false}},
     {"system_tests", {"event", &RunVoidEntry<test_event>, false}},
     {"system_tests", {"message_topic", &RunVoidEntry<test_message_topic>, false}},
     {"system_tests",

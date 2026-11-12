@@ -110,6 +110,7 @@ add_executable(
   core/rw/stdio/test_linux_stdio_print.cpp
   core/rw/write_port/test_write_port.cpp
   core/rw/write_stream/test_write_stream.cpp
+  driver/driver_async_condition/test_driver_async_condition.cpp
   driver/power/test_power.cpp
   driver/uart/test_uart.cpp
   driver/usb/test_cdc_uart.cpp
