@@ -147,9 +147,15 @@ class EndpointPool
   class HardwareScope
   {
    public:
-    /// 进入 pool 的硬件临界区；pool 为空或未设置回调时不做任何事
-    /// Enter the hardware critical region of pool; does nothing when pool is null or no
-    /// hook is set
+    /// 进入 pool 的硬件临界区；pool 不会为空，编译器不必再沿空指针路径分析
+    /// Enter the hardware critical region of pool; pool is never null, so the compiler
+    /// does not follow a null-pointer path
+    LIBXR_ALWAYS_INLINE explicit HardwareScope(EndpointPool& pool) : pool_(&pool)
+    {
+      if (pool.hardware_enter_) token_ = pool.hardware_enter_(pool.hardware_context_);
+    }
+    /// 指针版本；pool 为空或未设置回调时不做任何事 / Pointer overload; does nothing when
+    /// pool is null or no hook is set
     LIBXR_ALWAYS_INLINE explicit HardwareScope(EndpointPool* pool) : pool_(pool)
     {
       if (pool_ && pool_->hardware_enter_)

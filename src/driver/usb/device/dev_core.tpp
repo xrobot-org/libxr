@@ -62,7 +62,7 @@ void DeviceCore<C>::Initialize(bool in_isr)
     return;
   }
   {
-    EndpointPool::HardwareScope hardware(&pool_);
+    EndpointPool::HardwareScope hardware(pool_);
     OnControlReady();
     // IRQ 在硬件保护释放后即可运行。须在此之前发布就绪状态，
     // 否则合法的第一个 SETUP 可能因被视为未初始化而被丢弃。
@@ -123,7 +123,7 @@ void DeviceCore<C>::ProcessEvents(bool in_isr, uint32_t events)
       bool speed_ok = true;
       if (events & RESET_EVENT)
       {
-        EndpointPool::HardwareScope hardware(&pool_);
+        EndpointPool::HardwareScope hardware(pool_);
         OnControllerReset();
         const Speed observed_speed = ReadBusSpeed();
         speed_ok = (profile_speeds_ & SpeedBit(observed_speed)) != 0U;
@@ -209,7 +209,7 @@ void DeviceCore<C>::OnSetupPacket(bool in_isr, const SetupPacket* setup)
 {
   if (setup == nullptr) return;
   {
-    EndpointPool::HardwareScope hardware(&pool_);
+    EndpointPool::HardwareScope hardware(pool_);
     captured_setup_ = *setup;
     captured_setup_pending_ = true;
     pool_.PublishControl(SETUP_EVENT);
@@ -220,7 +220,7 @@ void DeviceCore<C>::OnSetupPacket(bool in_isr, const SetupPacket* setup)
 template <typename C>
 bool DeviceCore<C>::TakeCapturedSetup(SetupPacket& setup)
 {
-  EndpointPool::HardwareScope hardware(&pool_);
+  EndpointPool::HardwareScope hardware(pool_);
   // 较新的生命周期请求必须先于边界之后的 SETUP 生效。
   // 其发布与邮箱失效处于同一保护之内。
   // A newer lifecycle request must be applied before a post-boundary SETUP.
@@ -297,7 +297,7 @@ void DeviceCore<C>::Finish(bool in_isr)
   status_out_armed_ = false;
   status_out_seen_ = false;
   {
-    EndpointPool::HardwareScope hardware(&pool_);
+    EndpointPool::HardwareScope hardware(pool_);
     OnControlReady();
   }
   if (previous) previous->OnControlComplete(in_isr, completed);

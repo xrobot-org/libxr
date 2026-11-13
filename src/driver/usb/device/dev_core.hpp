@@ -194,7 +194,7 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   void RequestLifecycle(bool in_isr, uint32_t event, bool enabled)
   {
     {
-      EndpointPool::HardwareScope hardware(&pool_);
+      EndpointPool::HardwareScope hardware(pool_);
       // 只使在此生命周期边界之前捕获的 SETUP 失效。之后捕获的 SETUP，
       // 即使两个事件位合并，也保持待处理。
       // Invalidate only SETUP captured before this lifecycle boundary. A SETUP
@@ -210,7 +210,7 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   void RequestPower(bool in_isr, bool suspended)
   {
     {
-      EndpointPool::HardwareScope hardware(&pool_);
+      EndpointPool::HardwareScope hardware(pool_);
       requested_suspend_.store(suspended ? 1U : 0U, std::memory_order_release);
       pool_.PublishControl(POWER_EVENT);
     }
