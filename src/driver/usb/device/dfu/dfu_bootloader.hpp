@@ -1448,6 +1448,7 @@ class DFUClass : public DfuInterfaceClassBase
   ErrorCode HandleDnload(uint16_t block_num, uint16_t wLength,
                          ControlTransferResult& result)
   {
+    UNUSED(result);
     if (!caps_.can_download)
     {
       return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
@@ -1564,6 +1565,7 @@ class DFUClass : public DfuInterfaceClassBase
 
   ErrorCode HandleClearStatus(ControlTransferResult& result)
   {
+    UNUSED(result);
     if (state_ != DFUState::DFU_ERROR)
     {
       return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
@@ -1582,6 +1584,7 @@ class DFUClass : public DfuInterfaceClassBase
 
   ErrorCode HandleAbort(ControlTransferResult& result)
   {
+    UNUSED(result);
     switch (state_)
     {
       case DFUState::DFU_IDLE:
@@ -1903,6 +1906,7 @@ class DfuBootloaderClassT : private DfuBootloaderClassStorage,
                             uint16_t,
                             typename Base::ControlTransferResult& result) override
   {
+    UNUSED(result);
     if (bRequest != VENDOR_REQUEST_RUN_APP)
     {
       return ErrorCode::NOT_SUPPORT;
