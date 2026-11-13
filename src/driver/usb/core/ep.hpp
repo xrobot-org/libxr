@@ -212,7 +212,7 @@ class Endpoint
                                          : EPNumberToAddr(number_, config_.direction);
   }
   /// 当前状态（acquire 读取，任何上下文）/ Current state (acquire load, any context)
-  [[gnu::always_inline]] State GetState() const
+  LIBXR_ALWAYS_INLINE State GetState() const
   {
     return state_.load(std::memory_order_acquire);
   }
@@ -369,21 +369,21 @@ class Endpoint
 
   // The small helpers on the request path are forced inline: under -Os the compiler keeps
   // them out of line, and on flash with wait states each call costs more than its body.
-  [[gnu::always_inline]] static uint32_t SlotOf(uint32_t word, uint8_t index)
+  LIBXR_ALWAYS_INLINE static uint32_t SlotOf(uint32_t word, uint8_t index)
   {
     return (word >> (index * SLOT_BITS)) & SLOT_MASK;
   }
-  [[gnu::always_inline]] static uint32_t WithSlot(uint32_t word, uint8_t index,
-                                                  uint32_t state)
+  LIBXR_ALWAYS_INLINE static uint32_t WithSlot(uint32_t word, uint8_t index,
+                                               uint32_t state)
   {
     return (word & ~(SLOT_MASK << (index * SLOT_BITS))) | (state << (index * SLOT_BITS));
   }
-  [[gnu::always_inline]] static uint32_t LendOf(uint32_t word, uint8_t index)
+  LIBXR_ALWAYS_INLINE static uint32_t LendOf(uint32_t word, uint8_t index)
   {
     return (word >> (LEND_SHIFT + index * LEND_BITS)) & LEND_MASK;
   }
   // Marks the slot LENT and advances its lend count.
-  [[gnu::always_inline]] static uint32_t Lend(uint32_t word, uint8_t index)
+  LIBXR_ALWAYS_INLINE static uint32_t Lend(uint32_t word, uint8_t index)
   {
     const uint32_t shift = LEND_SHIFT + index * LEND_BITS;
     const uint32_t count = (LendOf(word, index) + 1U) & LEND_MASK;
@@ -391,11 +391,11 @@ class Endpoint
     return WithSlot(word, index, LENT);
   }
   // Whether the handle names the slot's current lend.
-  [[gnu::always_inline]] static bool Holds(uint32_t word, const Slot& slot)
+  LIBXR_ALWAYS_INLINE static bool Holds(uint32_t word, const Slot& slot)
   {
     return LendOf(word, slot.index) == slot.token;
   }
-  [[gnu::always_inline]] static uint32_t Enqueue(uint32_t word, uint8_t index)
+  LIBXR_ALWAYS_INLINE static uint32_t Enqueue(uint32_t word, uint8_t index)
   {
     const uint8_t other = index ^ 1U;
     const uint8_t head = SlotOf(word, other) == QUEUED ? other : index;
@@ -412,14 +412,14 @@ class Endpoint
   void Attach(EndpointPool& pool) { pool_ = &pool; }
   void Service(bool in_isr);
   // Defined in ep_pool.hpp, which ep.cpp includes.
-  [[gnu::always_inline]] inline void NotifyOwner(bool in_isr);
-  [[gnu::always_inline]] inline void NotifyQueued(bool in_isr);
-  [[gnu::always_inline]] inline bool CanStart() const;
-  [[gnu::always_inline]] bool Usable(uint32_t word, uint8_t index) const
+  LIBXR_ALWAYS_INLINE void NotifyOwner(bool in_isr);
+  LIBXR_ALWAYS_INLINE void NotifyQueued(bool in_isr);
+  LIBXR_ALWAYS_INLINE bool CanStart() const;
+  LIBXR_ALWAYS_INLINE bool Usable(uint32_t word, uint8_t index) const
   {
     return index < slot_count_ && SlotOf(word, index) == FREE;
   }
-  [[gnu::always_inline]] RawData SlotData(uint8_t index, size_t capacity) const
+  LIBXR_ALWAYS_INLINE RawData SlotData(uint8_t index, size_t capacity) const
   {
     return {static_cast<uint8_t*>(memory_.addr_) + index * slot_size_, capacity};
   }
@@ -436,7 +436,7 @@ class Endpoint
   void DeliverAborts(bool in_isr);
   void Deliver(bool in_isr, ErrorCode result, size_t actual);
   void Deliver(bool in_isr, ErrorCode result, size_t actual, const Slot& slot);
-  [[gnu::always_inline]] uint32_t NextTag(uint8_t index)
+  LIBXR_ALWAYS_INLINE uint32_t NextTag(uint8_t index)
   {
     sequence_ = (sequence_ + 1U) & 0x3FFFFFFFU;
     if (sequence_ == 0U) sequence_ = 1U;
@@ -444,7 +444,7 @@ class Endpoint
   }
   void SetState(State state) { state_.store(state, std::memory_order_release); }
   // Requests are being ended (stop pending, halted or closed); nothing continues.
-  [[gnu::always_inline]] bool Ending() const
+  LIBXR_ALWAYS_INLINE bool Ending() const
   {
     return stopping_ || GetState() != State::IDLE;
   }

@@ -226,7 +226,7 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests", {"usb_dfu", &RunVoidEntry<test_usb_dfu>, false}},
     {"usb_tests", {"usb_gsusb", &RunVoidEntry<test_usb_gsusb>, false}},
     {"usb_tests", {"usb_uac_mic", &RunVoidEntry<test_usb_uac_mic>, false}},
-    {"usb_tests", {"usb_fsdev", &RunVoidEntry<test_usb_fsdev>, false}},
+    {"usb_tests", {"usb_fsdev", &RunVoidEntry<test_usb_fsdev>, true, false}},
     {"usb_tests", {"usb_daplink_v2", &RunVoidEntry<test_usb_daplink_v2>, false}},
     {"usb_tests", {"usb_daplink_v1", &RunVoidEntry<test_usb_daplink_v1>, false}},
     {"core_tests", {"assert", &RunVoidEntry<test_assert>, false}},

@@ -150,17 +150,17 @@ class EndpointPool
     /// 进入 pool 的硬件临界区；pool 为空或未设置回调时不做任何事
     /// Enter the hardware critical region of pool; does nothing when pool is null or no
     /// hook is set
-    [[gnu::always_inline]] explicit HardwareScope(EndpointPool* pool) : pool_(pool)
+    LIBXR_ALWAYS_INLINE explicit HardwareScope(EndpointPool* pool) : pool_(pool)
     {
       if (pool_ && pool_->hardware_enter_)
         token_ = pool_->hardware_enter_(pool_->hardware_context_);
     }
-    [[gnu::always_inline]] ~HardwareScope() { Release(); }
+    LIBXR_ALWAYS_INLINE ~HardwareScope() { Release(); }
     HardwareScope(const HardwareScope&) = delete;
     HardwareScope& operator=(const HardwareScope&) = delete;
     /// 提前离开临界区；重复调用无效，析构时不会再离开一次 / Leave early; repeated calls
     /// are no-ops and the destructor will not leave again
-    [[gnu::always_inline]] void Release()
+    LIBXR_ALWAYS_INLINE void Release()
     {
       if (pool_ && pool_->hardware_leave_)
         pool_->hardware_leave_(pool_->hardware_context_, token_);
@@ -271,7 +271,7 @@ class EndpointPool
   /// request the owner (PublishControl + RequestService)
   void PostControl(uint32_t events, bool in_isr);
   /// 是否有 mask 内的控制事件待处理 / Whether any control event within mask is pending
-  [[gnu::always_inline]] bool HasPendingControl(uint32_t mask = UINT32_MAX) const
+  LIBXR_ALWAYS_INLINE bool HasPendingControl(uint32_t mask = UINT32_MAX) const
   {
     return (control_pending_.load(std::memory_order_acquire) & mask) != 0U;
   }
@@ -283,7 +283,7 @@ class EndpointPool
   /// 端点有工作（提交、完成或停止确认）：置位其待处理位并投递 ENDPOINT_EVENT /
   /// An endpoint has work (a submit, a completion or a stop confirmation): set its
   /// pending bit and post ENDPOINT_EVENT
-  [[gnu::always_inline]] void NotifyEndpoint(uint32_t bit, bool in_isr)
+  LIBXR_ALWAYS_INLINE void NotifyEndpoint(uint32_t bit, bool in_isr)
   {
     endpoint_pending_.fetch_or(bit, std::memory_order_release);
     PostControl(ENDPOINT_EVENT, in_isr);
@@ -291,7 +291,7 @@ class EndpointPool
   /// Owner: make every endpoint recheck its queue after a start gate opened.
   void KickEndpoints(bool in_isr);
   /// Owner: whether an endpoint may start hardware now.
-  [[gnu::always_inline]] bool CanStart(bool ep0) const
+  LIBXR_ALWAYS_INLINE bool CanStart(bool ep0) const
   {
     return !planning_ && !suspended_ && !lifecycle_hold_ &&
            !HasPendingControl(LIFECYCLE_EVENTS) && (ep0 || data_enabled_);
