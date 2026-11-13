@@ -33,7 +33,9 @@ inline constexpr uint8_t ENUM_SPEED_FULL_48_MHZ = 3U;
 
 inline constexpr size_t WORD_SIZE = sizeof(uint32_t);
 inline constexpr uint8_t FLUSH_ALL_TX_FIFO = 0x10U;
-inline constexpr uint32_t DMA_BURST_INCR4 = 4U;
+// GAHBCFG.HBstLen 的 INCR4 编码（0 SINGLE、1 INCR、3 INCR4、5 INCR8、7 INCR16）。
+// The INCR4 encoding of GAHBCFG.HBstLen (0 SINGLE, 1 INCR, 3 INCR4, 5 INCR8, 7 INCR16).
+inline constexpr uint32_t DMA_BURST_INCR4 = 3U;
 inline constexpr uint32_t DMA_MEMORY_CAPS =
     MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT;
 inline constexpr uint16_t ESP32_SX_FS_DMA_MIN_RX_FIFO_WORDS = 88U;
