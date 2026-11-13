@@ -17,7 +17,6 @@ void RunLifecycleSlotReferenceScenario()
 {
   char topic_name[96] = {};
   // A slot must stay pinned until every subscriber releases it.
-  UNUSED(SharedTopic::Remove(topic_name));
   MakeTopicName(topic_name, sizeof(topic_name), "linux_shm_ref");
   UNUSED(SharedTopic::Remove(topic_name));
 
@@ -61,13 +60,14 @@ void RunLifecycleSlotReferenceScenario()
     subscriber_a.Release();
     subscriber_b.Release();
   }
+
+  UNUSED(SharedTopic::Remove(topic_name));
 }
 
 void RunLifecycleTakeoverScenario()
 {
   char topic_name[96] = {};
   // Stale publisher takeover should allow a fresh creator to reopen the segment.
-  UNUSED(SharedTopic::Remove(topic_name));
   MakeTopicName(topic_name, sizeof(topic_name), "linux_shm_takeover");
   UNUSED(SharedTopic::Remove(topic_name));
 
@@ -107,6 +107,8 @@ void RunLifecycleTakeoverScenario()
     FillFrame(frame, 151);
     TEST_ASSERT(publisher.Publish(frame) == LibXR::ErrorCode::OK);
   }
+
+  UNUSED(SharedTopic::Remove(topic_name));
 }
 
 void RunLifecycleDeadSubscriberScenario()
@@ -199,6 +201,8 @@ void RunLifecycleDeadSubscriberScenario()
     close(ack_pipe[0]);
     close(cmd_pipe[1]);
   }
+
+  UNUSED(SharedTopic::Remove(topic_name));
 }
 
 void RunLifecycleScenarios()
