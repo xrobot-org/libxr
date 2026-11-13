@@ -51,6 +51,7 @@ class ESP32USBEndpoint : public USB::Endpoint
   /// 中断状态 / Called from the IN/OUT interrupts to advance the stop sequence. The two
   /// flags come from the endpoint interrupt status that the handler read and cleared on
   /// entry
+  /// @param in_isr 是否在中断上下文 / Whether the call is in interrupt context
   /// @param nak_effective INEPNE：IN 端点的 NAK 已生效 / INEPNE: the NAK of the IN
   ///        endpoint is in effect
   /// @param disabled EPDISD：端点已禁用 / EPDISD: the endpoint is disabled
