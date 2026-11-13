@@ -41,17 +41,21 @@ namespace LibXR
 #error "STM32F102/F103 cannot use CAN at the same time with USB."
 #endif
 
-// --- F3 xB/xC 与 F373xC：PMA = 512B --------------------------------
-// --- F3 xB/xC and F373xC: PMA = 512B ---
+// --- F3 xB/xC 与 F373xC：PMA = 512B，全部给 USB，不与 CAN 共享
+//     （RM0365 表 172、RM0316 表 178）
+// --- F3 xB/xC and F373xC: PMA = 512B, all of it for USB, nothing shared with CAN
+//     (RM0365 table 172, RM0316 table 178)
 #elif defined(STM32F302xB) || defined(STM32F302xC) || defined(STM32F303xB) || \
     defined(STM32F303xC) || defined(STM32F373xC)
 #define LIBXR_STM32_USB_PMA_SIZE 512u
 
-// --- F3 大容量（和 CAN 共享 1KB）：F302x6/8,D/E & F303xD/E -------
-// - 总共 1KB USB+CAN SRAM
-// - 若 CAN 在用：USB 只能用前 768B，最后 256B 给 CAN
-// - 1 KB of USB+CAN SRAM in total
-// - If CAN is in use: USB can only use the first 768 B, the last 256 B go to CAN
+// --- F302x6/8/D/E 与 F303xD/E：1KB，与 CAN 共享（RM0365 表 172、RM0316 表 178）
+// - CAN 时钟打开后 USB 只能用前 768B，最后 256B 给 CAN；这里以是否启用 HAL 的 CAN
+//   模块为准。
+// --- F302x6/8/D/E and F303xD/E: 1 KB shared with CAN (RM0365 table 172, RM0316 table
+//     178)
+// - With the CAN clock enabled USB can only use the first 768 B and the last 256 B go
+//   to CAN; the enabled HAL CAN module is taken as the sign of that.
 #elif defined(STM32F302x6) || defined(STM32F302x8) || defined(STM32F302xD) || \
     defined(STM32F302xE) || defined(STM32F303xD) || defined(STM32F303xE)
 
@@ -68,6 +72,8 @@ namespace LibXR
 #define LIBXR_STM32_USB_PMA_SIZE 1024u
 
 // --- L1: USB FS Device, PMA = 512B (dedicated) --------------------------
+//     上拉是 SYSCFG_PMC 的 USB_PU 位（RM0038 第 24.4.2 节）/ The pull-up is the USB_PU
+//     bit of SYSCFG_PMC (RM0038 section 24.4.2)
 #elif defined(STM32L1)
 #define LIBXR_STM32_USB_PMA_SIZE 512u
 
@@ -346,11 +352,6 @@ struct Stm32FsDevClassicHw
   }
 
  private:
-  // 取 HAL 的 PMA_ACCESS：F1、L1 为 2；F3 按料号（xC 一档为 2，xE 和 F302x8 为 1）；其余
-  // 经典型为 1。HAL 没有给出这个宏时按系列回退。
-  // Taken from HAL's PMA_ACCESS: 2 on F1 and L1; by part number on F3 (2 for the xC
-  // parts, 1 for xE and F302x8); 1 on the other classic parts. Without the macro the
-  // value falls back by family.
   // CNTR 的低功耗位：F1 的设备头文件叫 USB_CNTR_LP_MODE，其余经典型叫 USB_CNTR_LPMODE
   // （F3 两个名字都有）。
   // The low-power bit of CNTR: the F1 device header calls it USB_CNTR_LP_MODE, the other
@@ -362,10 +363,19 @@ struct Stm32FsDevClassicHw
       USB_CNTR_LP_MODE
 #endif
       ;
+  // 取 HAL 的 PMA_ACCESS。HAL 没有给出这个宏时按手册回退：每个 32 位字只用 16 位的
+  // （间隔 2）是 F1、L1 以及 F3 的 xB/xC 和 F373xC（RM0365 表 172、RM0316 表 178 的
+  // “1 x 16 bits / word”），其余经典型两个半字都用（间隔 1）。
+  // Taken from HAL's PMA_ACCESS. Without the macro the value falls back as the manuals
+  // say: only 16 bits of every 32-bit word are used (stride 2) on F1, L1 and the F3
+  // xB/xC and F373xC parts ("1 x 16 bits / word" in RM0365 table 172 and RM0316 table
+  // 178); the other classic parts use both half words (stride 1).
   static constexpr unsigned PMA_WORD_STRIDE =
 #if defined(PMA_ACCESS)
       PMA_ACCESS
-#elif defined(STM32F1) || defined(STM32F3)
+#elif defined(STM32F1) || defined(STM32L1) || defined(STM32F302xB) ||       \
+    defined(STM32F302xC) || defined(STM32F303xB) || defined(STM32F303xC) || \
+    defined(STM32F373xC)
       2U
 #else
       1U
