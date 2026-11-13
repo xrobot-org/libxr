@@ -486,6 +486,13 @@ FSDevDevice<HW>::FSDevDevice(
 template <typename HW>
 void FSDevDevice<HW>::HandleInterrupt()
 {
+  // 噪声位只清不处理，并且是按进入时的快照清的：掩码里混进一个有处理分支的标志时，
+  // 快照之后才锁存的那次事件会被直接清掉。
+  // The noise flags are only cleared, and cleared from the snapshot taken on entry: a
+  // handled flag inside the mask would wipe an event that latched after the snapshot.
+  static_assert((HW::ISTR_NOISE & (HW::ISTR_CTR | HW::ISTR_RESET | HW::ISTR_SOF |
+                                   HW::ISTR_SUSP | HW::ISTR_WKUP)) == 0U,
+                "ISTR_NOISE overlaps an interrupt flag that has a handler");
   const uint16_t istr = HW::ReadIstr();
   if ((istr & HW::ISTR_RESET) != 0U)
   {

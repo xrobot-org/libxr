@@ -80,7 +80,7 @@ struct FakeHw
   static constexpr uint16_t ISTR_SOF = 0x0200U;
   static constexpr uint16_t ISTR_SUSP = 0x0800U;
   static constexpr uint16_t ISTR_WKUP = 0x1000U;
-  static constexpr uint16_t ISTR_NOISE = 0x7100U;
+  static constexpr uint16_t ISTR_NOISE = 0x6100U;  // PMAOVR | ERR | ESOF
   static constexpr uint16_t CNTR_RUN_MASK = 0x8000U | 0x0400U | 0x0800U | 0x1000U;
   static constexpr uint16_t CNTR_SOFM = 0x0200U;
 
