@@ -340,20 +340,18 @@ CH32USBOtgHS::CH32USBOtgHS(
 
   const size_t ep_count =
       RX_EP_CFGS.size() > TX_EP_CFGS.size() ? RX_EP_CFGS.size() : TX_EP_CFGS.size();
-  ASSERT(ep_count > 0 && ep_count <= CH32EndpointOtgHs::EP_OTG_HS_MAX_SIZE);
+  REQUIRE(ep_count > 0 && ep_count <= CH32EndpointOtgHs::EP_OTG_HS_MAX_SIZE);
 
   RawData rx[CH32EndpointOtgHs::EP_OTG_HS_MAX_SIZE] = {};
   RawData tx[CH32EndpointOtgHs::EP_OTG_HS_MAX_SIZE] = {};
   size_t idx = 0;
   for (const auto& cfg : RX_EP_CFGS)
   {
-    ASSERT(idx < CH32EndpointOtgHs::EP_OTG_HS_MAX_SIZE);
     rx[idx++] = cfg;
   }
   idx = 0;
   for (const auto& cfg : TX_EP_CFGS)
   {
-    ASSERT(idx < CH32EndpointOtgHs::EP_OTG_HS_MAX_SIZE);
     tx[idx++] = cfg;
   }
 
@@ -386,13 +384,13 @@ CH32USBOtgHS::CH32USBOtgHS(
     }
     else if (rx[i].addr_ != nullptr)
     {
-      ASSERT(rx[i].size_ >= 64U);
+      REQUIRE(rx[i].size_ >= 64U);
       USB::EndpointPool::Put(
           new CH32EndpointOtgHs(ep_index, USB::Endpoint::Direction::OUT, rx[i]));
     }
     else if (tx[i].addr_ != nullptr)
     {
-      ASSERT(tx[i].size_ >= 64U);
+      REQUIRE(tx[i].size_ >= 64U);
       USB::EndpointPool::Put(
           new CH32EndpointOtgHs(ep_index, USB::Endpoint::Direction::IN, tx[i]));
     }
@@ -427,8 +425,11 @@ void CH32USBOtgHS::Start(bool)
   USBHSD->INT_EN =
       USBHS_UIE_SETUP_ACT | USBHS_UIE_TRANSFER | USBHS_UIE_DETECT | USBHS_UIE_SUSPEND;
   USBHSD->CONTROL |= USBHS_UC_DEV_PU_EN;
-  NVIC_EnableIRQ(USBHS_IRQn);
+  // 先登记对象再开中断：中断函数在没有对象时只清标志，会丢掉这期间的总线复位。
+  // Register the object before the interrupt is enabled: without an object the handler
+  // only clears the flags and would drop a bus reset that arrives in between.
   self_ = this;
+  NVIC_EnableIRQ(USBHS_IRQn);
 }
 
 void CH32USBOtgHS::Stop(bool)

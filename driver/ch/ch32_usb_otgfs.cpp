@@ -121,7 +121,11 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
       const uint8_t TOKEN = INTST & USBFS_UIS_TOKEN_MASK;
       const uint8_t EPNUM = INTST & USBFS_UIS_ENDP_MASK;
 
-      auto& ep = map[EPNUM];
+      // 端点表只有 EP0-EP7；ENDP 字段是 4 位，表外的值不取表项。
+      // The endpoint table holds EP0-EP7 only; the ENDP field has 4 bits, and a value
+      // beyond the table takes no entry.
+      LibXR::CH32EndpointOtgFs* const* ep =
+          EPNUM < LibXR::CH32EndpointOtgFs::EP_OTG_FS_MAX_SIZE ? map[EPNUM] : nullptr;
 
       switch (TOKEN)
       {
@@ -150,7 +154,7 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
           // OTGFS 硬件已经给出了本次 token 的完成 RX 长度。
           // The OTGFS hardware already provides the RX length of this token completion.
           const uint16_t LEN = USBFSD->RX_LEN;
-          if (ep[OUT_IDX])
+          if (ep != nullptr && ep[OUT_IDX])
           {
             ep[OUT_IDX]->TransferComplete(LEN);
           }
@@ -161,7 +165,7 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
         {
           // IN token 完成不需要额外 payload 长度，事件本身就足够了。
           // An IN token completion needs no extra payload length; the event is enough.
-          if (ep[IN_IDX])
+          if (ep != nullptr && ep[IN_IDX])
           {
             ep[IN_IDX]->TransferComplete(0);
           }
@@ -207,20 +211,18 @@ CH32USBOtgFS::CH32USBOtgFS(
 
   const size_t ep_count =
       RX_EP_CFGS.size() > TX_EP_CFGS.size() ? RX_EP_CFGS.size() : TX_EP_CFGS.size();
-  ASSERT(ep_count > 0 && ep_count <= CH32EndpointOtgFs::EP_OTG_FS_MAX_SIZE);
+  REQUIRE(ep_count > 0 && ep_count <= CH32EndpointOtgFs::EP_OTG_FS_MAX_SIZE);
 
   RawData rx[CH32EndpointOtgFs::EP_OTG_FS_MAX_SIZE] = {};
   RawData tx[CH32EndpointOtgFs::EP_OTG_FS_MAX_SIZE] = {};
   size_t idx = 0;
   for (const auto& cfg : RX_EP_CFGS)
   {
-    ASSERT(idx < CH32EndpointOtgFs::EP_OTG_FS_MAX_SIZE);
     rx[idx++] = cfg;
   }
   idx = 0;
   for (const auto& cfg : TX_EP_CFGS)
   {
-    ASSERT(idx < CH32EndpointOtgFs::EP_OTG_FS_MAX_SIZE);
     tx[idx++] = cfg;
   }
 
@@ -284,7 +286,7 @@ LibXR::ErrorCode CH32USBOtgFS::SetAddress(uint8_t address, USB::ControlContext c
 void CH32USBOtgFS::OnControlReady()
 {
   USBFSD->UEP0_RX_CTRL = USBFS_UEP_R_RES_ACK;
-#if defined(USBFS_UIE_DEV_SOF)
+#if defined(USBFS_UIS_TOKEN_SOF) && defined(USBFS_UIE_DEV_SOF)
   if (WantsBusTime()) USBFSD->INT_EN |= USBFS_UIE_DEV_SOF;
 #endif
 }
@@ -309,8 +311,11 @@ void CH32USBOtgFS::Start(bool)
   USBFSD->INT_EN = USBFS_UIE_SUSPEND | USBFS_UIE_BUS_RST | USBFS_UIE_TRANSFER;
   USBFSD->BASE_CTRL = USBFS_UC_DEV_PU_EN | USBFS_UC_INT_BUSY | USBFS_UC_DMA_EN;
   USBFSD->UDEV_CTRL = USBFS_UD_PD_DIS | USBFS_UD_PORT_EN;
-  NVIC_EnableIRQ(USBFS_IRQn);
+  // 先登记对象再开中断：中断函数在没有对象时只清标志，会丢掉这期间的总线复位。
+  // Register the object before the interrupt is enabled: without an object the handler
+  // only clears the flags and would drop a bus reset that arrives in between.
   self_ = this;
+  NVIC_EnableIRQ(USBFS_IRQn);
 }
 
 void CH32USBOtgFS::Stop(bool)

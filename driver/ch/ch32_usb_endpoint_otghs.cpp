@@ -834,7 +834,9 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
   // ISO：每包完成 / ISO: every packet completes.
   auto* rx_ctrl = get_rx_control_addr(GetNumber());
   *rx_ctrl = (*rx_ctrl & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_NAK;
+  transfer_accumulated_ = size;
   transfer_active_ = false;
+  hw_completed_ = true;
   OnHardwareComplete(true, transfer_tag_, size);
 }
 

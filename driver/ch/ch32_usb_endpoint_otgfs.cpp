@@ -213,8 +213,10 @@ static LibXR::RawData select_buffer(USB::Endpoint::EPNumber ep_num,
     return buffer;
   }
 
+  // 设备构造函数已确认 OUT 块和紧随其后的 IN 块各不小于 64 B。
+  // The device constructor has checked that the OUT block and the IN block right after it
+  // are each at least 64 B.
   const size_t half = 64U;
-  ASSERT(buffer.size_ >= 128U);
 
   if (dir == USB::Endpoint::Direction::OUT)
   {
