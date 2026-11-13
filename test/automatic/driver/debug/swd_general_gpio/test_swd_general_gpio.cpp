@@ -3,6 +3,7 @@
  * @brief SwdGeneralGPIO 主机测试 / Host tests for SwdGeneralGPIO.
  */
 
+#include <cstddef>
 #include <vector>
 
 #include "debug/swd_general_gpio.hpp"
@@ -96,7 +97,65 @@ void TestRequestOnTheWire()
   TEST_ASSERT(request == 0xA5u);
 }
 
-using Gpio = Debug::SwdGeneralGPIO<ClockedPin, RecordingPin>;
+/// SWDIO 引脚：读的时候先依次返回预设的电平，代替目标的应答
+/// SWDIO pin whose reads return the scripted levels first, in place of a target's answer.
+struct AnsweringPin : public RecordingPin
+{
+  bool Read() override
+  {
+    return next < answers.size() ? static_cast<bool>(answers[next++]) : level;
+  }
+
+  std::vector<bool> answers;  ///< 目标要返回的电平 / Levels the target returns.
+  size_t next = 0;            ///< 下一个要返回的位置 / Index of the next level.
+};
+
+/// 写传输在校验位之后把 SWDIO 拉低，再打 3 个时钟：目标用它们完成写入
+/// After the parity bit a write transfer holds SWDIO low for 3 more clocks, which the
+/// target uses to complete the write.
+void TestWriteIsFollowedByIdleClocks()
+{
+  ClockedPin swclk;
+  AnsweringPin swdio;
+  swclk.data = &swdio;
+  Debug::SwdGeneralGPIO<ClockedPin, AnsweringPin> swd(swclk, swdio, 0u,
+                                                      Debug::SwdGpioTiming{});
+  swclk.sampled.clear();
+
+  // ACK 为 OK：三位依次是 1、0、0。
+  // The ACK is OK: its three bits are 1, 0, 0 in this order.
+  swdio.answers = {true, false, false};
+  // 最高两位和校验位都是 1，后面的低电平才看得出来。
+  // The top two data bits and the parity bit are 1, so that the low level after them
+  // shows.
+  constexpr uint32_t WDATA = 0xC000'0001u;
+  Debug::SwdProtocol::Response resp{};
+  TEST_ASSERT(swd.Transfer(Debug::SwdProtocol::MakeApWriteRequest(1u, WDATA), resp) ==
+              ErrorCode::OK);
+  TEST_ASSERT(resp.ack == Debug::SwdProtocol::Ack::OK);
+
+  // 上升沿依次是：请求 8 个，转向 1 个，ACK 3 个，转向 1 个，数据 32 个，校验 1 个，
+  // 然后是写入后的 3 个。
+  // Rising edges in order: 8 of the request, 1 turnaround, 3 of the ACK, 1 turnaround,
+  // 32 data bits, 1 parity bit, then the 3 after the write.
+  constexpr size_t DATA_AT = 8u + 1u + 3u + 1u;
+  constexpr size_t PARITY_AT = DATA_AT + 32u;
+  TEST_ASSERT(swclk.sampled.size() == PARITY_AT + 1u + 3u);
+  uint32_t data = 0;
+  for (unsigned i = 0; i < 32u; ++i)
+  {
+    if (swclk.sampled[DATA_AT + i])
+    {
+      data |= (1u << i);
+    }
+  }
+  TEST_ASSERT(data == WDATA);
+  TEST_ASSERT(swclk.sampled[PARITY_AT]);
+  for (size_t i = PARITY_AT + 1u; i < swclk.sampled.size(); ++i)
+  {
+    TEST_ASSERT(!swclk.sampled[i]);
+  }
+}
 
 /// SetClockHz 只在无延时路径（每个时钟 c 个周期）不超速时（f >= f_cpu / c）用它；否则在
 /// N >= 1（a + b·N）中取最接近请求周期的一档，一样近时取较慢的。这里用一组假想的参数：
@@ -272,6 +331,7 @@ void test_swd_general_gpio()
 {
   TestIdleClocksDriveSwdioLow();
   TestRequestOnTheWire();
+  TestWriteIsFollowedByIdleClocks();
   TestDelayLoopsPickTheNearestStep();
   TestDelayLoopsNearestStepSweep();
   TestTimingFromFractionalCycles();
