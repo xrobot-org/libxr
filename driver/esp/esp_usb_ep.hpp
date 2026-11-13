@@ -47,9 +47,14 @@ class ESP32USBEndpoint : public USB::Endpoint
     DIS_WAIT,
   };
 
-  /// 由 IN/OUT 中断调用，推进停止时序 / Called from the IN/OUT interrupts to
-  /// advance the stop sequence
-  void AdvanceStop(bool in_isr);
+  /// 由 IN/OUT 中断调用，推进停止时序。两个标志取自中断入口处读出并清掉的那一份端点
+  /// 中断状态 / Called from the IN/OUT interrupts to advance the stop sequence. The two
+  /// flags come from the endpoint interrupt status that the handler read and cleared on
+  /// entry
+  /// @param nak_effective INEPNE：IN 端点的 NAK 已生效 / INEPNE: the NAK of the IN
+  ///        endpoint is in effect
+  /// @param disabled EPDISD：端点已禁用 / EPDISD: the endpoint is disabled
+  void AdvanceStop(bool in_isr, bool nak_effective, bool disabled);
   /// 有停止在等硬件确认（设备据此打开 SOF，核心靠帧数判停止超时）/ A stop is waiting for
   /// the hardware (the device keeps SOF on for it; the core counts frames to time it out)
   bool StopPending() const { return stop_phase_ != StopPhase::NONE; }
@@ -95,6 +100,9 @@ class ESP32USBEndpoint : public USB::Endpoint
   uint32_t transfer_tag_ = 0U;
   bool transfer_active_ = false;
   StopPhase stop_phase_ = StopPhase::NONE;
+  /// IN：停止时请求已在硬件里发完 / IN: the request had been sent completely in the
+  /// hardware when the stop came
+  bool stopped_sent_all_ = false;
   size_t transfer_actual_size_ = 0U;
   size_t transfer_queued_size_ = 0U;
   size_t dma_rx_status_bytes_ = 0U;

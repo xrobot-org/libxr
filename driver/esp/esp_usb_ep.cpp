@@ -14,14 +14,6 @@
 namespace LibXR
 {
 
-namespace
-{
-// DWC2 端点中断位：INEPNE（bit 6）与 EPDISD（bit 1）/ DWC2 endpoint interrupt
-// bits: INEPNE (bit 6) and EPDISD (bit 1)
-constexpr uint32_t USB_DWC_EPDISD_MSK = 1UL << 1;
-constexpr uint32_t USB_DWC_INEPNE_MSK = 1UL << 6;
-}  // namespace
-
 ESP32USBEndpoint::ESP32USBEndpoint(ESP32USBDevice& device, EPNumber number,
                                    Direction direction, RawData buffer)
     : USB::Endpoint(number, direction, buffer), device_(device)
@@ -205,6 +197,7 @@ ErrorCode ESP32USBEndpoint::ClearStallHardware(bool /*in_isr*/)
 
 USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
 {
+  UNUSED(in_isr);
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
   const bool is_in = (GetDirection() == Direction::IN);
@@ -239,6 +232,12 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
     }
     if (!enabled)
     {
+      // 端点已不在使能状态：请求已经在硬件里发完。它的 XFRC 可能在这次停止返回之后、
+      // ReapProgress 之前被中断清掉，所以在这里记下“已全部发出”。
+      // The endpoint is no longer enabled: the request has been sent in the hardware. Its
+      // XFRC may be cleared by the interrupt after this stop returns and before
+      // ReapProgress, so "everything was sent" is recorded here.
+      stopped_sent_all_ = true;
       ESPUSBDetail::FlushTxFifo(dev, ep_num);
       stop_phase_ = StopPhase::NONE;
       transfer_active_ = false;
@@ -296,10 +295,9 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
   stop_phase_ = StopPhase::DIS_WAIT;
   device_.UpdateTick();
   return StopResult::PENDING;
-  UNUSED(in_isr);
 }
 
-void ESP32USBEndpoint::AdvanceStop(bool in_isr)
+void ESP32USBEndpoint::AdvanceStop(bool in_isr, bool nak_effective, bool disabled)
 {
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
@@ -322,18 +320,13 @@ void ESP32USBEndpoint::AdvanceStop(bool in_isr)
   {
     if (stop_phase_ == StopPhase::SNAK_WAIT)
     {
-      const bool nak_effective =
-          (ep_num == 0U) ? (dev->diepint0_reg.inepnakeff != 0U)
-                         : (dev->in_eps[ep_num - 1U].diepint_reg.inepnakeff != 0U);
       if (!nak_effective) return;
       if (ep_num == 0U)
       {
-        dev->diepint0_reg.val = USB_DWC_INEPNE_MSK;
         dev->diepctl0_reg.epdis = 1;
       }
       else
       {
-        dev->in_eps[ep_num - 1U].diepint_reg.val = USB_DWC_INEPNE_MSK;
         dev->in_eps[ep_num - 1U].diepctl_reg.epdis = 1;
       }
       stop_phase_ = StopPhase::DIS_WAIT;
@@ -341,18 +334,7 @@ void ESP32USBEndpoint::AdvanceStop(bool in_isr)
     }
     if (stop_phase_ == StopPhase::DIS_WAIT)
     {
-      const bool disabled = (ep_num == 0U)
-                                ? (dev->diepint0_reg.epdisbld != 0U)
-                                : (dev->in_eps[ep_num - 1U].diepint_reg.epdisbld != 0U);
       if (!disabled) return;
-      if (ep_num == 0U)
-      {
-        dev->diepint0_reg.val = USB_DWC_EPDISD_MSK;
-      }
-      else
-      {
-        dev->in_eps[ep_num - 1U].diepint_reg.val = USB_DWC_EPDISD_MSK;
-      }
       ESPUSBDetail::FlushTxFifo(dev, ep_num);
       stop_phase_ = StopPhase::NONE;
       transfer_active_ = false;
@@ -361,10 +343,8 @@ void ESP32USBEndpoint::AdvanceStop(bool in_isr)
     return;
   }
 
-  if (stop_phase_ == StopPhase::DIS_WAIT &&
-      dev->out_eps[ep_num - 1U].doepint_reg.epdisbld != 0U)
+  if (stop_phase_ == StopPhase::DIS_WAIT && disabled)
   {
-    dev->out_eps[ep_num - 1U].doepint_reg.val = USB_DWC_EPDISD_MSK;
     stop_phase_ = StopPhase::NONE;
     transfer_active_ = false;
     OnHardwareStopped(in_isr);
@@ -415,7 +395,7 @@ size_t ESP32USBEndpoint::ReapProgress(const HwRequest& request, bool& retired)
   retired = false;
   if (GetDirection() == Direction::IN && ep_num != 0U)
   {
-    if (dev->in_eps[ep_num - 1U].diepint_reg.xfercompl != 0U)
+    if (stopped_sent_all_ || dev->in_eps[ep_num - 1U].diepint_reg.xfercompl != 0U)
     {
       retired = true;
       return request.length;
@@ -439,6 +419,7 @@ ErrorCode ESP32USBEndpoint::StartHardware(const HwRequest& request, bool /*in_is
   transfer_buffer_ = static_cast<uint8_t*>(request.slot.addr_);
   transfer_tag_ = request.tag;
   transfer_active_ = true;
+  stopped_sent_all_ = false;
   transfer_request_size_ = size;
   transfer_actual_size_ = 0U;
   transfer_queued_size_ = 0U;
@@ -480,17 +461,11 @@ void ESP32USBEndpoint::ResetHardwareState()
 
 void ESP32USBEndpoint::HandleInInterrupt(bool in_isr)
 {
-  // 停止时序未完成时先推进它（PENDING 由中断确认后调 OnHardwareStopped）。
-  // Advance the stop sequence first while it is still pending (PENDING becomes a
-  // confirmed stop through OnHardwareStopped).
-  AdvanceStop(in_isr);
-
-  // 在入口捕获标签：ISR 里现读 transfer_tag_ 会被同一条路径上的 StartHardware
-  // 改写，报出去的完成可能挂到下一个请求上。
-  // Capture the tag on entry: reading transfer_tag_ live in the ISR can be
-  // overwritten by a StartHardware on the same path, attaching the completion to
-  // the next request.
-  const uint32_t tag = transfer_tag_;
+  // 先读出并清掉这个端点的中断状态，之后的处理都用这一份：分两次读的话，两次之间
+  // 才置位的停止标志会在整体清除时被清掉而没人看到。
+  // Read and clear the interrupt status of this endpoint first and let everything below
+  // use that one copy: with two reads, a stop flag that is set between them is wiped by
+  // the blanket clear without having been seen.
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
   usb_dwc_diepint_reg_t intr = {};
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
@@ -505,6 +480,17 @@ void ESP32USBEndpoint::HandleInInterrupt(bool in_isr)
     intr.val = dev->in_eps[ep_num - 1U].diepint_reg.val;
     dev->in_eps[ep_num - 1U].diepint_reg.val = intr.val;
   }
+
+  // 停止时序未完成时先推进它（PENDING 由中断确认后调 OnHardwareStopped）。
+  // Advance the stop sequence first while it is still pending (PENDING becomes a
+  // confirmed stop through OnHardwareStopped).
+  AdvanceStop(in_isr, intr.inepnakeff != 0U, intr.epdisbld != 0U);
+
+  // 在这里捕获标签：之后现读 transfer_tag_ 会被同一条路径上的 StartHardware 改写，
+  // 报出去的完成可能挂到下一个请求上。
+  // Capture the tag here: reading transfer_tag_ live later can be overwritten by a
+  // StartHardware on the same path, attaching the completion to the next request.
+  const uint32_t tag = transfer_tag_;
 
   if (!device_.DmaEnabled() && intr.txfemp)
   {
@@ -548,9 +534,9 @@ void ESP32USBEndpoint::FinishPendingEp0InStatus(bool in_isr)
 
 void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
 {
-  AdvanceStop(in_isr);
-  const uint32_t tag = transfer_tag_;
-
+  // 与 IN 相同：先读出并清掉中断状态，停止时序和后面的处理都用这一份。
+  // As for IN: read and clear the interrupt status first; the stop sequence and the
+  // handling below use that one copy.
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
   usb_dwc_doepint_reg_t intr = {};
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
@@ -565,6 +551,9 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
     intr.val = dev->out_eps[ep_num - 1U].doepint_reg.val;
     dev->out_eps[ep_num - 1U].doepint_reg.val = intr.val;
   }
+
+  AdvanceStop(in_isr, false, intr.epdisbld != 0U);
+  const uint32_t tag = transfer_tag_;
 
   const bool ep0_setup_related =
       (ep_num == 0U) && (intr.setup || intr.stuppktrcvd || intr.back2backsetup);
