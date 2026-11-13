@@ -384,14 +384,10 @@ struct Stm32FsDevDrdHw
   // DRD 的 TXBD/RXBD 地址字段按 4 字节截断（& 0xFFFC），布局必须 4 字节对齐。
   static constexpr size_t PMA_ALIGN = 4U;
 
-  static USB_DRD_TypeDef* Regs()
-  {
-#if defined(USB_DRD_FS_BASE)  // H5 只有 USB_DRD_FS_BASE，G0/C0/U5 两者都有
-    return reinterpret_cast<USB_DRD_TypeDef*>(USB_DRD_FS_BASE);
-#else
-    return reinterpret_cast<USB_DRD_TypeDef*>(USB_BASE);
-#endif
-  }
+  /// 控制器的寄存器块；各系列的设备头文件都定义了 USB_DRD_FS，基地址宏的名字则不统一
+  /// Register block of the controller. Every family's device header defines USB_DRD_FS,
+  /// while the name of the base-address macro differs between families.
+  static USB_DRD_TypeDef* Regs() { return USB_DRD_FS; }
 
   static volatile uint32_t* Chep(uint8_t num) { return &Regs()->CHEP0R + num; }
 
