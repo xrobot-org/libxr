@@ -12,51 +12,6 @@
 namespace LibXR
 {
 
-/**
- * @brief CH32 通用 USB 设备核心：端点池加全速设备核心，本身不含硬件访问 / Generic CH32
- * USB device core: an endpoint pool plus a full-speed device core, with no hardware
- * access of its own
- */
-class CH32USBDevice : public USB::EndpointPool,
-                      public USB::DeviceCore<USB::FullSpeedCapabilities>
-{
- public:
-  /**
-   * @brief 构造 CH32 USB 设备核心对象 / Construct CH32 USB device core
-   */
-  CH32USBDevice(
-      ch32_usb_dev_id_t id, size_t max_ep_num,
-      USB::DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid,
-      uint16_t bcd,
-      const std::initializer_list<const USB::DescriptorStrings::LanguagePack*> LANG_LIST,
-      const std::initializer_list<const std::initializer_list<USB::ConfigDescriptorItem*>>
-          CONFIGS,
-      USB::Speed speed = USB::Speed::FULL, USB::USBSpec spec = USB::USBSpec::USB_2_1)
-      : USB::EndpointPool(max_ep_num),
-        USB::DeviceCore<USB::FullSpeedCapabilities>(*this, spec, speed, packet_size, vid,
-                                                    pid, bcd, LANG_LIST, CONFIGS),
-        id_(id)
-  {
-  }
-
-  /// 请求初始化设备（转给设备核心）/ Request the initialization of the device (forwarded
-  /// to the device core)
-  void Init(bool in_isr) override
-  {
-    USB::DeviceCore<USB::FullSpeedCapabilities>::Init(in_isr);
-  }
-  /// 请求反初始化设备（转给设备核心）/ Request the deinitialization of the device
-  /// (forwarded to the device core)
-  void Deinit(bool in_isr) override
-  {
-    USB::DeviceCore<USB::FullSpeedCapabilities>::Deinit(in_isr);
-  }
-
-  /// 构造时传入的 USB 设备编号（ch32_usb_dev_id_t），仅保存 / USB device id (a
-  /// ch32_usb_dev_id_t value) given at construction; only stored
-  uint8_t id_;
-};
-
 #if defined(RCC_APB1Periph_USB) || defined(__DOXYGEN__)
 
 /**

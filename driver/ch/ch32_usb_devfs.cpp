@@ -13,9 +13,7 @@ void UsbIrqThunk() { LibXR::CH32USBDeviceFS::Dispatch(); }
 extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBWakeUp_IRQHandler(
     void)
 {
-#if defined(EXTI_Line18)
   EXTI_ClearITPendingBit(EXTI_Line18);
-#endif
 }
 
 namespace LibXR

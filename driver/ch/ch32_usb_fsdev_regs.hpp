@@ -59,20 +59,13 @@ struct Ch32DevFsHw
   // be even aligned.
   static constexpr size_t PMA_ALIGN = 2U;
 
-  static constexpr uintptr_t REG_BASE =
-#if defined(USB_BASE)
-      USB_BASE
-#else
-      0x40005C00UL
-#endif
-      ;
-  static constexpr uintptr_t PMA_ADDR =
-#if defined(PMAAddr)
-      PMAAddr
-#else
-      0x40006000UL
-#endif
-      ;
+  // 外设库头文件没有给出 USBD 的基址，这里按参考手册写出：端点寄存器从 0x40005C00
+  // 开始，通用寄存器从 0x40005C40 开始，包缓冲区（与 CAN 共用的 512 B）在 0x40006000。
+  // The peripheral library headers give no base address for USBD, so they are written
+  // out as the reference manual states: endpoint registers from 0x40005C00, common
+  // registers from 0x40005C40, the packet buffer (512 B shared with CAN) at 0x40006000.
+  static constexpr uintptr_t REG_BASE = 0x40005C00UL;
+  static constexpr uintptr_t PMA_ADDR = 0x40006000UL;
 
   static volatile uint16_t* EpReg(uint8_t num)
   {
@@ -210,18 +203,14 @@ struct Ch32DevFsHw
 
   static void Connect(bool on)
   {
-#if defined(EXTEN_USBD_PU_EN)
     if (on)
     {
       EXTEN->EXTEN_CTR |= EXTEN_USBD_PU_EN;
     }
     else
     {
-      EXTEN->EXTEN_CTR &= static_cast<uint16_t>(~EXTEN_USBD_PU_EN);
+      EXTEN->EXTEN_CTR &= ~EXTEN_USBD_PU_EN;
     }
-#else
-    (void)on;
-#endif
   }
 
   static void MspInit()
@@ -235,22 +224,6 @@ struct Ch32DevFsHw
     RCC_AHBPeriphClockCmd(RCC_AHBPeriph_USBHS, ENABLE);
 #endif
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_USB, ENABLE);
-
-#if defined(RCC_APB2Periph_GPIOA) && defined(GPIOA) && defined(GPIO_Pin_11) &&        \
-    defined(GPIO_Pin_12) && defined(GPIO_Mode_Out_PP) && defined(GPIO_Speed_50MHz) && \
-    defined(GPIO_Mode_IN_FLOATING)
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
-
-    GPIO_InitTypeDef gpio{};
-    gpio.GPIO_Pin = GPIO_Pin_11 | GPIO_Pin_12;
-    gpio.GPIO_Speed = GPIO_Speed_50MHz;
-    gpio.GPIO_Mode = GPIO_Mode_Out_PP;
-    GPIO_Init(GPIOA, &gpio);
-    GPIO_ResetBits(GPIOA, GPIO_Pin_11 | GPIO_Pin_12);
-
-    gpio.GPIO_Mode = GPIO_Mode_IN_FLOATING;
-    GPIO_Init(GPIOA, &gpio);
-#endif
   }
 
   static uintptr_t EnterGuard() { return libxr_ch32_interrupt_save_and_disable(); }

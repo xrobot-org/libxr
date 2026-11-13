@@ -32,13 +32,10 @@ static void ResetEp0State(OtgHsEndpointMap& map)
   DEV_ASSERT_FROM_CALLBACK(in0 != nullptr, true);
 
   out0->tog0_ = true;
-  out0->tog1_ = false;
-
   in0->tog0_ = true;
-  in0->tog1_ = false;
 
-  // reset/suspend 恢复后，EP0 必须回到等待下一包 setup 的状态。
-  // After reset/suspend recovery, EP0 must be ready for the next setup packet.
+  // 总线复位后，EP0 回到等待下一个 setup 包的状态。
+  // After a bus reset EP0 returns to waiting for the next setup packet.
   USBHSD->UEP0_TX_CTRL = USBHS_UEP_T_TOG_DATA1 | USBHS_UEP_T_RES_NAK;
   USBHSD->UEP0_RX_CTRL = USBHS_UEP_R_TOG_DATA1 | USBHS_UEP_R_RES_ACK;
 }
@@ -84,9 +81,7 @@ static void PrepareEp0ForSetup(OtgHsEndpointMap& map)
   // A new SETUP interrupts the previous control transfer, so EP0 must be restored to the
   // default control-endpoint state before the setup packet is dispatched.
   out0->tog0_ = true;
-  out0->tog1_ = false;
   in0->tog0_ = true;
-  in0->tog1_ = false;
   USBHSD->UEP0_TX_CTRL = USBHS_UEP_T_TOG_DATA1 | USBHS_UEP_T_RES_NAK;
   USBHSD->UEP0_RX_CTRL = USBHS_UEP_R_TOG_DATA1 | USBHS_UEP_R_RES_NAK;
 }
@@ -243,8 +238,8 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
 
     uint8_t clear_mask = 0;
 
-    // 1) 总线级恢复：reset/suspend 必须优先重建 EP0。
-    // 1) Bus-level recovery: reset/suspend must rebuild EP0 first.
+    // 1) 总线级恢复：reset 先重建 EP0。
+    // 1) Bus-level recovery: a reset rebuilds EP0 first.
     if (INTFLAG & USBHS_UIF_BUS_RST)
     {
       USBHSD->DEV_AD = 0;
@@ -424,9 +419,7 @@ void CH32USBOtgHS::Start(bool)
   // OTGHS 先选择共享 48 MHz 时钟源，再打开 USBHS 自己的总线时钟。
   // OTGHS selects the shared 48 MHz clock source first, then enables the USBHS bus clock.
   LibXR::CH32UsbRcc::ConfigureUsb48M();
-#if defined(RCC_AHBPeriph_USBHS)
   RCC_AHBPeriphClockCmd(RCC_AHBPeriph_USBHS, ENABLE);
-#endif
   USBHSD->CONTROL = USBHS_UC_CLR_ALL | USBHS_UC_RESET_SIE;
   USBHSD->CONTROL &= ~USBHS_UC_RESET_SIE;
   USBHSD->HOST_CTRL = USBHS_UH_PHY_SUSPENDM;

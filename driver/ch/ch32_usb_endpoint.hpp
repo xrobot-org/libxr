@@ -8,15 +8,6 @@
 namespace LibXR
 {
 
-// CH32 OTG FS/HS 端点仍使用槽模型之前的后端接口，将在第 5 步迁移。在此之前，
-// 旧类只在定义了 LIBXR_CH32_USB_OTG_LEGACY 时编译，这样同时定义 USBFSD 的器件（V203
-// 同时具有 DevFS 设备和 OTG FS 外设）可以构建已迁移的 DevFS 路径。
-// 该开关将随第 5 步迁移一并移除。
-// The CH32 OTG FS/HS endpoints still speak the pre-slot-model backend interface; they
-// are migrated in step 5. Until then the legacy classes are only compiled when
-// LIBXR_CH32_USB_OTG_LEGACY is set, so a part that also defines USBFSD (V203 has both
-// the DevFS device and the OTG FS peripheral) can build the migrated DevFS path.
-// Remove this switch with the step-5 migration.
 #if defined(USBFSD) || defined(__DOXYGEN__)
 
 /**
@@ -170,15 +161,9 @@ class CH32EndpointOtgHs : public USB::Endpoint
   ErrorCode ClearStallHardware(bool in_isr) override;
   size_t MaxPacketSizeLimit(Type type) const override;
 
-  /// 预留的设备编号，当前代码既不赋值也不读取 / Reserved device id; the current code
-  /// neither assigns nor reads it
-  uint8_t dev_id_;
   /// EP0 数据阶段的软件 DATA0/DATA1 状态，true 表示下一包用 DATA1 / Software
   /// DATA0/DATA1 state of the EP0 data stage; true means the next packet uses DATA1
   bool tog0_ = false;
-  /// 与 tog0_ 一同被复位的第二个 toggle 状态，当前代码只写不读 / Second toggle state
-  /// reset together with tog0_; the current code only writes it
-  bool tog1_ = false;
 
   /// 当前请求的字节数，供 IRQ 窄恢复路径判断 EP0 IN 是否有数据在途 / Byte count of the
   /// current request, read by the narrow IRQ recovery path to tell whether EP0 IN has

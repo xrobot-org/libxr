@@ -531,7 +531,6 @@ ErrorCode CH32EndpointOtgHs::StartHardware(const HwRequest& request, bool /*in_i
       // 控制传输的 status OUT 固定从 DATA1 开始。
       // The status OUT of a control transfer always starts from DATA1.
       tog0_ = true;
-      tog1_ = false;
     }
 
     set_rx_dma_buffer(GetNumber(), request.slot.addr_);
@@ -650,7 +649,6 @@ ErrorCode CH32EndpointOtgHs::ClearStallHardware(bool /*in_isr*/)
   else
     *get_rx_control_addr(GetNumber()) = USBHS_UEP_R_RES_NAK | USBHS_UEP_R_TOG_AUTO;
   tog0_ = false;
-  tog1_ = false;
   return ErrorCode::OK;
 }
 

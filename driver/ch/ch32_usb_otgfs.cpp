@@ -37,9 +37,6 @@ static void ClearPendingOtgFsInterrupts()
     // This loop only clears the pending bits visible in the current INT_FG snapshot; a
     // later new host event is latched as a new interrupt and handled the next time the
     // IRQ is entered.
-    // This loop only drains the pending bits visible in the current INT_FG
-    // snapshot. Any later host event will relatch a fresh interrupt and be
-    // handled by the next IRQ entry.
   }
 }
 
@@ -72,9 +69,6 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
   // The handling order follows the control-transfer lifecycle:
   // 1) Bus-level recovery
   // 2) Token completion and setup dispatch
-  // Handle order matches the control-transfer lifecycle:
-  // 1) bus-level recovery
-  // 2) token completion / setup dispatch
   while (true)
   {
     const uint16_t INTFGST = *reinterpret_cast<volatile uint16_t*>(
@@ -93,15 +87,14 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
 
     // reset 会重建 EP0 状态，并把设备恢复到“等待 setup”的初始形态。
     // A reset rebuilds the EP0 state and returns the device to "waiting for setup".
-    // Reset rebuilds EP0 state and returns the device to "waiting for setup".
     if (PENDING & USBFS_UIF_BUS_RST)
     {
       USBFSD->DEV_ADDR = 0;
 
       usb->OnBusReset(true);
 
-      // 复位后首个 IN/OUT 均从 DATA1 开始（HS 已上板方案）。
-      // After a reset the first IN/OUT both start from DATA1 (verified on the HS board).
+      // 复位后 EP0 的首个数据包（IN 或 OUT）是 DATA1。
+      // After a reset the first data packet of EP0 (IN or OUT) is DATA1.
       out0->tog_ = true;
       in0->tog_ = true;
 
@@ -111,9 +104,9 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
       clear_mask |= USBFS_UIF_BUS_RST;
     }
 
-    // suspend 走与 reset 相同的 EP0 恢复路径；resume 由后续主机时序体现。
-    // suspend takes the same EP0 recovery path as reset; resume follows the host timing.
-    // Suspend follows the same EP0 recovery path; resume is observed later by the host.
+    // 挂起和恢复共用一个中断标志，由 MIS_ST 的当前总线状态区分。
+    // Suspend and resume share one interrupt flag; the current bus state in MIS_ST
+    // tells them apart.
     if (PENDING & USBFS_UIF_SUSPEND)
     {
       if (USBFSD->MIS_ST & USBFS_UMS_SUSPEND)
@@ -300,7 +293,6 @@ void CH32USBOtgFS::Start(bool)
 {
   // OTGFS 与 FSDEV 共用同一套 USB 48 MHz 时钟选择规则。
   // OTGFS and FSDEV share the same USB 48 MHz clock selection rule.
-  // OTGFS uses the same shared USB 48 MHz clock selection as FSDEV.
   LibXR::CH32UsbRcc::ConfigureUsb48M();
 #if defined(RCC_USBCLK48MCLKSource_USBPHY) && defined(RCC_AHBPeriph_USBHS)
   RCC_AHBPeriphClockCmd(RCC_AHBPeriph_USBHS, ENABLE);
@@ -309,6 +301,8 @@ void CH32USBOtgFS::Start(bool)
   RCC_AHBPeriphClockCmd(RCC_AHBPeriph_USBFS, ENABLE);
 #elif defined(RCC_AHBPeriph_USBOTGFS)
   RCC_AHBPeriphClockCmd(RCC_AHBPeriph_USBOTGFS, ENABLE);
+#else
+#error "The SDK header of this part names no bus clock for the USBFS controller."
 #endif
   USBFSH->BASE_CTRL = USBFS_UC_RESET_SIE | USBFS_UC_CLR_ALL;
   USBFSH->BASE_CTRL = 0x00;
