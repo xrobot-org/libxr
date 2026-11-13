@@ -138,6 +138,9 @@ class MockEndpoint : public Endpoint
     OnHardwareStopped(true);
   }
   void Late(uint32_t tag, size_t actual) { OnHardwareComplete(true, tag, actual); }
+  /// 没有停止在等时后端报出的停止确认 / A stop confirmation the backend reports with no
+  /// stop waiting.
+  void StrayStopConfirm() { OnHardwareStopped(true); }
 
  protected:
   ErrorCode ConfigureHardware(const Config&) override { return configure_result; }

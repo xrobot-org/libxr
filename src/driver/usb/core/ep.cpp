@@ -265,6 +265,10 @@ void Endpoint::EndRequests(bool in_isr, bool disable)
   // An earlier stop is still pending; it ends everything.
   if (stopping_) return;
 
+  // 新的停止从“未确认”开始：没有停止在等时后端多报的确认不能算到这次停止上。
+  // A new stop starts unconfirmed: a confirmation the backend reported with no stop
+  // waiting must not count for this one.
+  stop_confirmed_.store(0U, std::memory_order_relaxed);
   StopResult stop;
   {
     EndpointPool::HardwareScope hardware(pool_);

@@ -433,6 +433,37 @@ void TestCloseWithPendingStop()
   f.out.ConfirmStop();
 }
 
+/// 没有停止在等时后端多报的一次停止确认不算到下一次停止上：那次停止要等自己的确认，
+/// 在途请求在那之前不结束，排在后面的请求也不启动。
+/// A stop confirmation the backend reports with no stop waiting does not count for the
+/// next stop: that stop waits for its own confirmation, the in-flight request does not
+/// end before it and a request queued behind it does not start.
+void TestStrayStopConfirmationDoesNotEndTheNextStop()
+{
+  Fixture f;
+  Recorder rec;
+  f.in.SetOnComplete(rec.Bind());
+  f.in.pending_stop = true;
+  TEST_ASSERT(f.in.Configure({Direction::IN, Type::BULK, 64}, false) == ErrorCode::OK);
+  Slot a, b;
+  TEST_ASSERT(f.in.AcquireSlot(a, false) == ErrorCode::OK);
+  TEST_ASSERT(f.in.Submit(a, 8, false, false) == ErrorCode::OK);
+  f.in.StrayStopConfirm();
+  f.in.Flush(false);
+  TEST_ASSERT(f.in.IsStopping() && rec.list.empty());
+  // 停止期间提交的请求让 owner 再处理一次这个端点。
+  // A request submitted during the stop makes the owner service this endpoint once more.
+  TEST_ASSERT(f.in.AcquireSlot(b, false) == ErrorCode::OK);
+  TEST_ASSERT(f.in.Submit(b, 3, false, false) == ErrorCode::OK);
+  TEST_ASSERT(f.in.IsStopping() && rec.list.empty() && f.in.starts.size() == 1);
+  f.in.ConfirmStop();
+  TEST_ASSERT(!f.in.IsStopping() && rec.list.size() == 1 &&
+              rec.list[0].result == ErrorCode::ABORTED);
+  TEST_ASSERT(f.in.active && f.in.Last().length == 3);
+  f.in.Complete();
+  TEST_ASSERT(rec.list.size() == 2 && rec.list[1].result == ErrorCode::OK);
+}
+
 void TestLateCompletionDropped()
 {
   Fixture f;
@@ -1524,6 +1555,7 @@ void test_usb_endpoint()
   TestQueueFromOwnCallbackPostsNothing();
   TestCloseMakesLentSlotsStale();
   TestCloseWithPendingStop();
+  TestStrayStopConfirmationDoesNotEndTheNextStop();
   TestLateCompletionDropped();
   TestStall();
   TestStaleSlotBlocksOnlyItself();
