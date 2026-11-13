@@ -114,6 +114,8 @@ class CDCUart : public CDCBase, public LibXR::UART
          cfg.data_bits != 8U && cfg.data_bits != 16U))
       return ErrorCode::ARG_ERR;
     config_sequence_.fetch_add(1U, std::memory_order_acq_rel);
+    // 载荷的 release/acquire 同时给奇数序列标记定序。观察到较新的载荷，
+    // 必须使最后的序列检查拒绝较旧的快照。
     // Payload release/acquire also orders the odd sequence marker. Observing a
     // newer payload must make the final sequence check reject an older snapshot.
     config_baud_.store(cfg.baudrate, std::memory_order_release);
@@ -171,7 +173,7 @@ class CDCUart : public CDCBase, public LibXR::UART
     tx_outstanding_ = 0;
     tx_tail_ = false;
     ArmRx(in_isr);
-    // Data written before this configuration is sent now.
+    // 此配置之前写入的数据现在发送 / Data written before this configuration is sent now.
     RequestClassService(in_isr);
   }
 
@@ -184,6 +186,7 @@ class CDCUart : public CDCBase, public LibXR::UART
   {
     Endpoint* out = GetDataOutEndpoint();
     CDCBase::UnbindEndpoints(endpoint_pool, in_isr);
+    // 租借在解绑时已过期；归还它们会释放这些槽。
     // Leases became stale at the unbind; returning them frees the slots.
     while (rx_count_ != 0U)
     {
@@ -222,14 +225,17 @@ class CDCUart : public CDCBase, public LibXR::UART
 
   void OnDataInComplete(bool in_isr, const Endpoint::Completion& completion) override
   {
+    // 字节进入槽时，WriteQueue 的结算已完成这些字节。
     // WriteQueue settlement already completed the bytes when they entered the slot.
     if (tx_outstanding_ != 0U) --tx_outstanding_;
+    // 失败或中止的请求没有任何数据到达主机，不需要 ZLP。
     // Nothing reached the host for a failed or aborted request; it needs no ZLP.
     if (completion.result != ErrorCode::OK) tx_tail_ = false;
     PumpTx(in_isr);
   }
 
  private:
+  /// Owner：从写端口队首取数据填入一个空闲槽并提交。
   /// Owner: fill one free slot from the write-port front and submit it.
   void PumpTx(bool in_isr)
   {
@@ -237,6 +243,7 @@ class CDCUart : public CDCBase, public LibXR::UART
     if (!Inited() || ep == nullptr) return;
     if (write_port_cdc_.Size() == 0U)
     {
+      // 以包边界结束的传输，在其后不再有数据时被终止一次。
       // A transfer ending on a packet boundary is terminated once nothing follows it.
       if (tx_tail_ && tx_outstanding_ == 0U &&
           ep->SubmitZeroLength(in_isr) == ErrorCode::OK)
@@ -248,6 +255,7 @@ class CDCUart : public CDCBase, public LibXR::UART
     }
     Endpoint::Slot slot;
     if (ep->AcquireSlot(slot, in_isr) != ErrorCode::OK) return;
+    // 连续的写入共用一个槽，直到槽满或写端口为空。
     // Consecutive writes share one slot until it is full or the write port is empty.
     size_t size = 0U;
     while (size < slot.data.size_)
@@ -272,6 +280,7 @@ class CDCUart : public CDCBase, public LibXR::UART
       ep->ReleaseSlot(slot, in_isr);
       return;
     }
+    // ABORTED：期间已解绑；这些字节已离开写端口并被丢弃。
     // ABORTED: unbound meanwhile; the bytes already left the write port and are dropped.
     if (ep->Submit(slot, size, false, in_isr) == ErrorCode::OK)
     {
@@ -281,6 +290,7 @@ class CDCUart : public CDCBase, public LibXR::UART
     if (write_port_cdc_.Size() != 0U) RequestClassService(in_isr);
   }
 
+  /// Owner：为每个空闲的 OUT 槽装填接收，每槽一个包（见 CDCBase::BindEndpoints）。
   /// Owner: arm every free OUT slot, one packet each (see CDCBase::BindEndpoints).
   void ArmRx(bool in_isr)
   {
@@ -292,6 +302,7 @@ class CDCUart : public CDCBase, public LibXR::UART
     }
   }
 
+  /// Owner：按到达顺序把租借的数据移入读端口。
   /// Owner: move leased data into the read port in arrival order.
   void DrainRx(bool in_isr)
   {
@@ -302,6 +313,7 @@ class CDCUart : public CDCBase, public LibXR::UART
       if (rx_offset_ < lease.data.size_)
       {
         if (!read_port_cdc_.Readable()) return;
+        // 先置位再尝试，这样期间释放的空间仍会再请求一轮。
         // Set before trying, so space freed meanwhile still requests another pass.
         (void)rx_waiting_.exchange(1U, std::memory_order_seq_cst);
         auto queue = read_port_cdc_.GetReadQueue(in_isr);
@@ -330,6 +342,8 @@ class CDCUart : public CDCBase, public LibXR::UART
   friend class CDCUartReadPort;
   void OnReceiveSpace(bool in_isr)
   {
+    // 只有被已满的读端口挡住的租借才需要 owner。双方都对该标志做读-改-写：
+    // 要么 DrainRx 看到释放的空间，要么这里看到它的标志。
     // Only a lease held back by a full read port needs the owner. Both sides use a
     // read-modify-write on the flag: either DrainRx sees the freed space or this sees
     // its flag.

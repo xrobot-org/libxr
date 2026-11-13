@@ -117,6 +117,8 @@ LibXR::ErrorCode EndpointPool::Release(Endpoint* ep_info)
     }
   }
 
+  // 完成回调一直保留到下一次绑定将其替换：仍在停止中的请求，
+  // 会完成到提交它的那次绑定上。
   // The completion callback stays until the next binding replaces it: a request that
   // is still being stopped completes to the binding that submitted it.
   return released ? LibXR::ErrorCode::OK : LibXR::ErrorCode::NOT_FOUND;

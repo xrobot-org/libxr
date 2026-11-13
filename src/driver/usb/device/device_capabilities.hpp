@@ -27,6 +27,8 @@ struct HighSpeedCapabilities : FullSpeedCapabilities
   static constexpr uint32_t SPEEDS = SpeedBit(Speed::FULL) | SpeedBit(Speed::HIGH);
 };
 
+// 不同控制器的地址写入方式不同；协议上的提交始终是完成的状态阶段，
+// 而这些阶段保留了硬件编程的需要。
 // Address writes differ between controllers; the protocol commit is always the
 // completed status stage, while these phases preserve hardware programming needs.
 enum class ControlContext : uint8_t

@@ -322,8 +322,8 @@ class GsUsbClass : public DeviceClass
     // WIRE_MAX_SIZE is the per-frame bound: the IN slot must hold a whole frame for
     // submission and the OUT slot a whole frame for reception. A BSP slot array below
     // that asserts at bind time; each endpoint (two slots) needs >= 2 * WIRE_MAX_SIZE.
-    // 用 REQUIRE：槽太小在 release 构建里也不能静默通过——IN 槽 < 80 会静默
-    // 丢弃 FD 帧，OUT 槽 < 76 会把帧切成两段破坏同步。
+    // 用 REQUIRE：槽太小在 release 构建里也不能静默通过——IN 槽 < 80 会静默丢弃 FD 帧，
+    // OUT 槽 < 76 会把帧切成两段破坏同步。
     // Use REQUIRE: an undersized slot must not pass silently in release builds —
     // an IN slot below 80 silently drops FD frames and an OUT slot below 76 splits
     // frames and breaks synchronisation.
@@ -391,8 +391,8 @@ class GsUsbClass : public DeviceClass
     inited_ = false;
     host_format_ok_.store(0U, std::memory_order_release);
 
-    // 持有的 OUT 租约先释放（避免新绑定少一个槽）；被压住的 echo 随之丢弃，它属于
-    // 这里结束的这次绑定。
+    // 持有的 OUT 租约先释放（避免新绑定少一个槽）；被压住的 echo 随之丢弃，
+    // 它属于这里结束的这次绑定。
     // Release the held OUT lease first so the next binding keeps both slots; the
     // backpressured echo is dropped with it, since it belongs to the binding that ends
     // here.
@@ -970,7 +970,8 @@ class GsUsbClass : public DeviceClass
   std::array<LibXR::FDCAN::Configuration, CanChNum>
       fd_config_{};  ///< FD 配置 / FD configuration
 
-  std::atomic<uint32_t> host_format_ok_{0};  ///< Public cross-context status snapshot.
+  /// 跨上下文公开的状态快照 / Public cross-context status snapshot.
+  std::atomic<uint32_t> host_format_ok_{0};
 
   std::atomic<uint32_t>
       can_enabled_[CanChNum]{};  ///< 通道启用（classic） / Channel enabled (classic)
@@ -1368,9 +1369,9 @@ class GsUsbClass : public DeviceClass
   void RearmOut(bool in_isr)
   {
     // out_hold_ 表示背压中（租约在手里），out_armed_ 表示已经有一条接收在途：
-    // HALT 后的 ABORTED 重挂与 ENDPOINT_RESUMED 重挂可能同时发生，没有在途
-    // 判断就会挂出第二条接收，两个租约同时在途时后到的完成会覆盖
-    // out_hold_slot_（前一个槽泄漏、echo 丢失）。
+    // HALT 后的 ABORTED 重挂与 ENDPOINT_RESUMED 重挂可能同时发生，
+    // 没有在途判断就会挂出第二条接收，两个租约同时在途时后到的完成会覆盖 out_hold_slot_（
+    // 前一个槽泄漏、echo 丢失）。
     // out_hold_ means backpressured (lease held), out_armed_ means a receive is
     // already in flight: the ABORTED rearm after a HALT and the ENDPOINT_RESUMED
     // rearm can both fire, and without the in-flight check a second receive is
@@ -1817,7 +1818,7 @@ class GsUsbClass : public DeviceClass
   // ================= 转换函数 / Converters =================
 
   /**
-   * @brief wire -> ClassicPack / Convert wire frame to ClassicPack
+   * @brief wire -> ClassicPack：转换 wire 帧 / Convert wire frame to ClassicPack
    */
   static void HostWireToClassicPack(const WireHeader& wh, const uint8_t* payload,
                                     LibXR::CAN::ClassicPack& pack)
@@ -1851,7 +1852,7 @@ class GsUsbClass : public DeviceClass
   }
 
   /**
-   * @brief wire -> FDPack / Convert wire frame to FDPack
+   * @brief wire -> FDPack：转换 wire 帧 / Convert wire frame to FDPack
    */
   static void HostWireToFdPack(const WireHeader& wh, const uint8_t* payload,
                                LibXR::FDCAN::FDPack& pack)
@@ -1885,7 +1886,7 @@ class GsUsbClass : public DeviceClass
   }
 
   /**
-   * @brief ClassicPack -> QueueItem / Convert ClassicPack to QueueItem
+   * @brief ClassicPack -> QueueItem：转换 ClassicPack / Convert ClassicPack to QueueItem
    */
   void ClassicPackToQueueItem(const LibXR::CAN::ClassicPack& pack, uint8_t ch,
                               QueueItem& qi)
@@ -1929,7 +1930,7 @@ class GsUsbClass : public DeviceClass
   }
 
   /**
-   * @brief FDPack -> QueueItem / Convert FDPack to QueueItem
+   * @brief FDPack -> QueueItem：转换 FDPack / Convert FDPack to QueueItem
    */
   void FdPackToQueueItem(const LibXR::FDCAN::FDPack& pack, uint8_t ch, QueueItem& qi)
   {

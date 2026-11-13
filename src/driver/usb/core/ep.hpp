@@ -146,7 +146,9 @@ class Endpoint
     /// 最大包长，必须是该类型在当前速度下的合法值；0 无效 / Max packet size; must be
     /// legal for the type at the current speed; 0 is invalid
     uint16_t max_packet_size = 0;
-    size_t receive_size = 0;  ///< OUT：ReturnSlot 重新挂接收的长度；0 表示槽容量
+    /// OUT：ReturnSlot 重新挂接收的长度；0 表示槽容量
+    /// OUT: length ReturnSlot rearms the receive with; 0 means the slot capacity
+    size_t receive_size = 0;
   };
 
   /// Configure 之后读回，到下一次 Configure/Close 有效 / Valid until the next
@@ -162,7 +164,9 @@ class Endpoint
   /// the handle of the current lend
   struct Slot
   {
-    RawData data{nullptr, 0};  ///< IN：可写区域；OUT 租约：收到的字节
+    /// IN：可写区域；OUT 租约：收到的字节
+    /// IN: writable region; OUT lease: the bytes received
+    RawData data{nullptr, 0};
     uint8_t index = 0xFF;  ///< 槽号；0xFF 为无效句柄 / Slot index; 0xFF = invalid handle
     uint8_t token = 0;     ///< 借出戳，由核心填写 / Lend stamp, written by the core
     /// 句柄是否指向某个槽（index 不是 0xFF）/ Whether the handle refers to a slot (index
@@ -174,8 +178,11 @@ class Endpoint
   struct Completion
   {
     ErrorCode result = ErrorCode::OK;  ///< OK/ABORTED/FAILED/OUT_OF_RANGE/SIZE_ERR
-    size_t actual = 0;                 ///< IN：主机已取走；OUT：收到
-    Slot slot;                         ///< 仅 OUT 且 result == OK：借给持有者的槽
+    /// IN：主机已取走；OUT：收到 / IN: taken by the host; OUT: received
+    size_t actual = 0;
+    /// 仅 OUT 且 result == OK：借给持有者的槽
+    /// OUT only and result == OK: the slot lent to the holder
+    Slot slot;
   };
 
   /**
@@ -341,6 +348,12 @@ class Endpoint
     INFLIGHT = 4
   };
 
+  // 状态字：槽 0 [2:0]，槽 1 [5:3]，队首 [6]（槽 1 先入队），使能 [7]，零长度已排队 [8]，
+  // 零长度在途 [9]，IN [10]，槽 0 的借出计数 [16:11]，槽 1 的借出计数 [22:17]，
+  // 绑定代数 [31:23]。非 owner 调用者做决定所依据的全部信息都在这个字里；
+  // 代数使 CAS 在重新绑定前后失败。槽每次转入 LENT 都会推进其借出计数，
+  // 句柄携带其借出时的计数，因此持有较早借出句柄的持有者的 CAS 会失败。
+  // 槽在多次绑定之间保持其位置和计数，所以过期的槽只会阻塞自己，其持有者仍可归还它。
   // State word: slot 0 [2:0], slot 1 [5:3], head [6] (slot 1 was queued first), enabled
   // [7], zero-length queued [8], zero-length in flight [9], IN [10], lend count of slot 0
   // [16:11], lend count of slot 1 [22:17], binding generation [31:23]. Everything a
@@ -366,8 +379,10 @@ class Endpoint
   static constexpr uint8_t ZLP_INDEX = 2U;
   static constexpr uint8_t NO_REQUEST = 0xFFU;
 
-  // The small helpers on the request path are forced inline: under -Os the compiler keeps
-  // them out of line, and on flash with wait states each call costs more than its body.
+  // 请求路径上的小型辅助函数强制内联：按体积优化时编译器可能不内联它们，而每次调用的
+  // 开销比函数体本身还大。
+  // The small helpers on the request path are forced inline: when optimising for size a
+  // compiler may keep them out of line, and each call costs more than its body.
   LIBXR_ALWAYS_INLINE static uint32_t SlotOf(uint32_t word, uint8_t index)
   {
     return (word >> (index * SLOT_BITS)) & SLOT_MASK;
@@ -381,7 +396,7 @@ class Endpoint
   {
     return (word >> (LEND_SHIFT + index * LEND_BITS)) & LEND_MASK;
   }
-  // Marks the slot LENT and advances its lend count.
+  // 将槽标记为 LENT，并推进其借出计数 / Marks the slot LENT and advances its lend count.
   LIBXR_ALWAYS_INLINE static uint32_t Lend(uint32_t word, uint8_t index)
   {
     const uint32_t shift = LEND_SHIFT + index * LEND_BITS;
@@ -389,7 +404,7 @@ class Endpoint
     word = (word & ~(LEND_MASK << shift)) | (count << shift);
     return WithSlot(word, index, LENT);
   }
-  // Whether the handle names the slot's current lend.
+  // 句柄是否指向该槽当前的借出 / Whether the handle names the slot's current lend.
   LIBXR_ALWAYS_INLINE static bool Holds(uint32_t word, const Slot& slot)
   {
     return LendOf(word, slot.index) == slot.token;
@@ -410,6 +425,7 @@ class Endpoint
 
   void Attach(EndpointPool& pool) { pool_ = &pool; }
   void Service(bool in_isr);
+  // 定义在 ep_pool.hpp 中，ep.cpp 包含了该文件。
   // Defined in ep_pool.hpp, which ep.cpp includes.
   LIBXR_ALWAYS_INLINE void NotifyOwner(bool in_isr);
   LIBXR_ALWAYS_INLINE void NotifyQueued(bool in_isr);
@@ -442,6 +458,7 @@ class Endpoint
     return (sequence_ << 2U) | index;
   }
   void SetState(State state) { state_.store(state, std::memory_order_release); }
+  // 请求正在结束（停止待处理、已 STALL 或已关闭）；不再继续任何传输。
   // Requests are being ended (stop pending, halted or closed); nothing continues.
   LIBXR_ALWAYS_INLINE bool Ending() const
   {
@@ -458,6 +475,7 @@ class Endpoint
   std::atomic<State> state_{State::DISABLED};
   EndpointPool* pool_ = nullptr;
 
+  // 仅在禁用时写入；其他上下文在加载状态字与验证它的 CAS 之间读取。
   // Written only while disabled; read by other contexts between loading the state word
   // and the CAS that validates it.
   std::atomic<uint32_t> word_{0};
@@ -466,7 +484,7 @@ class Endpoint
   std::atomic<uint32_t> receive_size_{0};
   SlotMeta meta_[2];
 
-  // Owner-only request state.
+  // Owner 专用的请求状态 / Owner-only request state.
   uint8_t inflight_ = NO_REQUEST;
   bool inflight_tail_ =
       false;  // The ZLP tail of the in-flight slot request is on the wire.
@@ -479,7 +497,8 @@ class Endpoint
   bool start_before_deliver_ = false;
   bool start_failed_ = false;  // An early start failed; its FAILED completion is pending.
 
-  // IRQ producer, owner consumer. Word-sized for Cortex-M0 atomics.
+  // IRQ 为生产者，owner 为消费者。取字长大小，以适配只支持字长原子操作的目标。
+  // IRQ producer, owner consumer. Word-sized for targets with word-size atomics only.
   std::atomic<uint32_t> inflight_tag_{0};
   std::atomic<uint32_t> completion_ready_{0};
   uint32_t completion_tag_ = 0;
@@ -487,6 +506,8 @@ class Endpoint
   ErrorCode completion_result_ = ErrorCode::OK;
   std::atomic<uint32_t> stop_confirmed_{0};
   uint32_t pending_bit_ = 0;  // This endpoint's bit in the pool's pending mask.
+  // 由 owner 在收尾该端点的完成（含回调）期间置位；
+  // 其间入队的请求由随后的 StartNext 启动。
   // Set by the owner while it retires this endpoint's completion (callback included);
   // a request queued meanwhile is started by the StartNext that follows.
   std::atomic<uint32_t> servicing_{0};

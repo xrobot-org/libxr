@@ -12,7 +12,8 @@ enum class DeviceEvent : uint8_t
 /// 交给类的总线时间信息 / Bus time information handed to the classes
 struct BusTime
 {
-  uint8_t microframe = 0xff;  ///< 0xff when the controller only reports full frames.
+  /// 控制器只报告完整帧时为 0xff / 0xff when the controller only reports full frames.
+  uint8_t microframe = 0xff;
   /// 自上一次节拍以来经过的帧数（控制器报告微帧时为微帧数）；无法确定时为 0 / Frames
   /// elapsed since the previous tick (microframes when the controller reports them); 0
   /// when it cannot be determined

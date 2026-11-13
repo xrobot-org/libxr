@@ -24,11 +24,12 @@ Endpoint::Endpoint(EPNumber number, Direction direction, RawData slots,
 bool Endpoint::IsPlanning() const { return pool_ != nullptr && pool_->IsPlanning(); }
 
 // ---------------------------------------------------------------------------
-// Configuration
+// 配置 / Configuration
 // ---------------------------------------------------------------------------
 
 namespace
 {
+// 该类型在该速度下的最大包长（USB 2.0 5.5.3 / 5.7.3 / 5.8.3 / 5.6.3）。
 // Largest packet of the type at the speed (USB 2.0 5.5.3 / 5.7.3 / 5.8.3 / 5.6.3).
 size_t SpeedLimit(Endpoint::Type type, Speed speed)
 {
@@ -50,7 +51,7 @@ bool IsPowerOfTwo8To64(size_t packet)
   return packet == 8U || packet == 16U || packet == 32U || packet == 64U;
 }
 
-// Whether the packet size is legal for the type and speed.
+// 包长对该类型和速度是否合法 / Whether the packet size is legal for the type and speed.
 bool IsLegalPacket(Endpoint::Type type, Speed speed, size_t packet)
 {
   if (packet == 0U || packet > SpeedLimit(type, speed)) return false;
@@ -71,6 +72,7 @@ uint16_t Endpoint::LargestPacketSize(Type type) const
   const size_t room = std::min(slot_size_, MaxPacketSizeLimit(type));
   if (type == Type::CONTROL || type == Type::BULK)
   {
+    // 合法的包长只有短短一列：取其中能放下的最大值。
     // The legal sizes are a short list: take the largest one that fits.
     for (size_t packet = SpeedLimit(type, speed); packet >= 8U; packet /= 2U)
       if (packet <= room && IsLegalPacket(type, speed, packet))
@@ -82,6 +84,7 @@ uint16_t Endpoint::LargestPacketSize(Type type) const
 
 ErrorCode Endpoint::Configure(const Config& cfg, bool in_isr)
 {
+  // 被拒绝的 Configure 不会改动已配置的端点。
   // A configured endpoint is never touched by a rejected Configure.
   const bool planning = IsPlanning();
   if (!planning && (stopping_ || GetState() != State::DISABLED))
@@ -101,6 +104,8 @@ ErrorCode Endpoint::Configure(const Config& cfg, bool in_isr)
     return ErrorCode::ARG_ERR;
   }
 
+  // 槽数在构造时固定；容纳不下一个包的槽为 NO_BUFF，
+  // 绝不会悄悄切换为单槽。
   // The slot count is fixed at construction; a slot that cannot hold one packet is
   // NO_BUFF, never a silent switch to one slot.
   if (packet > slot_size_)
@@ -148,6 +153,8 @@ ErrorCode Endpoint::Configure(const Config& cfg, bool in_isr)
   uint32_t next;
   do
   {
+    // 过期的槽在其持有者归还之前保留其内存和借出计数；
+    // 槽从不移动，所以它只阻塞自己。
     // A stale slot keeps its memory and its lend count until its holder returns it; the
     // slots never move, so it blocks only itself.
     next = (old & (SLOT_FIELDS | LEND_FIELDS)) | ENABLED_BIT;
@@ -213,11 +220,12 @@ ErrorCode Endpoint::ClearStall(bool in_isr)
 }
 
 // ---------------------------------------------------------------------------
-// Ending requests and stopping the hardware
+// 结束请求并停止硬件 / Ending requests and stopping the hardware
 // ---------------------------------------------------------------------------
 
 void Endpoint::EndRequests(bool in_isr, bool disable)
 {
+  // 硬件已经上报的完成优先于停止。
   // A completion the hardware already reported wins over the stop.
   RetireMailbox(in_isr);
 
@@ -334,13 +342,15 @@ void Endpoint::DeliverAborts(bool in_isr)
 }
 
 // ---------------------------------------------------------------------------
-// Owner: start and retire
+// Owner：启动与收尾 / Owner: start and retire
 // ---------------------------------------------------------------------------
 
 void Endpoint::Service(bool in_isr)
 {
   do
   {
+    // 正常路径上，下一个排队的请求先于完成回调启动，
+    // 使回调的工作不会拖延总线上的传输。
     // On the normal path the next queued request starts before the completion callback
     // runs, so the callback's work does not delay the wire.
     servicing_.store(1U, std::memory_order_relaxed);
@@ -349,11 +359,14 @@ void Endpoint::Service(bool in_isr)
     start_before_deliver_ = false;
     if (stopping_ && stop_confirmed_.load(std::memory_order_acquire) != 0U)
       FinishStop(in_isr);
+    // 自 servicing_ 置位以来排入队列的请求（通常由回调排入）跳过了通知；
+    // StartNext 会接手它们。与 NotifyQueued 中的栅栏配对。
     // Requests queued since servicing_ was set (often by the callback) skipped their
     // notification; StartNext picks them up. Pairs with the fence in NotifyQueued.
     servicing_.store(0U, std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_seq_cst);
     StartNext(in_isr);
+    // 期间为该端点投递的工作（通常来自其自身的回调）在此完成。
     // Work posted for this endpoint meanwhile (often by its own callback) is done here.
   } while (pool_ != nullptr && pool_->TakeEndpointBit(pending_bit_));
 }
@@ -362,6 +375,7 @@ void Endpoint::RetireCompletion(bool in_isr) { RetireMailbox(in_isr); }
 
 void Endpoint::StartNext(bool in_isr)
 {
+  // 启动失败会立即完成；然后尝试下一个排队的请求。
   // A failed start completes at once; then the next queued request is tried.
   while (StartOne(in_isr, false))
   {
@@ -479,6 +493,7 @@ void Endpoint::FinishInflight(bool in_isr, ErrorCode result, size_t actual)
   start_failed_ = false;  // A failed early start is ended by whoever retires it first.
   inflight_tag_.store(0U, std::memory_order_release);
   const bool in = config_.direction == Direction::IN;
+  // 端点停止期间到达的 OUT 数据不属于任何一方。
   // OUT data that arrives while the endpoint is being stopped belongs to nobody.
   if (stopping_ && !in && result == ErrorCode::OK) result = ErrorCode::ABORTED;
 
@@ -538,7 +553,7 @@ void Endpoint::Deliver(bool in_isr, ErrorCode result, size_t actual, const Slot&
 }
 
 // ---------------------------------------------------------------------------
-// IRQ side
+// IRQ 侧 / IRQ side
 // ---------------------------------------------------------------------------
 
 void Endpoint::OnHardwareComplete(bool in_isr, uint32_t tag, size_t actual,
@@ -562,7 +577,7 @@ void Endpoint::OnHardwareStopped(bool in_isr)
 }
 
 // ---------------------------------------------------------------------------
-// Borrowing, any context
+// 借用，任意上下文 / Borrowing, any context
 // ---------------------------------------------------------------------------
 
 ErrorCode Endpoint::AcquireSlot(Slot& slot, bool in_isr)
@@ -671,11 +686,12 @@ ErrorCode Endpoint::Receive(size_t bytes, bool in_isr)
       return ErrorCode::SIZE_ERR;
     pick = Usable(old, 0U) ? 0U : Usable(old, 1U) ? 1U : NO_REQUEST;
     if (pick == NO_REQUEST) return ErrorCode::BUSY;
+    // 认领相当于不带句柄的借出：它会使该槽此前所有句柄失效。
     // The claim is a lend without a handle: it retires every earlier handle of the slot.
     next = Lend(old, pick);
   } while (!word_.compare_exchange_weak(old, next, std::memory_order_acq_rel,
                                         std::memory_order_acquire));
-  // The claimed slot is private until it is queued.
+  // 被认领的槽在入队之前是私有的 / The claimed slot is private until it is queued.
   meta_[pick] = {bytes, false};
   old = next;
   do

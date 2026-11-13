@@ -159,7 +159,7 @@ class HID : public DeviceClass
     ep_in_ = nullptr;
     ep_out_ = nullptr;
 
-    // 获取IN端点
+    // 获取IN端点 / Get the IN endpoint
     auto ans = endpoint_pool.Get(ep_in_, Endpoint::Direction::IN, in_ep_num_);
     ASSERT(ans == ErrorCode::OK);
     // 包长显式：取报告长度与当前速度下中断端点合法包长的较小者；槽装不下一个包时
@@ -185,7 +185,7 @@ class HID : public DeviceClass
           {Endpoint::Direction::OUT, Endpoint::Type::INTR, packet, packet}, in_isr);
     }
 
-    // 填充接口描述符
+    // 填充接口描述符 / Fill the interface descriptor
     desc_.intf = {
         9,                                                   // bLength
         static_cast<uint8_t>(DescriptorType::INTERFACE),     // bDescriptorType
@@ -198,7 +198,7 @@ class HID : public DeviceClass
         GetInterfaceStringIndex(0u)  // iInterface
     };
 
-    // 填充HID描述符
+    // 填充HID描述符 / Fill the HID descriptor
     desc_.hid = {9,
                  HIDDescriptorType::HID,
                  0x0111,  // HID v1.11
@@ -207,7 +207,7 @@ class HID : public DeviceClass
                  HIDDescriptorType::REPORT,
                  REPORT_DESC_LEN};
 
-    // 填充IN端点描述符
+    // 填充IN端点描述符 / Fill the IN endpoint descriptor
     desc_.ep_in = {
         7,
         static_cast<uint8_t>(DescriptorType::ENDPOINT),
@@ -217,7 +217,7 @@ class HID : public DeviceClass
         in_ep_interval_  // 轮询间隔ms
     };
 
-    // 填充OUT端点描述符（如启用）
+    // 填充OUT端点描述符（如启用） / Fill the OUT endpoint descriptor (if enabled)
     if (enable_out_endpoint_)
     {
       desc_.ep_out = {7,
@@ -228,7 +228,7 @@ class HID : public DeviceClass
                       out_ep_interval_};
     }
 
-    // 设置最终数据指针
+    // 设置最终数据指针 / Set the final data pointer
     if (enable_out_endpoint_)
     {
       SetData(RawData{reinterpret_cast<uint8_t*>(&desc_), sizeof(HIDDescBlockINOUT)});
@@ -345,7 +345,7 @@ class HID : public DeviceClass
     {
       case static_cast<uint8_t>(HIDDescriptorType::HID):  // 0x21
       {
-        // 返回 HID 描述符
+        // 返回 HID 描述符 / Return the HID descriptor
         ConstRawData desc = GetHIDDesc();
         need_write.addr_ = desc.addr_;
         need_write.size_ = (wLength < desc.size_) ? wLength : desc.size_;
@@ -353,7 +353,7 @@ class HID : public DeviceClass
       }
       case static_cast<uint8_t>(HIDDescriptorType::REPORT):  // 0x22
       {
-        // 返回 Report Descriptor
+        // 返回 Report Descriptor / Return the Report Descriptor
         ConstRawData desc = GetReportDesc();
         need_write.addr_ = desc.addr_;
         need_write.size_ = (wLength < desc.size_) ? wLength : desc.size_;
@@ -361,6 +361,7 @@ class HID : public DeviceClass
       }
       case static_cast<uint8_t>(HIDDescriptorType::PHYSICAL):
         // 物理描述符（很少用，未实现）
+        // Physical descriptor (rarely used, not implemented)
       default:
         return ErrorCode::NOT_SUPPORT;
     }
@@ -397,12 +398,15 @@ class HID : public DeviceClass
         {
           case ReportType::INPUT:
             // 查找或生成 Input Report（按你的设备实际逻辑）
+            // Find or generate the Input Report (per the actual logic of the device)
             return OnGetInputReport(report_id, result);
           case ReportType::OUTPUT:
             // 查找或返回最近收到的 Output Report（通常很少实现GET Output）
+            // Find or return the most recently received Output Report (GET Output is
+            // rarely implemented)
             return OnGetLastOutputReport(report_id, result);
           case ReportType::FEATURE:
-            // 查找或生成 Feature Report
+            // 查找或生成 Feature Report / Find or generate the Feature Report
             return OnGetFeatureReport(report_id, result);
           default:
             return OnCustomClassRequest(in_isr, bRequest, wValue, wLength, result);
@@ -420,7 +424,7 @@ class HID : public DeviceClass
         return OnSetReport(report_id, result);
 
       case ClassRequest::GET_IDLE:
-        // 仅支持一个Idle rate
+        // 仅支持一个Idle rate / Only one Idle rate is supported
         if (wLength != 1 || report_id != 0)
         {
           return ErrorCode::ARG_ERR;
@@ -464,11 +468,15 @@ class HID : public DeviceClass
         // 通常为 Output Report 或 Feature Report
         // 你可以区分是 Output 还是 Feature，也可以统一交给
         // OnSetReportData（推荐如下写法）
+        // Usually an Output Report or a Feature Report. The two can be told apart,
+        // or both handed to OnSetReportData (the form below is recommended).
         auto ans = OnSetReportData(in_isr, data);
         if (ans == ErrorCode::OK)
         {
           // 可选：记录最近一次 report id（假定第一个字节是 report id，没有 report id
           // 就写0）
+          // Optional: record the most recent report id (assumes the first byte is the
+          // report id; write 0 if there is none).
           last_output_report_id_ =
               (data.size_ > 0) ? reinterpret_cast<const uint8_t*>(data.addr_)[0] : 0;
         }

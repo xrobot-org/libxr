@@ -485,6 +485,8 @@ class DfuBootloaderBackend
         }
       }
     }
+    // 只有协议 owner 在读取其结果后才释放不可变的作业/数据槽。
+    // 被取消的旧作业绝不会更新替换它的新 USB 会话。
     // Only the protocol owner releases the immutable job/data slot after reading
     // its result. A cancelled old job never updates a replacement USB session.
     job_state_.store(EMPTY, std::memory_order_release);
@@ -597,9 +599,9 @@ class DfuBootloaderBackend
 
   bool HasPendingManifest() const { return manifest_.pending; }
 
-  // 下一次 GETSTATUS 报告的 poll timeout：同类写入步骤（要擦除 / 只编程）上一次实测
-  // 的耗时，还没有实测时用 25 / 10 ms。主机按它等待，一般一次 GETSTATUS 就能看到
-  // 写完。
+  // 下一次 GETSTATUS 报告的 poll timeout：同类写入步骤（要擦除 / 只编程）
+  // 上一次实测的耗时，还没有实测时用 25 / 10 ms。主机按它等待，
+  // 一般一次 GETSTATUS 就能看到写完。
   // The poll timeout reported by the next GETSTATUS: the measured duration of the last
   // write step of the same kind (with erase / program only), or 25 / 10 ms before one
   // was measured. A host that waits for it usually sees the step done at the first
@@ -687,6 +689,8 @@ class DfuBootloaderBackend
                                                       sizeof(seal)}) == ErrorCode::OK;
   }
 
+  // Seal 可能与载荷共用最后一个擦除块。复用每会话的擦除映射，
+  // 这样 manifest 不会擦除已被擦除、且已被 DNLOAD 载荷块部分编程的块。
   // Seal may share the last erase block with payload. Reuse the per-session
   // erase map so manifest does not wipe a block that was already erased and
   // partially programmed by DNLOAD payload chunks.
@@ -882,6 +886,8 @@ class DfuBootloaderBackend
     uint32_t state = job_state_.load(std::memory_order_acquire);
     if (state == EMPTY) return true;  // Constructor-only stored-image validation.
     if (state != RUNNING) return false;
+    // 一次成功的认领授权这一次不可取消的 Flash 调用。认领之后的取消只让它走到安全边界，
+    // 不会影响随后的调用。
     // A successful claim authorizes this one noncancelable Flash call. Cancel
     // after the claim lets it reach a safe boundary, not the following call.
     return job_state_.compare_exchange_strong(state, RUNNING, std::memory_order_acq_rel);
@@ -1355,8 +1361,8 @@ class DFUClass : public DfuInterfaceClassBase
       return ErrorCode::OK;
     }
 
-    // 数据阶段长度必须与 SETUP 里承诺的 wLength 一致：短包意味着主机发的是
-    // 截断的块，按整块暂存会把垃圾尾部一起写进 flash。
+    // 数据阶段长度必须与 SETUP 里承诺的 wLength 一致：短包意味着主机发的是截断的块，
+    // 按整块暂存会把垃圾尾部一起写进 flash。
     // The data stage length must match the wLength promised by the SETUP: a short
     // packet means the host sent a truncated block, and staging it as a full
     // block would write the garbage tail into flash as well.

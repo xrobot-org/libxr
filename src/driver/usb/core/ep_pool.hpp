@@ -189,6 +189,7 @@ class EndpointPool
     }
     ~InterruptScope()
     {
+      // 没有记录任何工作的批次（例如 FIFO 补充）不会运行 owner。
       // A batch that recorded nothing (a FIFO refill, say) does not run the owner.
       if (pool_.interrupt_depth_.fetch_sub(1U, std::memory_order_acq_rel) == 1U &&
           pool_.irq_deferred_.exchange(0U, std::memory_order_acq_rel) != 0U)
@@ -226,6 +227,7 @@ class EndpointPool
   /// 端点停止等待超过 STOP_FRAME_LIMIT 帧 / An endpoint stop waited STOP_FRAME_LIMIT
   /// frames without confirmation
   static constexpr uint32_t STOP_TIMEOUT_EVENT = 1024U;
+  /// 控制器复位前，一次未确认的停止最多可等待的帧数。
   /// Frames an unconfirmed stop may wait before the controller is reset.
   static constexpr uint32_t STOP_FRAME_LIMIT = 8U;
   /// 生命周期事件掩码（Init/Deinit/Reset/Disconnect）；挂起时端点不得启动硬件 /
@@ -275,6 +277,7 @@ class EndpointPool
   {
     return (control_pending_.load(std::memory_order_acquire) & mask) != 0U;
   }
+  /// Owner：清除端点的待处理位；该位原先已置位时返回 true。
   /// Owner: clear an endpoint's pending bit; true if it was set.
   bool TakeEndpointBit(uint32_t bit)
   {
@@ -288,14 +291,16 @@ class EndpointPool
     endpoint_pending_.fetch_or(bit, std::memory_order_release);
     PostControl(ENDPOINT_EVENT, in_isr);
   }
+  /// Owner：启动门打开后，让每个端点重新检查其队列。
   /// Owner: make every endpoint recheck its queue after a start gate opened.
   void KickEndpoints(bool in_isr);
-  /// Owner: whether an endpoint may start hardware now.
+  /// Owner：端点现在是否可以启动硬件 / Owner: whether an endpoint may start hardware now.
   LIBXR_ALWAYS_INLINE bool CanStart(bool ep0) const
   {
     return !planning_ && !suspended_ && !lifecycle_hold_ &&
            !HasPendingControl(LIFECYCLE_EVENTS) && (ep0 || data_enabled_);
   }
+  /// Owner：是否有端点的硬件停止尚未确认。
   /// Owner: whether any endpoint's hardware stop is not yet confirmed.
   bool AnyStopping() const
   {
@@ -311,6 +316,9 @@ class EndpointPool
       stop_last_frame_.store(NO_FRAME, std::memory_order_relaxed);
     }
   }
+  /// IRQ（总线节拍）：当一次停止已等待 STOP_FRAME_LIMIT 个 1 ms 帧时返回一次 true。
+  /// 高速总线每个微帧产生一次节拍，只有新的帧号才计数。0xFFFF 表示帧号未知（没有帧计数器
+  /// 的全速控制器）：每次节拍算一帧。
   /// IRQ (bus tick): true once when a stop has waited STOP_FRAME_LIMIT 1 ms frames. A
   /// high-speed bus ticks every microframe; only a new frame number counts. 0xFFFF is an
   /// unknown frame number (full-speed controllers without a frame counter): every tick
@@ -323,6 +331,7 @@ class EndpointPool
       return false;
     return stop_frames_.fetch_add(1U, std::memory_order_relaxed) + 1U == STOP_FRAME_LIMIT;
   }
+  /// Owner：生命周期事件被暂缓；期间任何端点都不得启动。
   /// Owner: a lifecycle event is held back; no endpoint may start meanwhile.
   void SetLifecycleHold(bool hold) { lifecycle_hold_ = hold; }
   /// 一个端点的停止已确认；最后一个确认时投递 STOP_DONE_EVENT / One endpoint's stop was
@@ -383,27 +392,34 @@ class EndpointPool
   HardwareEnter hardware_enter_ = nullptr;
   HardwareLeave hardware_leave_ = nullptr;
   std::atomic<uint32_t> interrupt_depth_{0};
-  std::atomic<uint32_t> irq_deferred_{0};  ///< Work was recorded during an IRQ batch.
+  /// IRQ 批处理期间记录了工作 / Work was recorded during an IRQ batch.
+  std::atomic<uint32_t> irq_deferred_{0};
   SerializedService service_;
   std::atomic<uint32_t> control_pending_{0};
+  // 有待处理工作的端点：位 2n 为 EP n OUT（或双向 EP n），位 2n + 1 为 EP n IN。
   // Endpoints with work: bit 2n is EP n OUT (or a bidirectional EP n), 2n + 1 is EP n IN.
   std::atomic<uint32_t> endpoint_pending_{0};
   Endpoint* by_bit_[2 * SLOT_COUNT] = {};
   void Register(Endpoint* ep, size_t number, size_t dir);
   Callback<uint32_t> control_handler_;
-  std::atomic<uint32_t> stopping_count_{0};  ///< Changed by the owner only.
+  /// 仅由 owner 修改 / Changed by the owner only.
+  std::atomic<uint32_t> stopping_count_{0};
   std::atomic<uint32_t> stop_frames_{0};
   static constexpr uint32_t NO_FRAME = UINT32_MAX;
-  std::atomic<uint32_t> stop_last_frame_{NO_FRAME};  ///< Frame number of the last count.
-  bool lifecycle_hold_ = false;                      ///< Controller-owner state.
+  /// 上一次计数时的帧号 / Frame number of the last count.
+  std::atomic<uint32_t> stop_last_frame_{NO_FRAME};
+  /// 控制器 owner 状态 / Controller-owner state.
+  bool lifecycle_hold_ = false;
   bool data_enabled_ = true;
   bool planning_ = false;
   Speed speed_ = Speed::FULL;
-  bool suspended_ = false;       ///< Controller-owner state.
+  /// 控制器 owner 状态 / Controller-owner state.
+  bool suspended_ = false;
   Endpoint* ep0_in_ = nullptr;   ///< 端点0 IN对象 / Endpoint 0 IN pointer
   Endpoint* ep0_out_ = nullptr;  ///< 端点0 OUT对象 / Endpoint 0 OUT pointer
 };
 
+// 请求路径上需要池的端点辅助函数；ep.cpp 将其内联。
 // Endpoint helpers on the request path that need the pool; ep.cpp inlines them.
 inline bool Endpoint::CanStart() const
 {
@@ -417,6 +433,8 @@ inline void Endpoint::NotifyOwner(bool in_isr)
 
 inline void Endpoint::NotifyQueued(bool in_isr)
 {
+  // 与 Service 中的栅栏配对：要么这里看到 servicing_ 已清除并发出通知，
+  // 要么 owner 的 StartNext 看到刚入队的请求。
   // Pairs with the fence in Service: either this sees servicing_ cleared and notifies,
   // or the owner's StartNext sees the request just queued.
   std::atomic_thread_fence(std::memory_order_seq_cst);

@@ -49,32 +49,32 @@ class DapLinkV2Class : public DeviceClass
   static constexpr const char* DEFAULT_INTERFACE_STRING = "CMSIS-DAP v2";
 
   /**
-   * @brief Info string set
+   * @brief 信息字符串集合 / Info string set
    */
   struct InfoStrings
   {
-    const char* vendor = nullptr;        ///< Vendor string
-    const char* product = nullptr;       ///< Product string
-    const char* serial = nullptr;        ///< Serial string
-    const char* firmware_ver = nullptr;  ///< Firmware version
+    const char* vendor = nullptr;        ///< 厂商字符串 / Vendor string
+    const char* product = nullptr;       ///< 产品字符串 / Product string
+    const char* serial = nullptr;        ///< 序列号字符串 / Serial string
+    const char* firmware_ver = nullptr;  ///< 固件版本 / Firmware version
 
-    const char* device_vendor = nullptr;   ///< Device vendor
-    const char* device_name = nullptr;     ///< Device name
-    const char* board_vendor = nullptr;    ///< Board vendor
-    const char* board_name = nullptr;      ///< Board name
-    const char* product_fw_ver = nullptr;  ///< Product FW version
+    const char* device_vendor = nullptr;   ///< 设备厂商 / Device vendor
+    const char* device_name = nullptr;     ///< 设备名称 / Device name
+    const char* board_vendor = nullptr;    ///< 板卡厂商 / Board vendor
+    const char* board_name = nullptr;      ///< 板卡名称 / Board name
+    const char* product_fw_ver = nullptr;  ///< 产品固件版本 / Product FW version
   };
 
  public:
   /**
-   * @brief Constructor
+   * @brief 构造函数 / Constructor
    *
-   * @param data_in_ep_num  Bulk IN endpoint number (required)
-   * @param data_out_ep_num Bulk OUT endpoint number (required)
-   * @param swd_link        SWD link reference
-   * @param nreset_gpio     Optional nRESET GPIO
-   * @param interface_string Interface string returned for the class's interface; must
-   *                         stay valid
+   * @param data_in_ep_num  批量 IN 端点号（必填） / Bulk IN endpoint number (required)
+   * @param data_out_ep_num 批量 OUT 端点号（必填） / Bulk OUT endpoint number (required)
+   * @param swd_link        SWD 链路引用 / SWD link reference
+   * @param nreset_gpio     可选的 nRESET GPIO / Optional nRESET GPIO
+   * @param interface_string 该类接口返回的接口字符串，须保持有效 / Interface string
+   * returned for the class's interface; must stay valid
    *
    */
   explicit DapLinkV2Class(Endpoint::EPNumber data_in_ep_num,
@@ -96,7 +96,7 @@ class DapLinkV2Class : public DeviceClass
   }
 
   /**
-   * @brief Virtual destructor
+   * @brief 虚析构函数 / Virtual destructor
    */
   ~DapLinkV2Class() override = default;
 
@@ -110,15 +110,15 @@ class DapLinkV2Class : public DeviceClass
   }
 
   /**
-   * @brief Set info strings
-   * @param info Info string set
+   * @brief 设置信息字符串 / Set info strings
+   * @param info 信息字符串集合 / Info string set
    */
   void SetInfoStrings(const InfoStrings& info) { info_ = info; }
 
   /**
-   * @brief Set the JTAG backend
-   * @param jtag JTAG driver; its clock is set to the current SWJ clock. Ignored when
-   *             JTAG is not compiled in
+   * @brief 设置 JTAG 后端 / Set the JTAG backend
+   * @param jtag JTAG 驱动，其时钟设为当前 SWJ 时钟；未编译 JTAG 时忽略 / JTAG driver; its
+   * clock is set to the current SWJ clock. Ignored when JTAG is not compiled in
    */
   void SetJtag(LibXR::Debug::Jtag* jtag)
   {
@@ -139,19 +139,19 @@ class DapLinkV2Class : public DeviceClass
   }
 
   /**
-   * @brief Get internal state
-   * @return State reference
+   * @brief 获取内部状态 / Get internal state
+   * @return 状态引用 / State reference
    */
   const LibXR::USB::DapLinkV2Def::State& GetState() const { return dap_state_; }
 
   /**
-   * @brief Whether initialized
-   * @return true if initialized
+   * @brief 是否已初始化 / Whether initialized
+   * @return 已初始化时为 true / true if initialized
    */
   bool IsInited() const { return inited_; }
 
   /**
-   * @brief Whether IN endpoint is busy
+   * @brief IN 端点是否忙 / Whether IN endpoint is busy
    *
    * @return true
    * @return false
@@ -163,7 +163,7 @@ class DapLinkV2Class : public DeviceClass
   }
 
   /**
-   * @brief Whether OUT endpoint is busy
+   * @brief OUT 端点是否忙 / Whether OUT endpoint is busy
    *
    * @return true
    * @return false
@@ -274,11 +274,11 @@ class DapLinkV2Class : public DeviceClass
       return ErrorCode::OK;
     }
     SyncSession(cur_epoch_);
-    // 没有暂存的响应在排队、又有空闲的 IN 槽时，响应直接写进 IN 槽，
-    // 由本线程提交，不经过类服务也不拷贝。否则响应先写进响应池的暂存槽，
-    // 不等主机取走前面的响应：SWD 继续往前执行，由 USB 侧在 IN 槽有空时
-    // 把暂存的响应拷进去提交。暂存槽用完（客户端在途数超过通告值）时在这里等；
-    // 命令继续由本线程持有，超时返回后下一次 Step 接着等。
+    // 没有暂存的响应在排队、又有空闲的 IN 槽时，响应直接写进 IN 槽，由本线程提交，
+    // 不经过类服务也不拷贝。否则响应先写进响应池的暂存槽，不等主机取走前面的响应：
+    // SWD 继续往前执行，由 USB 侧在 IN 槽有空时把暂存的响应拷进去提交。
+    // 暂存槽用完（客户端在途数超过通告值）时在这里等；命令继续由本线程持有，
+    // 超时返回后下一次 Step 接着等。
     // With no staged response waiting and an IN slot free, the response is written
     // straight into the IN slot and submitted by this thread, without the class service
     // and without a copy. Otherwise it is first written into a staging slot of the
@@ -314,10 +314,10 @@ class DapLinkV2Class : public DeviceClass
 
  protected:
   /**
-   * @brief Bind endpoint resources
-   * @param endpoint_pool Endpoint pool
-   * @param start_itf_num Start interface number
-   * @param in_isr Whether called from ISR context
+   * @brief 绑定端点资源 / Bind endpoint resources
+   * @param endpoint_pool 端点池 / Endpoint pool
+   * @param start_itf_num 起始接口号 / Start interface number
+   * @param in_isr 是否在 ISR 上下文中调用 / Whether called from ISR context
    */
   void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num,
                      bool in_isr) override
@@ -326,7 +326,7 @@ class DapLinkV2Class : public DeviceClass
 
     interface_num_ = start_itf_num;
 
-    // Allocate endpoints
+    // 分配端点 / Allocate endpoints
     auto ans =
         endpoint_pool.Get(ep_data_out_, Endpoint::Direction::OUT, data_out_ep_num_);
     ASSERT(ans == ErrorCode::OK);
@@ -334,6 +334,9 @@ class DapLinkV2Class : public DeviceClass
     ans = endpoint_pool.Get(ep_data_in_, Endpoint::Direction::IN, data_in_ep_num_);
     ASSERT(ans == ErrorCode::OK);
 
+    // 按当前速度下槽与控制器都容得下的最大包长配置端点（没有时为 0）。Configure 失败会让
+    // 端点进入 ERROR，组合设备随即拒绝该配置。两个方向都用借用模式：OUT 槽把收到的每个包
+    // 借给回调，响应直接写入 IN 槽。
     // Configure endpoints with the largest packet size the slots and the controller
     // hold at the current speed (0 when there is none). A failed Configure leaves the
     // endpoint in ERROR and the composition rejects the configuration. Both directions
@@ -358,10 +361,12 @@ class DapLinkV2Class : public DeviceClass
                              std::memory_order_release);
     }
 
+    // 挂接完成回调（在 owner 中运行，须保持轻量）。
     // Hook completion callbacks (they run in the owner and must stay shallow).
     ep_data_out_->SetOnComplete(on_data_out_cb_);
     ep_data_in_->SetOnComplete(on_data_in_cb_);
 
+    // 接口描述符（厂商自定义，2 个端点）。
     // Interface descriptor (vendor specific, 2 endpoints)
     desc_block_.intf = {9,
                         static_cast<uint8_t>(DescriptorType::INTERFACE),
@@ -401,9 +406,9 @@ class DapLinkV2Class : public DeviceClass
   }
 
   /**
-   * @brief Unbind endpoint resources
-   * @param endpoint_pool Endpoint pool
-   * @param in_isr Whether called from ISR context
+   * @brief 解绑端点资源 / Unbind endpoint resources
+   * @param endpoint_pool 端点池 / Endpoint pool
+   * @param in_isr 是否在 ISR 上下文中调用 / Whether called from ISR context
    */
   void UnbindEndpoints(EndpointPool& endpoint_pool, bool in_isr) override
   {
@@ -443,21 +448,21 @@ class DapLinkV2Class : public DeviceClass
   }
 
   /**
-   * @brief Number of interfaces contributed
-   * @return Interface count
+   * @brief 提供的接口数量 / Number of interfaces contributed
+   * @return 接口数量 / Interface count
    */
   size_t GetInterfaceCount() override { return 1; }
 
   /**
-   * @brief Whether an IAD is used
-   * @return true if this class uses an IAD
+   * @brief 是否使用 IAD / Whether an IAD is used
+   * @return 本类使用 IAD 时为 true / true if this class uses an IAD
    */
   bool HasIAD() override { return false; }
 
   /**
-   * @brief Endpoint ownership check
-   * @param ep_addr Endpoint address
-   * @return true if owned by this class
+   * @brief 端点归属检查 / Endpoint ownership check
+   * @param ep_addr 端点地址 / Endpoint address
+   * @return 属于本类时为 true / true if owned by this class
    */
   bool OwnsEndpoint(uint8_t ep_addr) const override
   {
@@ -470,8 +475,9 @@ class DapLinkV2Class : public DeviceClass
   }
 
   /**
-   * @brief Maximum bytes required in configuration descriptor
-   * @return Maximum bytes
+   * @brief 配置描述符所需的最大字节数 / Maximum bytes required in configuration
+   * descriptor
+   * @return 最大字节数 / Maximum bytes
    */
   size_t GetMaxConfigSize() override { return sizeof(desc_block_); }
 
@@ -507,21 +513,22 @@ class DapLinkV2Class : public DeviceClass
 
  private:
   // ============================================================================
+  // 局部辅助函数（保留原注释，已移入类内）。
   // Local helpers (kept with original comments, moved inside the class)
   // ============================================================================
 
-  // Cast enum/integer to uint8_t.
+  // 将枚举/整数转换为 uint8_t / Cast enum/integer to uint8_t.
   template <typename E>
   static constexpr uint8_t ToU8(E e)
   {
     return static_cast<uint8_t>(e);
   }
 
-  // CMSIS-DAP status bytes
+  // CMSIS-DAP 状态字节 / CMSIS-DAP status bytes
   static constexpr uint8_t DAP_OK = 0x00u;     ///< DAP_OK
   static constexpr uint8_t DAP_ERROR = 0xFFu;  ///< DAP_ERROR
 
-  // Unknown command response: single byte 0xFF.
+  // 未知命令响应：单字节 0xFF / Unknown command response: single byte 0xFF.
   static inline ErrorCode BuildUnknownCmdResponse(uint8_t* resp, uint16_t cap,
                                                   uint16_t& out_len)
   {
@@ -535,7 +542,7 @@ class DapLinkV2Class : public DeviceClass
     return ErrorCode::OK;
   }
 
-  // Command status response: <cmd, status>.
+  // 命令状态响应：<cmd, status> / Command status response: <cmd, status>.
   static inline ErrorCode BuildCmdStatusResponse(uint8_t cmd, uint8_t status,
                                                  uint8_t* resp, uint16_t cap,
                                                  uint16_t& out_len)
@@ -553,11 +560,11 @@ class DapLinkV2Class : public DeviceClass
 
  private:
   // ============================================================================
-  // USB callbacks
+  // USB 回调 / USB callbacks
   // ============================================================================
 
   /**
-   * @brief OUT complete callback static entry
+   * @brief OUT 完成回调的静态入口 / OUT complete callback static entry
    */
   static void OnDataOutCompleteStatic(bool in_isr, DapLinkV2Class* self,
                                       const Endpoint::Completion& completion)
@@ -569,7 +576,7 @@ class DapLinkV2Class : public DeviceClass
   }
 
   /**
-   * @brief IN complete callback static entry
+   * @brief IN 完成回调的静态入口 / IN complete callback static entry
    */
   static void OnDataInCompleteStatic(bool in_isr, DapLinkV2Class* self,
                                      const Endpoint::Completion& completion)
@@ -1054,6 +1061,7 @@ class DapLinkV2Class : public DeviceClass
       }
     }
 
+    // SWJ 影子默认值：SWDIO=1，nRESET=1，SWCLK=0。
     // SWJ shadow defaults: SWDIO=1, nRESET=1, SWCLK=0
     last_nreset_level_high_ = true;
     swj_shadow_ = static_cast<uint8_t>(DapLinkV2Def::DAP_SWJ_SWDIO_TMS |
@@ -1115,7 +1123,7 @@ class DapLinkV2Class : public DeviceClass
 
  private:
   /**
-   * @brief Get effective DAP packet size
+   * @brief 获取有效的 DAP 包长 / Get effective DAP packet size
    */
   uint16_t GetDapPacketSize() const
   {
@@ -1127,7 +1135,8 @@ class DapLinkV2Class : public DeviceClass
   static constexpr uint16_t ConfiguredDapPacketSize() { return MAX_DAP_PACKET_SIZE; }
 
   /**
-   * @brief Clip response length by DAP packet size and buffer capacity
+   * @brief 按 DAP 包长和缓冲容量截短响应长度 / Clip response length by DAP packet size
+   * and buffer capacity
    */
   uint16_t ClipResponseLength(uint16_t len, uint16_t cap) const
   {
@@ -1148,16 +1157,17 @@ class DapLinkV2Class : public DeviceClass
   }
 
   // ============================================================================
-  // Queued command helpers
+  // 排队命令辅助函数 / Queued command helpers
   // ============================================================================
 
   /**
-   * @brief Parse one queued command length from a packed queue stream
-   * @param req request pointer
-   * @param avail available bytes in the queue stream
-   * @param cmd_len parsed command length
-   * @return true parse success
-   * @return false parse failure
+   * @brief 从打包的队列流中解析一条排队命令的长度 / Parse one queued command length from
+   * a packed queue stream
+   * @param req 请求指针 / request pointer
+   * @param avail 队列流中的可用字节数 / available bytes in the queue stream
+   * @param cmd_len 解析出的命令长度 / parsed command length
+   * @return true 解析成功 / true parse success
+   * @return false 解析失败 / false parse failure
    */
   bool ParseQueuedCommandLength(const uint8_t* req, uint16_t avail,
                                 uint16_t& cmd_len) const
@@ -1312,7 +1322,7 @@ class DapLinkV2Class : public DeviceClass
         return true;
       }
 
-      // Reject nested queue/execute in queued stream.
+      // 拒绝队列流中嵌套的 queue/execute / Reject nested queue/execute in queued stream.
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::QUEUE_COMMANDS):
       case ToU8(LibXR::USB::DapLinkV2Def::CommandId::EXECUTE_COMMANDS):
       default:
@@ -1492,18 +1502,18 @@ class DapLinkV2Class : public DeviceClass
 
  private:
   // ============================================================================
-  // Command dispatch
+  // 命令分发 / Command dispatch
   // ============================================================================
 
   /**
-   * @brief Process one command
+   * @brief 处理一条命令 / Process one command
    *
-   * @param req      Request buffer
-   * @param req_len  Request length
-   * @param resp     Response buffer
-   * @param resp_cap Response capacity
-   * @param out_len  Output response length
-   * @return Error code
+   * @param req      请求缓冲 / Request buffer
+   * @param req_len  请求长度 / Request length
+   * @param resp     响应缓冲 / Response buffer
+   * @param resp_cap 响应容量 / Response capacity
+   * @param out_len  输出响应长度 / Output response length
+   * @return 错误码 / Error code
    */
   ErrorCode ProcessOneCommand(const uint8_t* req, uint16_t req_len, uint8_t* resp,
                               uint16_t resp_cap, uint16_t& out_len)
@@ -1601,11 +1611,11 @@ class DapLinkV2Class : public DeviceClass
   }
 
   /**
-   * @brief Build NOT_SUPPORT response
+   * @brief 构造 NOT_SUPPORT 响应 / Build NOT_SUPPORT response
    *
-   * @param resp     Response buffer
-   * @param resp_cap Response capacity
-   * @param out_len  Output response length
+   * @param resp     响应缓冲 / Response buffer
+   * @param resp_cap 响应容量 / Response capacity
+   * @param out_len  输出响应长度 / Output response length
    */
   void BuildNotSupportResponse(uint8_t* resp, uint16_t resp_cap, uint16_t& out_len)
   {
@@ -1719,7 +1729,7 @@ class DapLinkV2Class : public DeviceClass
     const size_t COPY_N = (N_WITH_NUL > MAX_PAYLOAD) ? MAX_PAYLOAD : N_WITH_NUL;
     Memory::FastCopy(&resp[2], str, COPY_N);
 
-    // Ensure termination even when truncated
+    // 即使被截断也保证以结束符收尾 / Ensure termination even when truncated
     resp[2 + COPY_N - 1] = 0x00;
 
     resp[1] = static_cast<uint8_t>(COPY_N);
@@ -1753,6 +1763,7 @@ class DapLinkV2Class : public DeviceClass
     resp[0] = cmd;
     resp[1] = 2u;
 
+    // 仅限小端设备：直接 memcpy 到载荷（不受对齐影响）。
     // Little-endian device only: direct memcpy to payload (alignment-safe).
     Memory::FastCopy(&resp[2], &val, sizeof(val));
 
@@ -1771,6 +1782,7 @@ class DapLinkV2Class : public DeviceClass
     resp[0] = cmd;
     resp[1] = 4u;
 
+    // 仅限小端设备：直接 memcpy 到载荷（不受对齐影响）。
     // Little-endian device only: direct memcpy to payload (alignment-safe).
     Memory::FastCopy(&resp[2], &val, sizeof(val));
 
@@ -1780,7 +1792,7 @@ class DapLinkV2Class : public DeviceClass
 
  private:
   // ============================================================================
-  // Simple control handlers
+  // 简单控制处理函数 / Simple control handlers
   // ============================================================================
 
   ErrorCode HandleHostStatus(const uint8_t* /*req*/, uint16_t /*req_len*/, uint8_t* resp,
@@ -1918,7 +1930,7 @@ class DapLinkV2Class : public DeviceClass
     dap_state_.transfer_cfg.retry_count = wait_retry;
     dap_state_.transfer_cfg.match_retry = match_retry;
 
-    // Map to SWD transaction policy
+    // 映射到 SWD 事务策略 / Map to SWD transaction policy
     Debug::Swd::TransferPolicy pol = swd_.GetTransferPolicy();
     pol.idle_cycles = IDLE;
     pol.wait_retry = wait_retry;
@@ -2037,6 +2049,7 @@ class DapLinkV2Class : public DeviceClass
       execute = 1u;
     }
 
+    // 始终返回 DAP_OK；未实现复位时 Execute=0。
     // Always return DAP_OK; if reset is not implemented, Execute=0.
     resp[1] = DAP_OK;
     resp[2] = execute;
@@ -2046,7 +2059,7 @@ class DapLinkV2Class : public DeviceClass
 
  private:
   // ============================================================================
-  // SWJ / SWD handlers
+  // SWJ / SWD 处理函数 / SWJ / SWD handlers
   // ============================================================================
   ErrorCode HandleSWJPins(const uint8_t* req, uint16_t req_len, uint8_t* resp,
                           uint16_t resp_cap, uint16_t& out_len)
@@ -2073,15 +2086,18 @@ class DapLinkV2Class : public DeviceClass
     uint32_t wait_us = 0u;
     Memory::FastCopy(&wait_us, &req[3], sizeof(wait_us));
 
+    // 0) 将所有选中引脚的请求状态锁存到影子值（即使不受支持）。
     // 0) Latch requested states into shadow for ALL selected pins (even if unsupported)
     swj_shadow_ = static_cast<uint8_t>((swj_shadow_ & static_cast<uint8_t>(~PIN_SEL)) |
                                        (PIN_OUT & PIN_SEL));
 
+    // 1) 仅 nRESET 有物理支持（尽力而为）。
     // 1) Only physically support nRESET (best-effort)
     if ((PIN_SEL & LibXR::USB::DapLinkV2Def::DAP_SWJ_NRESET) != 0u)
     {
       const bool LEVEL_HIGH =
           ((PIN_OUT & LibXR::USB::DapLinkV2Def::DAP_SWJ_NRESET) != 0u);
+      // DriveReset 更新 last_nreset_level_high_ 和影子值，存在 GPIO 时同时写 GPIO。
       // DriveReset updates last_nreset_level_high_ and shadow, and writes GPIO if
       // present.
       DriveReset(LEVEL_HIGH);
@@ -2202,15 +2218,18 @@ class DapLinkV2Class : public DeviceClass
 
     const uint8_t* data = &req[2];
 
+    // 委托给 SwdPort 实现（此处不使用 RawMode，也不做引脚级控制）。
     // Delegate to SwdPort implementation (no RawMode / no pin-level control here)
     const ErrorCode EC = swd_.SeqWriteBits(BIT_COUNT, data);
     if (EC != ErrorCode::OK)
     {
       resp[1] = ToU8(LibXR::USB::DapLinkV2Def::Status::ERROR);
+      // 保持传输层返回 OK，使主机仍能收到有效响应。
       // Keep transport-level OK so host still gets a valid response.
       return ErrorCode::OK;
     }
 
+    // 保持影子语义：SWCLK=0，SWDIO 为最后一位。
     // Maintain shadow semantics: keep SWCLK=0, SWDIO=last bit
     swj_shadow_ = static_cast<uint8_t>(
         swj_shadow_ & static_cast<uint8_t>(~LibXR::USB::DapLinkV2Def::DAP_SWJ_SWCLK_TCK));
@@ -2277,6 +2296,10 @@ class DapLinkV2Class : public DeviceClass
     out_len = 2u;
 
     // Req: [0]=0x1D [1]=SequenceCount [ ... sequences ... ]
+    // 每条序列：
+    //   INFO：[7]=方向（1=输入，0=输出），[5:0]=周期数（0 表示 64）
+    //   输出：后接 ceil(cycles/8) 字节数据（LSB 在前）
+    //   输入：请求中不含数据；响应追加 ceil(cycles/8) 字节数据（LSB 在前）
     // Each sequence:
     //   INFO: [7]=Direction (1=input,0=output), [5:0]=cycles (0=>64)
     //   If output: followed by ceil(cycles/8) bytes data (LSB-first)
@@ -2315,7 +2338,7 @@ class DapLinkV2Class : public DeviceClass
 
       if (!MODE_IN)
       {
-        // Output: data bytes are in request
+        // 输出：数据字节在请求中 / Output: data bytes are in request
         if (req_off + BYTES > req_len)
         {
           resp[1] = DAP_ERROR;
@@ -2331,13 +2354,14 @@ class DapLinkV2Class : public DeviceClass
         {
           resp[1] = DAP_ERROR;
           out_len = 2u;
+          // 返回 OK，使主机收到有效的响应包。
           // Return OK so host gets a valid response packet
           return ErrorCode::OK;
         }
       }
       else
       {
-        // Input: captured data is appended to response
+        // 输入：采集到的数据追加到响应中 / Input: captured data is appended to response
         if (resp_off + BYTES > resp_cap)
         {
           resp[1] = DAP_ERROR;
@@ -2623,7 +2647,7 @@ class DapLinkV2Class : public DeviceClass
 
  private:
   // ============================================================================
-  // Transfer helpers
+  // 传输辅助函数 / Transfer helpers
   // ============================================================================
 
   uint8_t MapAckToDapResp(LibXR::Debug::SwdProtocol::Ack ack) const
@@ -2769,6 +2793,7 @@ class DapLinkV2Class : public DeviceClass
   // DAP_Transfer / DAP_TransferBlock
   // ============================================================================
 
+  // 以下较长的函数保持原样，API 文档在头文件的接口处。
   // The following long functions are kept as-is; API docs live at the header boundary.
 
   ErrorCode HandleTransfer(const uint8_t* req, uint16_t req_len, uint8_t* resp,
@@ -2835,13 +2860,17 @@ class DapLinkV2Class : public DeviceClass
     { return static_cast<uint16_t>(need_ts ? 8u : 4u); };
 
     uint8_t response_count = 0u;
+    // 保持参考实现的行为：没有任何传输执行时，response_value 保持为 0。
     // Keep reference behavior: if no transfer executes, response_value remains 0.
     uint8_t response_value = 0u;
 
+    // 目标会以 posted 方式处理 AP 写入。保持写批量的快速，
+    // 并在传输边界处用一次 DP RDBUFF 读取统一检查。
     // AP writes are posted by the target. Keep the write batch fast and check
     // it once at a transfer boundary with a DP RDBUFF read.
     bool pending_ap_write = false;
 
+    // -------- posted 读流水线状态（仅 AP 读） --------
     // -------- posted-read pipeline state (AP read only) --------
     struct PendingApRead
     {
@@ -2866,6 +2895,8 @@ class DapLinkV2Class : public DeviceClass
       return true;
     };
 
+    // 通过 DP RDBUFF 完成待完成的 AP 读。
+    // RDBUFF 是 AP 读结果流水线的出口，不是 AP 写的检查器。
     // Complete a pending AP read by DP RDBUFF.
     // RDBUFF is the AP read-result pipe outlet, not the AP-write checker.
     auto complete_pending_ap_read = [&]() -> bool
@@ -2906,7 +2937,7 @@ class DapLinkV2Class : public DeviceClass
       pending.valid = false;
       pending.need_ts = false;
 
-      // Successful path keeps OK.
+      // 成功路径保持 OK / Successful path keeps OK.
       response_value = LibXR::USB::DapLinkV2Def::DAP_TRANSFER_OK;
       return true;
     };
@@ -2933,6 +2964,7 @@ class DapLinkV2Class : public DeviceClass
       return true;
     };
 
+    // 在非 AP 操作之前先完成待完成的 AP 读，以保持响应顺序。
     // Complete pending AP read before non-AP operations to keep response order.
     auto complete_pending_ap_read_if_any = [&]() -> bool
     { return pending.valid ? complete_pending_ap_read() : true; };
@@ -2940,6 +2972,7 @@ class DapLinkV2Class : public DeviceClass
     auto close_posted_state = [&]() -> bool
     { return complete_pending_ap_read_if_any() && check_posted_ap_write_if_pending(); };
 
+    // -------- 主循环 --------
     // -------- main loop --------
     for (uint32_t i = 0; i < COUNT; ++i)
     {
@@ -2961,6 +2994,7 @@ class DapLinkV2Class : public DeviceClass
       const bool MATCH_MASK =
           ((RQ & LibXR::USB::DapLinkV2Def::DAP_TRANSFER_MATCH_MASK) != 0u);
 
+      // 规范规定：时间戳不能与匹配位组合使用。
       // Spec rule: timestamp cannot be combined with match bits.
       if (TS && (MATCH_VALUE || MATCH_MASK))
       {
@@ -2974,6 +3008,8 @@ class DapLinkV2Class : public DeviceClass
       if (!RNW)
       {
         // ---------------- WRITE ----------------
+        // 写入可以紧跟在之前的 AP 写入之后，无需强制恢复。
+        // 仅在使用写数据之前关闭 AP 读流水线。
         // A write can follow previous AP writes without forcing a recovery.
         // Only close an AP-read pipeline before consuming write data.
         if (!complete_pending_ap_read_if_any())
@@ -3040,6 +3076,8 @@ class DapLinkV2Class : public DeviceClass
 
         if (MATCH_VALUE)
         {
+          // MATCH_VALUE 会执行真实读取，可能观察到之前的 AP 写入，
+          // 所以先关闭 posted 读和 posted AP 写两种状态。
           // MATCH_VALUE performs real reads and can observe earlier AP writes,
           // so close both posted read and posted AP-write state first.
           if (!close_posted_state())
@@ -3067,6 +3105,7 @@ class DapLinkV2Class : public DeviceClass
               ec = swd_.ApReadTxn(ADDR2B, rdata, ack);  // Includes RDBUFF.
               if (ec == ErrorCode::OK && ack == LibXR::Debug::SwdProtocol::Ack::OK)
               {
+                // ApReadTxn 仅完成 AP 读流水线。
                 // ApReadTxn completes the AP read pipeline only.
               }
             }
@@ -3110,7 +3149,7 @@ class DapLinkV2Class : public DeviceClass
             response_value =
                 static_cast<uint8_t>(LibXR::USB::DapLinkV2Def::DAP_TRANSFER_OK |
                                      LibXR::USB::DapLinkV2Def::DAP_TRANSFER_MISMATCH);
-            // MISMATCH does not increase response_count.
+            // MISMATCH 不增加 response_count / MISMATCH does not increase response_count.
             break;
           }
 
@@ -3119,10 +3158,11 @@ class DapLinkV2Class : public DeviceClass
           continue;
         }
 
+        // ---- 普通读 ----
         // ---- Normal read ----
         if (!AP)
         {
-          // DP read does not participate in posted pipelines.
+          // DP 读不参与 posted 流水线 / DP read does not participate in posted pipelines.
           if (!close_posted_state())
           {
             break;
@@ -3159,6 +3199,8 @@ class DapLinkV2Class : public DeviceClass
           continue;
         }
 
+        // AP 读可能观察到之前的 AP 写入，
+        // 所以在启动或延伸 posted 读流水线之前先关闭 posted 写入。
         // AP reads can observe previous AP writes, so close posted writes
         // before starting or extending the posted-read pipeline.
         if (!check_posted_ap_write_if_pending())
@@ -3166,9 +3208,11 @@ class DapLinkV2Class : public DeviceClass
           break;
         }
 
-        // AP normal read: posted-read pipeline.
+        // AP 普通读：posted 读流水线 / AP normal read: posted-read pipeline.
         if (!pending.valid)
         {
+          // 本段连续 AP 读中的第一次 AP 读：
+          // 启动一次 posted AP 读并丢弃返回的 posted 数据。
           // First AP read in this contiguous AP-read segment:
           // start one posted AP read and discard returned posted data.
           uint32_t dummy_posted = 0u;
@@ -3190,12 +3234,15 @@ class DapLinkV2Class : public DeviceClass
           pending.valid = true;
           pending.need_ts = TS;
 
+          // 传输尚未“完成”。
+          // 数据将由下一次 AP 读或末尾的 RDBUFF 产生。
           // Transfer is not "complete" yet.
           // Data will be produced by next AP read or tail RDBUFF.
           response_value = LibXR::USB::DapLinkV2Def::DAP_TRANSFER_OK;
         }
         else
         {
+          // 存在待完成的读：当前 AP 读返回的是上一次 AP 读的 posted 数据。
           // Pending exists: current AP read returns posted data
           // from the previous AP read.
           if (!ensure_space(bytes_for_read(pending.need_ts)))
@@ -3210,6 +3257,8 @@ class DapLinkV2Class : public DeviceClass
           const uint8_t CUR_V = MapAckToDapResp(ack);
           if (CUR_V != LibXR::USB::DapLinkV2Def::DAP_TRANSFER_OK || ec != ErrorCode::OK)
           {
+            // 当前 AP 读失败：尽力完成待完成的 AP 读。
+            // 否则 response_count 可能少算一次，流水线也可能残留脏状态。
             // Current AP read failed: try best effort to complete pending AP read.
             // Otherwise, response_count may miss one and pipeline may remain dirty.
             const uint8_t PROOR_FAIL =
@@ -3219,16 +3268,21 @@ class DapLinkV2Class : public DeviceClass
 
             if (!complete_pending_ap_read())
             {
+              // 待完成的读本身失败：返回较早的失败
+              // （complete_pending_ap_read 已写入 response_value）。
               // Pending itself failed: return earlier failure
               // (complete_pending_ap_read already wrote response_value).
               break;
             }
 
+            // 待完成的读已成功完成：保持当前失败。
             // Pending completion succeeded: keep current failure.
             response_value = PROOR_FAIL;
             break;
           }
 
+          // 当前 AP 读成功：先输出待完成的读（使用 posted_prev），
+          // 再把当前读标记为新的待完成读。
           // Current AP read succeeded: emit pending first (using posted_prev),
           // then mark current read as new pending.
           if (!emit_read_with_ts(pending.need_ts, posted_prev))
@@ -3251,6 +3305,10 @@ class DapLinkV2Class : public DeviceClass
       }
     }
 
+    // 若末尾仍存在待完成的 AP 读：
+    // - response_value == OK 时：用一次 RDBUFF 正常收尾；
+    // - response_value != OK 时：先尝试完成待完成的读；若成功，保持原失败，
+    //   否则采用待完成读的失败。
     // If pending AP read still exists at tail:
     // - when response_value == OK: normal tail by one RDBUFF;
     // - when response_value != OK: try pending completion first; if completion
@@ -3261,10 +3319,13 @@ class DapLinkV2Class : public DeviceClass
 
       if (!complete_pending_ap_read())
       {
+        // 此处以待完成读的失败为准（response_value 已写入）。
         // Pending failure wins here (response_value already written).
       }
       else
       {
+        // 待完成的读已成功完成：保持原失败
+        // （若原来为 OK，则保持 OK）。
         // Pending completion succeeded: keep original failure
         // (if original was OK, keep OK).
         if (PRIOR_FAIL != 0u && PRIOR_FAIL != LibXR::USB::DapLinkV2Def::DAP_TRANSFER_OK)
@@ -3277,6 +3338,7 @@ class DapLinkV2Class : public DeviceClass
     if (response_value == LibXR::USB::DapLinkV2Def::DAP_TRANSFER_OK &&
         !check_posted_ap_write_if_pending())
     {
+      // response_value 已由恢复辅助函数设置。
       // response_value is already set by the recovery helper.
     }
     resp[1] = response_count;
@@ -3327,6 +3389,7 @@ class DapLinkV2Class : public DeviceClass
 
     const uint8_t DAP_RQ = req[4];
 
+    // TransferBlock 不支持匹配和时间戳。
     // TransferBlock does not support match or timestamp
     if ((DAP_RQ & (LibXR::USB::DapLinkV2Def::DAP_TRANSFER_MATCH_VALUE |
                    LibXR::USB::DapLinkV2Def::DAP_TRANSFER_MATCH_MASK)) != 0u)
@@ -3340,7 +3403,7 @@ class DapLinkV2Class : public DeviceClass
       return ErrorCode::NOT_SUPPORT;
     }
 
-    // Count==0: return OK
+    // Count==0：返回 OK / Count==0: return OK
     if (count == 0u)
     {
       const uint16_t DONE0 = 0u;
@@ -3360,7 +3423,7 @@ class DapLinkV2Class : public DeviceClass
     uint16_t req_off = 5u;
     uint16_t resp_off = 4u;
 
-    // WRITE path: keep original behavior
+    // WRITE 路径：保持原有行为 / WRITE path: keep original behavior
     if (!RNW)
     {
       const uint32_t REQ_NEED =
@@ -3437,7 +3500,7 @@ class DapLinkV2Class : public DeviceClass
       return ErrorCode::OK;
     }
 
-    // READ path
+    // READ 路径 / READ path
     if (!AP)
     {
       const uint32_t RESP_NEED =
@@ -3451,7 +3514,7 @@ class DapLinkV2Class : public DeviceClass
         return ErrorCode::OK;
       }
 
-      // DP read: keep original behavior
+      // DP 读：保持原有行为 / DP read: keep original behavior
       for (uint32_t i = 0; i < count; ++i)
       {
         LibXR::Debug::SwdProtocol::Ack ack = LibXR::Debug::SwdProtocol::Ack::PROTOCOL;
@@ -3479,7 +3542,7 @@ class DapLinkV2Class : public DeviceClass
       return ErrorCode::OK;
     }
 
-    // AP read: posted-read pipeline
+    // AP 读：posted 读流水线 / AP read: posted-read pipeline
     {
       const uint32_t RESP_NEED =
           static_cast<uint32_t>(resp_off) + (static_cast<uint32_t>(count) * 4u);
@@ -3506,6 +3569,7 @@ class DapLinkV2Class : public DeviceClass
         goto out_ap_read;  // NOLINT
       }
 
+      // i=1..COUNT-1：每次 AP 读返回上一次的 posted 数据。
       // i=1..COUNT-1: each AP read returns previous posted data.
       for (uint32_t i = 1; i < count; ++i)
       {
@@ -3515,6 +3579,7 @@ class DapLinkV2Class : public DeviceClass
         if (ap_read_resp.ack != LibXR::Debug::SwdProtocol::Ack::OK ||
             ec != ErrorCode::OK || !ap_read_resp.parity_ok)
         {
+          // 当前 AP 读失败；尝试完成上一次 AP 读的结果。
           // Current AP read failed; try to complete the previous AP read result.
           if (resp_off + 4u <= resp_cap)
           {
@@ -3555,6 +3620,7 @@ class DapLinkV2Class : public DeviceClass
         xresp = CUR;
       }
 
+      // 通过 DP RDBUFF 完成最后一次 posted AP 读。
       // Complete the final posted AP read by DP RDBUFF.
       {
         uint32_t rdbuff_data = 0u;
@@ -4353,14 +4419,14 @@ class DapLinkV2Class : public DeviceClass
 
  private:
   // ============================================================================
-  // Reset helpers
+  // 复位辅助函数 / Reset helpers
   // ============================================================================
 
   void DriveReset(bool release)
   {
     last_nreset_level_high_ = release;
 
-    // Update shadow regardless of whether GPIO exists
+    // 无论 GPIO 是否存在都更新影子值 / Update shadow regardless of whether GPIO exists
     if (release)
     {
       swj_shadow_ |= LibXR::USB::DapLinkV2Def::DAP_SWJ_NRESET;
@@ -4397,12 +4463,16 @@ class DapLinkV2Class : public DeviceClass
   static constexpr uint8_t PACKET_COUNT_ADVERTISED = AdvertisedPacketCount;
   static constexpr uint8_t PACKET_COUNT_EFFECTIVE =
       (PACKET_COUNT_ADVERTISED > 4u) ? 4u : PACKET_COUNT_ADVERTISED;
+  // OpenOCD 0.12 对 CMD_DAP_TFER 按 pending_queue_len = (packet_size - 4) / 5 计算。
+  // CMD_DAP_TFER 的 transfer_count 为 u8，所以限制主机可见的包长，
+  // 以避免 transfer_count > 255 以及“expected X, got Y”不匹配。
   // OpenOCD 0.12 computes pending_queue_len = (packet_size - 4) / 5 for CMD_DAP_TFER.
   // CMD_DAP_TFER transfer_count is u8, so cap host-visible packet size to avoid
   // transfer_count > 255 and "expected X, got Y" mismatch.
   static constexpr uint16_t OPENOCD_SAFE_DAP_PACKET_SIZE =
       static_cast<uint16_t>((255u * 5u) + 4u);
   static constexpr uint8_t JTAG_MAX_DEVICES = 16u;
+  // 主机可见的 CMSIS-DAP 包长；端点的 MPS 限制由端点自身的逻辑分段/重组处理。
   // Host-visible CMSIS-DAP packet size; endpoint MPS limits are handled by
   // Endpoint-owned logical segmentation/reassembly.
   static constexpr uint16_t MAX_DAP_PACKET_SIZE = MaxDapPacketSize;
@@ -4517,52 +4587,55 @@ class DapLinkV2Class : public DeviceClass
   void* command_hook_ctx_ = nullptr;    ///< 钩子上下文 / Hook context
 
  private:
-  SwdPort& swd_;  ///< SWD link
+  SwdPort& swd_;  ///< SWD 链路 / SWD link
 
-  LibXR::Debug::Jtag* jtag_ = nullptr;                    ///< JTAG link
-  LibXR::Debug::JtagProtocol::ChainConfig jtag_chain_{};  ///< JTAG chain state
-  uint8_t jtag_ir_len_[JTAG_MAX_DEVICES] = {};            ///< JTAG IR lengths
+  LibXR::Debug::Jtag* jtag_ = nullptr;  ///< JTAG 链路 / JTAG link
+  /// JTAG 链状态 / JTAG chain state
+  LibXR::Debug::JtagProtocol::ChainConfig jtag_chain_{};
+  uint8_t jtag_ir_len_[JTAG_MAX_DEVICES] = {};  ///< JTAG IR 长度 / JTAG IR lengths
 
-  LibXR::GPIO* nreset_gpio_ = nullptr;  ///< Optional nRESET GPIO
+  LibXR::GPIO* nreset_gpio_ = nullptr;  ///< 可选的 nRESET GPIO / Optional nRESET GPIO
 
-  uint8_t swj_shadow_ =
-      static_cast<uint8_t>(DapLinkV2Def::DAP_SWJ_SWDIO_TMS |
-                           DapLinkV2Def::DAP_SWJ_NRESET);  ///< Shadow SWJ pin levels
+  /// SWJ 引脚电平的影子值 / Shadow SWJ pin levels
+  uint8_t swj_shadow_ = static_cast<uint8_t>(DapLinkV2Def::DAP_SWJ_SWDIO_TMS |
+                                             DapLinkV2Def::DAP_SWJ_NRESET);
 
-  bool last_nreset_level_high_ = true;  ///< Last nRESET level (high = release)
+  /// 上一次的 nRESET 电平（高电平为释放） / Last nRESET level (high = release)
+  bool last_nreset_level_high_ = true;
 
-  LibXR::USB::DapLinkV2Def::State dap_state_{};  ///< DAP state
+  LibXR::USB::DapLinkV2Def::State dap_state_{};  ///< DAP 状态 / DAP state
+  /// 信息字符串 / Info strings
   InfoStrings info_{"XRobot", "DAPLinkV2", "00000001", "2.0.0", "XRUSB",
-                    "XRDAP",  "XRobot",    "DAP_DEMO", "0.1.0"};  ///< Info strings
+                    "XRDAP",  "XRobot",    "DAP_DEMO", "0.1.0"};
 
-  uint32_t swj_clock_hz_ = 1000000u;  ///< SWJ clock (Hz)
+  uint32_t swj_clock_hz_ = 1000000u;  ///< SWJ 时钟（Hz） / SWJ clock (Hz)
 
-  const char* interface_string_ = nullptr;  ///< Interface string
+  const char* interface_string_ = nullptr;  ///< 接口字符串 / Interface string
 
-  Endpoint::EPNumber data_in_ep_num_;   ///< Bulk IN EP number
-  Endpoint::EPNumber data_out_ep_num_;  ///< Bulk OUT EP number
+  Endpoint::EPNumber data_in_ep_num_;   ///< 批量 IN 端点号 / Bulk IN EP number
+  Endpoint::EPNumber data_out_ep_num_;  ///< 批量 OUT 端点号 / Bulk OUT EP number
 
-  Endpoint* ep_data_in_ = nullptr;   ///< Bulk IN endpoint
-  Endpoint* ep_data_out_ = nullptr;  ///< Bulk OUT endpoint
+  Endpoint* ep_data_in_ = nullptr;   ///< 批量 IN 端点 / Bulk IN endpoint
+  Endpoint* ep_data_out_ = nullptr;  ///< 批量 OUT 端点 / Bulk OUT endpoint
 
-  std::atomic<bool> inited_{false};  ///< Initialized flag
-  uint8_t interface_num_ = 0;        ///< Interface number
+  std::atomic<bool> inited_{false};  ///< 已初始化标志 / Initialized flag
+  uint8_t interface_num_ = 0;        ///< 接口号 / Interface number
 
   LIBXR_PACKED_BEGIN
   /**
-   * @brief Descriptor block (Interface + 2x Endpoint)
+   * @brief 描述符块（接口 + 2 个端点） / Descriptor block (Interface + 2x Endpoint)
    *
    */
   struct DapLinkV2DescBlock
   {
-    InterfaceDescriptor intf;   ///< Interface descriptor
-    EndpointDescriptor ep_out;  ///< OUT endpoint descriptor
-    EndpointDescriptor ep_in;   ///< IN endpoint descriptor
+    InterfaceDescriptor intf;   ///< 接口描述符 / Interface descriptor
+    EndpointDescriptor ep_out;  ///< OUT 端点描述符 / OUT endpoint descriptor
+    EndpointDescriptor ep_in;   ///< IN 端点描述符 / IN endpoint descriptor
   } desc_block_{};
   LIBXR_PACKED_END
 
  private:
-  uint32_t match_mask_ = 0xFFFFFFFFu;  ///< Match mask
+  uint32_t match_mask_ = 0xFFFFFFFFu;  ///< 匹配掩码 / Match mask
 
   // 完成回调在 owner 里执行，必须保持浅操作：只拼装命令、提交暂存的响应和补挂接收，
   // 命令由 Step() 执行。

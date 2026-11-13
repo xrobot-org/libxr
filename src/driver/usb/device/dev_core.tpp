@@ -64,6 +64,8 @@ void DeviceCore<C>::Initialize(bool in_isr)
   {
     EndpointPool::HardwareScope hardware(&pool_);
     OnControlReady();
+    // IRQ 在硬件保护释放后即可运行。须在此之前发布就绪状态，
+    // 否则合法的第一个 SETUP 可能因被视为未初始化而被丢弃。
     // An IRQ can run as soon as the hardware guard releases. Publish readiness
     // before then, or a valid first SETUP can be discarded as uninitialized.
     inited_.store(1U, std::memory_order_release);
@@ -84,12 +86,15 @@ void DeviceCore<C>::Deinitialize(bool in_isr)
 template <typename C>
 void DeviceCore<C>::ProcessEvents(bool in_isr, uint32_t events)
 {
+  // 端点停止未确认期间，其他事情都不继续；确认会投递 STOP_DONE_EVENT，
+  // 届时被暂缓的事件才运行。
   // While an endpoint stop is unconfirmed nothing else proceeds; the confirmation
   // posts STOP_DONE_EVENT and the held events run then.
   if ((events & STOP_TIMEOUT_EVENT) && pool_.AnyStopping()) OnStopTimeout(in_isr);
   if ((events & STOP_DONE_EVENT) && !pool_.AnyStopping()) OnStopsSettled();
   events = (events | deferred_events_) & ~(STOP_DONE_EVENT | STOP_TIMEOUT_EVENT);
   deferred_events_ = 0;
+  // 被暂缓的生命周期事件同时也暂缓每个端点的启动。
   // A held-back lifecycle event also holds every endpoint start.
   pool_.SetLifecycleHold((events & LIFECYCLE_EVENTS) != 0U);
   if (pool_.AnyStopping())
@@ -99,6 +104,8 @@ void DeviceCore<C>::ProcessEvents(bool in_isr, uint32_t events)
   }
   if (events & LIFECYCLE_EVENTS)
   {
+    // 先收尾旧会话；再核对最后发布的意图。DEINIT|INIT 不等价于 DEINIT，
+    // INIT 不能仅因为拆除也处于待处理，就丢失在 else-if 分支里。
     // First retire the old session; then reconcile the last published intent.
     // DEINIT|INIT is not equivalent to DEINIT, and INIT must not get lost in an
     // else-if branch merely because teardown was also pending.
@@ -212,6 +219,8 @@ template <typename C>
 bool DeviceCore<C>::TakeCapturedSetup(SetupPacket& setup)
 {
   EndpointPool::HardwareScope hardware(&pool_);
+  // 较新的生命周期请求必须先于边界之后的 SETUP 生效。
+  // 其发布与邮箱失效处于同一保护之内。
   // A newer lifecycle request must be applied before a post-boundary SETUP.
   // Its publication is inside the same guard as mailbox invalidation.
   if (!captured_setup_pending_ || pool_.HasPendingControl(LIFECYCLE_EVENTS)) return false;
@@ -223,6 +232,8 @@ bool DeviceCore<C>::TakeCapturedSetup(SetupPacket& setup)
 template <typename C>
 void DeviceCore<C>::HandleSetup(bool in_isr, const SetupPacket& setup)
 {
+  // 先消费真正捕获到的旧完成（STATUS IN 可能仍需应用其地址）；
+  // 非最终的旧数据不得继续。
   // Consume a genuinely captured old completion first (a STATUS IN may still have to
   // apply its address); nonfinal old data must not be continued.
   replacing_setup_ = true;
@@ -336,6 +347,8 @@ void DeviceCore<C>::SendNextIn(bool in_isr)
 {
   const size_t remaining = control_in_.size_ - transferred_;
   const size_t amount = LibXR::min(remaining, static_cast<size_t>(ep0_packet_size_));
+  // 提前装填 STATUS OUT 只是硬件兼容性措施。完成仍由实际的状态包驱动，
+  // 绝不由这次装填调用驱动。
   // Early STATUS OUT arming is a hardware compatibility measure only. Completion
   // is still driven by the actual status packet, never by this arming call.
   ArmStatusOut(in_isr);
@@ -355,6 +368,7 @@ void DeviceCore<C>::SendNextIn(bool in_isr)
     if (this->other_speed_descriptor && transferred_ <= 1U && transferred_ + amount > 1U)
       static_cast<uint8_t*>(slot.data.addr_)[1U - transferred_] = 7U;
   in_segment_size_ = amount;
+  // 比 wLength 短且以包边界结束的回复，在同一请求内以 ZLP 终止。
   // A reply shorter than wLength that ends on a packet boundary is terminated by a
   // ZLP within the same request.
   const bool last = transferred_ + amount == control_in_.size_;
@@ -422,6 +436,7 @@ void DeviceCore<C>::OutComplete(bool in_isr, const Endpoint::Completion& complet
                           completion.result == ErrorCode::OK;
   const bool fits = completion.actual <= setup_.wLength - transferred_ &&
                     transferred_ + completion.actual <= control_out_.size_;
+  // 核心拷贝所需内容，并在据此行动之前归还租借。
   // The core copies what it needs and returns the lease before acting on it.
   if (lease.Valid())
   {
@@ -516,6 +531,7 @@ ErrorCode DeviceCore<C>::ClassRequest(bool in_isr)
                  result.write_data);  // An empty IN response is a valid data stage.
     return ErrorCode::OK;
   }
+  // 核心接收完整的 OUT 数据阶段，并通过 OnControlData 交出。
   // The core receives the whole OUT data stage and hands it over by OnControlData.
   if (result.write_data.size_ || setup_.wLength > control_out_.size_)
     return ErrorCode::ARG_ERR;
@@ -650,6 +666,7 @@ ErrorCode DeviceCore<C>::HandleStandardRequest(bool in_isr)
       if (result != ErrorCode::OK) return result;
       if (pool_.AnyStopping())
       {
+        // 状态阶段在绑定之后进行，即旧端点停止之后。
         // The status stage follows the binding, after the old endpoints stopped.
         pending_config_ = setup_.wValue;
         continuation_ = Continuation::CONFIG;

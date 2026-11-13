@@ -11,22 +11,24 @@
 namespace LibXR::USB::WinUsbMsOs20
 {
 
+// ---- 常量 ----
 // ---- constants ----
 
-// wIndex values for vendor request
+// vendor 请求的 wIndex 取值 / wIndex values for vendor request
 static constexpr uint16_t MSOS20_DESCRIPTOR_INDEX = 0x0007;
 static constexpr uint16_t MSOS20_SET_ALT_ENUMERATION = 0x0008;
 
-// MS OS 2.0 descriptor types
+// MS OS 2.0 描述符类型 / MS OS 2.0 descriptor types
 static constexpr uint16_t MS_OS_20_SET_HEADER_DESCRIPTOR = 0x0000;
 static constexpr uint16_t MS_OS_20_SUBSET_HEADER_CONFIGURATION = 0x0001;
 static constexpr uint16_t MS_OS_20_SUBSET_HEADER_FUNCTION = 0x0002;
 static constexpr uint16_t MS_OS_20_FEATURE_COMPATIBLE_ID = 0x0003;
 static constexpr uint16_t MS_OS_20_FEATURE_REG_PROPERTY = 0x0004;
 
-// Registry property data type
+// 注册表属性数据类型 / Registry property data type
 static constexpr uint16_t REG_MULTI_SZ = 0x0007;
 
+// MS OS 2.0 平台能力 UUID：D8DD60DF-4589-4CC7-9CD2-659D9E648A9F。
 // MS OS 2.0 platform capability UUID: D8DD60DF-4589-4CC7-9CD2-659D9E648A9F
 static constexpr uint8_t MSOS20_PLATFORM_CAPABILITY_UUID[16] = {
     0xDF, 0x60, 0xDD, 0xD8, 0x89, 0x45, 0xC7, 0x4C,
@@ -39,6 +41,7 @@ static constexpr uint16_t GUID_STR_UTF16_BYTES = (GUID_CHARS_WITH_BRACES + 1) * 
 static constexpr uint16_t GUID_MULTI_SZ_UTF16_BYTES =
     static_cast<uint16_t>(GUID_STR_UTF16_BYTES + 2u);
 
+// "DeviceInterfaceGUIDs"（UTF-16LE）加 NUL 结束符。
 // "DeviceInterfaceGUIDs" (UTF-16LE) + NUL terminator
 static constexpr uint8_t PROP_NAME_DEVICE_INTERFACE_GUIDS_UTF16[] = {
     'D', 0x00, 'e', 0x00, 'v', 0x00, 'i', 0x00, 'c', 0x00, 'e', 0x00, 'I',  0x00,
@@ -49,6 +52,7 @@ static constexpr uint16_t PROP_NAME_DEVICE_INTERFACE_GUIDS_BYTES =
 
 LIBXR_PACKED_BEGIN
 
+// ---- MS OS 2.0 基本块 ----
 // ---- MS OS 2.0 basic blocks ----
 
 /**
@@ -128,6 +132,7 @@ struct MsOs20FeatureRegPropertyHeader
                                       ///< name in bytes, including the NUL
 };
 
+// ---- MS OS 2.0 平台能力（BOS 设备能力） ----
 // ---- MS OS 2.0 Platform Capability (BOS Device Capability) ----
 
 /**
@@ -331,6 +336,7 @@ struct FunctionScopedWinUsbMsOs20DescSet
 
 LIBXR_PACKED_END
 
+// ---- 合理性检查 ----
 // ---- sanity checks ----
 static_assert(sizeof(MsOs20SetHeader) == 10, "SetHeader size mismatch");
 static_assert(sizeof(MsOs20SubsetHeaderConfiguration) == 8, "CfgHeader size mismatch");
@@ -344,17 +350,24 @@ static_assert(sizeof(FunctionScopedWinUsbMsOs20DescSet<GUID_MULTI_SZ_UTF16_BYTES
                   0x00B2,
               "Function-scoped WinUSB MS OS 2.0 set size mismatch");
 
+// ---- 组合设备的描述符集 ----
 // ---- descriptor set of a composition ----
 
+/// 组合设备中的一个 WinUSB 功能：其所在位置，以及 Windows 为它注册的接口 GUID。
 /// One WinUSB function of a composition: where it sits and the interface GUID Windows
 /// registers for it.
 struct WinUsbFunctionInfo
 {
-  uint8_t configuration_index = 0u;  ///< zero-based configuration index
-  uint8_t first_interface = 0u;      ///< first interface number of the function
-  const char* guid = nullptr;        ///< DeviceInterfaceGUID, "{...}"
+  /// 从 0 开始的配置索引 / zero-based configuration index
+  uint8_t configuration_index = 0u;
+  /// 该功能的第一个接口号 / first interface number of the function
+  uint8_t first_interface = 0u;
+  const char* guid = nullptr;  ///< DeviceInterfaceGUID, "{...}"
 };
 
+/// 组合设备的 MS OS 2.0 描述符集，由各类声明的功能一次性构建。
+/// 非复合设备上只有一个功能时使用设备级形式（此类设备上 Windows 会忽略子集头）；
+/// 其余情况下每个配置一个配置子集，每个功能一个功能子集。
 /// The MS OS 2.0 descriptor set of a composition, built once from the functions its
 /// classes declare. A single function on a non-composite device gets the device-level
 /// form (Windows ignores subset headers on such a device); every other case gets one
@@ -362,10 +375,11 @@ struct WinUsbFunctionInfo
 class WinUsbDescriptorSet
 {
  public:
-  /// @param functions Functions in configuration order
-  /// @param count Number of entries in functions; 0 (or a null pointer) leaves the set
-  /// empty
-  /// @param device_level Device-level form; needs exactly one function
+  /// @param functions 按配置顺序排列的功能 / Functions in configuration order
+  /// @param count functions 的条目数；0（或空指针）使集合为空 / Number of entries in
+  /// functions; 0 (or a null pointer) leaves the set empty
+  /// @param device_level 设备级形式；必须恰有一个功能 / Device-level form; needs exactly
+  /// one function
   void Build(const WinUsbFunctionInfo* functions, size_t count, bool device_level)
   {
     using Property = DeviceInterfaceGuidsRegProperty<GUID_MULTI_SZ_UTF16_BYTES>;
@@ -452,6 +466,8 @@ class WinUsbDescriptorSet
     size_ = total;
   }
 
+  /// 构建好的描述符集；Build() 产生之前为空。内存由 Build() 分配，
+  /// 在程序生命周期内保持有效。
   /// The built descriptor set; empty until Build() has produced one. The memory is
   /// allocated by Build() and stays valid for the life of the program.
   LibXR::ConstRawData Data() const { return LibXR::ConstRawData{data_, size_}; }
@@ -461,6 +477,7 @@ class WinUsbDescriptorSet
   size_t size_ = 0u;
 };
 
+// ---- 平台能力辅助 ----
 // ---- platform capability helper ----
 
 inline void init_msos20_platform_capability(MsOs20PlatformCapability& cap,
@@ -559,28 +576,30 @@ class MsOs20BosCapability final : public LibXR::USB::BosCapability
 
     const uint8_t BM = setup->bmRequestType;
 
-    // type must be Vendor (bits[6:5] == 10)
+    // 类型必须为 Vendor（bits[6:5] == 10） / type must be Vendor (bits[6:5] == 10)
     if ((BM & 0x60) != 0x40)
     {
       return ErrorCode::NOT_SUPPORT;
     }
 
+    // 接收方必须为 Device（bits[4:0] == 00000）。
     // recipient must be Device (bits[4:0] == 00000)
     if ((BM & 0x1F) != 0x00)
     {
       return ErrorCode::NOT_SUPPORT;
     }
 
-    // vendor code must match
+    // vendor 码必须匹配 / vendor code must match
     if (setup->bRequest != vendor_code_)
     {
       return ErrorCode::NOT_SUPPORT;
     }
 
+    // wIndex == 0x0007：MS OS 2.0 描述符集（Vendor IN）。
     // wIndex == 0x0007: MS OS 2.0 descriptor set (Vendor IN)
     if (setup->wIndex == MSOS20_DESCRIPTOR_INDEX)
     {
-      // direction must be IN
+      // 方向必须为 IN / direction must be IN
       if ((BM & 0x80) == 0)
       {
         return ErrorCode::NOT_SUPPORT;
@@ -592,6 +611,7 @@ class MsOs20BosCapability final : public LibXR::USB::BosCapability
         return ErrorCode::ARG_ERR;
       }
 
+      // 主机的 wLength==0 在此没有意义，拒绝。
       // Host wLength==0 is meaningless here; reject.
       if (setup->wLength == 0)
       {
@@ -605,16 +625,18 @@ class MsOs20BosCapability final : public LibXR::USB::BosCapability
       return ErrorCode::OK;
     }
 
+    // wIndex == 0x0008：Set Alt Enumeration（Vendor OUT，通常 wLength==0）。
     // wIndex == 0x0008: Set Alt Enumeration (Vendor OUT, usually wLength==0)
     if (setup->wIndex == MSOS20_SET_ALT_ENUMERATION)
     {
-      // direction should be OUT
+      // 方向应为 OUT / direction should be OUT
       if ((BM & 0x80) != 0)
       {
-        // Strict behavior: reject IN.
+        // 严格行为：拒绝 IN / Strict behavior: reject IN.
         return ErrorCode::NOT_SUPPORT;
       }
 
+      // 通常没有数据阶段。若 wLength != 0，仍然 ACK 以保持流程顺畅。
       // Usually no data stage. If wLength != 0, we still ACK to keep flow smooth.
       if (setup->wLength != 0)
       {
@@ -641,16 +663,17 @@ class MsOs20BosCapability final : public LibXR::USB::BosCapability
                                     windows_version_);
   }
 
-  // Cached MS OS 2.0 descriptor set bytes.
+  // 缓存的 MS OS 2.0 描述符集字节 / Cached MS OS 2.0 descriptor set bytes.
   LibXR::ConstRawData descriptor_set_{nullptr, 0};
 
+  // 用于 MS OS 2.0 查询的 vendor 请求 bRequest 码。
   // Vendor request bRequest code used for MS OS 2.0 query.
   uint8_t vendor_code_ = 0x20;
 
-  // Windows version field in Platform Capability.
+  // 平台能力中的 Windows 版本字段 / Windows version field in Platform Capability.
   uint32_t windows_version_ = 0x06030000;
 
-  // BOS Platform Capability descriptor block.
+  // BOS 平台能力描述符块 / BOS Platform Capability descriptor block.
   MsOs20PlatformCapability platform_cap_{};
 };
 

@@ -174,7 +174,7 @@ class HIDGamepadT
       0x09, 0x05,  // Usage (Game Pad)
       0xA1, 0x01,  // Collection (Application)
 
-      // Axes collection
+      // 轴集合 / Axes collection
       0x09, 0x01,  //   Usage (Pointer)
       0xA1, 0x00,  //   Collection (Physical)
       0x05, 0x01,  //     Usage Page (Generic Desktop)
@@ -183,7 +183,7 @@ class HIDGamepadT
       0x09, 0x32,  //     Usage (Z)
       0x09, 0x33,  //     Usage (Rx)
 
-      // Logical Min/Max (16-bit)
+      // 逻辑最小/最大值（16 位） / Logical Min/Max (16-bit)
       0x16, U8(static_cast<uint16_t>(LOG_MIN)),
       U8H(static_cast<uint16_t>(LOG_MIN)),  // Logical Minimum
       0x26, U8(static_cast<uint16_t>(LOG_MAX)),
@@ -194,7 +194,7 @@ class HIDGamepadT
       0x81, 0x02,  //     Input (Data, Variable, Absolute)
       0xC0,        //   End Collection (Physical)
 
-      // Buttons
+      // 按键 / Buttons
       0x05, 0x09,  //   Usage Page (Button)
       0x19, 0x01,  //   Usage Minimum (Button 1)
       0x29, 0x08,  //   Usage Maximum (Button 8)

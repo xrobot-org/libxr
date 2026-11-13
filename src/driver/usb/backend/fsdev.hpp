@@ -196,6 +196,7 @@ class FSDevEndpoint : public Endpoint
   void ArmRx();
 
   // IRQ 侧：每个 CTR_TX / CTR_RX 一个包。
+  // IRQ side: one packet per CTR_TX / CTR_RX.
   void OnTxPacket();
   void OnRxPacket(size_t bytes);
 
@@ -453,8 +454,8 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
   {
     if (!connected_)
     {
-      // 已 Stop（上拉拉低）之后不会再有 SOF；不重开 SOFM，避免未连接状态下
-      // 出现"中断使能开着却没有事务"的困惑。
+      // 已 Stop（上拉拉低）之后不会再有 SOF；不重开 SOFM，
+      // 避免未连接状态下出现"中断使能开着却没有事务"的困惑。
       // After Stop() (pull-up off) no SOF comes; SOFM is not unmasked again, so a
       // disconnected device never shows an enabled interrupt without traffic.
       return;
@@ -532,7 +533,7 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
 };
 
 // ---------------------------------------------------------------------------
-// Endpoint
+// 端点 / Endpoint
 // ---------------------------------------------------------------------------
 
 template <typename HW>
@@ -543,16 +544,15 @@ void FSDevEndpoint<HW>::SetStat(bool in, uint32_t target)
   const uint32_t ctr = in ? HW::EP_CTR_TX : HW::EP_CTR_RX;
   const uint32_t valid = in ? FSDEV_STAT_TX_VALID : FSDEV_STAT_RX_VALID;
   const bool arming = (target == valid);
-  // 写 1 翻转：只写到达目标的增量。读与写（以及写与读回）之间硬件可能自己
-  // 完成一次事务（结束 IN/OUT 并自行把 STAT 改回 NAK、锁存 CTR），按旧值算
-  // 增量会把 STAT 翻错。所以写后回读核对，不对就按新值重算重写（有界）。
+  // 写 1 翻转：只写到达目标的增量。读与写（以及写与读回）
+  // 之间硬件可能自己完成一次事务（结束 IN/OUT 并自行把 STAT 改回 NAK、锁存 CTR），
+  // 按旧值算增量会把 STAT 翻错。所以写后回读核对，不对就按新值重算重写（有界）。
   // CTR/ERR 是 rc_w0：这些写永远写 1 保持，窗口里锁存的 CTR 不能被抹掉。
-  // 装填（目标 VALID）时若发现本方向 CTR 已锁存，说明写入已生效且这笔事务
-  // 已经完成——STAT 是硬件自动回的 NAK，绝不能重试：重试会把端点再次装填
-  // （IN 用同一份 PMA 数据重发一包、OUT 多收一包）。完成的事务交给 CTR 处
-  // 理推进。停止类目标（NAK/STALL/DISABLED）没有二次装填问题，窗口里完成
-  // 的事务只会把 STAT 推回 NAK，按新值重算重写即可收敛，不能提前放弃——
-  // 否则停止路径等于没停住。
+  // 装填（目标 VALID）时若发现本方向 CTR 已锁存，说明写入已生效且这笔事务已经完成——STAT
+  // 是硬件自动回的 NAK，绝不能重试：重试会把端点再次装填 （IN 用同一份 PMA 数据重发一包、
+  // OUT 多收一包）。完成的事务交给 CTR 处理推进。停止类目标（NAK/STALL/DISABLED）
+  // 没有二次装填问题，窗口里完成的事务只会把 STAT 推回 NAK，按新值重算重写即可收敛，
+  // 不能提前放弃—— 否则停止路径等于没停住。
   // Write-1-to-toggle: write only the delta that reaches the target. Between the read and
   // the write (and between the write and the read-back) the hardware may finish a
   // transaction by itself (end the IN/OUT, set STAT back to NAK, latch CTR), and a delta
@@ -589,8 +589,8 @@ void FSDevEndpoint<HW>::SetStat(bool in, uint32_t target)
       return;  // 装填后事务在窗口内完成：STAT 是硬件自动回的 NAK，不重试
     }
   }
-  // 三次重算都没到达目标且（装填时）CTR 未锁存：读回路径异常，NAK/装填语义
-  // 已不可靠（停止路径等于没停住），不能静默继续。
+  // 三次重算都没到达目标且（装填时）CTR 未锁存：读回路径异常，
+  // NAK/装填语义已不可靠（停止路径等于没停住），不能静默继续。
   // Three recomputations did not reach the target and (when arming) no CTR is latched:
   // the read-back path is broken and the NAK/arm semantics no longer hold (the stop path
   // would not stop), so it must not continue silently.
@@ -648,6 +648,7 @@ size_t FSDevEndpoint<HW>::MaxPacketSizeLimit(Type type) const
 {
   size_t cap = pma_size_;
   // OUT 的 COUNT_RX 编码按 2 B / 32 B 块取整。
+  // The COUNT_RX encoding of OUT rounds to 2 B / 32 B blocks.
   if (!IsIn() && cap > 62U)
   {
     cap = (cap / 32U) * 32U;
@@ -890,7 +891,7 @@ void FSDevEndpoint<HW>::OnRxPacket(size_t bytes)
 }
 
 // ---------------------------------------------------------------------------
-// Device
+// 设备 / Device
 // ---------------------------------------------------------------------------
 
 template <typename HW>

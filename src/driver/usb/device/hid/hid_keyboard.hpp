@@ -99,7 +99,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
     POST_FAIL = 0x02,        ///< POST 失败 / POSTFail
     ERROR_UNDEFINED = 0x03,  ///< 未定义 / ErrorUndefined
 
-    // 字母
+    // 字母 / Letters
     A = 0x04,
     B = 0x05,
     C = 0x06,
@@ -127,7 +127,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
     Y = 0x1C,
     Z = 0x1D,
 
-    // 数字上排
+    // 数字上排 / Number row
     NUM_1 = 0x1E,
     NUM_2 = 0x1F,
     NUM_3 = 0x20,
@@ -186,7 +186,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
     DOWN_ARROW = 0x51,
     UP_ARROW = 0x52,
 
-    // 小键盘
+    // 小键盘 / Keypad
     NUM_LOCK = 0x53,
     KEYPAD_SLASH = 0x54,     ///< Keypad /
     KEYPAD_ASTERISK = 0x55,  ///< Keypad *
@@ -276,7 +276,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
     CRSEL_PROPS = 0xA3,
     EXSEL = 0xA4,
 
-    // 0xA5~0xDF RESERVED, skip explicit
+    // 0xA5~0xDF 为 RESERVED，不显式列出 / 0xA5~0xDF RESERVED, skip explicit
     RESERVED_A5 = 0xA5,
     RESERVED_A6 = 0xA6,
     RESERVED_A7 = 0xA7,
@@ -337,7 +337,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
     RESERVED_DE = 0xDE,
     RESERVED_DF = 0xDF,
 
-    // 修饰键
+    // 修饰键 / Modifier keys
     LEFT_CONTROL = 0xE0,
     LEFT_SHIFT = 0xE1,
     LEFT_ALT = 0xE2,
@@ -346,7 +346,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
     RIGHT_SHIFT = 0xE5,
     RIGHT_ALT = 0xE6,
     RIGHT_GUI = 0xE7
-    // 0xE8~0xFF 保留
+    // 0xE8~0xFF 保留 / 0xE8~0xFF reserved
   };
 
   /**

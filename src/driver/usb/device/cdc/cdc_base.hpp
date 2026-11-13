@@ -130,7 +130,7 @@ class CDCBase : public DeviceClass
   // Ensure CDCLineCoding is exactly 7 bytes.
   static_assert(sizeof(CDCLineCoding) == 7, "LineCoding结构必须7字节");
 
-  // 控制线路状态位定义
+  // 控制线路状态位定义 / Control line state bit definitions
   static constexpr uint16_t CDC_CONTROL_LINE_DTR = 0x01;  ///< DTR控制位 / DTR control bit
   static constexpr uint16_t CDC_CONTROL_LINE_RTS = 0x02;  ///< RTS控制位 / RTS control bit
 
@@ -248,11 +248,11 @@ class CDCBase : public DeviceClass
                              bool in_isr) override
   {
     control_line_state_.store(0U, std::memory_order_release);
-    // 获取并配置数据IN端点
+    // 获取并配置数据IN端点 / Acquire and configure the data IN endpoint
     auto ans = endpoint_pool.Get(ep_data_in_, Endpoint::Direction::IN, data_in_ep_num_);
     ASSERT(ans == ErrorCode::OK);
 
-    // 获取并配置数据OUT端点
+    // 获取并配置数据OUT端点 / Acquire and configure the data OUT endpoint
     ans = endpoint_pool.Get(ep_data_out_, Endpoint::Direction::OUT, data_out_ep_num_);
     ASSERT(ans == ErrorCode::OK);
 
@@ -281,6 +281,7 @@ class CDCBase : public DeviceClass
         {Endpoint::Direction::IN, Endpoint::Type::INTR, comm_packet}, in_isr);
 
     // === 填充CDC描述符块 ===
+    // === Fill the CDC descriptor block ===
     static constexpr uint8_t COMM_INTERFACE = 0;  // 通信接口号
     static constexpr uint8_t DATA_INTERFACE = 1;  // 数据接口号
 
@@ -342,7 +343,7 @@ class CDCBase : public DeviceClass
                              0x00,  // 无协议
                              GetInterfaceStringIndex(DATA_INTERFACE)};
 
-    // 数据OUT端点描述符
+    // 数据OUT端点描述符 / Data OUT endpoint descriptor
     desc_block_.data_ep_out = {7,
                                static_cast<uint8_t>(DescriptorType::ENDPOINT),
                                ep_data_out_->GetAddress(),
@@ -350,7 +351,7 @@ class CDCBase : public DeviceClass
                                ep_data_out_->MaxPacketSize(),
                                0};  // 轮询间隔0（BULK忽略）
 
-    // 数据IN端点描述符
+    // 数据IN端点描述符 / Data IN endpoint descriptor
     desc_block_.data_ep_in = {7,
                               static_cast<uint8_t>(DescriptorType::ENDPOINT),
                               static_cast<uint8_t>(ep_data_in_->GetAddress()),
@@ -415,6 +416,7 @@ class CDCBase : public DeviceClass
   {
     if (!self->inited_)
     {
+      // 解绑期间交来的租借立即归还。
       // A lease handed over while unbinding is returned at once.
       if (completion.slot.Valid() && self->ep_data_out_)
         self->ep_data_out_->ReleaseSlot(completion.slot, in_isr);
@@ -509,6 +511,7 @@ class CDCBase : public DeviceClass
     {
       case ClassRequest::SET_LINE_CODING:
         // 主机将在数据阶段发送7字节参数
+        // The host sends the 7-byte parameters in the data stage
         if (wLength != sizeof(line_coding_))
         {
           return ErrorCode::ARG_ERR;
@@ -676,7 +679,7 @@ class CDCBase : public DeviceClass
     InterfaceDescriptor
         comm_intf;  ///< 通信接口描述符 / Communication interface descriptor
 
-    // CDC类特定描述符
+    // CDC类特定描述符 / CDC class-specific descriptors
     struct
     {
       uint8_t bFunctionLength = 5;
@@ -780,9 +783,11 @@ class CDCBase : public DeviceClass
 
   // 状态标志。
   // State flags.
-  bool inited_ = false;                     ///< 初始化标志 / Initialization flag
-  bool has_control_line_state_cb_ = false;  ///< Control-line callback registered
-  bool has_line_coding_cb_ = false;         ///< Line-coding callback registered
+  bool inited_ = false;  ///< 初始化标志 / Initialization flag
+  /// 已注册控制线路回调 / Control-line callback registered
+  bool has_control_line_state_cb_ = false;
+  /// 已注册线路编码回调 / Line-coding callback registered
+  bool has_line_coding_cb_ = false;
 
   // 接口信息。
   // Interface metadata.
@@ -791,6 +796,8 @@ class CDCBase : public DeviceClass
   // CDC 参数。
   // CDC parameters.
   std::atomic<uint32_t> serial_state_pending_{0};
+  // Owner 上下文。没有空闲槽时请求保持待处理；
+  // 通知端点的下一次完成会重试它。
   // Owner context. Without a free slot the request stays pending; the next completion
   // of the notification endpoint retries it.
   void TrySendSerialState(bool in_isr)
@@ -813,8 +820,10 @@ class CDCBase : public DeviceClass
     (void)ep_comm_in_->Submit(slot, sizeof(message), false, in_isr);
   }
   CDCLineCoding line_coding_ = {115200, 0, 0, 8};  ///< 当前线路编码 / Current line coding
+  // 公开的 DTR/RTS 查询会跨越控制器 owner 的边界。沿用现有的字长原子 ABI，
+  // 包括只支持字长原子操作的目标。
   // Public DTR/RTS queries cross the controller-owner boundary. Use the existing
-  // word-sized atomic ABI, including on Cortex-M0 and QingKe targets.
+  // word-sized atomic ABI, including on targets with word-size atomics only.
   std::atomic<uint32_t> control_line_state_{0};
 };
 

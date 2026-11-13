@@ -692,6 +692,8 @@ LibXR::ErrorCode DeviceComposition::PrepareDescriptors(uint32_t speeds, bool in_
   const Speed current_speed = endpoint_pool_.GetSpeed();
   endpoint_pool_.SetPlanning(true);
   ErrorCode result = ErrorCode::OK;
+  // 先准备所支持的最高速度。内存只在这一初始化阶段增长，
+  // 绝不会在主机选定配置期间增长。
   // Prepare the largest supported speed first. Memory grows only in this
   // initialization-time phase, never during a host-selected configuration.
   for (int speed = static_cast<int>(Speed::HIGH); speed >= 0; --speed)

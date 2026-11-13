@@ -13,6 +13,8 @@
 namespace LibXR::USB
 {
 /**
+ * 事件驱动的 USB 设备协议引擎。能力是显式的编译期策略；不支持的功能状态与
+ * 分发不会被实例化。类的组合仍是普通的运行期组合，而不是模板树。
  * Event-driven USB device protocol engine. Capabilities are an explicit compile-
  * time policy; unsupported feature state and dispatch are not instantiated.
  * Class composition remains ordinary runtime composition, not a template tree.
@@ -154,12 +156,15 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   /// 远程唤醒当前是否被允许，用于 GET_STATUS 的应答；默认 false / Whether remote wakeup
   /// is currently enabled, reported in the GET_STATUS answer; false by default
   virtual bool IsRemoteWakeupEnabled() const { return false; }
+  /// 物理复位之后、EP0 打开之前，与后端相关的软件记账。
   /// Backend-specific software bookkeeping after physical reset, before EP0 open.
   virtual void OnControllerReset() {}
   /// 让 EP0 准备好接收下一个 SETUP：初始化完成和每次控制传输结束时在硬件保护内调用 /
   /// Make EP0 ready for the next SETUP; called inside the hardware guard after
   /// initialization and after every finished control transfer
   virtual void OnControlReady() {}
+  /// 端点停止已连续 STOP_FRAME_LIMIT 帧未被确认。后端复位控制器并确认所有待处理的停止；
+  /// 主机会重新枚举。
   /// An endpoint stop has not been confirmed for STOP_FRAME_LIMIT frames. The backend
   /// resets the controller and confirms every pending stop; the host enumerates again.
   virtual void OnStopTimeout(bool in_isr) { UNUSED(in_isr); }
@@ -190,6 +195,8 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   {
     {
       EndpointPool::HardwareScope hardware(&pool_);
+      // 只使在此生命周期边界之前捕获的 SETUP 失效。之后捕获的 SETUP，
+      // 即使两个事件位合并，也保持待处理。
       // Invalidate only SETUP captured before this lifecycle boundary. A SETUP
       // captured afterwards remains pending even when both event bits coalesce.
       captured_setup_pending_ = false;
@@ -219,13 +226,19 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
     STATUS_OUT,
     STALLED
   };
+  /// 一旦所有端点停止都被确认就继续的一个步骤。
   /// A step that resumes once every endpoint stop is confirmed.
   enum class Continuation : uint8_t
   {
     NONE,
-    SETUP,   ///< Dispatch setup_ after the old control transfer stopped.
-    CONFIG,  ///< Bind pending_config_ and send the status stage.
-    STATUS   ///< Send the status stage of SET_INTERFACE.
+    /// 旧控制传输停止后分发 setup_。
+    /// Dispatch setup_ after the old control transfer stopped.
+    SETUP,
+    /// 绑定 pending_config_ 并发送状态阶段。
+    /// Bind pending_config_ and send the status stage.
+    CONFIG,
+    /// 发送 SET_INTERFACE 的状态阶段 / Send the status stage of SET_INTERFACE.
+    STATUS
   };
   void ProcessEvents(bool in_isr, uint32_t events);
   void Continue(bool in_isr);
@@ -258,6 +271,8 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   std::atomic<uint32_t> desired_enabled_{0};
   std::atomic<uint32_t> inited_{0};
   std::atomic<uint32_t> requested_suspend_{0};
+  // 捕获、失效和消费使用后端的同一个短保护。
+  // 这个八字节邮箱内部不执行任何回调或包处理。
   // Capture, invalidation and consumption use the backend's same short guard.
   // No callback or packet processing executes inside this eight-byte mailbox.
   SetupPacket captured_setup_{};
@@ -274,7 +289,8 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   bool status_out_seen_ = false;
   bool replacing_setup_ = false;
   uint8_t pending_address_ = 0xff;
-  uint32_t deferred_events_ = 0;  ///< Events held back while an endpoint stops.
+  /// 端点停止期间被暂缓的事件 / Events held back while an endpoint stops.
+  uint32_t deferred_events_ = 0;
   Continuation continuation_ = Continuation::NONE;
   uint16_t pending_config_ = 0;
   Callback<const Endpoint::Completion&> in_callback_ =
