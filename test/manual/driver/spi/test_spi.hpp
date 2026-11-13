@@ -162,4 +162,65 @@ inline uint64_t TestSPIConfig(SPI& spi, Semaphore& semaphore, SPI::Configuration
   TEST_ASSERT(elapsed_us >= min_elapsed_us);
   return elapsed_us;
 }
+
+/**
+ * @brief 检查 SPI 双缓冲成功切换及失败保持 / Check SPI double-buffer rotation on
+ * success and retention on failure.
+ * @pre SPI 主机已初始化并通过 MOSI-MISO 回环连接；tx/rx 是互不重叠、各至少 8 字节的
+ *      连续双缓冲工作区。从普通任务调用且总线空闲。
+ *      Initialize an SPI master with MOSI-MISO loopback; tx/rx are disjoint contiguous
+ *      double-buffer workspaces of at least 8 bytes each. Call from a normal task with
+ *      the bus idle.
+ * @param spi 已初始化的 SPI / Initialized SPI controller.
+ * @param config 后端支持的 SPI 配置 / Configuration supported by the backend.
+ * @param tx 发送双缓冲区 / Transmit double-buffer storage.
+ * @param rx 接收双缓冲区 / Receive double-buffer storage.
+ */
+inline void TestSPIDoubleBuffer(SPI& spi, SPI::Configuration config, RawData tx,
+                                RawData rx)
+{
+  TEST_ASSERT(tx.addr_ != nullptr && rx.addr_ != nullptr && tx.size_ >= 8 &&
+              rx.size_ >= 8 && tx.size_ % 2 == 0 && rx.size_ % 2 == 0);
+  const auto tx_begin = reinterpret_cast<uintptr_t>(tx.addr_);
+  const auto rx_begin = reinterpret_cast<uintptr_t>(rx.addr_);
+  TEST_ASSERT(tx_begin >= rx_begin ? tx_begin - rx_begin >= rx.size_
+                                   : rx_begin - tx_begin >= tx.size_);
+
+  config.double_buffer = true;
+  TEST_ASSERT(spi.SetConfig(config) == ErrorCode::OK);
+  RawData tx_active = spi.GetTxBuffer();
+  RawData rx_active = spi.GetRxBuffer();
+  TEST_ASSERT(tx_active.size_ >= 4 && rx_active.size_ >= 4);
+
+  SPI::OperationRW operation;
+  TEST_ASSERT(spi.Transfer(tx_active.size_ + 1, operation) == ErrorCode::SIZE_ERR);
+  TEST_ASSERT(spi.GetTxBuffer().addr_ == tx_active.addr_ &&
+              spi.GetRxBuffer().addr_ == rx_active.addr_);
+
+  auto transfer_and_check = [&](RawData active_tx, RawData active_rx, uint8_t seed)
+  {
+    constexpr size_t kLength = 4;
+    auto* sent = static_cast<uint8_t*>(active_tx.addr_);
+    auto* received = static_cast<uint8_t*>(active_rx.addr_);
+    for (size_t i = 0; i < kLength; ++i)
+    {
+      sent[i] = static_cast<uint8_t>(seed + i * 37U);
+      received[i] = static_cast<uint8_t>(~sent[i]);
+    }
+    TEST_ASSERT(spi.Transfer(kLength, operation) == ErrorCode::OK);
+    for (size_t i = 0; i < kLength; ++i)
+    {
+      TEST_ASSERT(received[i] == sent[i]);
+    }
+  };
+
+  transfer_and_check(tx_active, rx_active, 0x13);
+  RawData tx_next = spi.GetTxBuffer();
+  RawData rx_next = spi.GetRxBuffer();
+  TEST_ASSERT(tx_next.addr_ != tx_active.addr_ && rx_next.addr_ != rx_active.addr_);
+
+  transfer_and_check(tx_next, rx_next, 0xA7);
+  TEST_ASSERT(spi.GetTxBuffer().addr_ == tx_active.addr_ &&
+              spi.GetRxBuffer().addr_ == rx_active.addr_);
+}
 }  // namespace LibXR::Test
