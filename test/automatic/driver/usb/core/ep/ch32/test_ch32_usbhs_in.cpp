@@ -7,15 +7,16 @@
  * 由测试扮演控制器。启用 INT_BUSY 时，UIF_TRANSFER 挂起期间控制器会对主机的下一个 IN
  * 回 busy NAK，此时 INT_ST 报告的是这次 NAK 而不是已 ACK 的包。这些用例检查端点能
  * 通过 TOG_AUTO 翻转找到这样的包，而不是让它保持挂包状态，否则控制器会把它发送两次。
- * 后面的用例检查另一个方向挂包期间丢失的翻转推进能得到修复。
+ * 后面的用例检查 OUT 挂包期间丢失的 IN 翻转推进能得到修复，以及 OUT 端点的 toggle 由软件
+ * 翻转。
  * Runs the real endpoint and endpoint core
  * (driver/ch/ch32_usb_endpoint_otghs.cpp) against a fake register block, with the test
  * playing the controller. With INT_BUSY the controller busy-NAKs the host's next IN
  * while UIF_TRANSFER is pending, and INT_ST then reports that NAK instead of the ACKed
  * packet. These cases check that the endpoint finds such a packet by its TOG_AUTO
  * toggle instead of leaving it armed, which made the controller send it twice. The
- * later cases check the repair of a toggle advance lost during an arm of the other
- * direction.
+ * later cases check the repair of an IN toggle advance lost during an arm of the OUT
+ * direction, and the software toggle of the OUT endpoint.
  */
 
 #include <cstdint>
@@ -202,17 +203,21 @@ void TestEp0StallClearKeepsData1()
   TEST_ASSERT(fake_usbhsd.UEP0_TX_CTRL == (USBHS_UEP_T_TOG_DATA1 | USBHS_UEP_T_RES_NAK));
 }
 
-// --- 另一方向挂包期间控制器丢失的 toggle 推进 ---
-// --- Toggle advances the controller loses while the other direction is armed ---
-// UEPn_TX_LEN、TX_CTRL 和 RX_CTRL 共用一个 32 位字：当某个包完成的同时，有一次挂包
-// 在写另一方向的寄存器，控制器对该包的 TOG_AUTO 推进可能丢失。挂包会记录写入之前的
-// toggle（tog_window_）；该方向的下一个正常包到来时若 toggle 没有变化，就推进一次。
-// 这里由测试按这样的挂包留下的样子设置 tog_window_。
-// UEPn_TX_LEN, TX_CTRL and RX_CTRL share one 32-bit word: when a packet completes while
-// an arm writes the other direction's registers, the controller's TOG_AUTO advance of
-// that packet can be lost. The arm records the toggle from before its writes
-// (tog_window_); the next good packet of that direction advances it once if it has not
+// --- Toggle ---
+// IN 的 toggle 由控制器推进（TOG_AUTO）。UEPn_TX_LEN、TX_CTRL 和 RX_CTRL 共用一个 32 位
+// 字：一个 IN 包完成的同时，有一次挂包在写 OUT 方向的寄存器，这次推进可能丢失。挂包会
+// 记录写入之前的 toggle（tog_window_）；下一个正常包到来时若 toggle 没有变化，就推进
+// 一次。这里由测试按这样的挂包留下的样子设置 tog_window_。
+// BULK/INTERRUPT OUT 的 toggle 由软件在每个 TOG_OK 包之后推进：开着 TOG_AUTO 时，一个
+// SOF 会让控制器翻转端点号等于帧号高四位的那个端点的 RX toggle。
+// The IN toggle is advanced by the controller (TOG_AUTO). UEPn_TX_LEN, TX_CTRL and
+// RX_CTRL share one 32-bit word: when an IN packet completes while an arm writes the OUT
+// direction's registers, that advance can be lost. The arm records the toggle from
+// before its writes (tog_window_); the next good packet advances it once if it has not
 // moved. Here the test sets tog_window_ the way such an arm leaves it.
+// The BULK/INTERRUPT OUT toggle is advanced by software after each TOG_OK packet: with
+// TOG_AUTO a SOF would make the controller flip the RX toggle of the endpoint numbered
+// like the top four bits of the frame number.
 
 uint8_t RxToggle() { return fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_TOG_MASK; }
 uint8_t TxToggle() { return fake_usbhsd.UEP1_TX_CTRL & USBHS_UEP_T_TOG_MASK; }
@@ -243,42 +248,66 @@ struct OutFixture
   }
 };
 
-/// 一个正常 OUT 包的推进丢失了：toggle 被推进一次。
-/// The advance of a good OUT packet was lost: the toggle is advanced once.
-void TestLostRxAdvanceRepaired()
+/// OUT 端点不开 TOG_AUTO，软件在每个 TOG_OK 包之后翻转 toggle，一个包翻转一次。
+/// The OUT endpoint runs without TOG_AUTO and software flips the toggle after a TOG_OK
+/// packet, one flip per packet.
+void TestOutPacketFlipsTheToggle()
 {
   OutFixture f;
-  TEST_ASSERT(RxToggle() == 0u);
-  f.ep.tog_window_ = CH32EndpointOtgHs::TOG_WINDOW | 0u;
-  // 控制器没有改变 toggle / The controller did not move the toggle.
+  TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_TOG_AUTO) == 0u);
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA0);
   f.HostSends(3, true);
   TEST_ASSERT(f.rec.list.size() == 1 && f.rec.list[0].actual == 3);
-  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1 && f.ep.tog_window_ == 0u);
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1);
+  TEST_ASSERT(f.ep.Receive(512, false) == ErrorCode::OK);
+  // 挂包不动 toggle / The arm keeps the toggle.
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1);
+  f.HostSends(4, true);
+  TEST_ASSERT(f.rec.list.size() == 2 && RxToggle() == USBHS_UEP_R_TOG_DATA0);
+  TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_TOG_AUTO) == 0u);
 }
 
-/// 推进没有丢失：toggle 保持在控制器设置的位置。
-/// The advance was not lost: the toggle stays where the controller put it.
-void TestKeptRxAdvanceUntouched()
+/// 重发（TOG_OK=0）不翻转 toggle，也不上报；请求被重新挂包。
+/// A resend (TOG_OK=0) does not flip the toggle and nothing is reported; the request is
+/// armed again.
+void TestResendDoesNotFlipTheToggle()
 {
   OutFixture f;
-  f.ep.tog_window_ = CH32EndpointOtgHs::TOG_WINDOW | 0u;
-  // TOG_AUTO 已推进 / TOG_AUTO advanced.
-  fake_usbhsd.UEP1_RX_CTRL ^= USBHS_UEP_R_TOG_DATA1;
   f.HostSends(3, true);
-  TEST_ASSERT(f.rec.list.size() == 1);
-  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1 && f.ep.tog_window_ == 0u);
+  const uint8_t after_first = RxToggle();
+  TEST_ASSERT(f.ep.Receive(512, false) == ErrorCode::OK);
+  f.HostSends(3, false);
+  TEST_ASSERT(f.rec.list.size() == 1 && RxToggle() == after_first);
+  TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_RES_MASK) == USBHS_UEP_R_RES_ACK);
 }
 
-/// 重发（TOG 不匹配）不推进 toggle，并在不修复的情况下结束窗口；请求被重新挂包。
-/// A resend (TOG mismatch) does not advance the toggle and ends the window without a
-/// repair; the request is armed again.
-void TestResendEndsWindow()
+/// 请求停止之后才收下的包（最后一个事务仍会完成）已经向主机回了 ACK，主机已推进相位：
+/// 先翻转 toggle，再丢弃这次完成。停止之后的重发不翻转。
+/// A packet accepted after the request was stopped (the last transaction still completes)
+/// was ACKed to the host, which advanced its phase: the toggle is flipped first and the
+/// completion dropped. A resend after a stop does not flip.
+void TestLateCompletionAfterStopFlipsTheToggle()
 {
   OutFixture f;
-  f.ep.tog_window_ = CH32EndpointOtgHs::TOG_WINDOW | 0u;
-  f.HostSends(3, false);
-  TEST_ASSERT(f.rec.list.empty() && RxToggle() == 0u && f.ep.tog_window_ == 0u);
-  TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_RES_MASK) == USBHS_UEP_R_RES_ACK);
+  f.ep.StopHardware(false);
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA0);
+  f.HostSends(5, true);
+  TEST_ASSERT(f.rec.list.empty());
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1);
+  f.HostSends(5, false);
+  TEST_ASSERT(f.rec.list.empty() && RxToggle() == USBHS_UEP_R_TOG_DATA1);
+}
+
+/// 清除 STALL 让 toggle 从 DATA0 重新开始，仍然不开 TOG_AUTO。
+/// The stall clear starts the toggle at DATA0 again, still without TOG_AUTO.
+void TestStallClearRestartsTheOutToggle()
+{
+  OutFixture f;
+  f.HostSends(3, true);
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1);
+  TEST_ASSERT(f.ep.ClearStallHardware(false) == ErrorCode::OK);
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA0);
+  TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_TOG_AUTO) == 0u);
 }
 
 /// 多包 OUT 请求：主机重发一个已被取走的包（它没收到 ACK）。重发的包被丢弃，接收按
@@ -307,19 +336,21 @@ void TestResendKeepsAcceptedPackets()
   fake_usbhsd.INT_ST = USBHS_UIS_TOG_OK;
   ep.TransferComplete(512);  // 第一个包已取走 / first packet taken
   TEST_ASSERT(rec.list.empty());
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1);
   const uint32_t second_dma = fake_usbhsd.UEP1_RX_DMA;
   TEST_ASSERT(second_dma == first_dma + 512u);
 
   // 主机重发：TOG 不匹配 / The host resends: TOG mismatch.
   fake_usbhsd.INT_ST = 0u;
   ep.TransferComplete(512);
-  TEST_ASSERT(rec.list.empty());
+  TEST_ASSERT(rec.list.empty() && RxToggle() == USBHS_UEP_R_TOG_DATA1);
   TEST_ASSERT(fake_usbhsd.UEP1_RX_DMA == second_dma);
   TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_RES_MASK) == USBHS_UEP_R_RES_ACK);
 
   fake_usbhsd.INT_ST = USBHS_UIS_TOG_OK;
   ep.TransferComplete(512);  // 第二个包已取走 / second packet taken
   TEST_ASSERT(rec.list.size() == 1 && rec.list[0].actual == 1024);
+  TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA0);
 }
 
 /// 一个已 ACK 的 IN 包的推进丢失了：下一个响应会以旧的相位发出，被主机当作重复包
@@ -376,9 +407,10 @@ int main()
   TestPacketAndZlp();
   TestQueuedResponses();
   TestEp0StallClearKeepsData1();
-  TestLostRxAdvanceRepaired();
-  TestKeptRxAdvanceUntouched();
-  TestResendEndsWindow();
+  TestOutPacketFlipsTheToggle();
+  TestResendDoesNotFlipTheToggle();
+  TestLateCompletionAfterStopFlipsTheToggle();
+  TestStallClearRestartsTheOutToggle();
   TestResendKeepsAcceptedPackets();
   TestLostTxAdvanceRepaired();
   TestArmWithoutCompletionRecordsNothing();

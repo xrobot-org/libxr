@@ -106,26 +106,18 @@ static void HandleTransferOut(CH32EndpointOtgHs* ep_out, uint8_t ep_num, uint8_t
     return;
   }
 
-  if (!is_nak)
-  {
-    ep_out->TransferComplete(rx_len);
-    return;
-  }
-  if (!busy || rx_len == 0u)
-  {
-    // 不报出的零长包也推进了 toggle：它若是挂包期间完成的那个事务，下一个好包之后 toggle
-    // 会回到写之前的值，不能再当作丢了推进。
-    // An unreported zero-length packet also advanced the toggle: if it was the
-    // transaction that completed during the arm, the toggle is back at its earlier value
-    // after the next good packet, which must not count as a lost advance.
-    ep_out->tog_window_ = 0u;
-    return;
-  }
-
-  // 部分 non-EP0 OUT 路径在端点仍有在途请求时，仍可能给出可用的晚到长度快照；
-  // 这里只保留这条窄恢复路径。
-  // Some non-EP0 OUT paths may still expose a usable late length snapshot while a
-  // request is in flight. Keep that narrow recovery path here.
+  // 非 EP0 的 OUT 事件不看 INT_ST.IS_NAK：每个 OUT 事件都是一个已收下并回了 ACK 的包。
+  // 被 NAK 的令牌不产生事件（板上实测：EP1 的 OUT 事件数等于主机发出的包数），而
+  // IS_NAK 偶尔会出现在一个真实的包上：CH32V307 上、SOF 中断开着时，700 万个 OUT 包里
+  // 有 3 个事件带 IS_NAK，RX_LEN 和 TOG_OK 都有效，主机随后也翻了相位。把这样的事件丢掉
+  // 就少翻一次 toggle，下一个包会被当作重发再丢一个。
+  // For an endpoint other than EP0, INT_ST.IS_NAK is not looked at: every OUT event is a
+  // packet that was received and acknowledged. A NAKed token raises no event (measured on
+  // the board: the OUT events of EP1 equal the packets the host sent), while IS_NAK does
+  // show up on a real packet now and then: on a CH32V307 with the SOF interrupt on, 3 of
+  // 7 million OUT packets came with IS_NAK set, with a valid RX_LEN and TOG_OK, and the
+  // host advanced its phase afterwards. Dropping such an event skips one toggle flip, and
+  // the next packet is then dropped as a resend as well.
   ep_out->TransferComplete(rx_len);
 }
 

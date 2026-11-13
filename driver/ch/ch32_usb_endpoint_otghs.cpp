@@ -376,7 +376,19 @@ ErrorCode CH32EndpointOtgHs::ConfigureHardware(const Config& cfg)
   {
     if (cfg.type != Type::ISOCHRONOUS && GetNumber() != EPNumber::EP0)
     {
-      *get_rx_control_addr(GetNumber()) = USBHS_UEP_R_RES_NAK | USBHS_UEP_R_TOG_AUTO;
+      // OUT 不开 R_TOG_AUTO，RX toggle 由软件在每个 TOG_OK 包之后翻转。机理：设备模式下
+      // SOF 以发往端点号 = 帧号 bit10:7 的传输上报（手册 V2.5 p.339-340）。板上实测
+      // （CH32V307，SOF 中断开）：帧号 bit10:7 等于端点号的 1024 个 SOF 里，控制器每个
+      // SOF 自动翻转该号 OUT 端点的 RX toggle，下一个命令包因 toggle 不符被当作重发丢
+      // 掉。IN 的 TX toggle 实测不受 SOF 影响，保留自动翻转。
+      // OUT runs without R_TOG_AUTO; software flips the RX toggle after each TOG_OK
+      // packet. Mechanism: in device mode a SOF is reported as a transfer to endpoint
+      // number = frame number bits 10:7 (manual V2.5 p.339-340). Measured on a CH32V307
+      // with the SOF interrupt on: during the 1024 SOFs whose frame bits 10:7 equal the
+      // endpoint number the controller auto-toggles the RX toggle of that OUT endpoint
+      // on every SOF, so the next command is dropped as a resend. The IN TX toggle was
+      // measured unaffected by SOF and keeps its auto toggle.
+      *get_rx_control_addr(GetNumber()) = USBHS_UEP_R_RES_NAK;
     }
     else
     {
@@ -468,35 +480,33 @@ ErrorCode CH32EndpointOtgHs::StartHardware(const HwRequest& request, bool /*in_i
   const bool IS_IN = (GetDirection() == Direction::IN);
   const bool IS_EP0 = (GetNumber() == EPNumber::EP0);
 
-  // UEPn_TX_LEN、TX_CTRL、RX_CTRL 在同一个 32 位字里。下面写本方向寄存器时，另一方向恰好
-  // 有一个包完成，控制器对另一方向 toggle 的自动推进会丢：OUT 的下一包被当作重发丢掉，IN
-  // 的下一包带着旧相位发出、被主机当作重复包丢掉（深流水下 IN 挂包与 OUT 收包并发，几千条
-  // 命令一次）。写之前 UIF_TRANSFER 未置位、写完已置位，就说明这期间完成了事务；记下另一
-  // 方向写之前的 toggle，它下一次报好包时由 RepairLostToggle 核对。UIF_TRANSFER 置位期间
-  // 控制器对一切事务回忙 NAK，此时写不会撞上。
-  // UEPn_TX_LEN, TX_CTRL and RX_CTRL share one 32-bit word. When a packet of the other
-  // direction completes while the writes below change this direction's registers, the
-  // controller loses its automatic advance of the other direction's toggle: OUT drops
-  // its next packet as a resend, IN sends its next packet with the old phase and the
-  // host drops it as a repeat (with IN armed while OUT packets arrive, about once in a
-  // few thousand commands at pipeline depth 3-4). UIF_TRANSFER clear before the writes
-  // and set after them means a transaction completed meanwhile: the other direction's
-  // toggle from before the writes is kept and checked by RepairLostToggle at its next
-  // good packet. While UIF_TRANSFER is set the controller busy-NAKs every transaction,
-  // so writes made then cannot collide.
+  // UEPn_TX_LEN、TX_CTRL、RX_CTRL 在同一个 32 位字里。挂 OUT 接收、写 RX_CTRL 时 IN
+  // 恰好完成一个包，控制器对 IN toggle 的自动推进会丢，下一个 IN 响应用旧相位发出，被
+  // 主机当作重复包丢掉（深流水下发生；去掉补推，15 x 10 万条命令出错 29 次，保留 0 次）。
+  // UIF_TRANSFER 写前未置位、写后已置位，说明期间完成了事务：记下 IN 写前的 toggle，
+  // 由 RepairLostToggle 在下一个好包时核对。UIF_TRANSFER 置位期间控制器对一切事务
+  // 回忙 NAK，此时写不会撞上。OUT 的 toggle 由软件翻转，控制器不写它。
+  // UEPn_TX_LEN, TX_CTRL and RX_CTRL share one 32-bit word. If an IN packet completes
+  // while the writes below arm an OUT receive, the controller loses its automatic
+  // advance of the IN toggle: the next IN response goes out with the old phase and the
+  // host drops it as a repeat (seen at pipeline depth 4; without the repair below 15
+  // runs of 100000 commands gave 29 errors, with it 0). UIF_TRANSFER clear before the
+  // writes and set after them means a transaction completed meanwhile: the IN toggle
+  // from before the writes is kept and checked by RepairLostToggle at the next good
+  // packet. While UIF_TRANSFER is set the controller busy-NAKs every transaction, so
+  // writes made then cannot collide. The OUT toggle is flipped by software and never
+  // written by the controller.
   // 先取 toggle 再看 UIF_TRANSFER：两次读之间完成的事务已让 UIF_TRANSFER 置位，不记。
   // The toggle first, then UIF_TRANSFER: a transaction completing between the two reads
   // has already set UIF_TRANSFER and is not recorded.
   CH32EndpointOtgHs* other = nullptr;
   uint8_t other_tog = 0;
-  if (!IS_EP0 && GetType() != Type::ISOCHRONOUS)
+  if (!IS_EP0 && !IS_IN && GetType() != Type::ISOCHRONOUS)
   {
-    other = map_otg_hs_[EPNumberToInt8(GetNumber())]
-                       [static_cast<uint8_t>(IS_IN ? Direction::OUT : Direction::IN)];
+    other = map_otg_hs_[EPNumberToInt8(GetNumber())][static_cast<uint8_t>(Direction::IN)];
     if (other != nullptr && other->GetType() != Type::ISOCHRONOUS)
     {
-      other_tog = IS_IN ? (*get_rx_control_addr(GetNumber()) & USBHS_UEP_R_TOG_MASK)
-                        : (*get_tx_control_addr(GetNumber()) & USBHS_UEP_T_TOG_MASK);
+      other_tog = *get_tx_control_addr(GetNumber()) & USBHS_UEP_T_TOG_MASK;
     }
     else
     {
@@ -632,21 +642,10 @@ void CH32EndpointOtgHs::RepairLostToggle()
   // 好包之后 toggle 必然离开写之前的值；没离开就是这次推进丢了。
   // After a good packet the toggle must have left its value from before the writes; if
   // it has not, this advance was lost.
-  if (GetDirection() == Direction::IN)
+  auto* ctrl = get_tx_control_addr(GetNumber());
+  if ((*ctrl & USBHS_UEP_T_TOG_MASK) == before)
   {
-    auto* ctrl = get_tx_control_addr(GetNumber());
-    if ((*ctrl & USBHS_UEP_T_TOG_MASK) == before)
-    {
-      *ctrl = static_cast<uint8_t>(*ctrl ^ USBHS_UEP_T_TOG_DATA1);
-    }
-  }
-  else
-  {
-    auto* ctrl = get_rx_control_addr(GetNumber());
-    if ((*ctrl & USBHS_UEP_R_TOG_MASK) == before)
-    {
-      *ctrl = static_cast<uint8_t>(*ctrl ^ USBHS_UEP_R_TOG_DATA1);
-    }
+    *ctrl = static_cast<uint8_t>(*ctrl ^ USBHS_UEP_T_TOG_DATA1);
   }
 }
 
@@ -718,7 +717,8 @@ ErrorCode CH32EndpointOtgHs::ClearStallHardware(bool /*in_isr*/)
     tx_tog_armed_ = USBHS_UEP_T_TOG_DATA0;
   }
   else
-    *get_rx_control_addr(GetNumber()) = USBHS_UEP_R_RES_NAK | USBHS_UEP_R_TOG_AUTO;
+    // 软件 toggle，见 ConfigureHardware / Software toggle, see ConfigureHardware
+    *get_rx_control_addr(GetNumber()) = USBHS_UEP_R_RES_NAK;
   tog0_ = false;
   return ErrorCode::OK;
 }
@@ -783,14 +783,30 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
   // 同 OtgFs：停止后/未挂载时的迟到完成直接丢弃，不再动寄存器。
   // Same as OtgFs: drop completions that arrive after a stop or with nothing
   // armed, without touching the registers.
+  const bool IS_IN = (GetDirection() == Direction::IN);
+  const bool IS_EP0 = (GetNumber() == EPNumber::EP0);
+  const bool IS_ISO = (GetType() == Type::ISOCHRONOUS);
+
+  // 软件 toggle：TOG_OK 的 OUT 包已被 ACK，主机已翻转相位，软件必须跟着翻转，包括落在
+  // Stop 之后、不再上报的包。TOG_OK=0 是主机重发的旧包，不翻转。
+  // Software toggle: a TOG_OK OUT packet was ACKed and the host advanced its phase, so
+  // software advances too, also for a packet landing after a stop that is not reported.
+  // TOG_OK=0 is a resend of an old packet and does not flip.
+  bool tog_ok = true;
+  if (!IS_IN && !IS_EP0 && !IS_ISO)
+  {
+    tog_ok = ((USBHSD->INT_ST & USBHS_UIS_TOG_OK) == USBHS_UIS_TOG_OK);  // NOLINT
+    if (tog_ok)
+    {
+      auto* rx_ctrl = get_rx_control_addr(GetNumber());
+      *rx_ctrl = static_cast<uint8_t>(*rx_ctrl ^ USBHS_UEP_R_TOG_DATA1);
+    }
+  }
+
   if (!transfer_active_)
   {
     return;
   }
-
-  const bool IS_IN = (GetDirection() == Direction::IN);
-  const bool IS_EP0 = (GetNumber() == EPNumber::EP0);
-  const bool IS_ISO = (GetType() == Type::ISOCHRONOUS);
 
   // UIF_TRANSFER/INT_FG 会在 IRQ handler 完成分发后统一清掉。
   // UIF_TRANSFER/INT_FG are cleared by the IRQ handler once dispatch has finished.
@@ -840,18 +856,11 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
   // Toggle mismatch: the host resent a packet already taken (it missed our ACK). Drop
   // it and arm the receive again as it was; the request, the RX DMA position and the
   // received count stay, so the packets accepted earlier still count.
-  if (!IS_EP0 && !IS_ISO)
+  if (!IS_EP0 && !IS_ISO && !tog_ok)
   {
-    const bool TOG_OK =
-        ((USBHSD->INT_ST & USBHS_UIS_TOG_OK) == USBHS_UIS_TOG_OK);  // NOLINT
-    if (!TOG_OK)
-    {
-      tog_window_ = 0u;  // 重发的包不推进 toggle / a resend does not advance the toggle
-      auto* rx_ctrl = get_rx_control_addr(GetNumber());
-      *rx_ctrl = (*rx_ctrl & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
-      return;
-    }
-    RepairLostToggle();
+    auto* rx_ctrl = get_rx_control_addr(GetNumber());
+    *rx_ctrl = (*rx_ctrl & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
+    return;
   }
 
   if (IS_EP0)

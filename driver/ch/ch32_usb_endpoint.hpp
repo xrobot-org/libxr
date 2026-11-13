@@ -139,15 +139,14 @@ class CH32EndpointOtgHs : public USB::Endpoint
    * entry: continues an IN split or finishes the request
    * @param size 本次硬件完成的字节数（OUT 为收到的长度）/ Bytes completed by the
    * hardware this time (the received length for OUT)
-   * @note 没有活动请求时直接丢弃（迟到的完成）/ Dropped when no request is active
-   * (a late completion)
+   * @note BULK/INTERRUPT OUT：TOG_OK 的包先翻转 RX toggle，再看有无活动请求 / For
+   * BULK/INTERRUPT OUT a TOG_OK packet flips the RX toggle first; the completion is
+   * dropped afterwards when no request is active (a late completion)
    */
   void TransferComplete(size_t size);
-  /// 一个好包（OUT 的 TOG_OK、IN 的 ACK）已收发：若另一方向挂包时控制器丢了这次自动推进，
-  /// 由软件补推一次。
-  /// A good packet (OUT with TOG_OK, IN ACKed) was transferred: if the controller lost
-  /// its automatic advance while the other direction was being armed, advance it once in
-  /// software.
+  /// IN 包已被 ACK：补推控制器在 OUT 挂包期间丢掉的 IN toggle 推进。
+  /// An IN packet was ACKed: advance the IN toggle once if the controller lost its
+  /// automatic advance while an OUT receive was being armed.
   void RepairLostToggle();
   /// 非 EP0 BULK/INTERRUPT IN：挂起的包是否已被主机 ACK（TOG_AUTO 下 toggle 已翻转）。
   /// Non-EP0 bulk/interrupt IN: whether the host has ACKed the armed packet (the
@@ -200,10 +199,10 @@ class CH32EndpointOtgHs : public USB::Endpoint
   /// IN：挂包时 TX_CTRL 的 toggle 位（USBHS_UEP_T_TOG_MASK）。
   /// IN: the TX_CTRL toggle bits (USBHS_UEP_T_TOG_MASK) when the packet was armed.
   uint8_t tx_tog_armed_ = 0;
-  /// 另一方向挂包期间完成了一个事务时，本方向在那之前的 toggle 位（| TOG_WINDOW），否则
+  /// 仅 IN 端点：同号 OUT 挂包期间完成了事务时，IN 此前的 toggle 位（| TOG_WINDOW），否则
   /// 为 0。
-  /// The toggle bits of this direction from before the other direction's arm, during
-  /// which a transaction completed (| TOG_WINDOW); 0 otherwise.
+  /// IN endpoints only: the IN toggle bits from before the arm of the OUT receive of the
+  /// same number, during which a transaction completed (| TOG_WINDOW); 0 otherwise.
   uint8_t tog_window_ = 0;
   /// tog_window_ 的有效标志位，使 toggle 位全为 0 时仍能与“没有窗口”区分 / Valid flag
   /// of tog_window_, so that all-zero toggle bits stay distinguishable from "no window"
