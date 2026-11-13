@@ -240,7 +240,9 @@ class Endpoint
 
   // ---- 配置与生命周期：只在 owner 中调用 / Owner only ----
 
-  /// OK / ARG_ERR（包长非法）/ NO_BUFF（槽装不下一个包）/ STATE_ERR / FAILED
+  /// 返回 OK、ARG_ERR（包长非法）、NO_BUFF（槽装不下一个包）、STATE_ERR 或 FAILED
+  /// Returns OK, ARG_ERR (illegal packet size), NO_BUFF (a slot cannot hold one
+  /// packet), STATE_ERR or FAILED
   [[nodiscard]] ErrorCode Configure(const Config& cfg, bool in_isr);
   /// 解绑：停用端点，借出的槽作废，排队与在途请求恰好结束一次 / Unbind
   void Close(bool in_isr);
@@ -262,7 +264,9 @@ class Endpoint
   // ---- IN 借用：任何上下文；Submit 可能就地执行 owner / IN borrowing, any context;
   // Submit may run the owner in place ----
 
-  /// OK / BUSY（无空闲槽）/ STATE_ERR（未启用或方向不符）
+  /// 返回 OK、BUSY（无空闲槽）或 STATE_ERR（未启用或方向不符）
+  /// Returns OK, BUSY (no free slot) or STATE_ERR (not enabled, or the wrong
+  /// direction)
   [[nodiscard]] ErrorCode AcquireSlot(Slot& slot, bool in_isr);
   /// OK / ABORTED（槽在解绑前借出，已回到空闲）/ SIZE_ERR / STATE_ERR（句柄不是当前
   /// 这次借出：已归还、已提交或来自更早的借出，槽不受影响）/ OK / ABORTED (lent before an

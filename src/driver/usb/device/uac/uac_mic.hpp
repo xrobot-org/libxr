@@ -458,7 +458,7 @@ class UAC1MicrophoneQ : public DeviceClass
     uint8_t bLength = 9;
     uint8_t bDescriptorType = static_cast<uint8_t>(DescriptorType::ENDPOINT);
     uint8_t bEndpointAddress = 0;  // 含方向位 / includes direction bit
-    uint8_t bmAttributes = 0x05;   // Isochronous + Async + Data
+    uint8_t bmAttributes = 0x05;   // 等时、异步、数据 / Isochronous, async, data
     uint16_t wMaxPacketSize = 0;   // 运行期填充 / filled at runtime
     uint8_t bInterval = 0x01;      // 1 ms
     uint8_t bRefresh = 0x00;       // 仅反馈端点使用 / feedback only
@@ -541,7 +541,7 @@ class UAC1MicrophoneQ : public DeviceClass
                        0x00,
                        0};
 
-    // AC 接口（标准接口）
+    // AC 接口（标准接口）/ AC interface (standard interface)
     // AC interface (standard).
     desc_block_.ac_intf = {9,
                            static_cast<uint8_t>(DescriptorType::INTERFACE),
@@ -564,7 +564,8 @@ class UAC1MicrophoneQ : public DeviceClass
     // Program the AC Input Terminal wChannelConfig from the channel count.
     if constexpr (CHANNELS == 2)
     {
-      desc_block_.it_mic.wChannelConfig = 0x0003;  // Left Front | Right Front
+      // 左前与右前声道 / Left Front | Right Front
+      desc_block_.it_mic.wChannelConfig = 0x0003;
     }
     else
     {
@@ -1182,8 +1183,9 @@ class UAC1MicrophoneQ : public DeviceClass
     if (available != 0U && pcm_queue_.PopBatch(static_cast<uint8_t*>(slot.data.addr_),
                                                available) != ErrorCode::OK)
     {
-      available = 0;  // 理论不可达（SPSC 单消费者）；按全补零处理 / Not reachable;
-                      // degrade to full zero fill
+      // 理论不可达（SPSC 单消费者）；按全补零处理。
+      // Not reachable (single consumer of the SPSC queue); treated as a frame of zeros.
+      available = 0;
     }
     if (available < amount)
     {

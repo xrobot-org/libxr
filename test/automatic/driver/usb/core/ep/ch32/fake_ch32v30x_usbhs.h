@@ -1,3 +1,5 @@
+// CH32 USBHS 端点主机测试用的假 CH32V30x 配置头文件：把 ch32v30x.h 的 USBHS 设备寄存器
+// 块做成普通内存，并给出端点用到的 ch32v30x_usb.h 寄存器位。
 // Fake CH32V30x configuration header for host tests of the CH32 USBHS endpoint: the
 // USBHS device register block of ch32v30x.h as plain memory, and the register bits of
 // ch32v30x_usb.h the endpoint uses.

@@ -194,7 +194,7 @@ class HID : public DeviceClass
         static_cast<uint8_t>(enable_out_endpoint_ ? 2 : 1),  // bNumEndpoints
         0x03,                                                // bInterfaceClass (HID)
         0x00,                                                // bInterfaceSubClass
-        0x00,                        // bInterfaceProtocol (可选键盘/鼠标设置1/2)
+        0x00,  // bInterfaceProtocol：键盘 1，鼠标 2 / keyboard 1, mouse 2
         GetInterfaceStringIndex(0u)  // iInterface
     };
 
@@ -214,7 +214,7 @@ class HID : public DeviceClass
         ep_in_->GetAddress(),
         static_cast<uint8_t>(Endpoint::Type::INTR),
         ep_in_->MaxPacketSize(),
-        in_ep_interval_  // 轮询间隔ms
+        in_ep_interval_  // 轮询间隔（ms）/ Polling interval in ms
     };
 
     // 填充OUT端点描述符（如启用） / Fill the OUT endpoint descriptor (if enabled)

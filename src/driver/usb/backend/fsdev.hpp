@@ -574,7 +574,9 @@ void FSDevEndpoint<HW>::SetStat(bool in, uint32_t target)
     const uint32_t cur = HW::ReadEp(num);
     if (arming && (cur & ctr) != 0U)
     {
-      return;  // 本方向事务已完成，由 CTR 处理推进
+      // 本方向事务已完成，由 CTR 处理推进。
+      // The transaction of this direction has completed; the CTR handling goes on.
+      return;
     }
     const uint32_t value =
         (cur & HW::EP_KEEP_MASK) | ((cur ^ target) & stat_mask) | NO_CLEAR;
@@ -586,7 +588,10 @@ void FSDevEndpoint<HW>::SetStat(bool in, uint32_t target)
     }
     if (arming && (after & ctr) != 0U)
     {
-      return;  // 装填后事务在窗口内完成：STAT 是硬件自动回的 NAK，不重试
+      // 装填后事务在窗口内完成：STAT 是硬件自动回的 NAK，不重试。
+      // The transaction completed within the window after the load: STAT is the NAK
+      // the hardware set by itself, so there is no retry.
+      return;
     }
   }
   // 三次重算都没到达目标且（装填时）CTR 未锁存：读回路径异常，
@@ -829,7 +834,9 @@ ErrorCode FSDevEndpoint<HW>::ClearStallHardware(bool in_isr)
   UNUSED(in_isr);
   if (Num() == 0U)
   {
-    return ErrorCode::OK;  // 下一个 SETUP 清 EP0 的 STALL 与 DATA0/1。
+    // 下一个 SETUP 清 EP0 的 STALL 与 DATA0/1。
+    // The next SETUP clears the STALL and the DATA0/1 state of EP0.
+    return ErrorCode::OK;
   }
   ClearDataToggle(IsIn());  // 恢复 DATA0
   SetStat(IsIn(), IsIn() ? FSDEV_STAT_TX_NAK : FSDEV_STAT_RX_NAK);
@@ -842,7 +849,8 @@ void FSDevEndpoint<HW>::OnTxPacket()
   const uint32_t tag = hw_tag_;
   if (tag == 0U)
   {
-    return;  // 已停止，或重复事件。
+    // 已停止，或重复事件 / Already stopped, or a repeated event.
+    return;
   }
   const size_t packet = MaxPacketSize();
   const size_t sent = LibXR::min(packet, hw_length_ - hw_progress_);
@@ -1011,7 +1019,8 @@ void FSDevDevice<HW>::OnBusResetRegs()
   HW::WriteDaddr(0x0080U);  // EF | 0
   if (out_[0] != nullptr)
   {
-    out_[0]->SetStat(false, FSDEV_STAT_RX_NAK);  // EP0 OUT NAK：SETUP 照常接收
+    // EP0 OUT NAK：SETUP 照常接收 / EP0 OUT answers NAK; a SETUP is still received.
+    out_[0]->SetStat(false, FSDEV_STAT_RX_NAK);
   }
   OnBusReset(true);
 }

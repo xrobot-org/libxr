@@ -282,8 +282,10 @@ class CDCBase : public DeviceClass
 
     // === 填充CDC描述符块 ===
     // === Fill the CDC descriptor block ===
-    static constexpr uint8_t COMM_INTERFACE = 0;  // 通信接口号
-    static constexpr uint8_t DATA_INTERFACE = 1;  // 数据接口号
+    /// 通信接口号 / Communication interface
+    static constexpr uint8_t COMM_INTERFACE = 0;
+    /// 数据接口号 / Data interface
+    static constexpr uint8_t DATA_INTERFACE = 1;
 
     // IAD 描述符（关联两组 CDC 接口）。
     // IAD descriptor that groups the two CDC interfaces.
@@ -317,8 +319,8 @@ class CDCBase : public DeviceClass
     // Call-management functional descriptor.
     desc_block_.cdc_callmgmt = {
         5, DescriptorType::CS_INTERFACE, DescriptorSubtype::CALL_MANAGEMENT,
-        0x00,                                                   // 无呼叫管理能力
-        static_cast<uint8_t>(DATA_INTERFACE + start_itf_num)};  // 数据接口号
+        // 无呼叫管理能力；数据接口号 / No call management capability; data interface.
+        0x00, static_cast<uint8_t>(DATA_INTERFACE + start_itf_num)};
 
     // ACM 功能描述符。
     // ACM functional descriptor.
@@ -364,10 +366,10 @@ class CDCBase : public DeviceClass
     desc_block_.comm_ep = {
         7,
         static_cast<uint8_t>(DescriptorType::ENDPOINT),
-        static_cast<uint8_t>(ep_comm_in_->GetAddress()),  // IN端点地址
+        static_cast<uint8_t>(ep_comm_in_->GetAddress()),  // IN 端点地址 / IN endpoint
         static_cast<uint8_t>(Endpoint::Type::INTR),
         ep_comm_in_->MaxPacketSize(),
-        0x04  // 轮询间隔FS-4ms HS-1ms
+        0x04  // 轮询间隔：FS 4 ms，HS 1 ms / Polling interval: FS 4 ms, HS 1 ms
     };
 
     itf_comm_in_num_ = start_itf_num;
@@ -773,7 +775,7 @@ class CDCBase : public DeviceClass
           [](bool context, CDCBase* self, const Endpoint::Completion&)
           { self->TrySendSerialState(context); }, this);
 
-  // 用户回调。
+  // 用户回调 / User callbacks.
   // User callbacks.
   LibXR::Callback<bool, bool>
       on_set_control_line_state_cb_;  ///< 控制线路状态变更回调 / Control line state

@@ -373,7 +373,7 @@ class DapLinkV2Class : public DeviceClass
                         interface_num_,
                         0,
                         2,
-                        0xFF,  // vendor specific
+                        0xFF,  // 厂商自定义 / Vendor specific
                         0x00,
                         0x00,
                         GetInterfaceStringIndex(0u)};
@@ -2837,8 +2837,11 @@ class DapLinkV2Class : public DeviceClass
     }
 
     resp[0] = ToU8(LibXR::USB::DapLinkV2Def::CommandId::TRANSFER);
-    resp[1] = 0u;  // response_count = #successful transfers
-    resp[2] = 0u;  // response_value (ACK bits / ERROR / MISMATCH)
+    // resp[1]：成功的传输数；resp[2]：应答值（ACK 位、ERROR、MISMATCH）。
+    // resp[1]: number of successful transfers; resp[2]: response value (ACK bits,
+    // ERROR, MISMATCH).
+    resp[1] = 0u;
+    resp[2] = 0u;
     uint16_t resp_off = 3u;
 
     // Req: [0]=CMD [1]=DAP index [2]=count [3..]=transfers...
@@ -3129,7 +3132,8 @@ class DapLinkV2Class : public DeviceClass
           {
             if (AP)
             {
-              ec = swd_.ApReadTxn(ADDR2B, rdata, ack);  // Includes RDBUFF.
+              // 包含 RDBUFF 的读取 / Includes the RDBUFF read.
+              ec = swd_.ApReadTxn(ADDR2B, rdata, ack);
               if (ec == ErrorCode::OK && ack == LibXR::Debug::SwdProtocol::Ack::OK)
               {
                 // ApReadTxn 仅完成 AP 读流水线。
