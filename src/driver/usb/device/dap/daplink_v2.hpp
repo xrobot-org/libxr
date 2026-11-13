@@ -424,12 +424,12 @@ class DapLinkV2Class : public DeviceClass
     transfer_abort_.store(true, std::memory_order_release);
 
     // 会话结束：epoch 加一。SWD/JTAG 由 Step 线程关闭（见 SyncSession），这里不碰。
-    // 借出的槽由解绑作废；Close 里送达的 ABORTED 完成因 inited_ 已为 false，
-    // 被回调入口忽略。
+    // 借出的槽由解绑作废；Close 里送达的完成因 inited_ 已为 false 不再处理，回调入口只
+    // 归还它带来的租约。
     // The session ends: the epoch is bumped. SWD/JTAG are closed by the Step thread (see
-    // SyncSession), not here. Lent slots are voided by the unbind; the ABORTED
-    // completions delivered inside Close are ignored by the callback entry because
-    // inited_ is already false.
+    // SyncSession), not here. Lent slots are voided by the unbind; a completion delivered
+    // inside Close is no longer handled because inited_ is already false, and the
+    // callback entry only gives back the lease it carries.
     ResetChannels();
     // 叫醒可能在等命令或等 IN 槽的 Step 线程。
     // Wake a Step thread that may be waiting for a command or for an IN slot.
@@ -573,10 +573,19 @@ class DapLinkV2Class : public DeviceClass
   static void OnDataOutCompleteStatic(bool in_isr, DapLinkV2Class* self,
                                       const Endpoint::Completion& completion)
   {
-    if (self && self->inited_)
+    if (!self->inited_)
     {
-      self->OnDataOutComplete(in_isr, completion);
+      // 解绑期间交来的租约立即归还：端点关闭时会先送达硬件已经收完的包，这个完成带着
+      // 借出的槽。不归还的话槽一直作废，两个槽都这样之后 OUT 端点再也挂不上接收。
+      // A lease handed over while unbinding is returned at once: closing the endpoint
+      // first delivers a packet the hardware had already received, and that completion
+      // lends its slot. A slot that is not given back stays void, and with both slots
+      // void the OUT endpoint can never arm a receive again.
+      if (completion.slot.Valid() && self->ep_data_out_)
+        self->ep_data_out_->ReleaseSlot(completion.slot, in_isr);
+      return;
     }
+    self->OnDataOutComplete(in_isr, completion);
   }
 
   /**

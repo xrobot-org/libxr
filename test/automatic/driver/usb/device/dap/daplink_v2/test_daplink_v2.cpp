@@ -662,6 +662,38 @@ void TestRebindDuringBatchThenDelay()
   TEST_ASSERT(!f.in.active && f.out.active);
 }
 
+/// 解绑时硬件已经收完、还没送达的 OUT 包：端点关闭前先把它送达，并借出它的槽。类这时
+/// 已经解绑，不处理这个包，但必须归还租约；否则槽一直作废，两个槽都作废后重新绑定也
+/// 挂不上接收，主机的命令再也发不进来。
+/// An OUT packet the hardware has received but not yet delivered when the class is
+/// unbound: the endpoint delivers it before it closes and lends its slot. The class is
+/// unbound by then and does not handle the packet, but it has to give the lease back;
+/// otherwise the slot stays void, and with both slots void a new binding cannot arm a
+/// receive and no command from the host gets in any more.
+void TestPacketDeliveredDuringUnbindGivesItsSlotBack()
+{
+  DapFixture f;
+  for (int round = 0; round < 2; ++round)
+  {
+    f.dap.BindEndpoints(f.pool, 0, false);
+    TEST_ASSERT(f.out.active);
+    {
+      // 控制器中断批次之内完成只登记，不送达；解绑在同一个批次里跟上。
+      // Inside a controller interrupt batch a completion is only recorded, not delivered;
+      // the unbind follows in the same batch.
+      EndpointPool::InterruptScope batch(f.pool);
+      f.out.HostSends({INFO, PACKET_SIZE_ID});
+      f.dap.UnbindEndpoints(f.pool, true);
+    }
+    Run(f);
+  }
+  f.dap.BindEndpoints(f.pool, 0, false);
+  TEST_ASSERT(f.out.active);
+  Send(f, {INFO, PACKET_SIZE_ID});
+  TEST_ASSERT(f.in.active && f.in.Last().length == 4);
+  f.in.Complete();
+}
+
 /// Step 等待响应缓冲区期间持有的命令（Step 因超时返回）属于收到它的会话。解绑再绑定
 /// 之后它不得到达目标：下一次 Step 丢弃它而不是执行它。
 /// A command that Step holds while it waits for a response buffer (Step returned on its
@@ -954,6 +986,7 @@ void test_usb_daplink_v2()
   TestQueueAndExecuteAnswerPerPacket();
   TestBatchOverflowAnswersError();
   TestRebindDuringBatchThenDelay();
+  TestPacketDeliveredDuringUnbindGivesItsSlotBack();
   TestHeldCommandDroppedAfterRebind();
   TestStagedResponseOfOldSessionIsDropped();
   TestBindAndUnbindLeaveSwdToStep();
