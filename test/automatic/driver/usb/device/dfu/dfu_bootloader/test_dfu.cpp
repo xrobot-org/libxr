@@ -25,12 +25,14 @@
 #include "device_composition.hpp"
 #include "dfu_bootloader.hpp"
 #include "dfu_runtime.hpp"
+#include "driver/usb/device/usb_device_test_common.hpp"
 #include "ep_pool.hpp"
 #include "flash.hpp"
 #include "test_assert.hpp"
 
 using namespace LibXR;
 using namespace LibXR::USB;
+using LibXR::USB::Test::RamFlash;
 
 namespace
 {
@@ -43,31 +45,6 @@ constexpr uint8_t DFU_UPLOAD = 0x02;
 constexpr uint8_t DFU_GETSTATUS = 0x03;
 constexpr uint8_t DFU_CLRSTATUS = 0x04;
 constexpr uint8_t DFU_GETSTATE = 0x05;
-
-/// RAM-backed Flash: erase fills with 0xFF, write copies, read is the base default.
-class RamFlash : public LibXR::Flash
-{
- public:
-  RamFlash(size_t min_erase, size_t min_write, RawData area)
-      : Flash(min_erase, min_write, area), area_(area)
-  {
-  }
-  ErrorCode Erase(size_t offset, size_t size) override
-  {
-    TEST_ASSERT(offset + size <= area_.size_);
-    std::memset(static_cast<uint8_t*>(area_.addr_) + offset, 0xFF, size);
-    return ErrorCode::OK;
-  }
-  ErrorCode Write(size_t offset, ConstRawData data) override
-  {
-    TEST_ASSERT(offset + data.size_ <= area_.size_);
-    std::memcpy(static_cast<uint8_t*>(area_.addr_) + offset, data.addr_, data.size_);
-    return ErrorCode::OK;
-  }
-
- private:
-  RawData area_;
-};
 
 unsigned g_jumps = 0;
 void JumpToApp(void*) { ++g_jumps; }

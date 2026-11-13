@@ -1,5 +1,5 @@
 /**
- * @file mock_endpoint.hpp
+ * @file usb_test_common.hpp
  * @brief 设备类主机测试共用的端点替身 / Shared endpoint double for device-class host
  * tests.
  *

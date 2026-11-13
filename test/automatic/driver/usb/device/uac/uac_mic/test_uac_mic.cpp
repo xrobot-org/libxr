@@ -5,20 +5,17 @@
 #include <vector>
 
 #include "dev_core.hpp"
+#include "driver/usb/usb_test_common.hpp"
 #include "ep_pool.hpp"
 #include "test_assert.hpp"
 #include "uac_mic.hpp"
 
 using namespace LibXR;
 using namespace LibXR::USB;
+using namespace LibXR::USB::Test;
 
 namespace
 {
-using Direction = Endpoint::Direction;
-using Number = Endpoint::EPNumber;
-using State = Endpoint::State;
-using Completion = Endpoint::Completion;
-using Slot = Endpoint::Slot;
 
 /// Re-exports the protected control-transfer result type and the diagnostics so a test
 /// can use them.
@@ -36,128 +33,6 @@ class Uac : public UAC1MicrophoneQ<1, 16>
 // 16000 Hz 单声道 16 bit：每音频帧 2 B，每个 1 ms 服务区间 16 帧 = 32 B，余数为 0。
 // 16000 Hz mono 16 bit: one audio frame is 2 B, one 1 ms service interval carries
 // 16 frames = 32 B, with a zero remainder.
-
-template <size_t N>
-struct alignas(64) Block
-{
-  std::array<uint8_t, N> bytes{};
-  RawData Raw() { return {bytes.data(), bytes.size()}; }
-};
-
-/// Backend double: records every start and lets the test play the hardware.
-class MockEndpoint : public Endpoint
-{
- public:
-  struct Start
-  {
-    uint32_t tag;
-    uint8_t* address;
-    size_t capacity;
-    size_t length;
-    std::vector<uint8_t> data;
-  };
-
-  MockEndpoint(Number number, Direction dir, RawData storage, uint8_t slot_count = 0)
-      : Endpoint(number, dir, storage, slot_count)
-  {
-  }
-
-  std::vector<Start> starts;
-  std::vector<std::vector<uint8_t>> sent;
-  bool active = false;
-  bool pending_stop = false;  // StopHardware answers PENDING.
-  bool stop_requested = false;
-  size_t reap_actual = 0;
-  bool reap_retired = false;
-  unsigned closes = 0, stalls = 0, clear_stalls = 0;
-  size_t limit = UINT16_MAX;
-  ErrorCode configure_result = ErrorCode::OK;
-
-  const Start& Last() const { return starts.back(); }
-
-  /// IN: the host takes the whole request.
-  void Complete(bool in_isr = true)
-  {
-    TEST_ASSERT(active);
-    active = false;
-    const Start& start = starts.back();
-    if (start.length != 0U)
-      TEST_ASSERT(std::equal(start.data.begin(), start.data.end(), start.address));
-    sent.push_back(start.data);
-    OnHardwareComplete(in_isr, start.tag, start.length);
-  }
-  /// IN: a short or failed request.
-  void CompleteWith(size_t actual, ErrorCode result = ErrorCode::OK)
-  {
-    TEST_ASSERT(active);
-    active = false;
-    OnHardwareComplete(true, starts.back().tag, actual, result);
-  }
-  /// OUT: the host sends bytes into the armed slot.
-  void HostSends(const std::vector<uint8_t>& bytes)
-  {
-    TEST_ASSERT(active && bytes.size() <= starts.back().capacity);
-    active = false;
-    if (!bytes.empty()) std::memcpy(starts.back().address, bytes.data(), bytes.size());
-    OnHardwareComplete(true, starts.back().tag, bytes.size());
-  }
-  void ConfirmStop()
-  {
-    TEST_ASSERT(stop_requested);
-    stop_requested = false;
-    active = false;
-    OnHardwareStopped(true);
-  }
-
- protected:
-  ErrorCode ConfigureHardware(const Config&) override { return configure_result; }
-  void CloseHardware(bool) override
-  {
-    TEST_ASSERT(!active);
-    ++closes;
-  }
-  ErrorCode StartHardware(const HwRequest& request, bool) override
-  {
-    TEST_ASSERT(!active && !stop_requested);
-    TEST_ASSERT(request.length <= request.slot.size_ || request.slot.size_ == 0U);
-    Start start{request.tag,
-                static_cast<uint8_t*>(request.slot.addr_),
-                request.slot.size_,
-                request.length,
-                {}};
-    if (GetConfig().direction == Direction::IN && request.length)
-      start.data.assign(start.address, start.address + request.length);
-    starts.push_back(std::move(start));
-    active = true;
-    return ErrorCode::OK;
-  }
-  StopResult StopHardware(bool) override
-  {
-    if (!pending_stop)
-    {
-      active = false;
-      return StopResult::DONE;
-    }
-    stop_requested = true;
-    return StopResult::PENDING;
-  }
-  size_t ReapProgress(const HwRequest&, bool& retired) override
-  {
-    retired = reap_retired;
-    return reap_actual;
-  }
-  ErrorCode StallHardware(bool) override
-  {
-    ++stalls;
-    return ErrorCode::OK;
-  }
-  ErrorCode ClearStallHardware(bool) override
-  {
-    ++clear_stalls;
-    return ErrorCode::OK;
-  }
-  size_t MaxPacketSizeLimit(Type) const override { return limit; }
-};
 
 bool IsBytes(const ConstRawData& data, std::initializer_list<uint8_t> expected)
 {

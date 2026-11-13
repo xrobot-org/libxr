@@ -23,10 +23,11 @@
 #include <thread>
 #include <vector>
 
-#include "../../mock_endpoint.hpp"
 #include "daplink_v2.hpp"
 #include "debug/swd.hpp"
 #include "device_composition.hpp"
+#include "driver/usb/device/dap/dap_test_common.hpp"
+#include "driver/usb/usb_test_common.hpp"
 
 using namespace LibXR;
 using namespace LibXR::USB;
@@ -46,64 +47,6 @@ constexpr uint8_t CONNECT = static_cast<uint8_t>(CommandId::CONNECT);
 constexpr uint8_t DELAY = static_cast<uint8_t>(CommandId::DELAY);
 constexpr uint8_t PACKET_SIZE_ID = static_cast<uint8_t>(InfoId::PACKET_SIZE);
 constexpr uint8_t PACKET_COUNT_ID = static_cast<uint8_t>(InfoId::PACKET_COUNT);
-
-/// Minimal SWD probe: every transfer succeeds and reads a fixed word. It records the
-/// thread of every call.
-class FakeSwd : public LibXR::Debug::Swd
-{
- public:
-  unsigned enters = 0, closes = 0, sequences = 0;
-  uint32_t clock_hz = 0;
-  std::vector<std::thread::id> callers;
-
-  ErrorCode SetClockHz(uint32_t hz) override
-  {
-    Note();
-    clock_hz = hz;
-    return ErrorCode::OK;
-  }
-  void Close() override
-  {
-    Note();
-    ++closes;
-  }
-  ErrorCode LineReset() override
-  {
-    Note();
-    return ErrorCode::OK;
-  }
-  ErrorCode EnterSwd() override
-  {
-    Note();
-    ++enters;
-    return ErrorCode::OK;
-  }
-  ErrorCode Transfer(const LibXR::Debug::SwdProtocol::Request& req,
-                     LibXR::Debug::SwdProtocol::Response& resp) override
-  {
-    Note();
-    if (req.rnw) resp.rdata = 0x12345678u;
-    resp.ack = LibXR::Debug::SwdProtocol::Ack::OK;
-    resp.parity_ok = true;
-    return ErrorCode::OK;
-  }
-  void IdleClocks(uint32_t) override { Note(); }
-  ErrorCode SeqWriteBits(uint32_t, const uint8_t*) override
-  {
-    Note();
-    ++sequences;
-    return ErrorCode::OK;
-  }
-  ErrorCode SeqReadBits(uint32_t cycles, uint8_t* out) override
-  {
-    Note();
-    if (out != nullptr) std::memset(out, 0, (cycles + 7U) / 8U);
-    return ErrorCode::OK;
-  }
-
- private:
-  void Note() { callers.push_back(std::this_thread::get_id()); }
-};
 
 using DapV2 = DapLinkV2Class<FakeSwd>;
 

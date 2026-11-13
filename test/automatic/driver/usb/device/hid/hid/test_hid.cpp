@@ -18,7 +18,7 @@
 #include <cstring>
 #include <vector>
 
-#include "../../mock_endpoint.hpp"
+#include "driver/usb/usb_test_common.hpp"
 #include "hid.hpp"
 #include "hid_gamepad.hpp"
 #include "hid_keyboard.hpp"

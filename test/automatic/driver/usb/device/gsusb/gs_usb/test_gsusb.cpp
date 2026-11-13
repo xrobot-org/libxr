@@ -22,9 +22,10 @@
 #include <cstring>
 #include <vector>
 
-#include "../../mock_endpoint.hpp"
 #include "can.hpp"
 #include "device_composition.hpp"
+#include "driver/usb/device/usb_device_test_common.hpp"
+#include "driver/usb/usb_test_common.hpp"
 #include "flash.hpp"
 #include "gs_usb.hpp"
 #include "gs_usb_protocol.hpp"
@@ -106,29 +107,6 @@ class StubCan : public LibXR::CAN
 
   unsigned configures = 0;
   std::vector<Tx> tx;
-};
-
-/// RAM-backed Flash for the Database (erase fills with 0xFF, write copies).
-class RamFlash : public LibXR::Flash
-{
- public:
-  RamFlash(size_t min_erase, size_t min_write, RawData area)
-      : Flash(min_erase, min_write, area), area_(area)
-  {
-  }
-  ErrorCode Erase(size_t offset, size_t size) override
-  {
-    std::memset(static_cast<uint8_t*>(area_.addr_) + offset, 0xFF, size);
-    return ErrorCode::OK;
-  }
-  ErrorCode Write(size_t offset, ConstRawData data) override
-  {
-    std::memcpy(static_cast<uint8_t*>(area_.addr_) + offset, data.addr_, data.size_);
-    return ErrorCode::OK;
-  }
-
- private:
-  RawData area_;
 };
 
 std::vector<uint8_t> ClassicFrame(uint32_t echo_id, uint32_t can_id, uint8_t dlc,

@@ -16,11 +16,13 @@
 #include <vector>
 
 #include "cdc_uart.hpp"
+#include "driver/usb/usb_test_common.hpp"
 #include "test_assert.hpp"
 #include "usb/backend/fsdev.hpp"
 
 using namespace LibXR;
 using namespace LibXR::USB;
+using LibXR::USB::Test::Block;
 
 namespace
 {
@@ -468,13 +470,6 @@ class ControlClass : public DeviceClass
   }
   void OnControlComplete(bool, const SetupPacket&) override { ++complete_count; }
   void OnControlAbort(bool, const SetupPacket&) override { ++abort_count; }
-};
-
-template <size_t N>
-struct alignas(64) Block
-{
-  std::array<uint8_t, N> bytes{};
-  RawData Raw() { return {bytes.data(), bytes.size()}; }
 };
 
 /// 枚举并配置后的通用底座 / Common base with the device enumerated and configured

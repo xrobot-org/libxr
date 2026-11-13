@@ -116,16 +116,16 @@ add_executable(
   driver/power/test_power.cpp
   driver/uart/test_uart.cpp
   driver/timebase/test_timebase.cpp
-  driver/usb/core/test_endpoint.cpp
-  driver/usb/core/test_fsdev.cpp
-  driver/usb/device/cdc/test_cdc_test.cpp
-  driver/usb/device/cdc/test_cdc_uart.cpp
-  driver/usb/device/dap/test_daplink_v1.cpp
-  driver/usb/device/dap/test_daplink_v2.cpp
-  driver/usb/device/dfu/test_dfu.cpp
-  driver/usb/device/gsusb/test_gsusb.cpp
-  driver/usb/device/hid/test_hid.cpp
-  driver/usb/device/uac/test_uac_mic.cpp
+  driver/usb/backend/fsdev/test_fsdev.cpp
+  driver/usb/core/ep/test_endpoint.cpp
+  driver/usb/device/cdc/cdc_test/test_cdc_test.cpp
+  driver/usb/device/cdc/cdc_uart/test_cdc_uart.cpp
+  driver/usb/device/dap/daplink_v1/test_daplink_v1.cpp
+  driver/usb/device/dap/daplink_v2/test_daplink_v2.cpp
+  driver/usb/device/dfu/dfu_bootloader/test_dfu.cpp
+  driver/usb/device/gsusb/gs_usb/test_gsusb.cpp
+  driver/usb/device/hid/hid/test_hid.cpp
+  driver/usb/device/uac/uac_mic/test_uac_mic.cpp
   middleware/database/database/test_database.cpp
   middleware/database/raw/raw/test_linux_database_raw.cpp
   middleware/database/raw_sequential/test_linux_database_sequential.cpp
@@ -249,13 +249,13 @@ set_tests_properties(xrobot_freshness PROPERTIES TIMEOUT 60)
 # CH32 USBHS IN endpoint against a fake register block: ACKed packets that INT_ST
 # reports as busy NAKs are found by their toggle.
 add_executable(
-  test_ch32_usbhs_in driver/usb/ch32/test_ch32_usbhs_in.cpp
+  test_ch32_usbhs_in driver/usb/core/ep/ch32/test_ch32_usbhs_in.cpp
                      "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/ch/ch32_usb_endpoint_otghs.cpp"
 )
 target_link_libraries(test_ch32_usbhs_in PRIVATE xr)
 target_include_directories(
   test_ch32_usbhs_in PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.."
-                             "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/ch32"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/core/ep/ch32"
                              "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/ch"
 )
 target_compile_definitions(

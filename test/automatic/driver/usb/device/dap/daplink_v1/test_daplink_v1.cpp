@@ -20,9 +20,10 @@
 #include <thread>
 #include <vector>
 
-#include "../../mock_endpoint.hpp"
 #include "daplink_v1.hpp"
 #include "debug/swd.hpp"
+#include "driver/usb/device/dap/dap_test_common.hpp"
+#include "driver/usb/usb_test_common.hpp"
 
 using namespace LibXR;
 using namespace LibXR::USB;
@@ -35,73 +36,6 @@ using InfoId = LibXR::USB::DapLinkV1Def::InfoId;
 using Port = LibXR::USB::DapLinkV1Def::Port;
 using SwdRequest = LibXR::Debug::SwdProtocol::Request;
 using SwdResponse = LibXR::Debug::SwdProtocol::Response;
-
-/// Minimal SWD probe: every transfer succeeds and reads a fixed word. It records the
-/// thread of every call.
-class FakeSwd : public LibXR::Debug::Swd
-{
- public:
-  unsigned enters = 0, closes = 0, line_resets = 0;
-  uint32_t clock_hz = 0;
-  unsigned writes = 0, reads = 0;
-  std::vector<std::thread::id> callers;
-
-  ErrorCode SetClockHz(uint32_t hz) override
-  {
-    Note();
-    clock_hz = hz;
-    return ErrorCode::OK;
-  }
-  void Close() override
-  {
-    Note();
-    ++closes;
-  }
-  ErrorCode LineReset() override
-  {
-    Note();
-    ++line_resets;
-    return ErrorCode::OK;
-  }
-  ErrorCode EnterSwd() override
-  {
-    Note();
-    ++enters;
-    return ErrorCode::OK;
-  }
-  ErrorCode Transfer(const SwdRequest& req, SwdResponse& resp) override
-  {
-    Note();
-    if (req.rnw)
-    {
-      ++reads;
-      resp.rdata = 0x12345678u;
-    }
-    else
-    {
-      ++writes;
-    }
-    resp.ack = LibXR::Debug::SwdProtocol::Ack::OK;
-    resp.parity_ok = true;
-    return ErrorCode::OK;
-  }
-  void IdleClocks(uint32_t) override { Note(); }
-  ErrorCode SeqWriteBits(uint32_t cycles, const uint8_t* data) override
-  {
-    Note();
-    if (cycles != 0U && data != nullptr) ++writes;
-    return ErrorCode::OK;
-  }
-  ErrorCode SeqReadBits(uint32_t cycles, uint8_t* out) override
-  {
-    Note();
-    if (out != nullptr) std::memset(out, 0, (cycles + 7U) / 8U);
-    return ErrorCode::OK;
-  }
-
- private:
-  void Note() { callers.push_back(std::this_thread::get_id()); }
-};
 
 class TestDap : public DapLinkV1Class<FakeSwd>
 {

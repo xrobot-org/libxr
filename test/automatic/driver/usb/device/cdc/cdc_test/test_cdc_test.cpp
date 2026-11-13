@@ -14,7 +14,7 @@
 #include <cstring>
 #include <vector>
 
-#include "../../mock_endpoint.hpp"
+#include "driver/usb/usb_test_common.hpp"
 #include "cdc_test.hpp"
 #include "device_composition.hpp"
 
