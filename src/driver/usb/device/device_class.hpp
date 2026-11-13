@@ -27,7 +27,8 @@ class DeviceCore;
  * 执行：控制器中断，或者任何调用 Submit/Receive/ReturnSlot/RequestClassService/Init 的
  * 应用线程。所以每个回调都可能在中断里（in_isr=true）运行，也可能在任意应用线程里
  * （in_isr=false）运行，必须不阻塞；同一设备的回调不会并发。线程持有 owner 时，中断只发布
- * 工作，要等这个线程处理。
+ * 工作，要等这个线程处理。所以调用这些接口的线程优先级不能太低：它持有 owner 时被抢占，
+ * 控制传输和端点完成都要等它恢复运行。
  * Execution context: BindEndpoints/UnbindEndpoints, OnDeviceEvent, the control request
  * callbacks (OnGetDescriptor, OnControl*, OnClass*, OnVendorRequest), OnService,
  * OnBusTime and the endpoint completions all run in the device's owner. The owner pass
@@ -36,7 +37,9 @@ class DeviceCore;
  * Init. Every callback can therefore run in an interrupt (in_isr=true) or in an
  * arbitrary application thread (in_isr=false), and must not block; callbacks of one
  * device never run concurrently. While a thread owns, interrupt work is only published
- * and waits for that thread.
+ * and waits for that thread. A thread that calls these interfaces therefore must not run
+ * at a low priority: when it is preempted while it owns, control transfers and endpoint
+ * completions wait until it runs again.
  */
 class DeviceClass : public ConfigDescriptorItem
 {
