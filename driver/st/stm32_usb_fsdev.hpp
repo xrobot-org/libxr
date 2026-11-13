@@ -282,7 +282,7 @@ struct Stm32FsDevClassicHw
   static void SuspendClocked() {}
   static void ResumeRegs()
   {
-    Regs()->CNTR &= static_cast<uint16_t>(~(USB_CNTR_LP_MODE | USB_CNTR_FSUSP));
+    Regs()->CNTR &= static_cast<uint16_t>(~(CNTR_LP_MODE | USB_CNTR_FSUSP));
   }
 
   static void Connect(bool on)
@@ -338,6 +338,17 @@ struct Stm32FsDevClassicHw
   // HAL's PMA_ACCESS: the F1/F3 HAL does not define it, yet their PMA is accessed with
   // half-word stride 2 like F1 (the IP whose PMA is shared with CAN); the other classic
   // parts use 1.
+  // CNTR 的低功耗位：F1 的设备头文件叫 USB_CNTR_LP_MODE，其余经典型叫 USB_CNTR_LPMODE
+  // （F3 两个名字都有）。
+  // The low-power bit of CNTR: the F1 device header calls it USB_CNTR_LP_MODE, the other
+  // classic parts USB_CNTR_LPMODE (F3 has both names).
+  static constexpr uint16_t CNTR_LP_MODE =
+#if defined(USB_CNTR_LPMODE)
+      USB_CNTR_LPMODE
+#else
+      USB_CNTR_LP_MODE
+#endif
+      ;
   static constexpr unsigned PMA_WORD_STRIDE =
 #if defined(PMA_ACCESS)
       PMA_ACCESS
