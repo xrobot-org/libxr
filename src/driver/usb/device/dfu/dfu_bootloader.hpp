@@ -412,10 +412,16 @@ class DfuBootloaderBackend
   bool RunPendingWork()
   {
     uint32_t expected = READY;
+    if (job_state_.load(std::memory_order_acquire) != READY) return false;
+    // 开始时刻在 RUNNING 发布之前写入：GETSTATUS 只在看到 RUNNING/DONE 之后读它，而状态为
+    // READY 时没有人读，所以下面的 CAS 失败（工作刚被取消）时这次写入也没有影响。
+    // The start time is written before RUNNING is published: GETSTATUS reads it only
+    // after it has seen RUNNING/DONE, and nobody reads it while the state is READY, so
+    // the write is harmless when the CAS below fails (the work was just cancelled).
+    job_started_ms_ = static_cast<uint32_t>(Timebase::GetMilliseconds());
     if (!job_state_.compare_exchange_strong(expected, RUNNING, std::memory_order_acq_rel))
       return false;
     DFUStatusCode result = DFUStatusCode::OK;
-    job_started_ms_ = static_cast<uint32_t>(Timebase::GetMilliseconds());
     if (job_.kind == WorkKind::WRITE)
     {
       if (!EnsureBlocksErased(job_.write.offset, job_.write.len))
