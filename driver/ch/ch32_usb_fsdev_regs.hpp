@@ -7,6 +7,7 @@
 #include "ch32_usb_rcc.hpp"
 #include "usb/backend/fsdev.hpp"
 
+// CH32 DevFS（经典型 FSDEV/PMA）外设路径的硬件访问 traits。
 // Hardware-access traits of the CH32 DevFS (classic FSDEV/PMA) peripheral path.
 #if defined(RCC_APB1Periph_USB)
 
@@ -54,6 +55,8 @@ struct Ch32DevFsHw
   static constexpr uint8_t ENDPOINT_COUNT = 8U;
   static constexpr size_t PMA_SIZE = 512U;
   // 经典型布局：ADDR 字段按偶数截断，缓冲地址必须偶数对齐。
+  // Classic layout: the ADDR field is truncated to even values, so buffer addresses must
+  // be even aligned.
   static constexpr size_t PMA_ALIGN = 2U;
 
   static constexpr uintptr_t REG_BASE =
@@ -114,6 +117,8 @@ struct Ch32DevFsHw
   static volatile uint16_t* BtField(uint8_t num, unsigned field)
   {
     // BTABLE = 0：字段 m 的半字偏移是 8n+2m，APB 字节偏移再乘 2（每数据字占 4 B）。
+    // BTABLE = 0: the half-word offset of field m is 8n+2m, and the APB byte offset is
+    // further multiplied by 2 (every data word takes 4 B).
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     return reinterpret_cast<volatile uint16_t*>(
         PMA_ADDR + (static_cast<uintptr_t>(num) * 8U + 2U * field) * 2U);
@@ -189,6 +194,8 @@ struct Ch32DevFsHw
     WriteCntr(0x0001U);  // FRES：强复位并顺带清 PDWN / Force reset, clears PDWN too
     WriteCntr(0U);
     // 直接写 0 清全部挂起标志；ClearIstr(0) 是写 0xFFFF（保持），语义不同。
+    // Write 0 directly to clear all pending flags; ClearIstr(0) writes 0xFFFF (keep),
+    // which has different semantics.
     *Istr() = 0U;
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     *reinterpret_cast<volatile uint16_t*>(REG_BASE + 0x50U) = 0U;  // BTABLE = 0

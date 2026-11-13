@@ -75,9 +75,9 @@ class ESP32USBDevice : public USB::EndpointPool,
    *
    * @param ep_cfgs endpoint 构造配置列表 / Endpoint construction config list
    * @param packet_size EP0 包长配置 / EP0 packet-size configuration
-   * @param vid USB vendor ID
-   * @param pid USB product ID
-   * @param bcd Device release number in BCD
+   * @param vid USB 厂商 ID / USB vendor ID
+   * @param pid USB 产品 ID / USB product ID
+   * @param bcd 设备版本号（BCD）/ Device release number in BCD
    * @param lang_list 字符串语言包列表 / String language-pack list
    * @param configs 配置描述符项列表 / Configuration-descriptor item lists
    * @param uid 可选设备唯一标识数据 / Optional device-unique ID payload

@@ -34,6 +34,9 @@ static void ClearPendingOtgFsInterrupts()
 
     // 这个循环只清当前 INT_FG 快照里可见的 pending 位；主机后续的新事件
     // 会重新锁存成新的中断，并在下一次 IRQ 进入时处理。
+    // This loop only clears the pending bits visible in the current INT_FG snapshot; a
+    // later new host event is latched as a new interrupt and handled the next time the
+    // IRQ is entered.
     // This loop only drains the pending bits visible in the current INT_FG
     // snapshot. Any later host event will relatch a fresh interrupt and be
     // handled by the next IRQ entry.
@@ -66,6 +69,9 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
   // 处理顺序与控制传输生命周期保持一致：
   // 1) 总线级恢复
   // 2) token 完成与 setup 分发
+  // The handling order follows the control-transfer lifecycle:
+  // 1) Bus-level recovery
+  // 2) Token completion and setup dispatch
   // Handle order matches the control-transfer lifecycle:
   // 1) bus-level recovery
   // 2) token completion / setup dispatch
@@ -86,6 +92,7 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
     uint8_t clear_mask = 0;
 
     // reset 会重建 EP0 状态，并把设备恢复到“等待 setup”的初始形态。
+    // A reset rebuilds the EP0 state and returns the device to "waiting for setup".
     // Reset rebuilds EP0 state and returns the device to "waiting for setup".
     if (PENDING & USBFS_UIF_BUS_RST)
     {
@@ -94,6 +101,7 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
       usb->OnBusReset(true);
 
       // 复位后首个 IN/OUT 均从 DATA1 开始（HS 已上板方案）。
+      // After a reset the first IN/OUT both start from DATA1 (verified on the HS board).
       out0->tog_ = true;
       in0->tog_ = true;
 
@@ -104,6 +112,7 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
     }
 
     // suspend 走与 reset 相同的 EP0 恢复路径；resume 由后续主机时序体现。
+    // suspend takes the same EP0 recovery path as reset; resume follows the host timing.
     // Suspend follows the same EP0 recovery path; resume is observed later by the host.
     if (PENDING & USBFS_UIF_SUSPEND)
     {
@@ -128,6 +137,10 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
           // 新的 setup 会中断前一笔 EP0 事务，因此这里在把 setup 包交给 DeviceCore
           // 之前，先把 EP0 的双向状态恢复到 NAK/DATA1（后续数据阶段与状态阶段的
           // 首包都是 DATA1）。
+          // A new setup interrupts the previous EP0 transaction, so before the setup
+          // packet is handed to DeviceCore, the bidirectional EP0 state is restored to
+          // NAK/DATA1 (the first packet of the following data stage and status stage is
+          // DATA1).
           USBFSD->UEP0_TX_CTRL = USBFS_UEP_T_RES_NAK;
           USBFSD->UEP0_RX_CTRL = USBFS_UEP_R_RES_NAK;
 
@@ -142,6 +155,7 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
         case USBFS_UIS_TOKEN_OUT:
         {
           // OTGFS 硬件已经给出了本次 token 的完成 RX 长度。
+          // The OTGFS hardware already provides the RX length of this token completion.
           const uint16_t LEN = USBFSD->RX_LEN;
           if (ep[OUT_IDX])
           {
@@ -153,6 +167,7 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
         case USBFS_UIS_TOKEN_IN:
         {
           // IN token 完成不需要额外 payload 长度，事件本身就足够了。
+          // An IN token completion needs no extra payload length; the event is enough.
           if (ep[IN_IDX])
           {
             ep[IN_IDX]->TransferComplete(0);
@@ -162,7 +177,9 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
 
 #if defined(USBFS_UIS_TOKEN_SOF) && defined(USBFS_UIE_DEV_SOF)
         case USBFS_UIS_TOKEN_SOF:
-          usb->OnSof(true, 0xffffU);  // No readable device frame counter in this IP.
+          // 本 IP 没有可读的设备帧计数器。
+          // No readable device frame counter in this IP.
+          usb->OnSof(true, 0xffffU);
           break;
 #endif
         default:
@@ -215,6 +232,7 @@ CH32USBOtgFS::CH32USBOtgFS(
   }
 
   // EP0：收发共用同一块（≥64 B，手册 p.355）。
+  // EP0: RX and TX share one block (at least 64 B, manual p.355).
   REQUIRE(rx[0].addr_ != nullptr && rx[0].addr_ == tx[0].addr_ && rx[0].size_ >= 64U);
 
   auto* ep0_out = new CH32EndpointOtgFs(USB::Endpoint::EPNumber::EP0,
@@ -231,6 +249,9 @@ CH32USBOtgFS::CH32USBOtgFS(
     {
       // 双向共享（单 bank）：IN 必须落在 OUT +64 且两块各 ≥64 B（手册表 23-4
       // p.359）；两个端点对象都传块基址，由端点构造按方向二分。
+      // Bidirectional shared (single bank): IN must land at OUT +64 and the two blocks
+      // are each at least 64 B (manual table 23-4 p.359); both endpoint objects pass the
+      // block base address, and the endpoint constructor splits it by direction.
       REQUIRE(tx[i].addr_ == reinterpret_cast<uint8_t*>(rx[i].addr_) + 64U);
       REQUIRE(rx[i].size_ >= 64U && tx[i].size_ >= 64U);
       USB::EndpointPool::Put(
@@ -241,6 +262,8 @@ CH32USBOtgFS::CH32USBOtgFS(
     else if (rx[i].addr_ != nullptr)
     {
       // 单向 OUT：两槽各占块的一半（≥2×MPS，默认 MPS=64 → ≥128 B）。
+      // Unidirectional OUT: each of the two slots takes half of the block (at least 2 x
+      // MPS, by default MPS=64, so at least 128 B).
       REQUIRE(rx[i].size_ >= 128U);
       USB::EndpointPool::Put(
           new CH32EndpointOtgFs(ep_index, USB::Endpoint::Direction::OUT, rx[i], true));
@@ -276,6 +299,7 @@ void CH32USBOtgFS::OnControlReady()
 void CH32USBOtgFS::Start(bool)
 {
   // OTGFS 与 FSDEV 共用同一套 USB 48 MHz 时钟选择规则。
+  // OTGFS and FSDEV share the same USB 48 MHz clock selection rule.
   // OTGFS uses the same shared USB 48 MHz clock selection as FSDEV.
   LibXR::CH32UsbRcc::ConfigureUsb48M();
 #if defined(RCC_USBCLK48MCLKSource_USBPHY) && defined(RCC_AHBPeriph_USBHS)

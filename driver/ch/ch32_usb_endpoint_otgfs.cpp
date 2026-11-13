@@ -259,6 +259,8 @@ CH32EndpointOtgFs::CH32EndpointOtgFs(EPNumber ep_num, Direction dir,
 ErrorCode CH32EndpointOtgFs::ConfigureHardware(const Config& cfg)
 {
   // 包长已由核心按 MaxPacketSizeLimit 收敛；状态由基类管理，这里只编程寄存器。
+  // The core has already clamped the packet size to MaxPacketSizeLimit; the state is
+  // managed by the base class, so only the registers are programmed here.
   is_isochronous_ = (cfg.type == Type::ISOCHRONOUS);
 
   if (IsPlanning())
@@ -274,6 +276,8 @@ ErrorCode CH32EndpointOtgFs::ConfigureHardware(const Config& cfg)
   {
     // 单 bank 共享双向：IN 地址固定在 OUT +64，两个使能保持稳定，NAK 是各方向
     // 的激活闸门。
+    // Single-bank shared bidirectional: the IN address is fixed at OUT +64 and both
+    // enables stay constant; NAK is the activation gate of each direction.
     enable_tx(GetNumber());
     enable_rx(GetNumber());
   }
@@ -333,6 +337,8 @@ ErrorCode CH32EndpointOtgFs::StartHardware(const HwRequest& request, bool /*in_i
   if (is_in)
   {
     // 槽内存就是 DMA 缓冲：类在 Submit 前已把数据写进槽，无需再拷贝。
+    // The slot memory is the DMA buffer: the class wrote the data into the slot before
+    // Submit, so no copy is needed.
     // 共享双向端点不能动 UEPn_DMA：硬件的 IN 区固定在块基址 +64，写了 IN 槽
     // 地址会把发送区推到 base+128、并让 OUT 收到 IN 区里去。
     // Shared bidirectional endpoints must not touch UEPn_DMA: the hardware IN
@@ -360,6 +366,7 @@ ErrorCode CH32EndpointOtgFs::StartHardware(const HwRequest& request, bool /*in_i
     else
     {
       // EP0 IN 按 start 次数翻转 toggle（HS 已上板方案）。
+      // EP0 IN flips the toggle per start count (the scheme verified on the HS board).
       *addr = USBFS_UEP_T_RES_ACK | (tog_ ? USBFS_UEP_T_TOG : 0);
       tog_ = !tog_;
     }
@@ -368,6 +375,10 @@ ErrorCode CH32EndpointOtgFs::StartHardware(const HwRequest& request, bool /*in_i
 
   // OUT：共享模式每包完成且不推进 DMA（UEPn_DMA 收发共用，推进会破坏 IN 固定
   // +64 的硬件布局）；单向模式按包推进 DMA，多包请求一次完成。
+  // OUT: in shared mode every packet completes and the DMA does not advance (UEPn_DMA is
+  // shared by RX and TX, advancing it would break the fixed IN +64 hardware layout); in
+  // single-direction mode the DMA advances per packet and a multi-packet request
+  // completes once.
   if (single_direction_ || is_ep0)
   {
     set_dma_buffer(GetNumber(), request.slot.addr_, false);
@@ -398,6 +409,11 @@ USB::Endpoint::StopResult CH32EndpointOtgFs::StopHardware(bool /*in_isr*/)
   // RES=NAK 立即生效：控制器从下一个事务起不再访问槽；在途的最后一个事务仍会
   // 完成（最多一个包落进槽），此后 INT_BUSY=1 自动 NAK 全部事务。无法也无须
   // 中止在途事务，迟到的完成由核心按标签丢弃（与 FSDEV 先例一致）。
+  // RES=NAK takes effect immediately: from the next transaction on the controller no
+  // longer accesses the slot; the last in-flight transaction still completes (at most one
+  // packet lands in the slot), after which INT_BUSY=1 NAKs all transactions
+  // automatically. An in-flight transaction can not and need not be aborted; a late
+  // completion is dropped by the core by tag (same as the FSDEV precedent).
   if (GetDirection() == Direction::IN)
   {
     *get_tx_ctrl_addr(GetNumber()) =
@@ -492,6 +508,7 @@ void CH32EndpointOtgFs::TransferComplete(size_t size)
   const bool IS_ISO = (GetType() == Type::ISOCHRONOUS);
 
   // UIF_TRANSFER/INT_FG 会在 IRQ handler 完成分发后统一清掉。
+  // UIF_TRANSFER/INT_FG are cleared by the IRQ handler once dispatch has finished.
 
   if (IS_IN)
   {
@@ -529,6 +546,7 @@ void CH32EndpointOtgFs::TransferComplete(size_t size)
       set_tx_len(GetNumber(), chunk);
     }
     // 完成后恢复 NAK；IN 一次请求一次完成，actual = 请求长度。
+    // Restore NAK after completion; an IN request completes once, actual = length.
     *get_tx_ctrl_addr(GetNumber()) =
         (*get_tx_ctrl_addr(GetNumber()) & ~USBFS_UEP_T_RES_MASK) | USBFS_UEP_T_RES_NAK;
     transfer_active_ = false;
@@ -539,6 +557,8 @@ void CH32EndpointOtgFs::TransferComplete(size_t size)
   }
 
   // TOG 不匹配表示数据同步失败：丢弃本包并按原请求重新挂接收。
+  // A TOG mismatch means data synchronization failed: drop this packet and re-arm the
+  // receive with the original request.
   if (!IS_ISO)
   {
     const bool TOG_OK = ((USBFSD->INT_ST & USBFS_U_TOG_OK) == USBFS_U_TOG_OK);  // NOLINT
@@ -562,12 +582,16 @@ void CH32EndpointOtgFs::TransferComplete(size_t size)
   if (!IS_EP0 && single_direction_ && !IS_ISO)
   {
     // 单向：按包推进 DMA，累计到请求长度或收到短包才一次完成。
+    // Single direction: the DMA advances per packet, and the request completes once when
+    // the accumulated length reaches the request length or a short packet arrives.
     transfer_accumulated_ += size;
     if (transfer_accumulated_ < transfer_requested_ && size == MaxPacketSize())
     {
       transfer_cursor_ += size;
       *get_dma_addr(GetNumber()) = reinterpret_cast<uint32_t>(transfer_cursor_);
-      return;  // RES 仍为 ACK，继续收下一包
+      // RES 仍为 ACK，继续收下一包
+      // RES stays ACK, keep receiving the next packet.
+      return;
     }
     *get_rx_ctrl_addr(GetNumber()) =
         (*get_rx_ctrl_addr(GetNumber()) & ~USBFS_UEP_R_RES_MASK) | USBFS_UEP_R_RES_NAK;
@@ -579,6 +603,9 @@ void CH32EndpointOtgFs::TransferComplete(size_t size)
 
   // 共享模式（含 EP0 与 ISO）：每包完成，actual = RX_LEN，不推进 DMA；包间由
   // INT_BUSY 自动 NAK 挡住，类消费槽后重新挂接收。
+  // Shared mode (including EP0 and ISO): every packet completes with actual = RX_LEN and
+  // the DMA does not advance; INT_BUSY NAKs automatically between packets, and the class
+  // re-arms the receive after consuming the slot.
   if (!IS_EP0)
   {
     *get_rx_ctrl_addr(GetNumber()) =

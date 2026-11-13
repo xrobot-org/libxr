@@ -154,7 +154,7 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   static constexpr uint8_t NO_FLUSH = 0xFF;
   static constexpr uint8_t FLUSH_ALL = 0x10;
 
-  // Register blocks of this core.
+  // 本 core 的寄存器块 / Register blocks of this core.
   USB_OTG_DeviceTypeDef* Device() const;
   USB_OTG_INEndpointTypeDef* InEp(uint8_t num) const;
   USB_OTG_OUTEndpointTypeDef* OutEp(uint8_t num) const;
@@ -172,14 +172,18 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   void ArmSetup();
   void DeliverSetup(const uint8_t* packet);
 
+  // 仅当 IN 停止在等待 INEPNE 时才取消屏蔽。
   // INEPNE is unmasked only while an IN stop waits for it.
   void UpdateInNakMask();
+  // 全局 OUT NAK，由所有正在停止的 OUT 端点共用。
   // Global OUT NAK, shared by every OUT endpoint that stops.
   bool AcquireGlobalOutNak();
   void ReleaseGlobalOutNak();
+  // TX FIFO 刷新：在 GRSTCTL 中一次一个，从不等待完成。
   // TX FIFO flushes: one at a time in GRSTCTL, never waited for.
   void RequestTxFlush(uint8_t fifo);
   void PollTxFlush();
+  // 停止或刷新在等待时，或需要总线时间时，总线 tick（SOF）保持运行。
   // The bus tick (SOF) runs while a stop or a flush waits, or bus time is wanted.
   void UpdateTick();
   void ForceStopAll(bool in_isr);
@@ -190,15 +194,21 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   uint8_t index_;
   USB_OTG_GlobalTypeDef* core_;
   uint8_t endpoint_count_;
-  uint32_t core_id_ = 0;  // GSNPSID, read once after the core reset.
+  // GSNPSID，core 复位后读取一次。
+  // GSNPSID, read once after the core reset.
+  uint32_t core_id_ = 0;
   HardwareConfig hw_;
   STM32OtgEndpoint* in_[MAX_ENDPOINTS] = {};
   STM32OtgEndpoint* out_[MAX_ENDPOINTS] = {};
-  alignas(4) uint8_t setup_[8] = {};  // Non-DMA SETUP packet.
+  alignas(4) uint8_t setup_[8] = {};  // 非 DMA 的 SETUP 包 / Non-DMA SETUP packet.
   USB::Speed bus_speed_ = USB::Speed::FULL;
-  bool discard_ = false;  // Bus reset seen, the owner has not applied it yet.
+  // 已看到总线复位，owner 尚未应用。
+  // Bus reset seen, the owner has not applied it yet.
+  bool discard_ = false;
   uint8_t global_nak_users_ = 0;
-  uint32_t flush_pending_ = 0;  // Bit n: TX FIFO n; bit 16: every TX FIFO.
+  // 位 n：TX FIFO n；位 16：所有 TX FIFO。
+  // Bit n: TX FIFO n; bit 16: every TX FIFO.
+  uint32_t flush_pending_ = 0;
   uint8_t flush_active_ = NO_FLUSH;
 
   static inline STM32USBOtgDevice* devices_[MAX_DEVICES] = {};
@@ -249,12 +259,19 @@ class STM32OtgEndpoint : public USB::Endpoint
 
   enum class StopStage : uint8_t
   {
+    /// 没有进行中的停止 / No stop in progress.
     NONE,
-    IN_NAK,          ///< SNAK set; waiting for INEPNE.
-    IN_DISABLE,      ///< EPDIS set; waiting for EPDISD.
-    IN_FLUSH,        ///< Disabled; waiting for the TX FIFO flush.
-    OUT_GLOBAL_NAK,  ///< Global OUT NAK requested; waiting for GONAKEFF.
-    OUT_DISABLE      ///< EPDIS set; waiting for EPDISD.
+    /// 已置 SNAK，等待 INEPNE / SNAK set; waiting for INEPNE.
+    IN_NAK,
+    /// 已置 EPDIS，等待 EPDISD / EPDIS set; waiting for EPDISD.
+    IN_DISABLE,
+    /// 已禁用，等待 TX FIFO 刷新 / Disabled; waiting for the TX FIFO flush.
+    IN_FLUSH,
+    /// 已请求全局 OUT NAK，等待 GONAKEFF / Global OUT NAK requested; waiting for
+    /// GONAKEFF.
+    OUT_GLOBAL_NAK,
+    /// 已置 EPDIS，等待 EPDISD / EPDIS set; waiting for EPDISD.
+    OUT_DISABLE
   };
 
   bool IsIn() const { return GetConfig().direction == Direction::IN; }
@@ -262,7 +279,7 @@ class STM32OtgEndpoint : public USB::Endpoint
   uint32_t Packet() const { return MaxPacketSize(); }
   bool Dma() const { return device_.hw_.dma; }
 
-  // IRQ side.
+  // 中断侧 / IRQ side.
   void FillFifo();
   void ReadFifo(size_t bytes);
   void OnTransferComplete();
@@ -276,13 +293,20 @@ class STM32OtgEndpoint : public USB::Endpoint
 
   STM32USBOtgDevice& device_;
   size_t fifo_size_;
+  // 在屏蔽控制器中断的状态下写入，或在中断内写入。
   // Written with the controller IRQ masked or inside it.
-  uint32_t hw_tag_ = 0;  // Tag of the transfer in hardware; 0 without one.
+  // 硬件中传输的标签；没有时为 0。
+  // Tag of the transfer in hardware; 0 without one.
+  uint32_t hw_tag_ = 0;
   uint8_t* hw_data_ = nullptr;
-  size_t hw_length_ = 0;      // Request length.
-  size_t hw_programmed_ = 0;  // XFRSIZ written at start (OUT).
-  size_t hw_capacity_ = 0;    // Bytes the slot can take (OUT).
-  size_t hw_done_ = 0;        // IN: bytes written to the FIFO; OUT: bytes received.
+  size_t hw_length_ = 0;  // 请求长度 / Request length.
+  // 启动时写入的 XFRSIZ（OUT）。
+  // XFRSIZ written at start (OUT).
+  size_t hw_programmed_ = 0;
+  size_t hw_capacity_ = 0;  // 槽可容纳的字节数（OUT） / Bytes the slot can take (OUT).
+  // IN：已写入 FIFO 的字节数；OUT：已接收的字节数。
+  // IN: bytes written to the FIFO; OUT: bytes received.
+  size_t hw_done_ = 0;
   size_t stopped_actual_ = 0;
   StopStage stop_stage_ = StopStage::NONE;
 };

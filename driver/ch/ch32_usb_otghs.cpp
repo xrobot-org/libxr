@@ -81,6 +81,8 @@ static void PrepareEp0ForSetup(OtgHsEndpointMap& map)
 
   // 新的 SETUP 会中断前一笔控制传输，因此在分发 setup 包之前，
   // 必须先把 EP0 恢复成默认控制端点形态。
+  // A new SETUP interrupts the previous control transfer, so EP0 must be restored to the
+  // default control-endpoint state before the setup packet is dispatched.
   out0->tog0_ = true;
   out0->tog1_ = false;
   in0->tog0_ = true;
@@ -150,6 +152,8 @@ static void HandleTransferIn(CH32EndpointOtgHs* ep_in, uint8_t ep_num, uint8_t i
 
   // EP0 的数据 IN 在 setup 仲裁后也可能没有可见 ACK 就结束；
   // 但 status ZLP 仍然必须保持严格，因此这里只允许非零数据阶段走这条路径。
+  // An EP0 data IN may also end after setup arbitration without a visible ACK; the status
+  // ZLP must still stay strict, so only a non-zero data stage may take this path.
   ep_in->TransferComplete(0u);
 }
 
@@ -165,6 +169,8 @@ static void HandleTransferToken(OtgHsEndpointMap& map, uint8_t int_st)
     {
       // CH32V30x USBHS 通过 SETUP_ACT 上报 SETUP，因此这里的 TOKEN_SETUP
       // 只是信息位，不能再次重复执行 setup 路径。
+      // CH32V30x USBHS reports SETUP through SETUP_ACT, so TOKEN_SETUP here is only an
+      // information bit and must not run the setup path a second time.
       break;
     }
 
@@ -196,6 +202,9 @@ static void ClearPendingOtgHsInterrupts()
 
     // 这个循环只清理 INT_FG 里已经锁存的位；如果之后又出现新的总线事件，
     // 硬件会重新触发 IRQ，由下一次进入 handler 时再清。
+    // This loop only clears the bits already latched in INT_FG; if a new bus event
+    // appears afterwards, the hardware raises the IRQ again and it is cleared the next
+    // time the handler is entered.
   }
 }
 
@@ -264,6 +273,8 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
 
     // 2) Setup 仲裁：在新 setup 重置控制传输状态之前，
     // 先消费上一笔 EP0 IN 完成。
+    // 2) Setup arbitration: consume the previous EP0 IN completion before the new setup
+    // resets the control-transfer state.
     if (CompleteEp0InBeforeSetup(map, INTFLAG, INTST))
     {
       clear_mask |= USBHS_UIF_TRANSFER;
@@ -298,6 +309,7 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
     }
 
     // 3) 普通 token 完成：非 setup 传输统一在这里分发。
+    // 3) Ordinary token completion: non-setup transfers are dispatched here.
     if ((INTFLAG & USBHS_UIF_TRANSFER) && ((clear_mask & USBHS_UIF_TRANSFER) == 0u))
     {
       HandleTransferToken(map, INTST);
@@ -351,6 +363,7 @@ CH32USBOtgHS::CH32USBOtgHS(
   }
 
   // EP0：收发共用一个 DMA 地址 → 必须是同一块（各 ≥64 B）。
+  // EP0: RX and TX share one DMA address, so they must be one block (at least 64 B).
   REQUIRE(rx[0].addr_ != nullptr && rx[0].addr_ == tx[0].addr_ && rx[0].size_ >= 64U);
 
   auto* ep0_out = new CH32EndpointOtgHs(USB::Endpoint::EPNumber::EP0,
@@ -367,6 +380,9 @@ CH32USBOtgHS::CH32USBOtgHS(
     {
       // 双向：HS 的 EP1-15 收发 DMA 寄存器分立，两块无相邻要求，各 ≥64 B
       // （手册 p.340/p.344）；默认两槽由软件切换 DMA 指针。
+      // Bidirectional: the RX and TX DMA registers of HS EP1-15 are separate and the two
+      // blocks need not be adjacent, each at least 64 B (manual p.340/p.344); by default
+      // the two slots are switched by software via the DMA pointer.
       REQUIRE(rx[i].size_ >= 64U && tx[i].size_ >= 64U);
       USB::EndpointPool::Put(
           new CH32EndpointOtgHs(ep_index, USB::Endpoint::Direction::OUT, rx[i]));
@@ -406,6 +422,7 @@ void CH32USBOtgHS::OnControlReady()
 void CH32USBOtgHS::Start(bool)
 {
   // OTGHS 先选择共享 48 MHz 时钟源，再打开 USBHS 自己的总线时钟。
+  // OTGHS selects the shared 48 MHz clock source first, then enables the USBHS bus clock.
   LibXR::CH32UsbRcc::ConfigureUsb48M();
 #if defined(RCC_AHBPeriph_USBHS)
   RCC_AHBPeriphClockCmd(RCC_AHBPeriph_USBHS, ENABLE);

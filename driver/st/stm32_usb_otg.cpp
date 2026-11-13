@@ -44,7 +44,9 @@ constexpr size_t OTG_HS_FIFO = 4096;
 #endif
 
 constexpr uint32_t PKTCNT_POS = 19U;
-constexpr uint32_t SETUP_COUNT = 3U;  // Back-to-back SETUP packets EP0 OUT accepts.
+// EP0 OUT 可接收的连续 SETUP 包数。
+// Back-to-back SETUP packets EP0 OUT accepts.
+constexpr uint32_t SETUP_COUNT = 3U;
 constexpr size_t SETUP_SIZE = 8U;
 constexpr size_t EP0_DMA_SIZE = 64U;
 
@@ -53,6 +55,7 @@ uint32_t Address(const void* pointer)
   return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pointer));
 }
 
+/// DIEPCTL0 的 MPSIZ 编码：64、32、16 和 8 字节。
 /// MPSIZ code of DIEPCTL0: 64, 32, 16 and 8 bytes.
 uint32_t Ep0SizeCode(uint32_t packet)
 {
@@ -113,6 +116,7 @@ STM32USBOtgDevice::STM32USBOtgDevice(
         __set_PRIMASK(static_cast<uint32_t>(saved));
       });
 
+  // 时钟、引脚和 NVIC 由 CubeMX 配置；HAL_PCD_MspInit() 只读取 Instance。
   // Clocks, pins and NVIC come from CubeMX; HAL_PCD_MspInit() only reads Instance.
   {
     PCD_HandleTypeDef msp = {};
@@ -120,6 +124,7 @@ STM32USBOtgDevice::STM32USBOtgDevice(
     HAL_PCD_MspInit(&msp);
   }
 
+  // 与 HAL_PCD_Init() 相同的 core 初始化，但不使用句柄。
   // The same core initialization as HAL_PCD_Init(), without the handle.
   core_->GAHBCFG &= ~USB_OTG_GAHBCFG_GINT;
   USB_OTG_CfgTypeDef cfg = {};
@@ -177,6 +182,8 @@ STM32USBOtgDevice::STM32USBOtgDevice(
 
 void STM32USBOtgDevice::ProgramFifos()
 {
+  // FIFO RAM：先 RX，再 TX0 及各 IN 端点的 TX FIFO，按顺序排布（IN 端点 n
+  // 使用 TX FIFO n）。
   // FIFO RAM: RX first, then TX0 and the TX FIFO of each IN endpoint in order (IN
   // endpoint n uses TX FIFO n).
   const uint32_t rx_words = static_cast<uint32_t>(out_[0]->fifo_size_ / 4U);
@@ -251,6 +258,7 @@ void STM32USBOtgDevice::Stop(bool in_isr)
     core_->GAHBCFG &= ~USB_OTG_GAHBCFG_GINT;
     if (devices_[index_] == this) devices_[index_] = nullptr;
   }
+  // 离开总线后不再有事件到达端点；确认所有等待中的停止。
   // Off the bus nothing reaches an endpoint any more; confirm every waiting stop.
   ForceStopAll(in_isr);
 }
@@ -281,6 +289,8 @@ USB::Speed STM32USBOtgDevice::ReadBusSpeed() const { return bus_speed_; }
 
 ErrorCode STM32USBOtgDevice::SetAddress(uint8_t address, USB::ControlContext context)
 {
+  // core 在状态阶段之前采用新地址（RM0090 "Endpoint initialization on
+  // SetAddress command"）。
   // The core takes the new address before the status stage (RM0090 "Endpoint
   // initialization on SetAddress command").
   if (context == USB::ControlContext::SETUP_BEFORE_STATUS)
@@ -300,6 +310,7 @@ void STM32USBOtgDevice::OnControlReady() { ArmSetup(); }
 void STM32USBOtgDevice::ArmSetup()
 {
   auto* out0 = OutEp(0);
+  // 较新的 core 在 EP0 OUT 仍使能时不得重新配置（与 HAL 一致）。
   // Newer cores must not be reprogrammed while EP0 OUT is still enabled (as HAL does).
   if (CoreId() > USB_OTG_CORE_ID_300A && (out0->DOEPCTL & USB_OTG_DOEPCTL_EPENA) != 0U)
     return;
@@ -325,6 +336,7 @@ void STM32USBOtgDevice::Dispatch(USB_OTG_GlobalTypeDef* core)
   STM32USBOtgDevice* device = devices_[index];
   if (device == nullptr)
   {
+    // 未启动：在驱动接管控制器之前保持中断线静默。
     // Not started: keep the line quiet until the driver owns the controller.
     core->GAHBCFG &= ~USB_OTG_GAHBCFG_GINT;
     return;
@@ -335,6 +347,8 @@ void STM32USBOtgDevice::Dispatch(USB_OTG_GlobalTypeDef* core)
 
 void STM32USBOtgDevice::HandleInterrupt()
 {
+  // 一次快照、固定顺序、不重复读取：先处理总线复位，
+  // 使同一快照中旧会话的端点事件随该复位结束。
   // One snapshot, a fixed order, no re-read: a bus reset first, so that endpoint events
   // of the old session in the same snapshot are ended by the reset.
   const uint32_t status = core_->GINTSTS & core_->GINTMSK;
@@ -370,12 +384,14 @@ void STM32USBOtgDevice::HandleInterrupt()
 void STM32USBOtgDevice::OnUsbReset()
 {
   core_->GINTSTS = USB_OTG_GINTSTS_USBRST;
+  // 旧会话的数据被丢弃，直到 owner 应用该复位。
   // Data of the old session is dropped until the owner has applied the reset.
   discard_ = true;
   Device()->DCTL &= ~USB_OTG_DCTL_RWUSIG;
   RequestTxFlush(FLUSH_ALL);
   for (uint8_t i = 0; i < endpoint_count_; ++i)
   {
+    // 处于停止中的端点保留其事件；停止流程本身会轮询寄存器。
     // Endpoints in a stop keep their events; the stop polls the registers anyway.
     if (in_[i] == nullptr || in_[i]->stop_stage_ == STM32OtgEndpoint::StopStage::NONE)
       InEp(i)->DIEPINT = 0xFB7FU;
@@ -405,6 +421,7 @@ void STM32USBOtgDevice::OnEnumerationDone()
 
 void STM32USBOtgDevice::DrainRxFifo()
 {
+  // 有界：每次中断最多处理这么多条状态项；其余由电平中断带出。
   // Bounded: at most this many status entries per interrupt; the level interrupt brings
   // the rest.
   for (unsigned i = 0; i < 16U && (core_->GINTSTS & USB_OTG_GINTSTS_RXFLVL) != 0U; ++i)
@@ -466,6 +483,8 @@ void STM32USBOtgDevice::HandleOutEndpoints()
     const bool setup = (events & USB_OTG_DOEPINT_STUP) != 0U;
     if ((events & USB_OTG_DOEPINT_XFRC) != 0U && ep != nullptr)
     {
+      // EP0 OUT 也会把 SETUP 和状态阶段事件报告为 XFRC（core 的 C 类和 E 类）；
+      // 只有数据传输才完成请求（与 HAL 一致）。
       // EP0 OUT also reports SETUP and status-phase events as XFRC (classes C and E of
       // the core); only a data transfer completes the request (as HAL does).
       bool data = !setup;
@@ -482,6 +501,7 @@ void STM32USBOtgDevice::HandleOutEndpoints()
     {
       if (hw_.dma)
       {
+        // 最后一个 SETUP 位于 core 前移后的 DMA 地址的正下方。
         // The last SETUP sits right below the DMA address the core advanced to.
         STM32_InvalidateDCacheByAddr(hw_.ep0_dma_buffer.addr_, EP0_DMA_SIZE);
         const uintptr_t start = reinterpret_cast<uintptr_t>(hw_.ep0_dma_buffer.addr_);
@@ -543,6 +563,7 @@ void STM32USBOtgDevice::HandleInEndpoints()
 
 void STM32USBOtgDevice::HandleGlobalOutNak()
 {
+  // 全局 NAK 开启期间该标志保持置位；通知一次即可。
   // The flag stays set while the global NAK is on; one notification is enough.
   core_->GINTMSK &= ~USB_OTG_GINTMSK_GONAKEFFM;
   for (uint8_t i = 1; i < endpoint_count_; ++i)
@@ -552,6 +573,7 @@ void STM32USBOtgDevice::HandleGlobalOutNak()
 void STM32USBOtgDevice::HandleSof()
 {
   core_->GINTSTS = USB_OTG_GINTSTS_SOF;
+  // 停止流程的兜底：每帧检查一次寄存器状态。
   // Backstop for stops: the register state is checked once per frame.
   for (uint8_t i = 0; i < endpoint_count_; ++i)
   {
@@ -571,6 +593,7 @@ void STM32USBOtgDevice::HandleSof()
 
 void STM32USBOtgDevice::UpdateInNakMask()
 {
+  // NAK 生效期间 INEPNE 保持置位；仅当停止流程在等待它时才取消屏蔽。
   // INEPNE stays set while the NAK is in effect; it is unmasked only while a stop waits
   // for it.
   for (uint8_t i = 0; i < endpoint_count_; ++i)
@@ -610,6 +633,7 @@ void STM32USBOtgDevice::RequestTxFlush(uint8_t fifo)
 
 void STM32USBOtgDevice::PollTxFlush()
 {
+  // 刷新需要几个时钟，从不等待其完成；仍在进行的刷新在下次中断或总线 tick 时再次检查。
   // A flush takes a few clocks; it is never waited for. A running one is checked again
   // at the next interrupt or bus tick.
   if (flush_active_ == NO_FLUSH && flush_pending_ == 0U) return;
@@ -625,7 +649,9 @@ void STM32USBOtgDevice::PollTxFlush()
     }
     if (flush_pending_ == 0U)
     {
-      UpdateTick();  // The flush that kept the bus tick on has finished.
+      // 使总线 tick 保持开启的刷新已完成。
+      // The flush that kept the bus tick on has finished.
+      UpdateTick();
       return;
     }
     if ((core_->GRSTCTL & USB_OTG_GRSTCTL_AHBIDL) == 0U) return;
@@ -724,7 +750,9 @@ ErrorCode STM32OtgEndpoint::ConfigureHardware(const Config& cfg)
     return ErrorCode::OK;
   }
   dev->DAINTMSK |= (1UL << num) << 16U;
-  if (num == 0U) return ErrorCode::OK;  // EP0 OUT follows the EP0 IN packet size.
+  // EP0 OUT 跟随 EP0 IN 的包大小。
+  // EP0 OUT follows the EP0 IN packet size.
+  if (num == 0U) return ErrorCode::OK;
   auto* regs = device_.OutEp(num);
   regs->DOEPCTL = (regs->DOEPCTL & ~(USB_OTG_DOEPCTL_MPSIZ | USB_OTG_DOEPCTL_EPTYP)) |
                   (packet & USB_OTG_DOEPCTL_MPSIZ) | EndpointType(cfg.type) |
@@ -738,7 +766,7 @@ void STM32OtgEndpoint::CloseHardware(bool in_isr)
   ResetTransfer();
   stop_stage_ = StopStage::NONE;
   const uint8_t num = Num();
-  if (num == 0U) return;  // EP0 stays active.
+  if (num == 0U) return;  // EP0 保持激活 / EP0 stays active.
   auto* dev = device_.Device();
   if (IsIn())
   {
@@ -802,6 +830,7 @@ ErrorCode STM32OtgEndpoint::StartHardware(const HwRequest& request, bool in_isr)
     regs->DIEPCTL |= USB_OTG_DIEPCTL_CNAK | USB_OTG_DIEPCTL_EPENA;
     if (!Dma() && length != 0U)
     {
+      // 立即写入当前能放下的数据，而不是等待下一次 TXFE 中断。
       // Write what fits now instead of waiting for the next TXFE interrupt.
       FillFifo();
       if (hw_done_ < hw_length_) device_.Device()->DIEPEMPMSK |= 1UL << num;
@@ -812,6 +841,7 @@ ErrorCode STM32OtgEndpoint::StartHardware(const HwRequest& request, bool in_isr)
   auto* regs = device_.OutEp(num);
   if (num == 0U)
   {
+    // 一次一个包；EP0 持续接收 SETUP 包。
     // One packet at a time; EP0 keeps accepting SETUP packets.
     hw_capacity_ = LibXR::min(hw_capacity_, static_cast<size_t>(packet));
     hw_programmed_ = packet;
@@ -820,6 +850,8 @@ ErrorCode STM32OtgEndpoint::StartHardware(const HwRequest& request, bool in_isr)
   }
   else
   {
+    // 请求长度是包大小的整数倍（Endpoint::Receive）；OUT 大小保持字对齐（RM0090
+    // "Generic non-isochronous OUT data transfers"）。
     // The request length is a packet multiple (Endpoint::Receive); OUT sizes are kept
     // word aligned (RM0090 "Generic non-isochronous OUT data transfers").
     const uint32_t length = static_cast<uint32_t>(request.length);
@@ -829,6 +861,7 @@ ErrorCode STM32OtgEndpoint::StartHardware(const HwRequest& request, bool in_isr)
     regs->DOEPTSIZ = (packets << PKTCNT_POS) | size;
     if (Dma())
     {
+      // 先清理（clean）这段缓存：之后被换出的脏行不得覆盖已接收的字节。
       // Clean first: a dirty line evicted later must not overwrite received bytes.
       STM32_CleanDCacheByAddr(hw_data_, request.slot.size_);
       regs->DOEPDMA = Address(hw_data_);
@@ -851,6 +884,7 @@ void STM32OtgEndpoint::FillFifo()
   }
   auto* regs = device_.InEp(num);
   volatile uint32_t& fifo = device_.Fifo(num);
+  // 受空闲 FIFO 空间限制；仅传输完整的包。
   // Bounded by the free FIFO space; whole packets only.
   while (hw_done_ < hw_length_)
   {
@@ -895,7 +929,7 @@ void STM32OtgEndpoint::ReadFifo(size_t bytes)
 void STM32OtgEndpoint::OnTransferComplete()
 {
   const uint32_t tag = hw_tag_;
-  if (tag == 0U) return;  // Stopped, or a duplicate.
+  if (tag == 0U) return;  // 已停止，或为重复调用 / Stopped, or a duplicate.
   size_t actual = hw_length_;
   if (!IsIn())
   {
@@ -934,8 +968,11 @@ USB::Endpoint::StopResult STM32OtgEndpoint::StopHardware(bool in_isr)
     if ((regs->DIEPCTL & USB_OTG_DIEPCTL_EPENA) == 0U)
     {
       ResetTransfer();
-      return StopResult::DONE;  // Finished; a pending XFRC is a late fact.
+      // 已完成；尚未处理的 XFRC 是迟到的事件。
+      // Finished; a pending XFRC is a late fact.
+      return StopResult::DONE;
     }
+    // RM0090 "IN endpoint disable"：SNAK、INEPNE、EPDIS、EPDISD，然后刷新 FIFO。
     // RM0090 "IN endpoint disable": SNAK, INEPNE, EPDIS, EPDISD, then the FIFO flush.
     stop_stage_ = StopStage::IN_NAK;
     device_.UpdateInNakMask();
@@ -946,6 +983,8 @@ USB::Endpoint::StopResult STM32OtgEndpoint::StopHardware(bool in_isr)
   auto* regs = device_.OutEp(num);
   if (num == 0U)
   {
+    // EP0 OUT 不能被禁用（RM0090 DOEPCTL0.EPDIS）。它从不写入槽：使用 DMA
+    // 时接收到设备的 EP0 缓冲区，不使用 DMA 时数据被丢弃。
     // EP0 OUT cannot be disabled (RM0090 DOEPCTL0.EPDIS). It never writes a slot: with
     // DMA it receives into the device's EP0 buffer, without DMA the data is dropped.
     regs->DOEPCTL |= USB_OTG_DOEPCTL_SNAK;
@@ -959,6 +998,7 @@ USB::Endpoint::StopResult STM32OtgEndpoint::StopHardware(bool in_isr)
     ResetTransfer();
     return StopResult::DONE;
   }
+  // RM0090 "Disabling an OUT endpoint"：全局 OUT NAK、EPDIS、EPDISD。
   // RM0090 "Disabling an OUT endpoint": global OUT NAK, EPDIS, EPDISD.
   stop_stage_ = StopStage::OUT_GLOBAL_NAK;
   if (device_.AcquireGlobalOutNak())
@@ -980,7 +1020,9 @@ void STM32OtgEndpoint::PollStop()
       auto* regs = device_.InEp(num);
       if ((regs->DIEPCTL & USB_OTG_DIEPCTL_EPENA) == 0U)
       {
-        ConfirmStop(true);  // Completed before the NAK; the FIFO is empty.
+        // 在 NAK 之前已完成；FIFO 为空。
+        // Completed before the NAK; the FIFO is empty.
+        ConfirmStop(true);
       }
       else if ((regs->DIEPCTL & USB_OTG_DIEPCTL_NAKSTS) != 0U)
       {
@@ -1066,6 +1108,7 @@ size_t STM32OtgEndpoint::ReapProgress(const HwRequest& request, bool& retired)
   retired = false;
   if (!IsIn()) return stopped_actual_;
   auto* regs = device_.InEp(Num());
+  // 只有尚未处理的传输完成才证明主机已取走全部数据。
   // Only a transfer complete not handled yet proves the host took everything.
   retired = (regs->DIEPINT & USB_OTG_DIEPINT_XFRC) != 0U;
   if (retired) return request.length;
@@ -1073,6 +1116,7 @@ size_t STM32OtgEndpoint::ReapProgress(const HwRequest& request, bool& retired)
   const size_t remaining = (regs->DIEPTSIZ & USB_OTG_DIEPTSIZ_PKTCNT) >> PKTCNT_POS;
   const size_t total =
       request.length == 0U ? 1U : (request.length + packet - 1U) / packet;
+  // 包离开 FIFO 时 PKTCNT 递减；最后一个包可能尚未收到主机的 ACK。
   // PKTCNT drops when a packet leaves the FIFO; the last one may lack the host's ACK.
   size_t sent = total > remaining ? total - remaining : 0U;
   if (sent != 0U) --sent;
@@ -1104,7 +1148,7 @@ ErrorCode STM32OtgEndpoint::ClearStallHardware(bool in_isr)
 {
   UNUSED(in_isr);
   const uint8_t num = Num();
-  // The next SETUP clears an EP0 STALL.
+  // 下一个 SETUP 会清除 EP0 STALL / The next SETUP clears an EP0 STALL.
   if (num == 0U) return ErrorCode::OK;
   const bool data0 = GetConfig().type == Type::BULK || GetConfig().type == Type::INTR;
   if (IsIn())
@@ -1123,7 +1167,7 @@ ErrorCode STM32OtgEndpoint::ClearStallHardware(bool in_isr)
 }
 
 // ---------------------------------------------------------------------------
-// Instances and vectors
+// 实例与中断向量 / Instances and vectors
 // ---------------------------------------------------------------------------
 
 #if defined(USB_OTG_FS)
@@ -1164,6 +1208,8 @@ STM32USBDeviceOtgHS::STM32USBDeviceOtgHS(
 
 #endif
 
+// 由包装后的 HAL_PCD_IRQHandler() 进入（stm32_usb_wrap.cpp）。句柄仅作提示：当 main()
+// 从未运行 MX_USB_OTG_*_PCD_Init() 时其 Instance 为空，因此改由当前活动异常确定控制器。
 // Entry from the wrapped HAL_PCD_IRQHandler() (stm32_usb_wrap.cpp). The handle is
 // only a hint: when main() never ran MX_USB_OTG_*_PCD_Init() its Instance is null, so the
 // active exception names the controller instead.

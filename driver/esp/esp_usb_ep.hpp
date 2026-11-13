@@ -12,7 +12,7 @@ namespace LibXR
 class ESP32USBDevice;
 
 /**
- * @brief ESP32-S3 USB endpoint implementation
+ * @brief ESP32-S3 USB 端点实现 / ESP32-S3 USB endpoint implementation
  */
 class ESP32USBEndpoint : public USB::Endpoint
 {

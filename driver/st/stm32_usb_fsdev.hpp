@@ -20,6 +20,8 @@
 namespace LibXR
 {
 
+// 经典型 FSDEV 控制器与 USB_DRD_FS 的 PMA 大小。带 CAN 的 F1/F3 共享包内存，
+// 共享比例在构建期决定，方式与旧驱动相同。未知料号请手动定义 LIBXR_STM32_USB_PMA_SIZE。
 // PMA sizes of the classic FSDEV controllers and of USB_DRD_FS. F1/F3 with CAN share
 // the packet memory; the share is decided at build time the same way the old driver
 // did. Define LIBXR_STM32_USB_PMA_SIZE manually for an unknown part number.
@@ -30,6 +32,7 @@ namespace LibXR
 #define LIBXR_STM32_USB_PMA_SIZE 1024u
 
 // --- F1: F102/F103 USB FS Device, PMA = 512B，与 CAN 共用，不能并行使用 ---
+// --- F1: F102/F103 USB FS Device, PMA = 512B, shared with CAN, no parallel use ---
 #elif defined(STM32F102xB) || defined(STM32F102xC) || defined(STM32F103x6) || \
     defined(STM32F103xB) || defined(STM32F103xE) || defined(STM32F103xG)
 #define LIBXR_STM32_USB_PMA_SIZE 512u
@@ -39,6 +42,7 @@ namespace LibXR
 #endif
 
 // --- F3 小容量带 USB：PMA = 512B，专用给 USB --------------------
+// --- F3 small density with USB: PMA = 512B, dedicated to USB ---
 #elif defined(STM32F302xB) || defined(STM32F302xC) || defined(STM32F303xB) || \
     defined(STM32F303xC) || defined(STM32F373xC)
 #define LIBXR_STM32_USB_PMA_SIZE 512u
@@ -46,14 +50,16 @@ namespace LibXR
 // --- F3 大容量（和 CAN 共享 1KB）：F302x6/8,D/E & F303xD/E -------
 // - 总共 1KB USB+CAN SRAM
 // - 若 CAN 在用：USB 只能用前 768B，最后 256B 给 CAN
+// - 1 KB of USB+CAN SRAM in total
+// - If CAN is in use: USB can only use the first 768 B, the last 256 B go to CAN
 #elif defined(STM32F302x6) || defined(STM32F302x8) || defined(STM32F302xD) || \
     defined(STM32F302xE) || defined(STM32F303xD) || defined(STM32F303xE)
 
 #if defined(HAL_CAN_MODULE_ENABLED)
-// 给 USB 768B
+// 给 USB 768B / 768 B for USB.
 #define LIBXR_STM32_USB_PMA_SIZE 768u
 #else
-// 整 1KB 给 USB
+// 整 1KB 给 USB / The whole 1 KB for USB.
 #define LIBXR_STM32_USB_PMA_SIZE 1024u
 #endif
 
@@ -127,6 +133,8 @@ void STM32FsDevRequireWrap();
  * and COUNT are in stored bytes.
  */
 // H5（USB_DRD_FS）的 CMSIS 不再提供经典型宏名，经典 traits 只在非 DRD 芯片编译。
+// The CMSIS of H5 (USB_DRD_FS) no longer provides the classic macro names; the classic
+// traits are compiled only for non-DRD parts.
 #if !defined(USB_DRD_FS)
 struct Stm32FsDevClassicHw
 {
@@ -143,6 +151,8 @@ struct Stm32FsDevClassicHw
   static constexpr uint32_t EP_ERR_RX = 0U;
   static constexpr uint32_t EP_ERR_TX = 0U;
   // 经典型没有 ERR 位：CTR/SETUP/类型/KIND/地址写 1 保持。
+  // The classic layout has no ERR bit: CTR/SETUP/type/KIND/address are written as 1 to
+  // keep them.
   static constexpr uint32_t EP_KEEP_MASK =
       EP_CTR_RX | EP_SETUP | EP_TYPE | EP_KIND | EP_CTR_TX | EP_ADDR;
 
@@ -159,6 +169,8 @@ struct Stm32FsDevClassicHw
   static constexpr uint8_t ENDPOINT_COUNT = 8U;
   static constexpr size_t PMA_SIZE = LIBXR_STM32_USB_PMA_SIZE;
   // 经典型 ADDR 字段按偶数截断（& 0xFFFE），布局必须保证缓冲地址偶数对齐。
+  // The classic ADDR field is truncated to even values (& 0xFFFE), so the layout must
+  // keep buffer addresses even aligned.
   static constexpr size_t PMA_ALIGN = 2U;
 
   static USB_TypeDef* Regs() { return reinterpret_cast<USB_TypeDef*>(USB_BASE); }
@@ -187,6 +199,8 @@ struct Stm32FsDevClassicHw
   {
     // BTABLE = 0：字段 m 的半字偏移是 8n+2m，APB 字节偏移再乘 PMA_WORD_STRIDE（HAL
     // 同式）。
+    // BTABLE = 0: the half-word offset of field m is 8n+2m, and the APB byte offset is
+    // further multiplied by PMA_WORD_STRIDE (same formula as HAL).
     return reinterpret_cast<volatile uint16_t*>(
         PmaBase() + (static_cast<uintptr_t>(num) * 8U + 2U * field) * PMA_WORD_STRIDE);
   }
@@ -284,6 +298,8 @@ struct Stm32FsDevClassicHw
     }
 #else
     // F1/F3 没有内部上拉：上电时序由用户实现的 HAL_PCDEx_SetConnectionState 控制。
+    // F1/F3 have no internal pull-up: the power-on sequence is controlled by the
+    // user-implemented HAL_PCDEx_SetConnectionState.
     PCD_HandleTypeDef hpcd = {};
     hpcd.Instance = Regs();
     HAL_PCDEx_SetConnectionState(&hpcd, on ? 1U : 0U);
@@ -293,6 +309,8 @@ struct Stm32FsDevClassicHw
   static void MspInit()
   {
     // 时钟、引脚与 NVIC 由 CubeMX 的 HAL_PCD_MspInit 提供；句柄只读 Instance。
+    // Clocks, pins and NVIC are provided by the CubeMX HAL_PCD_MspInit; the handle is
+    // only read for Instance.
     PCD_HandleTypeDef hpcd = {};
     hpcd.Instance = Regs();
     HAL_PCD_MspInit(&hpcd);
@@ -353,6 +371,8 @@ using Stm32FsDevDrdHw = Stm32FsDevClassicHw;
 struct Stm32FsDevDrdHw
 {
   // H5 的 CMSIS 把 RXBD BLSIZE 移进了 LL USB 头；这里按 RM 直接取 RXBD count bit31。
+  // The H5 CMSIS moved RXBD BLSIZE into the LL USB header; per the RM, RXBD count bit31
+  // is taken directly here.
   static constexpr uint32_t RX_BD_BLSIZE = 0x80000000UL;
   static constexpr uint32_t EP_CTR_RX = USB_CHEP_VTRX;
   static constexpr uint32_t EP_DTOG_RX = USB_CHEP_DTOG_RX;
@@ -367,6 +387,7 @@ struct Stm32FsDevDrdHw
   static constexpr uint32_t EP_ERR_RX = USB_CHEP_ERRRX;
   static constexpr uint32_t EP_ERR_TX = USB_CHEP_ERRTX;
   // HAL USB_CHEP_REG_MASK：VTRX/VTTX/ERR/NAK/LSEP/DEVADDR 写 1 保持。
+  // HAL USB_CHEP_REG_MASK: VTRX/VTTX/ERR/NAK/LSEP/DEVADDR are written as 1 to keep.
   static constexpr uint32_t EP_KEEP_MASK = USB_CHEP_REG_MASK;
 
   static constexpr uint16_t ISTR_CTR = USB_ISTR_CTR;
@@ -382,6 +403,8 @@ struct Stm32FsDevDrdHw
   static constexpr uint8_t ENDPOINT_COUNT = 8U;
   static constexpr size_t PMA_SIZE = LIBXR_STM32_USB_PMA_SIZE;
   // DRD 的 TXBD/RXBD 地址字段按 4 字节截断（& 0xFFFC），布局必须 4 字节对齐。
+  // The DRD TXBD/RXBD address field is truncated to 4 bytes (& 0xFFFC), so the layout
+  // must be 4-byte aligned.
   static constexpr size_t PMA_ALIGN = 4U;
 
   /// 控制器的寄存器块；各系列的设备头文件都定义了 USB_DRD_FS，基地址宏的名字则不统一
@@ -398,7 +421,9 @@ struct Stm32FsDevDrdHw
   static uint16_t ReadIstr() { return static_cast<uint16_t>(Regs()->ISTR); }
   static void ClearIstr(uint16_t flags)
   {
-    Regs()->ISTR = static_cast<uint32_t>(~flags);  // 高位写 1 保持
+    // 高位写 1 保持
+    // Write 1 to keep the high bits.
+    Regs()->ISTR = static_cast<uint32_t>(~flags);
   }
   static uint16_t ReadFnr() { return static_cast<uint16_t>(Regs()->FNR); }
   static void WriteDaddr(uint16_t value) { Regs()->DADDR = value; }
@@ -456,6 +481,8 @@ struct Stm32FsDevDrdHw
   }
 
   // PMA 只支持 32 位访问；尾部的 1–3 字节单独处理（HAL 同式）。
+  // The PMA supports 32-bit access only; the trailing 1-3 bytes are handled separately
+  // (same as HAL).
   static void PmaWrite(uint16_t addr, const uint8_t* src, size_t len)
   {
     volatile uint32_t* p = reinterpret_cast<volatile uint32_t*>(PmaBase() + addr);
@@ -497,7 +524,7 @@ struct Stm32FsDevDrdHw
   {
     Regs()->CNTR = USB_CNTR_USBRST;
     Regs()->CNTR &= ~USB_CNTR_USBRST;
-    Regs()->CNTR &= ~USB_CNTR_HOST;  // 设备模式
+    Regs()->CNTR &= ~USB_CNTR_HOST;  // 设备模式 / Device mode.
     Regs()->ISTR = 0U;
   }
 

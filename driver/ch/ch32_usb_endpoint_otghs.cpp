@@ -347,6 +347,8 @@ CH32EndpointOtgHs::CH32EndpointOtgHs(EPNumber ep_num, Direction dir,
 ErrorCode CH32EndpointOtgHs::ConfigureHardware(const Config& cfg)
 {
   // 包长已由核心按 MaxPacketSizeLimit 收敛；状态由基类管理，这里只编程寄存器。
+  // The core has already clamped the packet size to MaxPacketSizeLimit; the state is
+  // managed by the base class, so only the registers are programmed here.
   if (IsPlanning())
   {
     return ErrorCode::OK;
@@ -474,11 +476,15 @@ ErrorCode CH32EndpointOtgHs::StartHardware(const HwRequest& request, bool /*in_i
   transfer_cursor_ = static_cast<uint8_t*>(request.slot.addr_);
   transfer_remaining_ = 0;
   hw_completed_ = false;
-  last_transfer_size_ = request.length;  // IRQ 窄恢复路径读取（EP0 IN 无 ACK 补偿）
+  // IRQ 窄恢复路径读取（EP0 IN 无 ACK 补偿）
+  // Read by the narrow IRQ recovery path (EP0 IN has no ACK compensation).
+  last_transfer_size_ = request.length;
 
   if (IS_IN)
   {
     // 槽内存就是 DMA 缓冲：类在 Submit 前已把数据写进槽，无需再拷贝。
+    // The slot memory is the DMA buffer: the class wrote the data into the slot before
+    // Submit, so no copy is needed.
     set_tx_dma_buffer(GetNumber(), request.slot.addr_);
     // 超过一个包长的 IN 请求按 MPS 分包（HS BULK 为 512，槽可达 1024）。
     // Split IN requests longer than one packet at MPS (HS bulk is 512, slots
@@ -506,6 +512,7 @@ ErrorCode CH32EndpointOtgHs::StartHardware(const HwRequest& request, bool /*in_i
       else
       {
         // EP0 IN 按 start 次数翻转 toggle（HS 已上板方案）。
+        // EP0 IN flips the toggle per start count (the scheme verified on the HS board).
         *addr = USBHS_UEP_T_RES_ACK |
                 (*addr & (~(USBHS_UEP_T_RES_MASK | USBHS_UEP_T_TOG_MDATA))) |
                 (tog0_ ? USBHS_UEP_T_TOG_DATA1 : 0);
@@ -522,6 +529,7 @@ ErrorCode CH32EndpointOtgHs::StartHardware(const HwRequest& request, bool /*in_i
     if (IS_EP0 && request.length == 0)
     {
       // 控制传输的 status OUT 固定从 DATA1 开始。
+      // The status OUT of a control transfer always starts from DATA1.
       tog0_ = true;
       tog1_ = false;
     }
@@ -541,6 +549,7 @@ ErrorCode CH32EndpointOtgHs::StartHardware(const HwRequest& request, bool /*in_i
         if (request.length == 0u)
         {
           // 控制传输的 status OUT 固定从 DATA1 开始。
+          // The status OUT of a control transfer always starts from DATA1.
           *addr = USBHS_UEP_R_RES_ACK |
                   (*addr & (~(USBHS_UEP_R_RES_MASK | USBHS_UEP_R_TOG_MDATA))) |
                   USBHS_UEP_R_TOG_DATA1;
@@ -549,6 +558,9 @@ ErrorCode CH32EndpointOtgHs::StartHardware(const HwRequest& request, bool /*in_i
         {
           // EP0 多包 OUT 续挂时，这里只重新打开 ACK，不再用软件重算 DATA0/DATA1。
           // 每个包成功收完后，由完成路径推进一次硬件 RX toggle。
+          // When a multi-packet EP0 OUT is re-armed, only ACK is re-enabled here and
+          // DATA0/DATA1 is not recomputed in software. The completion path advances the
+          // hardware RX toggle once after each packet is received successfully.
           *addr = (*addr & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
         }
       }
@@ -573,6 +585,11 @@ USB::Endpoint::StopResult CH32EndpointOtgHs::StopHardware(bool /*in_isr*/)
   // RES=NAK 立即生效：控制器从下一个事务起不再访问槽；在途的最后一个事务仍会
   // 完成（最多一个包落进槽），此后 INT_BUSY=1 自动 NAK 全部事务。无法也无须
   // 中止在途事务，迟到的完成由核心按标签丢弃（与 FSDEV 先例一致）。
+  // RES=NAK takes effect immediately: from the next transaction on the controller no
+  // longer accesses the slot; the last in-flight transaction still completes (at most one
+  // packet lands in the slot), after which INT_BUSY=1 NAKs all transactions
+  // automatically. An in-flight transaction can not and need not be aborted; a late
+  // completion is dropped by the core by tag (same as the FSDEV precedent).
   if (GetDirection() == Direction::IN)
   {
     *get_tx_control_addr(GetNumber()) =
@@ -678,6 +695,8 @@ size_t CH32EndpointOtgHs::MaxPacketSizeLimit(Type type) const
 {
   // CH32 USBHS 的 BULK 端点始终使用硬件固定的 512 字节包长；CONTROL/INTERRUPT
   // 为 64；ISO 上限 1023（手册 p.340/p.344）。
+  // The BULK endpoints of CH32 USBHS always use the hardware-fixed 512-byte packet size;
+  // CONTROL/INTERRUPT use 64; ISO is limited to 1023 (manual p.340/p.344).
   if (type == Type::BULK)
   {
     return 512U;
@@ -704,6 +723,7 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
   const bool IS_ISO = (GetType() == Type::ISOCHRONOUS);
 
   // UIF_TRANSFER/INT_FG 会在 IRQ handler 完成分发后统一清掉。
+  // UIF_TRANSFER/INT_FG are cleared by the IRQ handler once dispatch has finished.
 
   if (IS_IN)
   {
@@ -742,6 +762,8 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
   }
 
   // TOG 不匹配表示数据同步失败：丢弃本包并按原请求重新挂接收。
+  // A TOG mismatch means data synchronization failed: drop this packet and re-arm the
+  // receive with the original request.
   if (!IS_EP0 && !IS_ISO)
   {
     const bool TOG_OK =
@@ -762,10 +784,16 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
     auto* rx_ctrl = get_rx_control_addr(GetNumber());
     // 这里不要直接把 EP0 OUT 留在 ACK：上层控制传输栈会在当前包被完整消费后再
     // 重新挂接收，否则下一轮 session 可能撞上陈旧的 EP0 软件状态。
+    // Do not leave EP0 OUT in ACK here: the upper control transfer stack re-arms the
+    // receive after the current packet is fully consumed, otherwise the next session may
+    // run into stale EP0 software state.
     if (size > 0u)
     {
       // 每成功收完一个 EP0 OUT 包，都推进一次硬件 RX DATA0/DATA1 相位（多包
       // OUT 数据阶段在此推进；只重开 ACK 不消费 toggle 会让后续包停住）。
+      // After every EP0 OUT packet is received successfully, the hardware RX DATA0/DATA1
+      // phase advances once (the multi-packet OUT data stage advances here; re-enabling
+      // only ACK without consuming the toggle would stall the following packets).
       *rx_ctrl = static_cast<uint8_t>(
           ((*rx_ctrl ^ USBHS_UEP_R_TOG_DATA1) & ~USBHS_UEP_R_RES_MASK) |
           USBHS_UEP_R_RES_NAK);
@@ -784,13 +812,17 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
   if (!IS_ISO)
   {
     // 非 EP0 非 ISO：DMA 寄存器分立，按包推进 RX DMA，多包请求一次完成。
+    // Non-EP0 non-ISO: the DMA registers are separate, so the RX DMA advances per packet
+    // and a multi-packet request completes once.
     transfer_accumulated_ += size;
     if (transfer_accumulated_ < transfer_requested_ && size == MaxPacketSize())
     {
       transfer_cursor_ += size;
       *get_rx_dma_addr(GetNumber()) =
           static_cast<uint32_t>(reinterpret_cast<uintptr_t>(transfer_cursor_));
-      return;  // RES 仍为 ACK，继续收下一包
+      // RES 仍为 ACK，继续收下一包
+      // RES stays ACK, keep receiving the next packet.
+      return;
     }
     auto* rx_ctrl = get_rx_control_addr(GetNumber());
     *rx_ctrl = (*rx_ctrl & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_NAK;
@@ -800,7 +832,7 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
     return;
   }
 
-  // ISO：每包完成。
+  // ISO：每包完成 / ISO: every packet completes.
   auto* rx_ctrl = get_rx_control_addr(GetNumber());
   *rx_ctrl = (*rx_ctrl & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_NAK;
   transfer_active_ = false;

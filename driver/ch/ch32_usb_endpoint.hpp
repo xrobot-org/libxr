@@ -8,6 +8,10 @@
 namespace LibXR
 {
 
+// CH32 OTG FS/HS 端点仍使用槽模型之前的后端接口，将在第 5 步迁移。在此之前，
+// 旧类只在定义了 LIBXR_CH32_USB_OTG_LEGACY 时编译，这样同时定义 USBFSD 的器件（V203
+// 同时具有 DevFS 设备和 OTG FS 外设）可以构建已迁移的 DevFS 路径。
+// 该开关将随第 5 步迁移一并移除。
 // The CH32 OTG FS/HS endpoints still speak the pre-slot-model backend interface; they
 // are migrated in step 5. Until then the legacy classes are only compiled when
 // LIBXR_CH32_USB_OTG_LEGACY is set, so a part that also defines USBFSD (V203 has both
