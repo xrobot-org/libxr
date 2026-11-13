@@ -261,10 +261,12 @@ class CDCBase : public DeviceClass
     ans = endpoint_pool.Get(ep_comm_in_, Endpoint::Direction::IN, comm_ep_num_);
     ASSERT(ans == ErrorCode::OK);
 
-    // 配置端点参数。
-    // Configure endpoint parameters.
-    // A failed Configure leaves the endpoint in ERROR; the composition then rejects
-    // the configuration.
+    // 配置端点参数。Configure 失败时端点停在 ERROR，组合设备随后拒绝这个配置。
+    // 每个端点取它的槽和控制器在当前速度下能容纳的最大合法包长（一个都容纳不了时为
+    // 0，由 Configure 拒绝）。CDC 是没有传输边界的字节流，所以每个 OUT 请求就是一个
+    // 包：更长的请求会把已收到的字节压到填满为止。通知端点不需要超过 16 B。
+    // Configure endpoint parameters. A failed Configure leaves the endpoint in ERROR; the
+    // composition then rejects the configuration.
     // Each endpoint takes the largest legal packet its slots and the controller hold at
     // this speed (none at all: 0, rejected by Configure). A CDC stream has no transfer
     // boundaries, so each OUT request is one packet: a longer request would hold received

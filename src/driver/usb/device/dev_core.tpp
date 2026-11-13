@@ -349,10 +349,16 @@ void DeviceCore<C>::SendNextIn(bool in_isr)
 {
   const size_t remaining = control_in_.size_ - transferred_;
   const size_t amount = LibXR::min(remaining, static_cast<size_t>(ep0_packet_size_));
-  // 提前装填 STATUS OUT 只是硬件兼容性措施。完成仍由实际的状态包驱动，
-  // 绝不由这次装填调用驱动。
-  // Early STATUS OUT arming is a hardware compatibility measure only. Completion
-  // is still driven by the actual status packet, never by this arming call.
+  // 主机收到最后一个 IN 包后可以立刻发出状态阶段的零长度 OUT，这可能早于这里处理 IN
+  // 完成；主机也可以不等数据发完就进入状态阶段。所以 STATUS OUT 在发出 IN 包之前挂好。
+  // 先到的状态包只做记录（status_out_seen_）：之后不再发送剩余数据，控制传输在当前
+  // IN 包完成时结束。
+  // The host may send the zero-length OUT of the status stage right after the last IN
+  // packet, which can be before the IN completion is handled here; it may also enter the
+  // status stage before all data has been sent. STATUS OUT is therefore armed before the
+  // IN packet goes out. A status packet that arrives first is only recorded
+  // (status_out_seen_): the remaining data is no longer sent and the control transfer
+  // ends when the current IN packet completes.
   ArmStatusOut(in_isr);
   if (phase_ != Phase::DATA_IN) return;
   Endpoint::Slot slot;

@@ -153,9 +153,9 @@ class CDCReadTest : public CDCBase
   void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num,
                      bool in_isr) override
   {
-    // 基类只做 Configure；首次接收必须由本类挂上，否则永远收不到数据。
-    // The base only configures; this class must arm the first receive or it would never
-    // receive anything.
+    // 基类只配置端点，首次接收由派生类发起（CDCUart 同样如此）。
+    // The base only configures the endpoints; the derived class starts the first receive
+    // (as CDCUart does).
     CDCBase::BindEndpoints(endpoint_pool, start_itf_num, in_isr);
     auto ep_data_out = GetDataOutEndpoint();
     if (ep_data_out != nullptr)
