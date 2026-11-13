@@ -276,7 +276,8 @@ void STM32USBOtgDevice::Connect()
   core_->GINTSTS = 0xBFFFFFFFU;
   uint32_t mask = USB_OTG_GINTMSK_USBRST | USB_OTG_GINTMSK_ENUMDNEM |
                   USB_OTG_GINTMSK_USBSUSPM | USB_OTG_GINTMSK_WUIM |
-                  USB_OTG_GINTMSK_IEPINT | USB_OTG_GINTMSK_OEPINT;
+                  USB_OTG_GINTMSK_IEPINT | USB_OTG_GINTMSK_OEPINT |
+                  USB_OTG_GINTMSK_IISOIXFRM;
   if (!hw_.dma) mask |= USB_OTG_GINTMSK_RXFLVLM;
   if (hw_.vbus_sensing) mask |= USB_OTG_GINTMSK_SRQIM | USB_OTG_GINTMSK_OTGINT;
   core_->GINTMSK = mask;
@@ -392,6 +393,7 @@ void STM32USBOtgDevice::HandleInterrupt()
   if (status & USB_OTG_GINTSTS_RXFLVL) DrainRxFifo();
   if (status & USB_OTG_GINTSTS_OEPINT) HandleOutEndpoints();
   if (status & USB_OTG_GINTSTS_IEPINT) HandleInEndpoints();
+  if (status & USB_OTG_GINTSTS_IISOIXFR) HandleIsoIncomplete();
   if (status & USB_OTG_GINTSTS_BOUTNAKEFF) HandleGlobalOutNak();
   if (status & USB_OTG_GINTSTS_SOF) HandleSof();
   if (status & USB_OTG_GINTSTS_USBSUSP)
@@ -613,6 +615,18 @@ void STM32USBOtgDevice::HandleGlobalOutNak()
     if (out_[i] != nullptr) out_[i]->OnGlobalOutNak();
 }
 
+void STM32USBOtgDevice::HandleIsoIncomplete()
+{
+  // 帧号在清标志之前读：这个中断属于它置位时的当前帧。
+  // The frame number is read before the flag is cleared: the interrupt belongs to the
+  // frame that is current when it is raised.
+  const bool ended_odd =
+      (((Device()->DSTS & USB_OTG_DSTS_FNSOF) >> USB_OTG_DSTS_FNSOF_Pos) & 1U) != 0U;
+  core_->GINTSTS = USB_OTG_GINTSTS_IISOIXFR;
+  for (uint8_t i = 1; i < endpoint_count_; ++i)
+    if (in_[i] != nullptr) in_[i]->OnIsoIncomplete(ended_odd);
+}
+
 void STM32USBOtgDevice::HandleSof()
 {
   core_->GINTSTS = USB_OTG_GINTSTS_SOF;
@@ -791,6 +805,7 @@ ErrorCode STM32OtgEndpoint::ConfigureHardware(const Config& cfg)
 {
   ResetTransfer();
   stop_stage_ = StopStage::NONE;
+  iso_abort_ = false;
   const uint8_t num = Num();
   const uint32_t packet = cfg.max_packet_size;
   auto* dev = device_.Device();
@@ -826,6 +841,7 @@ void STM32OtgEndpoint::CloseHardware(bool in_isr)
   UNUSED(in_isr);
   ResetTransfer();
   stop_stage_ = StopStage::NONE;
+  iso_abort_ = false;
   const uint8_t num = Num();
   if (num == 0U) return;  // EP0 保持激活 / EP0 stays active.
   auto* dev = device_.Device();
@@ -1040,6 +1056,13 @@ USB::Endpoint::StopResult STM32OtgEndpoint::StopHardware(bool in_isr)
   const uint8_t num = Num();
   if (IsIn())
   {
+    if (iso_abort_)
+    {
+      // 漏帧引起的禁用已经在进行，它改为以这次停止结束。
+      // A missed-frame disable is already running; it now ends as this stop.
+      iso_abort_ = false;
+      return StopResult::PENDING;
+    }
     auto* regs = device_.InEp(num);
     device_.Device()->DIEPEMPMSK &= ~(1UL << num);
     if ((regs->DIEPCTL & USB_OTG_DIEPCTL_EPENA) == 0U)
@@ -1161,6 +1184,38 @@ void STM32OtgEndpoint::PollStop()
   }
 }
 
+// 参考手册 OTG 一章 "Incomplete isochronous IN data transfers"：这个中断表示至少有一个
+// 等时 IN 端点在刚结束的帧里没有发出数据，由应用读每个等时 IN 端点的控制寄存器找出是
+// 哪个。端点仍处于使能、且奇偶帧位（EONUM）等于中断到来时读到的帧号奇偶（ended_odd），
+// 就是没发完的那个：它是为刚结束的帧挂的。为下一帧挂的端点奇偶相反，请求保留。没发完
+// 的端点走 IN 停止时序禁用，请求以 FAILED 结束，类在下一帧重新提交。
+// "Incomplete isochronous IN data transfers" (OTG section of the reference manual): the
+// interrupt says that at least one isochronous IN endpoint did not send in the frame
+// that ended, and the application reads the control register of every isochronous IN
+// endpoint to find which. An endpoint is incomplete when it is still enabled and its
+// even/odd frame bit (EONUM) equals the parity of the frame number read when the
+// interrupt came (ended_odd): it was armed for the frame that ended. An endpoint armed
+// for the next frame has the other parity and keeps its request. Disable the incomplete
+// one with the IN stop sequence and end its request with FAILED, so the class submits the
+// next frame.
+void STM32OtgEndpoint::OnIsoIncomplete(bool ended_odd)
+{
+  if (hw_tag_ == 0U || stop_stage_ != StopStage::NONE) return;
+  if (GetConfig().type != Type::ISOCHRONOUS) return;
+  const uint8_t num = Num();
+  auto* regs = device_.InEp(num);
+  const uint32_t control = regs->DIEPCTL;
+  if ((control & USB_OTG_DIEPCTL_EPENA) == 0U) return;
+  const bool armed_odd = (control & USB_OTG_DIEPCTL_EONUM_DPID) != 0U;
+  if (ended_odd != armed_odd) return;
+  iso_abort_ = true;
+  device_.Device()->DIEPEMPMSK &= ~(1UL << num);
+  stop_stage_ = StopStage::IN_NAK;
+  device_.UpdateInNakMask();
+  regs->DIEPCTL |= USB_OTG_DIEPCTL_SNAK;
+  device_.UpdateTick();
+}
+
 void STM32OtgEndpoint::OnNakEffective() { PollStop(); }
 
 void STM32OtgEndpoint::OnDisabled() { PollStop(); }
@@ -1189,9 +1244,18 @@ void STM32OtgEndpoint::ConfirmStop(bool in_isr)
       stopped_actual_ = hw_done_;
     }
   }
+  const bool iso_abort = iso_abort_;
+  const uint32_t tag = hw_tag_;
+  iso_abort_ = false;
   stop_stage_ = StopStage::NONE;
   ResetTransfer();
   device_.UpdateInNakMask();
+  if (iso_abort)
+  {
+    device_.UpdateTick();
+    OnHardwareComplete(in_isr, tag, 0U, ErrorCode::FAILED);
+    return;
+  }
   OnHardwareStopped(in_isr);
 }
 
