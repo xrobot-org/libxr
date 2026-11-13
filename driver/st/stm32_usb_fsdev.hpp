@@ -41,8 +41,8 @@ namespace LibXR
 #error "STM32F102/F103 cannot use CAN at the same time with USB."
 #endif
 
-// --- F3 小容量带 USB：PMA = 512B，专用给 USB --------------------
-// --- F3 small density with USB: PMA = 512B, dedicated to USB ---
+// --- F3 xB/xC 与 F373xC：PMA = 512B --------------------------------
+// --- F3 xB/xC and F373xC: PMA = 512B ---
 #elif defined(STM32F302xB) || defined(STM32F302xC) || defined(STM32F303xB) || \
     defined(STM32F303xC) || defined(STM32F373xC)
 #define LIBXR_STM32_USB_PMA_SIZE 512u
@@ -126,11 +126,11 @@ void STM32FsDevRequireWrap();
  *        Hardware access of the classic FSDEV (F1/F3/F0/L0/L1/G4/WB/L4/L5)
  *
  * 寄存器 16 位；PMA 以半字访问，每 16 位数据字占 `PMA_WORD_STRIDE` 个半字地址
- * （F1/F3 部分 = 2，其余 = 1）。ADDR/COUNT 单位是存储字节。
+ * （F1、L1 和 F3 的一部分 = 2，其余 = 1）。ADDR/COUNT 单位是存储字节。
  *
  * 16-bit registers; the PMA is accessed as half words with every 16-bit data word
- * occupying `PMA_WORD_STRIDE` half-word addresses (F1/F3 parts = 2, the rest = 1). ADDR
- * and COUNT are in stored bytes.
+ * occupying `PMA_WORD_STRIDE` half-word addresses (F1, L1 and part of F3 = 2, the rest =
+ * 1). ADDR and COUNT are in stored bytes.
  */
 // H5（USB_DRD_FS）的 CMSIS 不再提供经典型宏名，经典 traits 只在非 DRD 芯片编译。
 // The CMSIS of H5 (USB_DRD_FS) no longer provides the classic macro names; the classic
@@ -296,6 +296,20 @@ struct Stm32FsDevClassicHw
     {
       Regs()->BCDR &= static_cast<uint16_t>(~USB_BCDR_DPPU);
     }
+#elif defined(SYSCFG_PMC_USB_PU)
+    // L1：没有 BCDR，内部上拉是 SYSCFG_PMC 的 USB_PU 位（HAL 的
+    // __HAL_SYSCFG_USBPULLUP_ENABLE 写的也是它）。
+    // L1: there is no BCDR, the internal pull-up is the USB_PU bit of SYSCFG_PMC (the
+    // bit HAL's __HAL_SYSCFG_USBPULLUP_ENABLE writes).
+    __HAL_RCC_SYSCFG_CLK_ENABLE();
+    if (on)
+    {
+      SET_BIT(SYSCFG->PMC, SYSCFG_PMC_USB_PU);
+    }
+    else
+    {
+      CLEAR_BIT(SYSCFG->PMC, SYSCFG_PMC_USB_PU);
+    }
 #else
     // F1/F3 没有内部上拉：上电时序由用户实现的 HAL_PCDEx_SetConnectionState 控制。
     // F1/F3 have no internal pull-up: the power-on sequence is controlled by the
@@ -332,12 +346,11 @@ struct Stm32FsDevClassicHw
   }
 
  private:
-  // HAL 的 PMA_ACCESS：F1/F3 的 HAL 不提供这个宏，
-  // 而它们的 PMA 与 F1 一样按半字间隔 2 访问（PMA 与 CAN 共享 SRAM 的那批 IP），
-  // 其余经典型为 1。
-  // HAL's PMA_ACCESS: the F1/F3 HAL does not define it, yet their PMA is accessed with
-  // half-word stride 2 like F1 (the IP whose PMA is shared with CAN); the other classic
-  // parts use 1.
+  // 取 HAL 的 PMA_ACCESS：F1、L1 为 2；F3 按料号（xC 一档为 2，xE 和 F302x8 为 1）；其余
+  // 经典型为 1。HAL 没有给出这个宏时按系列回退。
+  // Taken from HAL's PMA_ACCESS: 2 on F1 and L1; by part number on F3 (2 for the xC
+  // parts, 1 for xE and F302x8); 1 on the other classic parts. Without the macro the
+  // value falls back by family.
   // CNTR 的低功耗位：F1 的设备头文件叫 USB_CNTR_LP_MODE，其余经典型叫 USB_CNTR_LPMODE
   // （F3 两个名字都有）。
   // The low-power bit of CNTR: the F1 device header calls it USB_CNTR_LP_MODE, the other
