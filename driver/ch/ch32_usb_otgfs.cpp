@@ -32,8 +32,8 @@ static void ClearPendingOtgFsInterrupts()
     }
     USBFSD->INT_FG = PENDING;
 
-    // 这个循环只清当前 INT_FG 快照里可见的 pending 位；主机后续的新事件
-    // 会重新锁存成新的中断，并在下一次 IRQ 进入时处理。
+    // 这个循环只清当前 INT_FG 快照里可见的 pending 位；
+    // 主机后续的新事件会重新锁存成新的中断，并在下一次 IRQ 进入时处理。
     // This loop only clears the pending bits visible in the current INT_FG snapshot; a
     // later new host event is latched as a new interrupt and handled the next time the
     // IRQ is entered.
@@ -134,9 +134,9 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBFS_IRQHandle
       {
         case USBFS_UIS_TOKEN_SETUP:
         {
-          // 新的 setup 会中断前一笔 EP0 事务，因此这里在把 setup 包交给 DeviceCore
-          // 之前，先把 EP0 的双向状态恢复到 NAK/DATA1（后续数据阶段与状态阶段的
-          // 首包都是 DATA1）。
+          // 新的 setup 会中断前一笔 EP0 事务，因此这里在把 setup 包交给 DeviceCore 之前，
+          // 先把 EP0 的双向状态恢复到 NAK/DATA1（后续数据阶段与状态阶段的首包都是 DATA1）
+          // 。
           // A new setup interrupts the previous EP0 transaction, so before the setup
           // packet is handed to DeviceCore, the bidirectional EP0 state is restored to
           // NAK/DATA1 (the first packet of the following data stage and status stage is

@@ -1,9 +1,19 @@
-// CH32 USBHS bulk IN endpoint (driver/ch/ch32_usb_endpoint_otghs.cpp) against a fake
-// register block: the real endpoint and endpoint core, with the test playing the
-// controller. With INT_BUSY the controller busy-NAKs the host's next IN while
-// UIF_TRANSFER is pending, and INT_ST then reports that NAK instead of the ACKed
-// packet. These cases check that the endpoint finds such a packet by its TOG_AUTO
-// toggle instead of leaving it armed, which made the controller send it twice.
+/**
+ * @file test_ch32_usbhs_in.cpp
+ * @brief CH32 USBHS 批量 IN 端点主机测试 / Host tests for the CH32 USBHS bulk IN
+ *        endpoint.
+ *
+ * 在假寄存器块上运行真实的端点与端点核心（driver/ch/ch32_usb_endpoint_otghs.cpp），
+ * 由测试扮演控制器。启用 INT_BUSY 时，UIF_TRANSFER 挂起期间控制器会对主机的下一个 IN
+ * 回 busy NAK，此时 INT_ST 报告的是这次 NAK 而不是已 ACK 的包。这些用例检查端点能
+ * 通过 TOG_AUTO 翻转找到这样的包，而不是让它保持挂包状态，否则控制器会把它发送两次。
+ * Runs the real endpoint and endpoint core
+ * (driver/ch/ch32_usb_endpoint_otghs.cpp) against a fake register block, with the test
+ * playing the controller. With INT_BUSY the controller busy-NAKs the host's next IN
+ * while UIF_TRANSFER is pending, and INT_ST then reports that NAK instead of the ACKed
+ * packet. These cases check that the endpoint finds such a packet by its TOG_AUTO
+ * toggle instead of leaving it armed, which made the controller send it twice.
+ */
 
 #include <cstdint>
 #include <cstdio>
@@ -51,9 +61,12 @@ uint32_t Address(const void* pointer)
   return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pointer));
 }
 
+/// 主机 ACK 已挂包的 EP1 IN 包：TOG_AUTO 使 toggle 翻转
 /// The host ACKs the armed EP1 IN packet: TOG_AUTO advances the toggle.
 void HostAcksEp1() { fake_usbhsd.UEP1_TX_CTRL ^= USBHS_UEP_T_TOG_DATA1; }
 
+/// 一次 UIF_TRANSFER，其 INT_ST 显示 busy NAK：按 INT_ST 分发对它不做任何处理，所以
+/// 只有 toggle 检查能完成该端点。
 /// One UIF_TRANSFER whose INT_ST shows a busy NAK: dispatch by INT_ST does nothing for
 /// it, so only the toggle check can complete the endpoint.
 void InterruptWithBusyNak() { CH32EndpointOtgHs::CompleteAckedInPackets(); }
@@ -89,6 +102,7 @@ struct Fixture
   }
 };
 
+// 516 字节的响应：512 + 4。第一个包的 ACK 被报告为 busy NAK。
 // A 516-byte response: 512 + 4. The ACK of the first packet is reported as a busy NAK.
 void TestTwoPacketResponse()
 {
@@ -97,10 +111,13 @@ void TestTwoPacketResponse()
   auto* base = static_cast<uint8_t*>(slot.data.addr_);
   TEST_ASSERT(Armed(base, 512));
 
+  // 主机尚未取走该包：busy NAK 使它保持挂包。
   // The host has not taken the packet yet: a busy NAK leaves it armed.
   InterruptWithBusyNak();
   TEST_ASSERT(Armed(base, 512) && f.rec.list.empty());
 
+  // 第一个包已 ACK，但 INT_ST 显示的是主机下一个 IN 的 NAK。若保持挂包，
+  // 控制器会再次发送 base[0..512)。
   // The first packet is ACKed but INT_ST shows the NAK of the host's next IN. Left
   // armed, the controller would send base[0..512) again.
   HostAcksEp1();
@@ -114,12 +131,14 @@ void TestTwoPacketResponse()
   TEST_ASSERT(f.rec.list[0].result == ErrorCode::OK && f.rec.list[0].actual == 516);
   TEST_ASSERT((fake_usbhsd.UEP1_TX_CTRL & USBHS_UEP_T_RES_MASK) == USBHS_UEP_T_RES_NAK);
 
+  // 没有挂包：后续中断不产生任何变化。
   // Nothing armed: further interrupts change nothing.
   HostAcksEp1();
   InterruptWithBusyNak();
   TEST_ASSERT(f.rec.list.size() == 1);
 }
 
+// 恰好一个包加其 ZLP：ZLP 是第二次硬件请求。
 // Exactly one packet plus its ZLP: the ZLP is a second hardware request.
 void TestPacketAndZlp()
 {
@@ -140,6 +159,7 @@ void TestPacketAndZlp()
   TEST_ASSERT(f.rec.list[0].result == ErrorCode::OK && f.rec.list[0].actual == 512);
 }
 
+// 两个排队的响应：第二个在第一个完成后才启动，其起始 toggle 是第一个留下的值。
 // Two queued responses: the second starts only after the first is complete, and the
 // starting toggle of the second is the one the first left behind.
 void TestQueuedResponses()
@@ -163,6 +183,9 @@ void TestQueuedResponses()
   TEST_ASSERT(f.rec.list.size() == 2 && f.rec.list[1].actual == 3);
 }
 
+// STALL 之后的 EP0。下一个 SETUP 在设备核心清除端点 halt 之前，
+// 先在中断里把 EP0 恢复为 NAK/DATA1；该清除不能复位 toggle，否则数据阶段以 DATA0 开始，
+// 主机把它当作重复包丢弃，STALL 之后的请求就会超时。
 // EP0 after a STALL. The next SETUP restores EP0 to NAK/DATA1 in the interrupt before
 // the device core clears the endpoint's halt; that clear must not reset the toggle, or
 // the data stage starts with DATA0, the host drops it as a repeat and the request after
@@ -180,6 +203,7 @@ void TestEp0StallClearKeepsData1()
 
   TEST_ASSERT(in0.Stall(false) == ErrorCode::OK);
   TEST_ASSERT((fake_usbhsd.UEP0_TX_CTRL & USBHS_UEP_T_RES_MASK) == USBHS_UEP_T_RES_STALL);
+  // SETUP 中断写入的值（PrepareEp0ForSetup）。
   // What the SETUP interrupt writes (PrepareEp0ForSetup).
   fake_usbhsd.UEP0_TX_CTRL = USBHS_UEP_T_TOG_DATA1 | USBHS_UEP_T_RES_NAK;
   TEST_ASSERT(in0.ClearStall(false) == ErrorCode::OK);

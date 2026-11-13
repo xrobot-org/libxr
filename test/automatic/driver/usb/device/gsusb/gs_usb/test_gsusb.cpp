@@ -1,7 +1,7 @@
 /**
  * @file test_gsusb.cpp
- * @brief gs_usb（CAN 适配器）设备类（槽模型）主机测试 /
- *        Host tests for the gs_usb (CAN adapter) device class.
+ * @brief gs_usb（CAN 适配器）设备类（槽模型）主机测试 / Host tests for the gs_usb (CAN
+ *        adapter) device class.
  *
  * 覆盖槽模型迁移改动的路径：每通道一个 SPSC 接收队列加一个 echo 队列、
  * 服务里取槽打包提交、echo 总是优先、echo 队列满时保留 OUT 租约作背压、
@@ -46,6 +46,7 @@ static constexpr auto TEST_LANGUAGE = DescriptorStrings::MakeLanguagePack(
 constexpr std::size_t CHANNELS = 2;
 using Gs = GsUsbClass<CHANNELS>;
 
+/// 公开该类受保护的绑定与请求入口
 /// Exposes the protected bind/request entry points of the class.
 class TestGs : public Gs
 {
@@ -58,14 +59,18 @@ class TestGs : public Gs
   using ControlTransferResult = DeviceClass::ControlTransferResult;
 };
 
+/// 让本测试使用自己的定时器链表，这样先前销毁的类不会给下一次 Timer::Refresh() 留下
+/// 悬空的任务节点。
 /// Give this test its own timer list so a class destroyed earlier cannot leave a
 /// dangling task node behind for the next Timer::Refresh().
 void FreshTimerList() { LibXR::Timer::list_ = new LibXR::LockFreeList(); }
 
+/// 线上帧布局：echo_id、can_id、dlc、channel、flags、reserved，以及 8 字节数据
 /// Wire frame layout: echo_id, can_id, dlc, channel, flags, reserved, 8 data bytes.
 constexpr std::size_t WIRE_HEADER = 12;
 constexpr std::size_t WIRE_CLASSIC = WIRE_HEADER + 8;
 
+/// 最小的 CAN 控制器：记录类发送的内容，并注入 RX 帧
 /// Minimal CAN controller: records what the class transmits and injects RX frames.
 class StubCan : public LibXR::CAN
 {
@@ -93,6 +98,7 @@ class StubCan : public LibXR::CAN
     return ErrorCode::OK;
   }
 
+  /// 通过已注册的订阅者向类注入一个收到的帧
   /// Play a received frame into the class through its registered subscribers.
   void Inject(uint32_t id, const std::vector<uint8_t>& data,
               LibXR::CAN::Type type = LibXR::CAN::Type::STANDARD)
@@ -130,6 +136,7 @@ uint32_t ReadU32(const std::vector<uint8_t>& frame, std::size_t offset)
   return value;
 }
 
+/// 两个 CAN 通道、该类，以及为其提供服务池的组合
 /// Two CAN channels, the class and the composition that gives it a service pool.
 struct GsFixture
 {
@@ -150,6 +157,7 @@ struct GsFixture
   {
     TEST_ASSERT(pool.Put(&in) == ErrorCode::OK);
     TEST_ASSERT(pool.Put(&out) == ErrorCode::OK);
+    // 代替 DeviceCore 的类服务分发。
     // Stand-in for DeviceCore's class-service dispatch.
     handler = Callback<uint32_t>::Create(
         [](bool in_isr, DeviceClass* self, uint32_t events)
@@ -161,6 +169,8 @@ struct GsFixture
   }
 };
 
+/// 主机格式协商（小端标记）与每通道模式。每个带数据阶段的请求都要先发其厂商请求：
+/// 由它选定通道。
 /// Host format negotiation (little-endian marker) and per-channel mode. Every request
 /// with a data stage needs its vendor request first: that is what selects the channel.
 void Configure(GsFixture& f, bool enable_ch0 = true, bool enable_ch1 = true)
@@ -189,30 +199,35 @@ void TestBindAndConfiguration()
   GsFixture f;
   f.gs.BindEndpoints(f.pool, 0, false);
 
+  // 每个 OUT 租约对应一整个槽（receive_size 为 0）：一个帧在一次请求里到达。
   // One whole slot per OUT lease (receive_size 0): a frame arrives in one request.
   TEST_ASSERT(f.out.active && f.out.Last().length == 128);
   TEST_ASSERT(f.in.starts.empty());
 
+  // HOST_FORMAT / MODE 的数据阶段经 OnClassData 到达类。
   // The data stage of HOST_FORMAT / MODE reaches the class through OnClassData.
   const uint32_t byte_order = 0x0000beefu;
   ConstRawData fmt{&byte_order, sizeof(byte_order)};
   TEST_ASSERT(f.gs.OnClassData(false, static_cast<uint8_t>(GsUsb::BReq::HOST_FORMAT),
                                fmt) == ErrorCode::OK);
-  const uint32_t mode[2] = {1u, 0u};  // START on channel 0
+  const uint32_t mode[2] = {1u, 0u};  // 通道 0 START / START on channel 0
   ConstRawData mode_data{mode, sizeof(mode)};
   TEST_ASSERT(f.gs.OnClassData(false, static_cast<uint8_t>(GsUsb::BReq::MODE),
                                mode_data) == ErrorCode::OK);
   TEST_ASSERT(f.can0.configures == 1);
 
+  // 越界通道的 MODE 在任何数据阶段之前就被拒绝。
   // MODE for an out-of-range channel is refused before any data stage.
   TestGs::ControlTransferResult result;
   TEST_ASSERT(f.gs.OnVendorRequest(false, static_cast<uint8_t>(GsUsb::BReq::MODE), 9, 8,
                                    0, result) == ErrorCode::ARG_ERR);
+  // mode 数据阶段必须恰好是一个 DeviceMode。
   // The mode data stage must be exactly one DeviceMode.
   const uint32_t short_mode[1] = {1u};
   ConstRawData short_data{short_mode, sizeof(short_mode)};
   TEST_ASSERT(f.gs.OnClassData(false, static_cast<uint8_t>(GsUsb::BReq::MODE),
                                short_data) == ErrorCode::ARG_ERR);
+  // GET_DEVICE_CONFIG 无需数据阶段即可应答。
   // GET_DEVICE_CONFIG answers without a data stage.
   TEST_ASSERT(f.gs.OnVendorRequest(false,
                                    static_cast<uint8_t>(GsUsb::BReq::DEVICE_CONFIG), 0,
@@ -230,20 +245,24 @@ void TestHostFrameToCanAndEcho()
   const std::vector<uint8_t> payload{0x11, 0x22, 0x33};
   f.out.HostSends(ClassicFrame(0x1234u, 0x123u, 3, 0, 0, payload));
 
+  // 该帧到达 CAN 控制器一次，echo 从 IN 端点回到主机。
   // The frame reached the CAN controller once, and the echo went back on the IN endpoint.
   TEST_ASSERT(f.can0.tx.size() == 1);
   TEST_ASSERT(f.can0.tx[0].id == 0x123u && f.can0.tx[0].dlc == 3);
   TEST_ASSERT(std::equal(payload.begin(), payload.end(), f.can0.tx[0].data));
   TEST_ASSERT(f.in.active && f.in.Last().length == WIRE_CLASSIC);
   const auto& echo = f.in.Last().data;
-  TEST_ASSERT(ReadU32(echo, 0) == 0x1234u);  // the host's echo_id comes back
+  // 主机的 echo_id 原样返回 / The host's echo_id comes back.
+  TEST_ASSERT(ReadU32(echo, 0) == 0x1234u);
   TEST_ASSERT(ReadU32(echo, 4) == 0x123u);
   TEST_ASSERT(echo[8] == 3 && echo[9] == 0 && echo[10] == 0);
   TEST_ASSERT(std::equal(payload.begin(), payload.end(), echo.begin() + WIRE_HEADER));
+  // 租约已归还，所以 OUT 接收重新挂包。
   // The lease went back, so the OUT receive re-armed.
   TEST_ASSERT(f.out.active);
   f.in.Complete();
 
+  // 发往未启动通道的帧被丢弃，不访问控制器。
   // A frame for a channel that is not started is dropped without touching the controller.
   TestGs::ControlTransferResult mode_result;
   TEST_ASSERT(f.gs.OnVendorRequest(false, static_cast<uint8_t>(GsUsb::BReq::MODE), 0, 8,
@@ -268,7 +287,8 @@ void TestCanRxToHost()
   f.can0.Inject(0x456u, payload);
   TEST_ASSERT(f.in.active && f.in.Last().length == WIRE_CLASSIC);
   const auto& frame = f.in.Last().data;
-  TEST_ASSERT(ReadU32(frame, 0) == 0xFFFFFFFFu);  // RX frames carry ECHO_ID_RX
+  // RX 帧携带 ECHO_ID_RX / RX frames carry ECHO_ID_RX.
+  TEST_ASSERT(ReadU32(frame, 0) == 0xFFFFFFFFu);
   TEST_ASSERT(ReadU32(frame, 4) == 0x456u);
   TEST_ASSERT(frame[8] == 2 && frame[9] == 0);
   TEST_ASSERT(frame[10] == 0);
@@ -279,23 +299,27 @@ void TestCanRxToHost()
 void TestRxQueueOverflowFlag()
 {
   FreshTimerList();
-  GsFixture f(4, 32);  // four frames per channel
+  GsFixture f(4, 32);  // 每通道四帧 / four frames per channel
   f.gs.BindEndpoints(f.pool, 0, false);
   Configure(f, true, false);
 
+  // 两个 IN 槽在途，四深的 RX 队列被填满，所以第七帧无处可去而被丢弃。
   // Two IN slots are in flight and the four-deep RX queue fills, so the seventh frame
   // has nowhere to go and is dropped.
   for (unsigned i = 0; i < 7; ++i)
   {
     f.can0.Inject(0x100u + i, {static_cast<uint8_t>(i)});
   }
+  // 排空：两帧已在总线上，其余的在槽释放后跟上。
   // Drain: two frames are on the wire, the rest follow once slots free up.
   for (unsigned i = 0; i < 12 && f.in.active; ++i)
   {
     f.in.Complete();
   }
 
-  TEST_ASSERT(f.in.sent.size() == 6);  // seven injected, one dropped
+  TEST_ASSERT(f.in.sent.size() == 6);  // 注入七帧，丢弃一帧 / seven injected, one dropped
+  // Linux 主机照常交付带标志的帧，然后再补上它自己的 RX 溢出错误帧，
+  // 所以标志附在通道 0 的一个真实帧上，且该帧保持完整。
   // The Linux host delivers the frame that carries the flag as usual and then adds
   // its own RX-overflow error frame, so the flag rides on a real frame of channel 0
   // and that frame stays intact.
@@ -307,10 +331,14 @@ void TestRxQueueOverflowFlag()
     TEST_ASSERT(ReadU32(frame, 4) == 0x100u + i && frame[WIRE_HEADER] == i);
     if ((frame[10] & GsUsb::CAN_FLAG_OVERFLOW) != 0U) ++overflow;
   }
+  // 丢帧恰好报告一次，附在该通道的下一帧上。
   // The drop is reported exactly once, on that channel's next frame.
   TEST_ASSERT(overflow == 1);
 }
 
+/// Linux 主机在处理任何帧（包括 echo）之后都会检查 GS_CAN_FLAG_OVERFLOW，并把它计到
+/// 该帧所属的通道上。因此丢帧会报告在该通道发往主机的下一帧上，即使那一帧是 echo，
+/// 也绝不会报告在其他通道的帧上。
 /// The Linux host checks GS_CAN_FLAG_OVERFLOW after handling any frame, an echo
 /// included, and counts it for that frame's channel. A drop is therefore reported on
 /// the channel's next frame to the host even when that frame is an echo, and never on
@@ -318,15 +346,17 @@ void TestRxQueueOverflowFlag()
 void TestOverflowFlagRidesOnTheChannelsNextFrame()
 {
   FreshTimerList();
-  GsFixture f(4, 32);  // four frames per channel
+  GsFixture f(4, 32);  // 每通道四帧 / four frames per channel
   f.gs.BindEndpoints(f.pool, 0, false);
   Configure(f);
 
+  // 两个 IN 槽在途，四帧排队，第七帧被丢弃。
   // Two IN slots in flight, four frames queued, the seventh dropped.
   for (unsigned i = 0; i < 7; ++i)
   {
     f.can0.Inject(0x100u + i, {static_cast<uint8_t>(i)});
   }
+  // 通道 1 和通道 0 的 echo 随后排队；echo 优先发送。
   // Echoes for channel 1 and channel 0 queue next; echoes go first.
   f.out.HostSends(ClassicFrame(0x10u, 0x301u, 1, 1, 0, {0x11}));
   f.out.HostSends(ClassicFrame(0x20u, 0x300u, 1, 0, 0, {0x22}));
@@ -341,12 +371,15 @@ void TestOverflowFlagRidesOnTheChannelsNextFrame()
   {
     if ((frame[10] & GsUsb::CAN_FLAG_OVERFLOW) == 0U) continue;
     ++overflow;
+    // 通道 0 的 echo 是丢帧后的第一帧；它保留自己的 echo_id。
     // Channel 0's echo is its first frame after the drop; it keeps its echo_id.
     TEST_ASSERT(ReadU32(frame, 0) == 0x20u && frame[9] == 0);
   }
   TEST_ASSERT(overflow == 1);
 }
 
+/// echo 帧先于任何排队的 RX 帧发往主机：主机的 TX 路径（Linux 驱动中的 echo ->
+/// netif_wake_queue）不会被接收流量拖延。
 /// Echo frames go to the host before any queued RX frame: the host's TX path (echo ->
 /// netif_wake_queue in the Linux driver) is not delayed behind received traffic.
 void TestEchoHasPriority()
@@ -356,11 +389,13 @@ void TestEchoHasPriority()
   f.gs.BindEndpoints(f.pool, 0, false);
   Configure(f, true, false);
 
+  // 两个 RX 帧占用两个 IN 槽，另外四个在通道队列里等待。
   // Two RX frames take the two IN slots, four more wait in the channel queue.
   for (unsigned i = 0; i < 6; ++i)
   {
     f.can0.Inject(0x100u + i, {static_cast<uint8_t>(i)});
   }
+  // 三个主机帧发到总线上；它们的 echo 在占满的槽后面排队。
   // Three host frames are sent on the bus; their echoes queue behind the busy slots.
   for (unsigned i = 0; i < 3; ++i)
   {
@@ -373,6 +408,7 @@ void TestEchoHasPriority()
   }
 
   TEST_ASSERT(f.in.sent.size() == 9);
+  // 先是已在总线上的两帧，然后是所有 echo，最后是 RX 队列的其余部分。
   // The two frames already on the wire, then every echo, then the rest of the RX queue.
   for (unsigned i = 0; i < 2; ++i)
   {
@@ -393,10 +429,12 @@ void TestEchoHasPriority()
 void TestEchoBackpressure()
 {
   FreshTimerList();
-  GsFixture f(32, 4);  // four echo slots
+  GsFixture f(32, 4);  // 四个 echo 槽 / four echo slots
   f.gs.BindEndpoints(f.pool, 0, false);
   Configure(f, true, false);
 
+  // 两个 echo 占满两个 IN 槽，然后 echo 队列被填满；echo 排不进队列的那一帧保留其
+  // OUT 租约，而不是丢弃 echo。
   // Two echoes fit the two IN slots, then the echo queue fills; the frame whose echo
   // cannot be queued holds its OUT lease instead of dropping the echo.
   unsigned sent = 0;
@@ -405,10 +443,13 @@ void TestEchoBackpressure()
     f.out.HostSends(ClassicFrame(0x2000u + sent, 0x200u + sent, 1, 0, 0, {0x5A}));
     ++sent;
   }
-  TEST_ASSERT(!f.out.active);  // backpressure: no new OUT receive is armed
+  // 背压：不再挂新的 OUT 接收 / Backpressure: no new OUT receive is armed.
+  TEST_ASSERT(!f.out.active);
   TEST_ASSERT(sent >= 7);
-  TEST_ASSERT(f.can0.tx.size() == sent);  // the CAN TX happened exactly once per frame
+  // 每帧恰好触发一次 CAN TX / The CAN TX happened exactly once per frame.
+  TEST_ASSERT(f.can0.tx.size() == sent);
 
+  // 释放 IN 槽后，服务推出被保留的 echo 并归还租约。
   // Freeing the IN slots lets the service push the held echo and return the lease.
   for (unsigned i = 0; i < 16 && !f.out.active; ++i)
   {
@@ -433,6 +474,7 @@ void TestUserIdRoundTripAndDatabaseWrite()
   TEST_ASSERT(f.gs.OnClassData(false, static_cast<uint8_t>(GsUsb::BReq::SET_USER_ID),
                                data) == ErrorCode::OK);
 
+  // GET_USER_ID 立即读取 RAM 中的值（回调从不等待存储）。
   // GET_USER_ID reads the RAM value at once (the callback never waits for the storage).
   TestGs::ControlTransferResult result;
   TEST_ASSERT(f.gs.OnVendorRequest(false, static_cast<uint8_t>(GsUsb::BReq::GET_USER_ID),
@@ -442,6 +484,7 @@ void TestUserIdRoundTripAndDatabaseWrite()
   std::memcpy(&read_back, result.write_data.addr_, sizeof(read_back));
   TEST_ASSERT(read_back == user_id);
 
+  // 写入 Database 的是 100 ms 的 Timer 任务。
   // The 100 ms Timer task is what writes the Database.
   for (unsigned i = 0; i < 100; ++i)
   {
@@ -458,6 +501,7 @@ void TestMultiChannelRoundRobin()
   f.gs.BindEndpoints(f.pool, 0, false);
   Configure(f);
 
+  // 每通道四帧排在两个 IN 槽之后；总线上两个通道必须交替发送，而不是由某一个通道先发完。
   // Four frames per channel are queued behind the two IN slots; the channels must
   // alternate on the wire instead of one channel draining first.
   for (unsigned i = 0; i < 6; ++i)
@@ -470,6 +514,7 @@ void TestMultiChannelRoundRobin()
     f.in.Complete();
   }
   TEST_ASSERT(f.in.sent.size() == 12);
+  // 第一帧发出时另一个通道还没有排队的内容；此后两个通道交错发送，各通道保持自己的顺序。
   // The first frame went out before the other channel had anything queued; after that
   // the channels interleave and each channel keeps its own order.
   unsigned next[2] = {0, 0};
@@ -492,11 +537,11 @@ void TestMultiChannelRoundRobin()
 void TestErrorFrameHasOwnQueue()
 {
   FreshTimerList();
-  GsFixture f(2, 32);  // two data frames per channel
+  GsFixture f(2, 32);  // 每通道两个数据帧 / two data frames per channel
   f.gs.BindEndpoints(f.pool, 0, false);
   Configure(f, true, false);
 
-  // Channel 0 reports bus errors.
+  // 通道 0 报告总线错误 / Channel 0 reports bus errors.
   TestGs::ControlTransferResult result;
   TEST_ASSERT(f.gs.OnVendorRequest(false, static_cast<uint8_t>(GsUsb::BReq::MODE), 0, 8,
                                    0, result) == ErrorCode::OK);
@@ -505,6 +550,7 @@ void TestErrorFrameHasOwnQueue()
   TEST_ASSERT(f.gs.OnClassData(false, static_cast<uint8_t>(GsUsb::BReq::MODE),
                                mode_data) == ErrorCode::OK);
 
+  // 填满两个 IN 槽和数据队列，然后触发一个错误。错误帧仍必须通过，因为它有自己的队列。
   // Fill the two IN slots and the data queue, then raise an error. The error frame
   // must still get through because it has its own queue.
   for (unsigned i = 0; i < 6; ++i)

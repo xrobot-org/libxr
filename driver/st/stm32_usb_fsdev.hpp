@@ -332,8 +332,9 @@ struct Stm32FsDevClassicHw
   }
 
  private:
-  // HAL 的 PMA_ACCESS：F1/F3 的 HAL 不提供这个宏，而它们的 PMA 与 F1 一样按半字
-  // 间隔 2 访问（PMA 与 CAN 共享 SRAM 的那批 IP），其余经典型为 1。
+  // HAL 的 PMA_ACCESS：F1/F3 的 HAL 不提供这个宏，
+  // 而它们的 PMA 与 F1 一样按半字间隔 2 访问（PMA 与 CAN 共享 SRAM 的那批 IP），
+  // 其余经典型为 1。
   // HAL's PMA_ACCESS: the F1/F3 HAL does not define it, yet their PMA is accessed with
   // half-word stride 2 like F1 (the IP whose PMA is shared with CAN); the other classic
   // parts use 1.

@@ -274,8 +274,7 @@ ErrorCode CH32EndpointOtgFs::ConfigureHardware(const Config& cfg)
 
   if (!single_direction_ && !is_ep0)
   {
-    // 单 bank 共享双向：IN 地址固定在 OUT +64，两个使能保持稳定，NAK 是各方向
-    // 的激活闸门。
+    // 单 bank 共享双向：IN 地址固定在 OUT +64，两个使能保持稳定，NAK 是各方向的激活闸门。
     // Single-bank shared bidirectional: the IN address is fixed at OUT +64 and both
     // enables stay constant; NAK is the activation gate of each direction.
     enable_tx(GetNumber());
@@ -339,8 +338,8 @@ ErrorCode CH32EndpointOtgFs::StartHardware(const HwRequest& request, bool /*in_i
     // 槽内存就是 DMA 缓冲：类在 Submit 前已把数据写进槽，无需再拷贝。
     // The slot memory is the DMA buffer: the class wrote the data into the slot before
     // Submit, so no copy is needed.
-    // 共享双向端点不能动 UEPn_DMA：硬件的 IN 区固定在块基址 +64，写了 IN 槽
-    // 地址会把发送区推到 base+128、并让 OUT 收到 IN 区里去。
+    // 共享双向端点不能动 UEPn_DMA：硬件的 IN 区固定在块基址 +64，
+    // 写了 IN 槽地址会把发送区推到 base+128、并让 OUT 收到 IN 区里去。
     // Shared bidirectional endpoints must not touch UEPn_DMA: the hardware IN
     // area is fixed at block base +64, so writing the IN slot address would
     // transmit from base+128 and let OUT land in the IN area.
@@ -391,9 +390,8 @@ ErrorCode CH32EndpointOtgFs::StartHardware(const HwRequest& request, bool /*in_i
   }
   else
   {
-    // EP0 OUT：数据阶段按 tog_ 交替（SETUP 后为 DATA1，之后逐包翻转）；状态
-    // 阶段（长度 0）固定 DATA1。多包控制写数据阶段第二包是 DATA0，若每包都按
-    // DATA1 挂接收会全部被丢。
+    // EP0 OUT：数据阶段按 tog_ 交替（SETUP 后为 DATA1，之后逐包翻转）；状态阶段（长度 0）
+    // 固定 DATA1。多包控制写数据阶段第二包是 DATA0，若每包都按 DATA1 挂接收会全部被丢。
     // EP0 OUT: the data stage alternates per tog_ (DATA1 after SETUP, flipping
     // every packet); the status stage (length 0) is always DATA1. The second
     // packet of a multi-packet control write is DATA0, so arming DATA1 for every
@@ -406,9 +404,9 @@ ErrorCode CH32EndpointOtgFs::StartHardware(const HwRequest& request, bool /*in_i
 
 USB::Endpoint::StopResult CH32EndpointOtgFs::StopHardware(bool /*in_isr*/)
 {
-  // RES=NAK 立即生效：控制器从下一个事务起不再访问槽；在途的最后一个事务仍会
-  // 完成（最多一个包落进槽），此后 INT_BUSY=1 自动 NAK 全部事务。无法也无须
-  // 中止在途事务，迟到的完成由核心按标签丢弃（与 FSDEV 先例一致）。
+  // RES=NAK 立即生效：控制器从下一个事务起不再访问槽；
+  // 在途的最后一个事务仍会完成（最多一个包落进槽），此后 INT_BUSY=1 自动 NAK 全部事务。
+  // 无法也无须中止在途事务，迟到的完成由核心按标签丢弃（与 FSDEV 先例一致）。
   // RES=NAK takes effect immediately: from the next transaction on the controller no
   // longer accesses the slot; the last in-flight transaction still completes (at most one
   // packet lands in the slot), after which INT_BUSY=1 NAKs all transactions
@@ -478,10 +476,9 @@ ErrorCode CH32EndpointOtgFs::ClearStallHardware(bool /*in_isr*/)
 
 size_t CH32EndpointOtgFs::MaxPacketSizeLimit(Type type) const
 {
-  // 手册表 23-4（p.359）/EP0（p.355）：EP1-15 除 EP3 外最大 64 B；EP3 仅同步
-  // 传输且单缓冲时最大 1023 B；EP0 收发共用 64 B。
-  // 手册表 23-4（p.359）：只有 EP3 在同步传输且单缓冲时才支持 >64 的包长，
-  // 其余端点（含 EP0）最大 64 B。
+  // 手册表 23-4（p.359）/EP0（p.355）：EP1-15 除 EP3 外最大 64 B；
+  // EP3 仅同步传输且单缓冲时最大 1023 B；EP0 收发共用 64 B。手册表 23-4（p.359）：
+  // 只有 EP3 在同步传输且单缓冲时才支持 >64 的包长，其余端点（含 EP0）最大 64 B。
   // Manual table 23-4 (p.359): only EP3 in isochronous single-buffer mode
   // supports a packet size above 64; everything else (EP0 included) is 64.
   if (type == Type::ISOCHRONOUS)
@@ -526,8 +523,8 @@ void CH32EndpointOtgFs::TransferComplete(size_t size)
       }
       else
       {
-        // 共享模式只有 64 B 的 IN 区，请求长度不会超过一个包；走到这里说明
-        // 配置有误，按剩余字节整包发出，不再续发。
+        // 共享模式只有 64 B 的 IN 区，请求长度不会超过一个包；走到这里说明配置有误，
+        // 按剩余字节整包发出，不再续发。
         // Shared mode only has a 64 B IN area, so a request never exceeds one
         // packet; reaching here means a misconfiguration — send what is left as
         // one packet and stop splitting.
@@ -564,8 +561,9 @@ void CH32EndpointOtgFs::TransferComplete(size_t size)
     const bool TOG_OK = ((USBFSD->INT_ST & USBFS_U_TOG_OK) == USBFS_U_TOG_OK);  // NOLINT
     if (!TOG_OK)
     {
-      // 重试只补收没到的部分：单向模式可能已经 ACK 了前几包，整请求重来会丢掉
-      // 它们（shared/EP0/ISO 每包完成，remaining == requested，行为不变）。
+      // 重试只补收没到的部分：单向模式可能已经 ACK 了前几包，
+      // 整请求重来会丢掉它们（shared/EP0/ISO 每包完成，remaining == requested，行为不变）
+      // 。
       // Retry only the missing part: in single-direction mode earlier packets may
       // already be ACKed and a full restart would drop them (shared/EP0/ISO
       // complete per packet, so remaining == requested and nothing changes).

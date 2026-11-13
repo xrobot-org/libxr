@@ -1,3 +1,20 @@
+/**
+ * @file test_uac_mic.cpp
+ * @brief UAC1 麦克风设备类（槽模型）主机测试 / Host tests for the UAC1 microphone device
+ *        class.
+ *
+ * 覆盖 alt 0/1 切换时的激活与补零投帧、槽被占满时的丢帧计数、等时请求 FAILED 后的
+ * 恢复、经设备核心的 SET_INTERFACE 流程（含停止未确认时的延迟）、解绑后速度清除、
+ * 后端不支持等时传输时的绑定失败、采样率与 Feature Unit 类请求，以及高速下微帧债务
+ * 累积成整个服务区间的节拍。
+ * Covers the activation and zero-filled frame submission on alt 0/1 switches, the drop
+ * count when the slots are taken, the recovery after an isochronous request FAILED, the
+ * SET_INTERFACE flow through the device core (including the deferral while a stop is
+ * unconfirmed), the speed cleared on unbind, the bind failure on a backend without
+ * isochronous support, the sampling-frequency and feature-unit class requests, and the
+ * high-speed pacing where microframe debt accrues into whole service intervals.
+ */
+
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -17,6 +34,7 @@ using namespace LibXR::USB::Test;
 namespace
 {
 
+/// 重新导出受保护的控制传输结果类型和诊断接口，供测试使用
 /// Re-exports the protected control-transfer result type and the diagnostics so a test
 /// can use them.
 class Uac : public UAC1MicrophoneQ<1, 16>
@@ -46,14 +64,18 @@ std::vector<uint8_t> Zeros(size_t size) { return std::vector<uint8_t>(size, 0); 
 static constexpr auto TEST_LANGUAGE = DescriptorStrings::MakeLanguagePack(
     DescriptorStrings::Language::EN_US, "LibXR", "USB tests", "0");
 
+/// 类级夹具：端点池、一个 ISO IN 端点和 UAC 麦克风
 /// Class-level fixture: the pool, one ISO IN endpoint and the UAC microphone.
 struct UacFixture
 {
-  Block<128> iso_storage;  // 2 slots of 64 B; one 32 B packet fits twice.
+  // 2 个 64 B 的槽；一个 32 B 的包可放两次。
+  // 2 slots of 64 B; one 32 B packet fits twice.
+  Block<128> iso_storage;
   EndpointPool pool{4};
   MockEndpoint iso{Number::EP1, Direction::IN, iso_storage.Raw()};
   Uac uac{Number::EP1, 16000};
-  DeviceComposition composition;  // Connects the class to the pool's service.
+  // 把类连接到池的服务 / Connects the class to the pool's service.
+  DeviceComposition composition;
   UacFixture() : composition(pool, {&TEST_LANGUAGE}, {{&uac}})
   {
     TEST_ASSERT(pool.Put(&iso) == ErrorCode::OK);
@@ -84,6 +106,8 @@ class TestUacDevice : public DeviceCore<FullSpeedCapabilities>
   void OnStopTimeout(bool) override {}
 };
 
+/// 设备级夹具：EP0 替身、一个 ISO IN 端点和设备核心。核心执行标准的
+/// SET_CONFIGURATION / SET_INTERFACE 流程。
 /// Device-level fixture: EP0 mocks, one ISO IN endpoint and the device core. The core
 /// runs the standard SET_CONFIGURATION / SET_INTERFACE flows.
 struct UacDeviceFixture
@@ -104,6 +128,7 @@ struct UacDeviceFixture
   void Setup(uint8_t kind, uint8_t request, uint16_t value, uint16_t length,
              uint16_t index = 0)
   {
+    // SETUP 会独立于软件取消旧的硬件控制传输。
     // A SETUP cancels the old hardware control transfer independently from software.
     in0.active = false;
     out0.active = false;
@@ -113,6 +138,7 @@ struct UacDeviceFixture
 };
 
 // ---------------------------------------------------------------------------
+// KickOneFrame：取槽、补零出队、提交
 // KickOneFrame: slot, pop with zero fill, submit
 // ---------------------------------------------------------------------------
 
@@ -213,6 +239,7 @@ void TestUacFrameDropCount()
 }
 
 // ---------------------------------------------------------------------------
+// FAILED 恢复：结束待决请求，重新 Configure，从下一拍继续
 // FAILED recovery: end pending requests, re-Configure, resume from the next tick
 // ---------------------------------------------------------------------------
 
@@ -223,8 +250,8 @@ void TestUacFailedRecovery()
   TEST_ASSERT(f.uac.SetAltSetting(1, 1) == ErrorCode::OK);
   TEST_ASSERT(f.iso.active && f.iso.starts.size() == 1);
 
-  // 等时请求 FAILED：完成路径只置待决标志（完成回调里不做生命周期操作），Close 与
-  // 重新 Configure 由下一拍非中断 SOF 的 ActivateStreaming 执行。
+  // 等时请求 FAILED：完成路径只置待决标志（完成回调里不做生命周期操作），
+  // Close 与重新 Configure 由下一拍非中断 SOF 的 ActivateStreaming 执行。
   // The isochronous request FAILED: the completion only raises the pending flag
   // (no lifecycle ops in a completion callback); the next non-ISR SOF runs Close and the
   // re-Configure via ActivateStreaming.
@@ -261,6 +288,7 @@ void TestUacFailedRecovery()
 }
 
 // ---------------------------------------------------------------------------
+// 经设备核心的 SET_INTERFACE
 // SET_INTERFACE through the device core
 // ---------------------------------------------------------------------------
 
@@ -367,6 +395,7 @@ void TestUacSetInterfaceSlowStop()
 }
 
 // ---------------------------------------------------------------------------
+// 解绑时清除 speed_
 // speed_ is cleared on unbind
 // ---------------------------------------------------------------------------
 
@@ -393,6 +422,7 @@ void TestUacSpeedClearedOnUnbind()
 }
 
 // ---------------------------------------------------------------------------
+// 不支持等时传输的后端使绑定失败，并给出明确的运行时错误
 // A backend without isochronous support fails the bind with a clear runtime error
 // ---------------------------------------------------------------------------
 
@@ -411,12 +441,15 @@ void TestUacUnsupportedBackend()
   UacDeviceFixture d;
   d.iso.configure_result = ErrorCode::NOT_SUPPORT;
   d.device.Init(false);
-  d.Setup(0x00, 9, 1, 0);  // SET_CONFIGURATION 1：绑定失败 → INIT_ERR → STALL
+  // SET_CONFIGURATION 1：绑定失败 → INIT_ERR → STALL
+  // SET_CONFIGURATION 1: the bind fails -> INIT_ERR -> STALL
+  d.Setup(0x00, 9, 1, 0);
   TEST_ASSERT(d.in0.IsStalled() && d.out0.IsStalled());
   TEST_ASSERT(!d.uac.OwnsEndpoint(0x81));
 }
 
 // ---------------------------------------------------------------------------
+// 类请求：端点采样率与 Feature Unit
 // Class requests: EP sampling frequency and the feature unit
 // ---------------------------------------------------------------------------
 
@@ -449,6 +482,7 @@ void TestUacClassRequests()
   ConstRawData stage{rate, sizeof(rate)};
   TEST_ASSERT(f.uac.OnClassData(false, Uac::SET_CUR, stage) == ErrorCode::OK);
   // 被拒的那次也要先发 SETUP：数据阶段的类型由上一次请求登记，消费后即清空。
+  // 被拒的那次也要先发 SETUP：数据阶段的类型由上一次请求登记，消费后即清空。
   // A refused attempt needs its own SETUP too: the data stage is typed by the
   // previous request and cleared once consumed.
   const uint8_t wrong[3] = {0x80, 0xBB, 0x00};  // 48000 Hz
@@ -459,7 +493,8 @@ void TestUacClassRequests()
 
   // Feature Unit：静音与音量。
   // Feature unit: mute and volume.
-  const uint16_t fu = static_cast<uint16_t>(Uac::ID_FU << 8U);  // wIndex 高字节
+  // wIndex 高字节 / High byte of wIndex.
+  const uint16_t fu = static_cast<uint16_t>(Uac::ID_FU << 8U);
   TEST_ASSERT(f.uac.OnClassRequest(false, Uac::GET_MIN, Uac::FU_VOLUME << 8U, 2, fu,
                                    result) == ErrorCode::OK);
   TEST_ASSERT(IsBytes(result.write_data, {0, 0}));
@@ -496,6 +531,7 @@ void TestUacClassRequests()
 }
 
 // ---------------------------------------------------------------------------
+// 高速节拍：微帧债务累积成整个服务区间
 // High-speed pacing: microframe debt accrues into whole service intervals
 // ---------------------------------------------------------------------------
 
@@ -511,7 +547,8 @@ void TestUacHighSpeedPacing()
   TEST_ASSERT(f.iso.starts.size() == 1 && f.iso.Last().length == 4);
   f.iso.Complete();
 
-  BusTime micro{3, 3};  // 3 个微帧 elapsed，超出的债务丢弃
+  // 3 个微帧 elapsed，超出的债务丢弃 / 3 microframes elapsed; the excess debt is dropped.
+  BusTime micro{3, 3};
   f.uac.OnBusTime(false, micro);
   TEST_ASSERT(f.iso.starts.size() == 2 && f.iso.Last().length == 4);
   f.iso.Complete();

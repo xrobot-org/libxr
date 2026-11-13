@@ -19,9 +19,9 @@
 #include <cstring>
 #include <vector>
 
-#include "driver/usb/usb_test_common.hpp"
 #include "cdc_to_uart.hpp"
 #include "cdc_uart.hpp"
+#include "driver/usb/usb_test_common.hpp"
 #include "libxr_pipe.hpp"
 
 using namespace LibXR;
@@ -33,6 +33,7 @@ namespace
 constexpr uint8_t SET_LINE_CODING = 0x20;
 constexpr uint8_t GET_LINE_CODING = 0x21;
 
+/// 公开 CDC 类受保护的请求入口
 /// Exposes the protected request entry points of a CDC class.
 template <typename Base>
 class Exposed : public Base
@@ -45,6 +46,7 @@ class Exposed : public Base
   using ControlTransferResult = DeviceClass::ControlTransferResult;
 };
 
+/// CDC PSTN 6.3.11 的 7 字节线路编码，dwDTERate 在先，小端
 /// The 7-byte line coding of CDC PSTN 6.3.11, little-endian dwDTERate first.
 std::vector<uint8_t> Coding(uint32_t baud, uint8_t char_format, uint8_t parity,
                             uint8_t data_bits)
@@ -57,6 +59,7 @@ std::vector<uint8_t> Coding(uint32_t baud, uint8_t char_format, uint8_t parity,
   return bytes;
 }
 
+/// 按核心的执行方式发出 SET_LINE_CODING：先 SETUP，再收到数据阶段
 /// SET_LINE_CODING as the core runs it: the SETUP, then the received data stage.
 template <typename Class>
 ErrorCode SetLineCoding(Class& cdc, const std::vector<uint8_t>& bytes)
@@ -79,6 +82,7 @@ std::vector<uint8_t> GetLineCoding(Class& cdc)
   return std::vector<uint8_t>(p, p + 7);
 }
 
+/// 只支持 8 位数据、1 位停止位、9600..115200 波特率、任意校验的 UART
 /// A UART that supports 8 data bits with 1 stop bit at 9600..115200 baud, any parity.
 class LimitedUart : public UART
 {
@@ -131,19 +135,21 @@ void TestCdcUartAcceptsEveryLineCoding()
       },
       &ctx));
 
+  // 1.5 位停止位、Mark 校验和 7 位数据：都是合法的 PSTN 取值，均应答。
   // 1.5 stop bits, Mark parity and 7 data bits: all valid PSTN values, acknowledged.
   const auto one_and_half = Coding(9600, 1, 3, 7);
   TEST_ASSERT(SetLineCoding(cdc, one_and_half) == ErrorCode::OK);
+  // 没有实际端口时，主机设的值就是当前值。
   // With no physical port the host's values are the current ones.
   TEST_ASSERT(GetLineCoding(cdc) == one_and_half);
   TEST_ASSERT(seen_count == 1 && seen.baudrate == 9600U && seen.data_bits == 7U);
 
-  // Space parity and 16 data bits likewise.
+  // Space 校验和 16 位数据同样处理 / Space parity and 16 data bits likewise.
   const auto space = Coding(921600, 2, 4, 16);
   TEST_ASSERT(SetLineCoding(cdc, space) == ErrorCode::OK);
   TEST_ASSERT(GetLineCoding(cdc) == space);
 
-  // Only the 7-byte length is checked.
+  // 只检查 7 字节的长度 / Only the 7-byte length is checked.
   const std::vector<uint8_t> short_stage(6, 0);
   ConstRawData data{short_stage.data(), short_stage.size()};
   TEST_ASSERT(cdc.OnClassData(false, SET_LINE_CODING, data) == ErrorCode::ARG_ERR);
@@ -157,12 +163,13 @@ void TestCdcToUartAppliesTheNearestSupportedCoding()
   Exposed<CDCToUart> cdc(Number::EP1, Number::EP2, Number::EP3, uart);
   cdc.BindEndpoints(f.pool, 0, false);
 
-  // A supported coding is applied as requested.
+  // 支持的编码按请求应用 / A supported coding is applied as requested.
   TEST_ASSERT(SetLineCoding(cdc, Coding(57600, 0, 2, 8)) == ErrorCode::OK);
   TEST_ASSERT(GetLineCoding(cdc) == Coding(57600, 0, 2, 8));
   TEST_ASSERT(uart.applied.baudrate == 57600U &&
               uart.applied.parity == UART::Parity::EVEN && uart.applied.stop_bits == 1U);
 
+  // 不支持 2 位停止位：仍应答，UART 以 1 位停止位运行，GET_LINE_CODING 返回该值。
   // 2 stop bits are not supported: acknowledged, the UART runs with 1 stop bit and
   // GET_LINE_CODING reports that.
   TEST_ASSERT(SetLineCoding(cdc, Coding(19200, 2, 1, 8)) == ErrorCode::OK);
@@ -171,11 +178,13 @@ void TestCdcToUartAppliesTheNearestSupportedCoding()
               uart.applied.parity == UART::Parity::ODD && uart.applied.stop_bits == 1U &&
               uart.applied.data_bits == 8U);
 
+  // 同样不支持 7 位数据：结果是请求波特率下的 8N1。
   // 7 data bits are not supported either: the result is 8N1 at the requested rate.
   TEST_ASSERT(SetLineCoding(cdc, Coding(38400, 1, 2, 7)) == ErrorCode::OK);
   TEST_ASSERT(GetLineCoding(cdc) == Coding(38400, 0, 0, 8));
   TEST_ASSERT(uart.applied.baudrate == 38400U && uart.applied.data_bits == 8U);
 
+  // 不支持的波特率：仍应答，之前的编码继续生效。
   // An unsupported rate: acknowledged, the previous coding stays in effect.
   TEST_ASSERT(SetLineCoding(cdc, Coding(3000000, 0, 0, 8)) == ErrorCode::OK);
   TEST_ASSERT(GetLineCoding(cdc) == Coding(38400, 0, 0, 8));

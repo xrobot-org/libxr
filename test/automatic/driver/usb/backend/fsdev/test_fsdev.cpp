@@ -1,9 +1,18 @@
-// Shared FSDEV runtime (src/driver/usb/backend/fsdev.hpp) against a fake controller:
-// the fake implements the register semantics (STAT/DTOG toggle on write-1, CTR/SETUP
-// keep, ISTR write-0-to-clear) and the PMA layout (half-word stride 2) of a classic
-// FSDEV part, and a host side drives SETUP/OUT/IN packets through it. The tests run
-// enumeration, control read/write, multi-packet bulk, stops and bus resets through the
-// real dispatch/owner machinery of FSDevDevice.
+/**
+ * @file test_fsdev.cpp
+ * @brief FSDEV 共用运行时主机测试 / Host tests for the shared FSDEV runtime.
+ *
+ * 在假控制器上运行共用的 FSDEV 运行时（src/driver/usb/backend/fsdev.hpp）：假控制器
+ * 实现经典型 FSDEV 的寄存器语义（STAT/DTOG 写 1 翻转、CTR/SETUP 保持、ISTR 写 0 清除）
+ * 和 PMA 布局（半字步长 2），主机侧通过它发送 SETUP/OUT/IN 包。测试经由 FSDevDevice
+ * 真实的分发/owner 机制，运行枚举、控制读写、多包批量传输、停止和总线复位。
+ * Runs the shared FSDEV runtime (src/driver/usb/backend/fsdev.hpp) against a fake
+ * controller: the fake implements the register semantics (STAT/DTOG toggle on write-1,
+ * CTR/SETUP keep, ISTR write-0-to-clear) and the PMA layout (half-word stride 2) of a
+ * classic FSDEV part, and a host side drives SETUP/OUT/IN packets through it. The tests
+ * run enumeration, control read/write, multi-packet bulk, stops and bus resets through
+ * the real dispatch/owner machinery of FSDevDevice.
+ */
 
 #include <sys/wait.h>
 #include <unistd.h>
@@ -75,8 +84,8 @@ struct FakeHw
   static constexpr uint16_t CNTR_RUN_MASK = 0x8000U | 0x0400U | 0x0800U | 0x1000U;
   static constexpr uint16_t CNTR_SOFM = 0x0200U;
 
-  /// ISTR.CTR 是所有端点 CTR 的或，EP_ID 指向挂起端点中编号最小的那个（真硬件按
-  /// 优先级，EP0 最高）；软件清位后仍有挂起端点时硬件立刻重新置位。
+  /// ISTR.CTR 是所有端点 CTR 的或，EP_ID 指向挂起端点中编号最小的那个（真硬件按优先级，
+  /// EP0 最高）；软件清位后仍有挂起端点时硬件立刻重新置位。
   /// ISTR.CTR is the OR of all endpoint CTRs and EP_ID points at the pending endpoint
   /// with the lowest number; a pending endpoint re-asserts CTR right after the software
   /// clears it.
@@ -103,8 +112,9 @@ struct FakeHw
   }
 
   static uint32_t ReadEp(uint8_t num) { return ep[num]; }
-  /// 一次性竞态钩子：在下一次 WriteEp 生效前注入一次硬件事务，复现 SetStat 的
-  /// 读改写窗口 / One-shot race hook: injects a hardware transaction right before
+  /// 一次性竞态钩子：在下一次 WriteEp 生效前注入一次硬件事务，
+  /// 复现 SetStat 的读改写窗口 / One-shot race hook: injects a hardware transaction right
+  /// before
   /// the next WriteEp lands, reproducing the SetStat read-modify-write window.
   static inline std::function<void()> on_write;
   /// 一次性竞态钩子：在 WriteEp 生效之后、软件读回之前注入硬件事务，复现
@@ -151,6 +161,7 @@ struct FakeHw
   static volatile uint16_t* BtField(uint8_t num, unsigned field)
   {
     // 每数据字占 2 个半字地址：字段 m 在 APB 字节 (8n+2m)*2。
+    // Each data word takes 2 half-word addresses: field m sits at APB byte (8n+2m)*2.
     return reinterpret_cast<volatile uint16_t*>(
         reinterpret_cast<uintptr_t>(pma.data()) +
         (static_cast<uintptr_t>(num) * 8U + 2U * field) * 2U);
@@ -219,6 +230,8 @@ struct FakeHw
   static void InitRegs()
   {
     // FRES 脉冲复位 USB 逻辑：EPnR、ISTR、地址全部清零（与真硬件一致）。
+    // The FRES pulse resets the USB logic: EPnR, ISTR and the address all clear, as on
+    // real hardware.
     WriteCntr(0x0001U);
     WriteCntr(0U);
     istr = 0;
@@ -402,6 +415,7 @@ SetupPacket MakeSetup(uint8_t type, uint8_t request, uint16_t value, uint16_t in
 }
 
 // ---------------------------------------------------------------------------
+// 控制类（最小实现，取自 test_endpoint.cpp）
 // Control class (minimal, from test_endpoint.cpp)
 // ---------------------------------------------------------------------------
 
@@ -548,7 +562,7 @@ struct Done
 };
 
 // ---------------------------------------------------------------------------
-// Tests
+// 测试 / Tests
 // ---------------------------------------------------------------------------
 
 void TestEnumerationAndControlRead()
@@ -718,17 +732,20 @@ void TestBusResetEndsTransfers()
   Pump();
   TEST_ASSERT(packet.size() == 18);
   f.StatusOut();
-  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_TX) != 0x0030U);  // 旧会话不再发送
+  // 旧会话不再发送 / The old session no longer sends.
+  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_TX) != 0x0030U);
 }
 
 void TestSuspendResume()
 {
   Fixture f;
-  FakeHw::RxPacket(0, nullptr, 0U, false);  // 无在途控制传输时的噪声包，读掉丢弃
+  // 无在途控制传输时的噪声包，读掉丢弃
+  // A noise packet with no control transfer in flight; it is read and discarded.
+  FakeHw::RxPacket(0, nullptr, 0U, false);
   Pump();
   FakeHw::SuspendLine();
   Pump();
-  TEST_ASSERT((FakeHw::ReadCntr() & 0x0008U) != 0U);  // FSUSP 置位
+  TEST_ASSERT((FakeHw::ReadCntr() & 0x0008U) != 0U);  // FSUSP 置位 / FSUSP is set
   FakeHw::ResumeLine();
   Pump();
   TEST_ASSERT((FakeHw::ReadCntr() & 0x0008U) == 0U);
@@ -894,8 +911,8 @@ void TestStopRaceWithTransaction()
 }
 
 /// 构造期 PMA 检查：缓冲不对齐 / 超出 pma_limit 必须在构造时 REQUIRE 失败，
-/// 而不是静默截断地址让缓冲重叠。REQUIRE 走 libxr_fatal_error → abort，所以
-/// 在 fork 出的子进程里构造，父进程检查异常退出。
+/// 而不是静默截断地址让缓冲重叠。REQUIRE 走 libxr_fatal_error → abort，
+/// 所以在 fork 出的子进程里构造，父进程检查异常退出。
 /// Construction-time PMA checks: a misaligned buffer or a layout past pma_limit
 /// must REQUIRE-fail at construction instead of silently truncating addresses and
 /// overlapping buffers. REQUIRE aborts via libxr_fatal_error, so construct in a
@@ -928,9 +945,9 @@ void TestPmaLayoutChecks()
   expect_fatal(false, true);  // 布局超出 pma_limit / layout past the limit
 }
 
-/// 装填 VALID 后、硬件读回之前事务就完成了（写入生效、STAT 自动回 NAK、CTR
-/// 锁存）：重试逻辑不得把端点再次翻成 VALID——IN 会用同一份 PMA 数据重发一
-/// 包，OUT 会多收一包。正确行为是把这次完成交给 CTR 处理。
+/// 装填 VALID 后、硬件读回之前事务就完成了（写入生效、STAT 自动回 NAK、CTR 锁存）：
+/// 重试逻辑不得把端点再次翻成 VALID——IN 会用同一份 PMA 数据重发一包，OUT 会多收一包。
+/// 正确行为是把这次完成交给 CTR 处理。
 /// The transaction completes after the VALID write lands but before the
 /// read-back (write effective, STAT auto-NAK, CTR latched): the retry logic
 /// must not flip the endpoint back to VALID — that re-arms the same PMA data
@@ -951,6 +968,8 @@ void TestArmNotRearmedByRace()
     FakeHw::on_write_post = [] { FakeHw::AckIn(1); };
     TEST_ASSERT(SubmitBytes(in, bytes) == ErrorCode::OK);
     // 必须停在 NAK（等 CTR 处理），不能被重试翻回 VALID
+    // It must stay at NAK (waiting for the CTR handler), not be flipped back to VALID by
+    // the retry.
     TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_TX) == 0x0020U);
     Pump();
     TEST_ASSERT(done.count == 1 && done.actual == 64 && done.result == ErrorCode::OK);

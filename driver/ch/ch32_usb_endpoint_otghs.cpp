@@ -582,9 +582,9 @@ ErrorCode CH32EndpointOtgHs::StartHardware(const HwRequest& request, bool /*in_i
 
 USB::Endpoint::StopResult CH32EndpointOtgHs::StopHardware(bool /*in_isr*/)
 {
-  // RES=NAK 立即生效：控制器从下一个事务起不再访问槽；在途的最后一个事务仍会
-  // 完成（最多一个包落进槽），此后 INT_BUSY=1 自动 NAK 全部事务。无法也无须
-  // 中止在途事务，迟到的完成由核心按标签丢弃（与 FSDEV 先例一致）。
+  // RES=NAK 立即生效：控制器从下一个事务起不再访问槽；
+  // 在途的最后一个事务仍会完成（最多一个包落进槽），此后 INT_BUSY=1 自动 NAK 全部事务。
+  // 无法也无须中止在途事务，迟到的完成由核心按标签丢弃（与 FSDEV 先例一致）。
   // RES=NAK takes effect immediately: from the next transaction on the controller no
   // longer accesses the slot; the last in-flight transaction still completes (at most one
   // packet lands in the slot), after which INT_BUSY=1 NAKs all transactions
@@ -666,12 +666,13 @@ bool CH32EndpointOtgHs::InPacketAcked() const
 
 void CH32EndpointOtgHs::CompleteAckedInPackets()
 {
-  // INT_BUSY 让控制器在 UIF_TRANSFER 清零前对后续事务回忙 NAK，而 INT_ST 记录的是
-  // 最近一次事务：IN 包刚被 ACK，主机紧接着发来的 IN（多包传输的下一包、ZLP，或别的
-  // 端点的事务）被忙 NAK 后，INT_ST 就变成 NAK 或别的端点，按 INT_ST 分发会丢掉这次
-  // 完成，RES 仍为 ACK，控制器随后把同一包再发一遍（toggle 已翻转，主机照单全收）。
-  // 所以每次 UIF_TRANSFER 都按 toggle 检查挂着的 IN 包是否已被 ACK。UIF_TRANSFER
-  // 清零前不会有新事务完成，同一次检查不会把续挂的包误判为已发。
+  // INT_BUSY 让控制器在 UIF_TRANSFER 清零前对后续事务回忙 NAK，
+  // 而 INT_ST 记录的是最近一次事务：IN 包刚被 ACK，
+  // 主机紧接着发来的 IN（多包传输的下一包、ZLP，或别的端点的事务）被忙 NAK 后，
+  // INT_ST 就变成 NAK 或别的端点，按 INT_ST 分发会丢掉这次完成，RES 仍为 ACK，
+  // 控制器随后把同一包再发一遍（toggle 已翻转，主机照单全收）。
+  // 所以每次 UIF_TRANSFER 都按 toggle 检查挂着的 IN 包是否已被 ACK。
+  // UIF_TRANSFER 清零前不会有新事务完成，同一次检查不会把续挂的包误判为已发。
   // With INT_BUSY the controller busy-NAKs further transactions until UIF_TRANSFER is
   // cleared, while INT_ST describes the latest transaction: when the IN right after an
   // ACKed packet (the next packet of a multi-packet transfer, a ZLP, or another
@@ -782,8 +783,8 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
   if (IS_EP0)
   {
     auto* rx_ctrl = get_rx_control_addr(GetNumber());
-    // 这里不要直接把 EP0 OUT 留在 ACK：上层控制传输栈会在当前包被完整消费后再
-    // 重新挂接收，否则下一轮 session 可能撞上陈旧的 EP0 软件状态。
+    // 这里不要直接把 EP0 OUT 留在 ACK：上层控制传输栈会在当前包被完整消费后再重新挂接收，
+    // 否则下一轮 session 可能撞上陈旧的 EP0 软件状态。
     // Do not leave EP0 OUT in ACK here: the upper control transfer stack re-arms the
     // receive after the current packet is fully consumed, otherwise the next session may
     // run into stale EP0 software state.

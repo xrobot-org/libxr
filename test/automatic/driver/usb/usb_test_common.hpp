@@ -32,6 +32,7 @@ using State = Endpoint::State;
 using Completion = Endpoint::Completion;
 using Slot = Endpoint::Slot;
 
+/// 按缓存行对齐的存储块；主机构建的缓存行为 64 B
 /// Cache-line aligned storage block; the host build's line is 64 B.
 template <size_t N>
 struct alignas(64) Block
@@ -40,6 +41,7 @@ struct alignas(64) Block
   RawData Raw() { return {bytes.data(), bytes.size()}; }
 };
 
+/// 后端替身：记录每次启动，由测试扮演硬件
 /// Backend double: records every start and lets the test play the hardware.
 class MockEndpoint : public Endpoint
 {
@@ -61,7 +63,7 @@ class MockEndpoint : public Endpoint
   std::vector<Start> starts;
   std::vector<std::vector<uint8_t>> sent;
   bool active = false;
-  bool pending_stop = false;  // StopHardware answers PENDING.
+  bool pending_stop = false;  // StopHardware 返回 PENDING / StopHardware answers PENDING.
   bool stop_requested = false;
   size_t reap_actual = 0;
   bool reap_retired = false;
@@ -73,7 +75,7 @@ class MockEndpoint : public Endpoint
 
   const Start& Last() const { return starts.back(); }
 
-  /// IN: the host takes the whole request.
+  /// IN：主机取走整个请求 / IN: the host takes the whole request.
   void Complete(bool in_isr = true)
   {
     uint32_t tag;
@@ -91,14 +93,14 @@ class MockEndpoint : public Endpoint
     }
     OnHardwareComplete(in_isr, tag, length);
   }
-  /// IN: the host took fewer bytes than requested.
+  /// IN：主机取走的字节数少于请求 / IN: the host took fewer bytes than requested.
   void CompleteWith(size_t actual, ErrorCode result = ErrorCode::OK)
   {
     TEST_ASSERT(active);
     active = false;
     OnHardwareComplete(true, starts.back().tag, actual, result);
   }
-  /// OUT: the host sends bytes into the armed slot.
+  /// OUT：主机向已挂包的槽发送数据 / OUT: the host sends bytes into the armed slot.
   void HostSends(const std::vector<uint8_t>& bytes)
   {
     TEST_ASSERT(active && bytes.size() <= starts.back().capacity);
@@ -145,6 +147,7 @@ class MockEndpoint : public Endpoint
   }
   StopResult StopHardware(bool) override
   {
+    // 硬件可能已因 SETUP 取消了 EP0 传输。
     // A SETUP may already have cancelled an EP0 transfer in hardware.
     std::lock_guard<std::mutex> guard(lock);
     if (!pending_stop)
@@ -173,6 +176,7 @@ class MockEndpoint : public Endpoint
   size_t MaxPacketSizeLimit(Type) const override { return limit; }
 };
 
+/// 记录交给某个端点绑定的完成事件
 /// Records completions delivered to one endpoint binding.
 struct Recorder
 {
@@ -192,6 +196,7 @@ inline std::vector<uint8_t> Bytes(size_t size, uint8_t seed)
   return data;
 }
 
+/// 控制器按启动顺序发到总线上的全部数据
 /// Everything the controller put on the wire, in start order.
 inline std::vector<uint8_t> Wire(const MockEndpoint& ep)
 {
@@ -201,6 +206,7 @@ inline std::vector<uint8_t> Wire(const MockEndpoint& ep)
   return data;
 }
 
+/// 三个数据端点及其池：EP1 IN、EP2 OUT、EP3 IN
 /// Three data endpoints plus their pool: EP1 IN, EP2 OUT, EP3 IN.
 struct Fixture
 {

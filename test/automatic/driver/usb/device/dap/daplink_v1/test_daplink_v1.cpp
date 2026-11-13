@@ -49,6 +49,7 @@ class TestDap : public DapLinkV1Class<FakeSwd>
   using DapLinkV1Class<FakeSwd>::UnbindEndpoints;
 };
 
+/// 以给定命令开头的 64 字节报告，其余保持为零
 /// A 64-byte report with the given command prefix; the tail stays zero.
 std::vector<uint8_t> Report(std::initializer_list<uint8_t> prefix)
 {
@@ -63,6 +64,8 @@ std::vector<uint8_t> InfoReport(InfoId id)
   return Report({static_cast<uint8_t>(CommandId::INFO), static_cast<uint8_t>(id)});
 }
 
+/// 按应用 DAP 线程的方式执行所有已到达的命令。等待 IN 槽的响应会使 Step(0) 超时并结束循环
+/// 。
 /// Run every command that has arrived, the way the application's DAP thread would. A
 /// response that waits for an IN slot makes Step(0) time out and ends the loop.
 void Run(TestDap& dap)
@@ -78,18 +81,20 @@ void TestInfoRoundTrip()
   Fixture f;
   TestDap dap(Number::EP1, Number::EP2, swd);
   dap.BindEndpoints(f.pool, 0, false);
+  // 挂出一个 OUT 租约，每个租约一个报告。
   // One OUT lease armed, one report per lease.
   TEST_ASSERT(f.out.active && f.out.Last().length == 64 && f.out.starts.size() == 1);
   TEST_ASSERT(f.in.starts.empty());
-  // Nothing to do without a request.
+  // 没有请求时无事可做 / Nothing to do without a request.
   Run(dap);
   TEST_ASSERT(f.in.starts.empty());
 
   f.out.HostSends(InfoReport(InfoId::VENDOR));
+  // owner 只取走租约：OUT 端点不重新挂包（背压）。
   // The owner only takes the lease: the OUT endpoint is not rearmed (backpressure).
   TEST_ASSERT(!f.out.active && f.out.starts.size() == 1 && f.in.starts.empty());
 
-  // The application's DAP thread executes the command.
+  // 应用的 DAP 线程执行该命令 / The application's DAP thread executes the command.
   Run(dap);
   TEST_ASSERT(f.in.active && f.in.Last().length == 64);
   const auto& response = f.in.Last().data;
@@ -97,8 +102,10 @@ void TestInfoRoundTrip()
   TEST_ASSERT(std::memcmp(&response[2], "XRobot", 7) == 0);
   TEST_ASSERT(std::all_of(response.begin() + 9, response.end(),
                           [](uint8_t byte) { return byte == 0U; }));
+  // 响应已被接受：租约已归还，OUT 端点重新挂包。
   // The response was accepted: the lease went back and the OUT endpoint is armed again.
   TEST_ASSERT(f.out.active && f.out.starts.size() == 2 && f.out.Last().length == 64);
+  // 没有待处理内容时再次 Step 不做任何事。
   // Stepping again with nothing pending does nothing.
   Run(dap);
   TEST_ASSERT(f.in.starts.size() == 1);
@@ -151,6 +158,7 @@ void TestTwoOutReportsAnsweredInOrder()
   TEST_ASSERT(f.in.sent[1][1] == 10U &&
               std::memcmp(&f.in.sent[1][2], "DAPLinkV1", 10) == 0);
 
+  // 两个 OUT 槽都在接收：再来一个报告后，另一个槽仍处于挂包状态。
   // Both OUT slots are receiving: after one more report the other slot is still armed.
   TEST_ASSERT(f.out.active);
   f.out.HostSends(InfoReport(InfoId::VENDOR));
@@ -166,6 +174,7 @@ void TestConnectDelayAndUnknown()
   TestDap dap(Number::EP1, Number::EP2, swd);
   dap.BindEndpoints(f.pool, 0, false);
 
+  // DAP_Connect(SWD) 进入 SWD 并回答端口。
   // DAP_Connect(SWD) enters SWD and answers the port.
   f.out.HostSends(Report(
       {static_cast<uint8_t>(CommandId::CONNECT), static_cast<uint8_t>(Port::SWD)}));
@@ -175,13 +184,14 @@ void TestConnectDelayAndUnknown()
   TEST_ASSERT(swd.enters == 1 && swd.clock_hz == 1000000u);
   f.in.Complete();
 
-  // A delay command waits in the Step thread.
+  // 延时命令在 Step 线程里等待 / A delay command waits in the Step thread.
   f.out.HostSends(Report({static_cast<uint8_t>(CommandId::DELAY), 0x64, 0x00}));
   Run(dap);
   TEST_ASSERT(f.in.Last().data[0] == static_cast<uint8_t>(CommandId::DELAY) &&
               f.in.Last().data[1] == 0x00);
   f.in.Complete();
 
+  // 未知命令回答 0xFF，且不会卡住流水线。
   // An unknown command answers 0xFF and does not stall the pipeline.
   f.out.HostSends(Report({0x42}));
   Run(dap);
@@ -200,16 +210,19 @@ void TestPipelineAndSlotExhaustion()
 
   const auto info = InfoReport(InfoId::PRODUCT);
 
+  // 第一条命令：响应发到总线上，租约归还。
   // First command: its response goes on the wire and the lease goes back.
   f.out.HostSends(info);
   Run(dap);
   TEST_ASSERT(f.in.starts.size() == 1 && f.in.active && f.out.starts.size() == 2);
 
+  // 第二条命令：占用第二个 IN 槽，响应排在第一条之后。
   // Second command: the second IN slot is taken, the response queues behind the first.
   f.out.HostSends(info);
   Run(dap);
   TEST_ASSERT(f.in.starts.size() == 1 && f.out.starts.size() == 3);
 
+  // 第三条命令：没有剩余的 IN 槽，所以 Step 超时并持有响应和租约。
   // Third command: no IN slot left, so Step times out holding the response and the
   // lease.
   f.out.HostSends(info);
@@ -218,6 +231,7 @@ void TestPipelineAndSlotExhaustion()
   TEST_ASSERT(dap.Step(0) == ErrorCode::TIMEOUT);
   TEST_ASSERT(f.in.starts.size() == 1);
 
+  // 主机取走第一个响应后释放一个槽；下一次 Step 提交第三个响应。
   // The host taking the first response frees a slot; the next Step submits the third.
   f.in.Complete();
   TEST_ASSERT(f.in.starts.size() == 2);
@@ -238,6 +252,7 @@ void TestUnbindWhilePending()
   f.out.HostSends(InfoReport(InfoId::VENDOR));
   TEST_ASSERT(!f.out.active);
 
+  // 解绑结束会话：下一次 Step 丢弃持有的命令，并归还其过期租约。
   // Unbinding ends the session: the next Step drops the held command and gives its
   // stale lease back.
   dap.UnbindEndpoints(f.pool, false);
@@ -245,7 +260,7 @@ void TestUnbindWhilePending()
   Run(dap);
   TEST_ASSERT(f.in.starts.empty());
 
-  // A fresh binding serves the next command normally.
+  // 新的绑定正常处理下一条命令 / A fresh binding serves the next command normally.
   dap.BindEndpoints(f.pool, 0, false);
   TEST_ASSERT(f.out.active && f.out.Last().length == 64);
   const size_t armed = f.out.starts.size();
@@ -258,6 +273,7 @@ void TestUnbindWhilePending()
   f.in.Complete();
 }
 
+/// 设备解绑后重新绑定时仍在执行的命令属于已结束的会话：其响应不得提交到新的绑定里。
 /// A command that is executing while the device is unbound and bound again belongs to
 /// the session that ended: its response must not be submitted into the new binding.
 void TestNoStaleResponseAfterRebind()
@@ -278,7 +294,7 @@ void TestNoStaleResponseAfterRebind()
   Run(dap);
   TEST_ASSERT(f.in.starts.empty());
 
-  // The new session answers normally.
+  // 新会话正常应答 / The new session answers normally.
   f.out.HostSends(InfoReport(InfoId::VENDOR));
   Run(dap);
   TEST_ASSERT(f.in.active && f.in.starts.size() == 1);
@@ -286,6 +302,8 @@ void TestNoStaleResponseAfterRebind()
   f.in.Complete();
 }
 
+/// SWD 归运行 Step 的线程所有：构造、绑定和解绑（USB owner 上下文，这里是测试主线程）
+/// 不调用 SWD。Step 线程在第一条命令之前执行会话开始，在解绑之后执行会话结束。
 /// SWD belongs to the thread that runs Step: construction, bind and unbind (the USB owner
 /// context, here the test's main thread) make no SWD call. The Step thread applies the
 /// session start before the first command and the session end after the unbind.
@@ -321,6 +339,7 @@ void TestBindAndUnbindLeaveSwdToStep()
 
 void TestResponseNeverSentWithoutABinding()
 {
+  // 未绑定时，类回答 FAILED，而不是访问端点。
   // The class answers FAILED while unbound instead of touching the endpoints.
   FakeSwd swd;
   Fixture f;

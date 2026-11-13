@@ -35,6 +35,7 @@ static constexpr uint8_t TEST_REPORT_DESC[8] = {0x05, 0x01, 0x09, 0x02,
 
 using TestHidBase = HID<sizeof(TEST_REPORT_DESC), 8, 2>;
 
+/// 具体的 HID，输入报告 8 字节，输出报告 2 字节
 /// Concrete HID with 8-byte input and 2-byte output reports.
 class TestHid : public TestHidBase
 {
@@ -121,6 +122,7 @@ void TestSendInputReport()
   TEST_ASSERT(f.in.MaxPacketSize() == 8 && f.in.GetGranted().slot_capacity == 64);
   TEST_ASSERT(f.in.starts.empty());
 
+  // 非法参数从不占用单条在途标志。
   // Bad arguments never consume the one-in-flight flag.
   TEST_ASSERT(hid.SendInputReport({nullptr, 8}, false) == ErrorCode::ARG_ERR);
   std::array<uint8_t, 8> report{};
@@ -132,6 +134,7 @@ void TestSendInputReport()
               ErrorCode::OK);
   TEST_ASSERT(f.in.active && f.in.Last().length == 8);
   TEST_ASSERT(std::equal(report.begin(), report.end(), f.in.Last().data.begin()));
+  // 已有一个报告在途：下一次提交返回 BUSY，而不是排队。
   // One report in flight: the next submission is BUSY, not queued.
   TEST_ASSERT(hid.SendInputReport({report.data(), report.size()}, false) ==
               ErrorCode::BUSY);
@@ -140,7 +143,7 @@ void TestSendInputReport()
   f.in.Complete();
   TEST_ASSERT(hid.in_completions == 1 && hid.last_in_result == ErrorCode::OK);
   TEST_ASSERT(!f.in.active);
-  // The completion frees the writer.
+  // 完成事件释放发送方 / The completion frees the writer.
   TEST_ASSERT(hid.SendInputReport({report.data(), report.size()}, false) ==
               ErrorCode::OK);
   f.in.Complete();
@@ -158,6 +161,7 @@ void TestInputReportAcrossReset()
               ErrorCode::OK);
   TEST_ASSERT(f.in.active);
 
+  // 总线复位关闭端点：在途报告以 ABORTED 结束，发送方被释放（主机从未收到它）。
   // A bus reset closes the endpoint: the in-flight report ends ABORTED and the writer is
   // freed (the host never received it).
   f.in.Close(false);
@@ -166,6 +170,7 @@ void TestInputReportAcrossReset()
               ErrorCode::FAILED);
   TEST_ASSERT(f.in.starts.size() == 1);
 
+  // 解绑之后门铃已失效：返回 FAILED，且不访问端点。
   // After the unbind the doorbell is gone: FAILED without touching the endpoint.
   hid.UnbindEndpoints(f.pool, false);
   TEST_ASSERT(hid.SendInputReport({report.data(), report.size()}, false) ==
@@ -178,15 +183,18 @@ void TestOutReportLease()
   TestHid hid(Number::EP1, Number::EP2, true);
   hid.BindEndpoints(f.pool, 0, false);
   TEST_ASSERT(hid.GetOutEndpoint() == &f.out);
+  // 挂出一个槽，每个租约一个报告。
   // One slot armed, one report per lease.
   TEST_ASSERT(f.out.GetGranted().slot_capacity == 64);
   TEST_ASSERT(f.out.active && f.out.Last().length == 2 && f.out.starts.size() == 1);
 
   f.out.HostSends({0x5A, 0xA5});
   TEST_ASSERT(hid.out_reports == 1 && hid.last_out == std::vector<uint8_t>({0x5A, 0xA5}));
+  // 基类归还租约，从而重新挂接收。
   // The base returns the lease, which rearms the receive.
   TEST_ASSERT(f.out.active && f.out.starts.size() == 2 && f.out.Last().length == 2);
 
+  // 第二个报告到达已重新挂包的槽。
   // A second report arrives on the rearmed slot.
   f.out.HostSends({0x01, 0x02});
   TEST_ASSERT(hid.out_reports == 2 && hid.last_out == std::vector<uint8_t>({0x01, 0x02}));
@@ -198,13 +206,16 @@ void TestOutResumeRearms()
   Fixture f;
   TestHid hid(Number::EP1, Number::EP2, true);
   hid.BindEndpoints(f.pool, 0, false);
+  // 被中止的接收（这里是 flush）不会被基类重新挂包。
   // An aborted receive (here: a flush) is not rearmed by the base.
   f.out.Flush(false);
   TEST_ASSERT(hid.out_reports == 0 && !f.out.active);
+  // OUT 端点的 ENDPOINT_RESUMED 使其重新挂包。
   // ENDPOINT_RESUMED for the OUT endpoint arms it again.
   hid.OnDeviceEvent(true, DeviceEvent::ENDPOINT_RESUMED,
                     static_cast<uint8_t>(f.out.GetAddress()));
   TEST_ASSERT(f.out.active && f.out.Last().length == 2);
+  // 针对其他端点的 resume 不产生任何影响。
   // A resume for somebody else's endpoint does nothing.
   const size_t starts = f.out.starts.size();
   hid.OnDeviceEvent(true, DeviceEvent::ENDPOINT_RESUMED,
@@ -212,6 +223,8 @@ void TestOutResumeRearms()
   TEST_ASSERT(f.out.starts.size() == starts);
 }
 
+/// SET_IDLE 保存空闲速率（HID 1.11 7.2.4：duration 在 wValue 高字节，report ID 在低字节）
+/// ，GET_IDLE 以一个字节返回它（HID 1.11 7.2.3）。
 /// SET_IDLE stores the idle rate (HID 1.11 7.2.4: duration in the high byte of wValue,
 /// report ID in the low byte) and GET_IDLE returns it as one byte (HID 1.11 7.2.3).
 void TestIdleRate()
@@ -232,12 +245,13 @@ void TestIdleRate()
   };
 
   TEST_ASSERT(get_idle() == 0U);
+  // 所有报告的 duration 为 0x7D（以 4 ms 为单位即 500 ms）。
   // Duration 0x7D (500 ms in 4 ms units) for all reports.
   TEST_ASSERT(hid.OnClassRequest(false,
                                  static_cast<uint8_t>(TestHid::ClassRequest::SET_IDLE),
                                  0x7D00, 0, 0, result) == ErrorCode::OK);
   TEST_ASSERT(get_idle() == 0x7DU && hid.GetIDLERate() == 0x7DU);
-  // Duration 0 means indefinite.
+  // duration 为 0 表示无限期 / Duration 0 means indefinite.
   TEST_ASSERT(hid.OnClassRequest(false,
                                  static_cast<uint8_t>(TestHid::ClassRequest::SET_IDLE),
                                  0x0000, 0, 0, result) == ErrorCode::OK);
@@ -247,9 +261,12 @@ void TestIdleRate()
 void TestConfigurationRejectedWhenSlotTooSmall()
 {
   Fixture f;
-  f.in.limit = 0;  // The backend can hold no legal packet on this endpoint.
+  // 后端在该端点上放不下任何合法的包。
+  // The backend can hold no legal packet on this endpoint.
+  f.in.limit = 0;
   TestHid hid(Number::EP1, Number::EP2, false);
   hid.BindEndpoints(f.pool, 0, false);
+  // Configure 拒绝了该大小：端点处于 ERROR，无法发送任何报告。
   // Configure refused the size: the endpoint is in ERROR and no report can be sent.
   TEST_ASSERT(f.in.GetState() == State::ERROR);
   std::array<uint8_t, 8> report{};
@@ -265,6 +282,7 @@ void TestKeyboardReports()
   keyboard.BindEndpoints(f.pool, 0, false);
   TEST_ASSERT(keyboard.GetInEndpoint() == &f.in && keyboard.GetOutEndpoint() == &f.out);
   TEST_ASSERT(f.in.MaxPacketSize() == 8);
+  // 每个租约一个字节的 LED 报告。
   // One byte of LED report per lease.
   TEST_ASSERT(f.out.active && f.out.Last().length == 1);
 
@@ -283,6 +301,7 @@ void TestKeyboardReports()
       },
       &led));
 
+  // 路径 1：OUT 端点上的 LED 报告。
   // Path 1: an LED report on the OUT endpoint.
   f.out.HostSends({0x03});  // NumLock + CapsLock
   TEST_ASSERT(led.called && led.num && led.caps && !led.scroll);
@@ -290,6 +309,7 @@ void TestKeyboardReports()
               !keyboard.GetScrollLock());
   TEST_ASSERT(f.out.active && f.out.starts.size() == 2);
 
+  // 路径 2：核心交给类的 SET_REPORT OUT 数据阶段。
   // Path 2: the SET_REPORT OUT data stage handed to the class by the core.
   led.called = false;
   std::array<uint8_t, 1> led_report{0x04};  // ScrollLock
@@ -300,13 +320,13 @@ void TestKeyboardReports()
   TEST_ASSERT(led.called && !led.num && !led.caps && led.scroll);
   TEST_ASSERT(keyboard.GetScrollLock() && !keyboard.GetNumLock());
 
-  // SET_REPORT without a data stage is refused.
+  // 没有数据阶段的 SET_REPORT 被拒绝 / SET_REPORT without a data stage is refused.
   TestKeyboard::ControlTransferResult result;
   TEST_ASSERT(keyboard.OnClassRequest(
                   false, static_cast<uint8_t>(TestHid::ClassRequest::SET_REPORT), 0x0200,
                   0, 0, result) == ErrorCode::ARG_ERR);
 
-  // Input reports: press and release.
+  // 输入报告：按下与释放 / Input reports: press and release.
   keyboard.PressKey({HIDKeyboard::KeyCode::A, HIDKeyboard::KeyCode::B},
                     HIDKeyboard::Modifier::LEFT_SHIFT, false);
   TEST_ASSERT(f.in.active && f.in.Last().length == 8);
@@ -334,6 +354,7 @@ void TestMouseAndGamepad()
   TEST_ASSERT(f.in.Last().data == std::vector<uint8_t>({0, 0, 0, 0}));
   f.in.Complete();
 
+  // 游戏手柄没有 OUT 端点，并报告自己的状态。
   // The gamepad has no OUT endpoint and reports its own status.
   Block<128> in_storage;
   EndpointPool pool{2};
