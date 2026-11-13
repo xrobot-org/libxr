@@ -514,15 +514,15 @@ class UAC1MicrophoneQ : public DeviceClass
 
     // 包长显式：w_max_packet_size_ 由采样率与分帧推出（RecomputeTiming）。Configure
     // 校验它在当前速度下合法、槽与后端 FIFO 装得下；失败时端点停在 ERROR，composition
-    // 以 ConfigurationValid() 拒绝本次配置。等时端点不被后端支持时（FSDEV / CH32
-    // DevFS 的 ConfigureHardware 返回 NOT_SUPPORT）也走这一条路：使用者从绑定结果
-    // 得到明确的运行期错误，而不是悄悄不工作。
+    // 以 ConfigurationValid() 拒绝本次配置。等时端点不被后端支持时（后端的
+    // ConfigureHardware 返回 NOT_SUPPORT）也走这一条路：使用者从绑定结果得到明确的
+    // 运行期错误，而不是悄悄不工作。
     // Explicit packet size: w_max_packet_size_ is derived from the sample rate and the
     // framing (RecomputeTiming). Configure validates it against the speed, the slots
     // and the backend FIFO; on failure the endpoint stays in ERROR and the composition
     // refuses the configuration. A backend without isochronous support (NOT_SUPPORT
-    // from the FSDEV / CH32 DevFS ConfigureHardware) fails the same way: the user gets
-    // a clear runtime error from the bind result instead of a silently dead stream.
+    // from its ConfigureHardware) fails the same way: the user gets a clear runtime
+    // error from the bind result instead of a silently dead stream.
     (void)ep_iso_in_->Configure(
         {Endpoint::Direction::IN, Endpoint::Type::ISOCHRONOUS, w_max_packet_size_},
         in_isr);

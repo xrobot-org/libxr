@@ -5,7 +5,6 @@
 #include "dev_core.hpp"
 #include "libxr_mem.hpp"
 #include "usb/core/desc_cfg.hpp"
-#include "usb/core/usb_macro_guard.hpp"
 
 namespace LibXR::USB
 {
@@ -169,9 +168,9 @@ class HID : public DeviceClass
     // legal interrupt packet at this speed. NO_BUFF means the slot cannot hold one
     // packet; the endpoint enters ERROR and the composition rejects the configuration.
     (void)ep_in_->Configure(
-        {Endpoint::Direction::IN, Endpoint::Type::INTERRUPT,
+        {Endpoint::Direction::IN, Endpoint::Type::INTR,
          static_cast<uint16_t>(LibXR::min<size_t>(
-             TX_REPORT_LEN, ep_in_->LargestPacketSize(Endpoint::Type::INTERRUPT)))},
+             TX_REPORT_LEN, ep_in_->LargestPacketSize(Endpoint::Type::INTR)))},
         in_isr);
 
     if (enable_out_endpoint_)
@@ -179,11 +178,11 @@ class HID : public DeviceClass
       ans = endpoint_pool.Get(ep_out_, Endpoint::Direction::OUT, out_ep_num_);
       ASSERT(ans == ErrorCode::OK);
       const uint16_t packet = static_cast<uint16_t>(LibXR::min<size_t>(
-          RX_REPORT_LEN, ep_out_->LargestPacketSize(Endpoint::Type::INTERRUPT)));
+          RX_REPORT_LEN, ep_out_->LargestPacketSize(Endpoint::Type::INTR)));
       // receive_size 与包长一致：每个租约恰是一条报告。
       // receive_size equals one packet: one report per lease.
       (void)ep_out_->Configure(
-          {Endpoint::Direction::OUT, Endpoint::Type::INTERRUPT, packet, packet}, in_isr);
+          {Endpoint::Direction::OUT, Endpoint::Type::INTR, packet, packet}, in_isr);
     }
 
     // 填充接口描述符
@@ -213,7 +212,7 @@ class HID : public DeviceClass
         7,
         static_cast<uint8_t>(DescriptorType::ENDPOINT),
         ep_in_->GetAddress(),
-        static_cast<uint8_t>(Endpoint::Type::INTERRUPT),
+        static_cast<uint8_t>(Endpoint::Type::INTR),
         ep_in_->MaxPacketSize(),
         in_ep_interval_  // 轮询间隔ms
     };
@@ -224,7 +223,7 @@ class HID : public DeviceClass
       desc_.ep_out = {7,
                       static_cast<uint8_t>(DescriptorType::ENDPOINT),
                       ep_out_->GetAddress(),
-                      static_cast<uint8_t>(Endpoint::Type::INTERRUPT),
+                      static_cast<uint8_t>(Endpoint::Type::INTR),
                       ep_out_->MaxPacketSize(),
                       out_ep_interval_};
     }

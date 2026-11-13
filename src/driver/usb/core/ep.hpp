@@ -8,7 +8,6 @@
 #include "libxr_cb.hpp"
 #include "libxr_def.hpp"
 #include "libxr_type.hpp"
-#include "usb_macro_guard.hpp"
 
 namespace LibXR::USB
 {
@@ -88,7 +87,7 @@ class Endpoint
     CONTROL = 0,      ///< 控制端点 / Control
     ISOCHRONOUS = 1,  ///< 等时端点 / Isochronous
     BULK = 2,         ///< 批量端点 / Bulk
-    INTERRUPT = 3     ///< 中断端点 / Interrupt
+    INTR = 3          ///< 中断端点 / Interrupt
   };
 
   /// 端点状态；ERROR 只表示 Configure 失败 / Endpoint state; ERROR only reports a failed

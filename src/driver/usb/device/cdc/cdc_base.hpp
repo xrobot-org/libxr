@@ -6,7 +6,6 @@
 #include "libxr_def.hpp"
 #include "uart.hpp"
 #include "usb/core/desc_cfg.hpp"
-#include "usb/core/usb_macro_guard.hpp"
 
 namespace LibXR::USB
 {
@@ -272,14 +271,14 @@ class CDCBase : public DeviceClass
     // bytes until it fills. The notification needs no more than 16 B.
     const uint16_t in_packet = ep_data_in_->LargestPacketSize(Endpoint::Type::BULK);
     const uint16_t out_packet = ep_data_out_->LargestPacketSize(Endpoint::Type::BULK);
-    const uint16_t comm_packet = LibXR::min<uint16_t>(
-        16U, ep_comm_in_->LargestPacketSize(Endpoint::Type::INTERRUPT));
+    const uint16_t comm_packet =
+        LibXR::min<uint16_t>(16U, ep_comm_in_->LargestPacketSize(Endpoint::Type::INTR));
     (void)ep_data_in_->Configure(
         {Endpoint::Direction::IN, Endpoint::Type::BULK, in_packet}, in_isr);
     (void)ep_data_out_->Configure(
         {Endpoint::Direction::OUT, Endpoint::Type::BULK, out_packet, out_packet}, in_isr);
     (void)ep_comm_in_->Configure(
-        {Endpoint::Direction::IN, Endpoint::Type::INTERRUPT, comm_packet}, in_isr);
+        {Endpoint::Direction::IN, Endpoint::Type::INTR, comm_packet}, in_isr);
 
     // === 填充CDC描述符块 ===
     static constexpr uint8_t COMM_INTERFACE = 0;  // 通信接口号
@@ -365,7 +364,7 @@ class CDCBase : public DeviceClass
         7,
         static_cast<uint8_t>(DescriptorType::ENDPOINT),
         static_cast<uint8_t>(ep_comm_in_->GetAddress()),  // IN端点地址
-        static_cast<uint8_t>(Endpoint::Type::INTERRUPT),
+        static_cast<uint8_t>(Endpoint::Type::INTR),
         ep_comm_in_->MaxPacketSize(),
         0x04  // 轮询间隔FS-4ms HS-1ms
     };

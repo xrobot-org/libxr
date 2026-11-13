@@ -1106,8 +1106,7 @@ ErrorCode STM32OtgEndpoint::ClearStallHardware(bool in_isr)
   const uint8_t num = Num();
   // The next SETUP clears an EP0 STALL.
   if (num == 0U) return ErrorCode::OK;
-  const bool data0 =
-      GetConfig().type == Type::BULK || GetConfig().type == Type::INTERRUPT;
+  const bool data0 = GetConfig().type == Type::BULK || GetConfig().type == Type::INTR;
   if (IsIn())
   {
     auto* regs = device_.InEp(num);

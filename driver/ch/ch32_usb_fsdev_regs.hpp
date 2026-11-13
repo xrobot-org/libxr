@@ -27,43 +27,43 @@ namespace LibXR
  */
 struct Ch32DevFsHw
 {
-  static constexpr uint32_t kEpCtrRx = 0x8000U;
-  static constexpr uint32_t kEpDtogRx = 0x4000U;
-  static constexpr uint32_t kEpStatRx = 0x3000U;
-  static constexpr uint32_t kEpSetup = 0x0800U;
-  static constexpr uint32_t kEpType = 0x0600U;
-  static constexpr uint32_t kEpKind = 0x0100U;
-  static constexpr uint32_t kEpCtrTx = 0x0080U;
-  static constexpr uint32_t kEpDtogTx = 0x0040U;
-  static constexpr uint32_t kEpStatTx = 0x0030U;
-  static constexpr uint32_t kEpAddr = 0x000FU;
-  static constexpr uint32_t kEpErrRx = 0U;
-  static constexpr uint32_t kEpErrTx = 0U;
-  static constexpr uint32_t kEpKeepMask =
-      kEpCtrRx | kEpSetup | kEpType | kEpKind | kEpCtrTx | kEpAddr;
+  static constexpr uint32_t EP_CTR_RX = 0x8000U;
+  static constexpr uint32_t EP_DTOG_RX = 0x4000U;
+  static constexpr uint32_t EP_STAT_RX = 0x3000U;
+  static constexpr uint32_t EP_SETUP = 0x0800U;
+  static constexpr uint32_t EP_TYPE = 0x0600U;
+  static constexpr uint32_t EP_KIND = 0x0100U;
+  static constexpr uint32_t EP_CTR_TX = 0x0080U;
+  static constexpr uint32_t EP_DTOG_TX = 0x0040U;
+  static constexpr uint32_t EP_STAT_TX = 0x0030U;
+  static constexpr uint32_t EP_ADDR = 0x000FU;
+  static constexpr uint32_t EP_ERR_RX = 0U;
+  static constexpr uint32_t EP_ERR_TX = 0U;
+  static constexpr uint32_t EP_KEEP_MASK =
+      EP_CTR_RX | EP_SETUP | EP_TYPE | EP_KIND | EP_CTR_TX | EP_ADDR;
 
-  static constexpr uint16_t kIstrCtr = 0x8000U;
-  static constexpr uint16_t kIstrReset = 0x0400U;
-  static constexpr uint16_t kIstrSof = 0x0200U;
-  static constexpr uint16_t kIstrSusp = 0x0800U;
-  static constexpr uint16_t kIstrWkup = 0x1000U;
-  static constexpr uint16_t kIstrNoise = 0x7100U;  // ESOF | ERR | PMAOVR
-  static constexpr uint16_t kCntrRunMask = 0x8000U | 0x0400U | 0x0800U | 0x1000U;
-  static constexpr uint16_t kCntrSofm = 0x0200U;
+  static constexpr uint16_t ISTR_CTR = 0x8000U;
+  static constexpr uint16_t ISTR_RESET = 0x0400U;
+  static constexpr uint16_t ISTR_SOF = 0x0200U;
+  static constexpr uint16_t ISTR_SUSP = 0x0800U;
+  static constexpr uint16_t ISTR_WKUP = 0x1000U;
+  static constexpr uint16_t ISTR_NOISE = 0x7100U;  // ESOF | ERR | PMAOVR
+  static constexpr uint16_t CNTR_RUN_MASK = 0x8000U | 0x0400U | 0x0800U | 0x1000U;
+  static constexpr uint16_t CNTR_SOFM = 0x0200U;
 
-  static constexpr uint8_t kEndpoints = 8U;
-  static constexpr size_t kPmaSize = 512U;
+  static constexpr uint8_t ENDPOINT_COUNT = 8U;
+  static constexpr size_t PMA_SIZE = 512U;
   // 经典型布局：ADDR 字段按偶数截断，缓冲地址必须偶数对齐。
-  static constexpr size_t kPmaAlign = 2U;
+  static constexpr size_t PMA_ALIGN = 2U;
 
-  static constexpr uintptr_t kRegBase =
+  static constexpr uintptr_t REG_BASE =
 #if defined(USB_BASE)
       USB_BASE
 #else
       0x40005C00UL
 #endif
       ;
-  static constexpr uintptr_t kPmaAddr =
+  static constexpr uintptr_t PMA_ADDR =
 #if defined(PMAAddr)
       PMAAddr
 #else
@@ -74,7 +74,7 @@ struct Ch32DevFsHw
   static volatile uint16_t* EpReg(uint8_t num)
   {
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
-    return reinterpret_cast<volatile uint16_t*>(kRegBase +
+    return reinterpret_cast<volatile uint16_t*>(REG_BASE +
                                                 static_cast<uintptr_t>(num) * 4U);
   }
 
@@ -87,7 +87,7 @@ struct Ch32DevFsHw
   static volatile uint16_t* Cntr()
   {
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
-    return reinterpret_cast<volatile uint16_t*>(kRegBase + 0x40U);
+    return reinterpret_cast<volatile uint16_t*>(REG_BASE + 0x40U);
   }
   static uint16_t ReadCntr() { return *Cntr(); }
   static void WriteCntr(uint16_t value) { *Cntr() = value; }
@@ -95,7 +95,7 @@ struct Ch32DevFsHw
   static volatile uint16_t* Istr()
   {
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
-    return reinterpret_cast<volatile uint16_t*>(kRegBase + 0x44U);
+    return reinterpret_cast<volatile uint16_t*>(REG_BASE + 0x44U);
   }
   static uint16_t ReadIstr() { return *Istr(); }
   static void ClearIstr(uint16_t flags) { *Istr() = static_cast<uint16_t>(~flags); }
@@ -103,12 +103,12 @@ struct Ch32DevFsHw
   static uint16_t ReadFnr()
   {
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
-    return *reinterpret_cast<volatile uint16_t*>(kRegBase + 0x48U);
+    return *reinterpret_cast<volatile uint16_t*>(REG_BASE + 0x48U);
   }
   static void WriteDaddr(uint16_t value)
   {
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
-    *reinterpret_cast<volatile uint16_t*>(kRegBase + 0x4CU) = value;
+    *reinterpret_cast<volatile uint16_t*>(REG_BASE + 0x4CU) = value;
   }
 
   static volatile uint16_t* BtField(uint8_t num, unsigned field)
@@ -116,7 +116,7 @@ struct Ch32DevFsHw
     // BTABLE = 0：字段 m 的半字偏移是 8n+2m，APB 字节偏移再乘 2（每数据字占 4 B）。
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     return reinterpret_cast<volatile uint16_t*>(
-        kPmaAddr + (static_cast<uintptr_t>(num) * 8U + 2U * field) * 2U);
+        PMA_ADDR + (static_cast<uintptr_t>(num) * 8U + 2U * field) * 2U);
   }
 
   static void SetTxBuf(uint8_t num, uint16_t addr)
@@ -154,7 +154,7 @@ struct Ch32DevFsHw
   {
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     volatile uint16_t* p = reinterpret_cast<volatile uint16_t*>(
-        kPmaAddr + static_cast<uintptr_t>(addr) * 2U);
+        PMA_ADDR + static_cast<uintptr_t>(addr) * 2U);
     for (size_t i = 0; i < len; i += 2)
     {
       uint16_t word = src[i];
@@ -171,7 +171,7 @@ struct Ch32DevFsHw
   {
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     const volatile uint16_t* p = reinterpret_cast<const volatile uint16_t*>(
-        kPmaAddr + static_cast<uintptr_t>(addr) * 2U);
+        PMA_ADDR + static_cast<uintptr_t>(addr) * 2U);
     for (size_t i = 0; i < len; i += 2)
     {
       const uint16_t word = *p;
@@ -191,7 +191,7 @@ struct Ch32DevFsHw
     // 直接写 0 清全部挂起标志；ClearIstr(0) 是写 0xFFFF（保持），语义不同。
     *Istr() = 0U;
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
-    *reinterpret_cast<volatile uint16_t*>(kRegBase + 0x50U) = 0U;  // BTABLE = 0
+    *reinterpret_cast<volatile uint16_t*>(REG_BASE + 0x50U) = 0U;  // BTABLE = 0
   }
 
   static void SuspendRegs() { WriteCntr(static_cast<uint16_t>(ReadCntr() | 0x0008U)); }

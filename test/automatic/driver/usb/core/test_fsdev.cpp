@@ -36,41 +36,42 @@ struct FakeHw
   static inline bool pull_up = false;
   static inline bool clocks = false;
 
-  static constexpr uint8_t kEndpoints = 8U;
-  static constexpr size_t kPmaSize = 512U;
-  static constexpr size_t kPmaAlign = 2U;
+  static constexpr uint8_t ENDPOINT_COUNT = 8U;
+  static constexpr size_t PMA_SIZE = 512U;
+  static constexpr size_t PMA_ALIGN = 2U;
 
-  static constexpr uint32_t kEpCtrRx = 0x8000U;
-  static constexpr uint32_t kEpDtogRx = 0x4000U;
-  static constexpr uint32_t kEpStatRx = 0x3000U;
-  static constexpr uint32_t kEpStatRxValid = 0x3000U;
-  static constexpr uint32_t kEpStatTxValid = 0x0030U;
-  static constexpr uint32_t kEpSetup = 0x0800U;
-  static constexpr uint32_t kEpType = 0x0600U;
-  static constexpr uint32_t kEpKind = 0x0100U;
-  static constexpr uint32_t kEpCtrTx = 0x0080U;
-  static constexpr uint32_t kEpDtogTx = 0x0040U;
-  static constexpr uint32_t kEpStatTx = 0x0030U;
-  static constexpr uint32_t kEpAddr = 0x000FU;
-  static constexpr uint32_t kEpErrRx = 0U;
-  static constexpr uint32_t kEpErrTx = 0U;
-  static constexpr uint32_t kEpKeepMask =
-      kEpCtrRx | kEpSetup | kEpType | kEpKind | kEpCtrTx | kEpAddr;
-  static constexpr uint32_t kEpToggleMask = kEpStatTx | kEpStatRx | kEpDtogTx | kEpDtogRx;
+  static constexpr uint32_t EP_CTR_RX = 0x8000U;
+  static constexpr uint32_t EP_DTOG_RX = 0x4000U;
+  static constexpr uint32_t EP_STAT_RX = 0x3000U;
+  static constexpr uint32_t EP_STAT_RX_VALID = 0x3000U;
+  static constexpr uint32_t EP_STAT_TX_VALID = 0x0030U;
+  static constexpr uint32_t EP_SETUP = 0x0800U;
+  static constexpr uint32_t EP_TYPE = 0x0600U;
+  static constexpr uint32_t EP_KIND = 0x0100U;
+  static constexpr uint32_t EP_CTR_TX = 0x0080U;
+  static constexpr uint32_t EP_DTOG_TX = 0x0040U;
+  static constexpr uint32_t EP_STAT_TX = 0x0030U;
+  static constexpr uint32_t EP_ADDR = 0x000FU;
+  static constexpr uint32_t EP_ERR_RX = 0U;
+  static constexpr uint32_t EP_ERR_TX = 0U;
+  static constexpr uint32_t EP_KEEP_MASK =
+      EP_CTR_RX | EP_SETUP | EP_TYPE | EP_KIND | EP_CTR_TX | EP_ADDR;
+  static constexpr uint32_t EP_TOGGLE_MASK =
+      EP_STAT_TX | EP_STAT_RX | EP_DTOG_TX | EP_DTOG_RX;
   /// 写 0 清除、写 1 保持的位（CTR 与 ERR 都是 rc_w0）/ rc_w0 bits: write 0 clears
-  static constexpr uint32_t kEpWrite0ClearMask =
-      kEpCtrRx | kEpCtrTx | kEpErrRx | kEpErrTx;
+  static constexpr uint32_t EP_WRITE0_CLEAR_MASK =
+      EP_CTR_RX | EP_CTR_TX | EP_ERR_RX | EP_ERR_TX;
   /// 普通读写位 / Plain read-write bits
-  static constexpr uint32_t kEpRwMask = kEpType | kEpKind | kEpAddr;
+  static constexpr uint32_t EP_RW_MASK = EP_TYPE | EP_KIND | EP_ADDR;
 
-  static constexpr uint16_t kIstrCtr = 0x8000U;
-  static constexpr uint16_t kIstrReset = 0x0400U;
-  static constexpr uint16_t kIstrSof = 0x0200U;
-  static constexpr uint16_t kIstrSusp = 0x0800U;
-  static constexpr uint16_t kIstrWkup = 0x1000U;
-  static constexpr uint16_t kIstrNoise = 0x7100U;
-  static constexpr uint16_t kCntrRunMask = 0x8000U | 0x0400U | 0x0800U | 0x1000U;
-  static constexpr uint16_t kCntrSofm = 0x0200U;
+  static constexpr uint16_t ISTR_CTR = 0x8000U;
+  static constexpr uint16_t ISTR_RESET = 0x0400U;
+  static constexpr uint16_t ISTR_SOF = 0x0200U;
+  static constexpr uint16_t ISTR_SUSP = 0x0800U;
+  static constexpr uint16_t ISTR_WKUP = 0x1000U;
+  static constexpr uint16_t ISTR_NOISE = 0x7100U;
+  static constexpr uint16_t CNTR_RUN_MASK = 0x8000U | 0x0400U | 0x0800U | 0x1000U;
+  static constexpr uint16_t CNTR_SOFM = 0x0200U;
 
   /// ISTR.CTR 是所有端点 CTR 的或，EP_ID 指向挂起端点中编号最小的那个（真硬件按
   /// 优先级，EP0 最高）；软件清位后仍有挂起端点时硬件立刻重新置位。
@@ -81,9 +82,9 @@ struct FakeHw
   {
     bool pending = false;
     uint8_t id = 0;
-    for (uint8_t i = 0; i < kEndpoints; ++i)
+    for (uint8_t i = 0; i < ENDPOINT_COUNT; ++i)
     {
-      if ((ep[i] & (kEpCtrRx | kEpCtrTx)) != 0U && !pending)
+      if ((ep[i] & (EP_CTR_RX | EP_CTR_TX)) != 0U && !pending)
       {
         pending = true;
         id = i;
@@ -91,11 +92,11 @@ struct FakeHw
     }
     if (pending)
     {
-      istr = static_cast<uint16_t>((istr & 0xFFF0U) | (id & 0x0FU) | kIstrCtr);
+      istr = static_cast<uint16_t>((istr & 0xFFF0U) | (id & 0x0FU) | ISTR_CTR);
     }
     else
     {
-      istr &= static_cast<uint16_t>(~kIstrCtr);
+      istr &= static_cast<uint16_t>(~ISTR_CTR);
     }
   }
 
@@ -121,10 +122,10 @@ struct FakeHw
     // CTR/ERR: write 0 clears, write 1 keeps. STAT/DTOG: write 1 toggles.
     // TYPE/KIND/EA: written. SETUP is hardware-managed, writes have no effect.
     uint32_t next = ep[num];
-    next &= value | ~kEpWrite0ClearMask;
-    next = (next & ~kEpRwMask) | (value & kEpRwMask);
-    next ^= value & kEpToggleMask;
-    next = (next & ~kEpSetup) | (ep[num] & kEpSetup);
+    next &= value | ~EP_WRITE0_CLEAR_MASK;
+    next = (next & ~EP_RW_MASK) | (value & EP_RW_MASK);
+    next ^= value & EP_TOGGLE_MASK;
+    next = (next & ~EP_SETUP) | (ep[num] & EP_SETUP);
     ep[num] = next;
     UpdateIstr();
     if (on_write_post)
@@ -234,8 +235,8 @@ struct FakeHw
   static uintptr_t EnterGuard() { return 0U; }
   static void ExitGuard(uintptr_t) {}
 
-  static void SuspendLine() { istr |= kIstrSusp; }
-  static void ResumeLine() { istr |= kIstrWkup; }
+  static void SuspendLine() { istr |= ISTR_SUSP; }
+  static void ResumeLine() { istr |= ISTR_WKUP; }
 
   // ---- 主机侧（模拟硬件行为，不经过软件写语义）/ Host side (hardware behavior) ----
 
@@ -257,7 +258,7 @@ struct FakeHw
   /// endpoint is VALID (the host retries through NAKs).
   static void RxPacket(uint8_t num, const uint8_t* data, size_t len, bool setup)
   {
-    if (!setup && (ep[num] & kEpStatRx) != kEpStatRxValid)
+    if (!setup && (ep[num] & EP_STAT_RX) != EP_STAT_RX_VALID)
     {
       return;  // NAK：主机稍后重试 / NAK, the host retries later
     }
@@ -266,16 +267,16 @@ struct FakeHw
       PmaWrite(RxAddr(num), data, len);
     }
     *BtField(num, 3U) = static_cast<uint16_t>(len & 0x3FFU);
-    ep[num] = (ep[num] & ~kEpStatRx) | kEpCtrRx | 0x2000U;
+    ep[num] = (ep[num] & ~EP_STAT_RX) | EP_CTR_RX | 0x2000U;
     // SETUP 位由硬件在收到非 SETUP token 时清除 / cleared by hardware on a non-SETUP
     // token.
     if (setup)
     {
-      ep[num] |= kEpSetup;
+      ep[num] |= EP_SETUP;
     }
     else
     {
-      ep[num] &= ~kEpSetup;
+      ep[num] &= ~EP_SETUP;
     }
     UpdateIstr();
   }
@@ -284,7 +285,7 @@ struct FakeHw
   /// ACKed it: STAT forced NAK and CTR set.
   static void AckIn(uint8_t num)
   {
-    ep[num] = (ep[num] & ~kEpStatTx) | kEpCtrTx | 0x0020U;
+    ep[num] = (ep[num] & ~EP_STAT_TX) | EP_CTR_TX | 0x0020U;
     UpdateIstr();
   }
 
@@ -295,14 +296,14 @@ struct FakeHw
       value = 0;
     }
     daddr = 0;
-    istr |= kIstrReset;
+    istr |= ISTR_RESET;
     UpdateIstr();
   }
 
   static void Sof(uint16_t frame)
   {
     fnr = frame;
-    istr |= kIstrSof;
+    istr |= ISTR_SOF;
   }
 };
 
@@ -323,7 +324,8 @@ void Pump()
 void SendStatusOut(uint8_t num = 0)
 {
   for (int i = 0;
-       i < 8 && (FakeHw::ReadEp(num) & FakeHw::kEpStatRx) != FakeHw::kEpStatRxValid; ++i)
+       i < 8 && (FakeHw::ReadEp(num) & FakeHw::EP_STAT_RX) != FakeHw::EP_STAT_RX_VALID;
+       ++i)
   {
     Pump();
   }
@@ -348,7 +350,8 @@ std::vector<uint8_t> TakeInPacket(uint8_t num)
 std::vector<uint8_t> AwaitInPacket(uint8_t num)
 {
   for (int i = 0;
-       i < 8 && (FakeHw::ReadEp(num) & FakeHw::kEpStatTx) != FakeHw::kEpStatTxValid; ++i)
+       i < 8 && (FakeHw::ReadEp(num) & FakeHw::EP_STAT_TX) != FakeHw::EP_STAT_TX_VALID;
+       ++i)
   {
     Pump();
   }
@@ -573,7 +576,7 @@ void TestEnumerationAndControlRead()
   // 类拒绝的请求以 STALL 回应 / A rejected request answers STALL.
   f.Setup(MakeSetup(0x40, 0x77, 0, 0, 0));
   Pump();
-  TEST_ASSERT((FakeHw::ReadEp(0) & FakeHw::kEpStatTx) == 0x0010U);
+  TEST_ASSERT((FakeHw::ReadEp(0) & FakeHw::EP_STAT_TX) == 0x0010U);
 }
 
 void TestControlWrite()
@@ -644,11 +647,11 @@ void TestBulkOutMultiPacket()
   out->SetOnComplete(done.CallbackFor());
   const auto data = Bytes(128, 0x22);
   TEST_ASSERT(out->Receive(128, false) == ErrorCode::OK);
-  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatRx) == 0x3000U);  // VALID
+  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_RX) == 0x3000U);  // VALID
 
   FakeHw::RxPacket(1, data.data(), 64U, false);
   Pump();
-  TEST_ASSERT(done.count == 0 && (FakeHw::ReadEp(1) & FakeHw::kEpStatRx) == 0x3000U);
+  TEST_ASSERT(done.count == 0 && (FakeHw::ReadEp(1) & FakeHw::EP_STAT_RX) == 0x3000U);
   FakeHw::RxPacket(1, data.data() + 64, 64U, false);
   Pump();
   Pump();
@@ -682,11 +685,11 @@ void TestStopCountsLatePacket()
   out->Flush(false);
   Pump();
   TEST_ASSERT(done.count == 1 && done.result == ErrorCode::ABORTED && done.actual == 64);
-  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatRx) == 0x2000U);  // NAK
+  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_RX) == 0x2000U);  // NAK
 
   // 停止后重新挂接收 / Rearm after the flush
   TEST_ASSERT(out->Receive(128, false) == ErrorCode::OK);
-  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatRx) == 0x3000U);
+  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_RX) == 0x3000U);
 }
 
 void TestBusResetEndsTransfers()
@@ -699,7 +702,7 @@ void TestBusResetEndsTransfers()
               ErrorCode::OK);
   const auto bytes = Bytes(64, 0x33);
   TEST_ASSERT(SubmitBytes(in, bytes) == ErrorCode::OK);
-  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatTx) == 0x0030U);
+  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_TX) == 0x0030U);
 
   FakeHw::BusReset();
   Pump();
@@ -720,7 +723,7 @@ void TestBusResetEndsTransfers()
   Pump();
   TEST_ASSERT(packet.size() == 18);
   f.StatusOut();
-  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatTx) != 0x0030U);  // 旧会话不再发送
+  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_TX) != 0x0030U);  // 旧会话不再发送
 }
 
 void TestSuspendResume()
@@ -763,7 +766,7 @@ void TestPacketSizeLimit()
   // 同一端点号两方向类型不一致 / Both directions of one number share the type.
   TEST_ASSERT(in->Configure({Endpoint::Direction::IN, Endpoint::Type::BULK, 64}, false) ==
               ErrorCode::OK);
-  TEST_ASSERT(out->Configure({Endpoint::Direction::OUT, Endpoint::Type::INTERRUPT, 64},
+  TEST_ASSERT(out->Configure({Endpoint::Direction::OUT, Endpoint::Type::INTR, 64},
                              false) == ErrorCode::FAILED);
   // 超过 PMA 缓冲的包长；被拒的端点会停在 ERROR，故用另一个端点检查
   // A packet larger than the PMA buffer; a rejected endpoint stays in ERROR, so the
@@ -812,7 +815,7 @@ void TestCdcEcho()
   SendStatusOut();
 
   // CDC 数据端点已绑定并挂接收 / The CDC data endpoints are bound and armed
-  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatRx) == 0x3000U);
+  TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_RX) == 0x3000U);
 
   // 主机发数据 → CDC 读 / Host sends data, the CDC reader takes it
   const auto packet = Bytes(64, 0x55);
@@ -856,19 +859,19 @@ void TestStopRaceWithTransaction()
                                false) == ErrorCode::OK);
     out->SetOnComplete(done.CallbackFor());
     TEST_ASSERT(out->Receive(128, false) == ErrorCode::OK);
-    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatRx) == 0x3000U);  // VALID
+    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_RX) == 0x3000U);  // VALID
 
     const auto late = Bytes(64, 7);
     FakeHw::on_write = [&late] { FakeHw::RxPacket(1, late.data(), late.size(), false); };
     out->Flush(false);
     Pump();
     // NAK 而不是 VALID / NAK, not VALID
-    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatRx) == 0x2000U);
+    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_RX) == 0x2000U);
     TEST_ASSERT(done.count == 1 && done.result == ErrorCode::ABORTED &&
                 done.actual == 64);
     // 停止后再来的包不再被收下（端点保持 NAK）/ A later packet is not taken
     FakeHw::RxPacket(1, Bytes(64, 8).data(), 64U, false);
-    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatRx) == 0x2000U);
+    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_RX) == 0x2000U);
     TEST_ASSERT(done.count == 1 && done.actual == 64);
   }
 
@@ -884,12 +887,12 @@ void TestStopRaceWithTransaction()
     in->SetOnComplete(done.CallbackFor());
     const auto bytes = Bytes(64, 9);
     TEST_ASSERT(SubmitBytes(in, bytes) == ErrorCode::OK);
-    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatTx) == 0x0030U);  // VALID
+    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_TX) == 0x0030U);  // VALID
 
     FakeHw::on_write = [] { FakeHw::AckIn(1); };
     in->Flush(false);
     Pump();
-    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatTx) == 0x0020U);  // NAK
+    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_TX) == 0x0020U);  // NAK
     TEST_ASSERT(done.count == 1 && done.result == ErrorCode::ABORTED &&
                 done.actual == 64);
   }
@@ -953,7 +956,7 @@ void TestArmNotRearmedByRace()
     FakeHw::on_write_post = [] { FakeHw::AckIn(1); };
     TEST_ASSERT(SubmitBytes(in, bytes) == ErrorCode::OK);
     // 必须停在 NAK（等 CTR 处理），不能被重试翻回 VALID
-    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatTx) == 0x0020U);
+    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_TX) == 0x0020U);
     Pump();
     TEST_ASSERT(done.count == 1 && done.actual == 64 && done.result == ErrorCode::OK);
   }
@@ -972,7 +975,7 @@ void TestArmNotRearmedByRace()
     FakeHw::on_write_post = [&data]
     { FakeHw::RxPacket(1, data.data(), data.size(), false); };
     TEST_ASSERT(out->Receive(64, false) == ErrorCode::OK);
-    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::kEpStatRx) == 0x2000U);
+    TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_RX) == 0x2000U);
     Pump();
     TEST_ASSERT(done.count == 1 && done.actual == 64 && done.result == ErrorCode::OK);
     out->ReleaseSlot(done.slot, false);

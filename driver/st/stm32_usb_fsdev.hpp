@@ -119,47 +119,47 @@ void STM32FsDevRequireWrap();
  * @brief 经典型 FSDEV 的硬件访问（F1/F3/F0/L0/L1/G4/WB/L4/L5）
  *        Hardware access of the classic FSDEV (F1/F3/F0/L0/L1/G4/WB/L4/L5)
  *
- * 寄存器 16 位；PMA 以半字访问，每 16 位数据字占 `PMA_ACCESS` 个半字地址
+ * 寄存器 16 位；PMA 以半字访问，每 16 位数据字占 `PMA_WORD_STRIDE` 个半字地址
  * （F1/F3 部分 = 2，其余 = 1）。ADDR/COUNT 单位是存储字节。
  *
  * 16-bit registers; the PMA is accessed as half words with every 16-bit data word
- * occupying `PMA_ACCESS` half-word addresses (F1/F3 parts = 2, the rest = 1). ADDR and
- * COUNT are in stored bytes.
+ * occupying `PMA_WORD_STRIDE` half-word addresses (F1/F3 parts = 2, the rest = 1). ADDR
+ * and COUNT are in stored bytes.
  */
 // H5（USB_DRD_FS）的 CMSIS 不再提供经典型宏名，经典 traits 只在非 DRD 芯片编译。
 #if !defined(USB_DRD_FS)
 struct Stm32FsDevClassicHw
 {
-  static constexpr uint32_t kEpCtrRx = USB_EP_CTR_RX;
-  static constexpr uint32_t kEpDtogRx = USB_EP_DTOG_RX;
-  static constexpr uint32_t kEpStatRx = USB_EPRX_STAT;
-  static constexpr uint32_t kEpSetup = USB_EP_SETUP;
-  static constexpr uint32_t kEpType = USB_EP_T_FIELD;
-  static constexpr uint32_t kEpKind = USB_EP_KIND;
-  static constexpr uint32_t kEpCtrTx = USB_EP_CTR_TX;
-  static constexpr uint32_t kEpDtogTx = USB_EP_DTOG_TX;
-  static constexpr uint32_t kEpStatTx = USB_EPTX_STAT;
-  static constexpr uint32_t kEpAddr = USB_EPADDR_FIELD;
-  static constexpr uint32_t kEpErrRx = 0U;
-  static constexpr uint32_t kEpErrTx = 0U;
+  static constexpr uint32_t EP_CTR_RX = USB_EP_CTR_RX;
+  static constexpr uint32_t EP_DTOG_RX = USB_EP_DTOG_RX;
+  static constexpr uint32_t EP_STAT_RX = USB_EPRX_STAT;
+  static constexpr uint32_t EP_SETUP = USB_EP_SETUP;
+  static constexpr uint32_t EP_TYPE = USB_EP_T_FIELD;
+  static constexpr uint32_t EP_KIND = USB_EP_KIND;
+  static constexpr uint32_t EP_CTR_TX = USB_EP_CTR_TX;
+  static constexpr uint32_t EP_DTOG_TX = USB_EP_DTOG_TX;
+  static constexpr uint32_t EP_STAT_TX = USB_EPTX_STAT;
+  static constexpr uint32_t EP_ADDR = USB_EPADDR_FIELD;
+  static constexpr uint32_t EP_ERR_RX = 0U;
+  static constexpr uint32_t EP_ERR_TX = 0U;
   // 经典型没有 ERR 位：CTR/SETUP/类型/KIND/地址写 1 保持。
-  static constexpr uint32_t kEpKeepMask =
-      kEpCtrRx | kEpSetup | kEpType | kEpKind | kEpCtrTx | kEpAddr;
+  static constexpr uint32_t EP_KEEP_MASK =
+      EP_CTR_RX | EP_SETUP | EP_TYPE | EP_KIND | EP_CTR_TX | EP_ADDR;
 
-  static constexpr uint16_t kIstrCtr = USB_ISTR_CTR;
-  static constexpr uint16_t kIstrReset = USB_ISTR_RESET;
-  static constexpr uint16_t kIstrSof = USB_ISTR_SOF;
-  static constexpr uint16_t kIstrSusp = USB_ISTR_SUSP;
-  static constexpr uint16_t kIstrWkup = USB_ISTR_WKUP;
-  static constexpr uint16_t kIstrNoise = USB_ISTR_ESOF | USB_ISTR_ERR | USB_ISTR_PMAOVR;
-  static constexpr uint16_t kCntrRunMask =
+  static constexpr uint16_t ISTR_CTR = USB_ISTR_CTR;
+  static constexpr uint16_t ISTR_RESET = USB_ISTR_RESET;
+  static constexpr uint16_t ISTR_SOF = USB_ISTR_SOF;
+  static constexpr uint16_t ISTR_SUSP = USB_ISTR_SUSP;
+  static constexpr uint16_t ISTR_WKUP = USB_ISTR_WKUP;
+  static constexpr uint16_t ISTR_NOISE = USB_ISTR_ESOF | USB_ISTR_ERR | USB_ISTR_PMAOVR;
+  static constexpr uint16_t CNTR_RUN_MASK =
       USB_CNTR_CTRM | USB_CNTR_RESETM | USB_CNTR_SUSPM | USB_CNTR_WKUPM;
-  static constexpr uint16_t kCntrSofm = USB_CNTR_SOFM;
+  static constexpr uint16_t CNTR_SOFM = USB_CNTR_SOFM;
 
-  static constexpr uint8_t kEndpoints = 8U;
-  static constexpr size_t kPmaSize = LIBXR_STM32_USB_PMA_SIZE;
+  static constexpr uint8_t ENDPOINT_COUNT = 8U;
+  static constexpr size_t PMA_SIZE = LIBXR_STM32_USB_PMA_SIZE;
   // 经典型 ADDR 字段按偶数截断（& 0xFFFE），布局必须保证缓冲地址偶数对齐。
-  static constexpr size_t kPmaAlign = 2U;
+  static constexpr size_t PMA_ALIGN = 2U;
 
   static USB_TypeDef* Regs() { return reinterpret_cast<USB_TypeDef*>(USB_BASE); }
 
@@ -185,9 +185,10 @@ struct Stm32FsDevClassicHw
 
   static volatile uint16_t* BtField(uint8_t num, unsigned field)
   {
-    // BTABLE = 0：字段 m 的半字偏移是 8n+2m，APB 字节偏移再乘 PMA_ACCESS（HAL 同式）。
+    // BTABLE = 0：字段 m 的半字偏移是 8n+2m，APB 字节偏移再乘 PMA_WORD_STRIDE（HAL
+    // 同式）。
     return reinterpret_cast<volatile uint16_t*>(
-        PmaBase() + (static_cast<uintptr_t>(num) * 8U + 2U * field) * kPmaAccess);
+        PmaBase() + (static_cast<uintptr_t>(num) * 8U + 2U * field) * PMA_WORD_STRIDE);
   }
 
   static void SetTxBuf(uint8_t num, uint16_t addr)
@@ -226,7 +227,7 @@ struct Stm32FsDevClassicHw
   static void PmaWrite(uint16_t addr, const uint8_t* src, size_t len)
   {
     volatile uint16_t* p = reinterpret_cast<volatile uint16_t*>(
-        PmaBase() + static_cast<uintptr_t>(addr) * kPmaAccess);
+        PmaBase() + static_cast<uintptr_t>(addr) * PMA_WORD_STRIDE);
     for (size_t i = 0; i < len; i += 2)
     {
       uint16_t word = src[i];
@@ -235,18 +236,18 @@ struct Stm32FsDevClassicHw
         word |= static_cast<uint16_t>(src[i + 1]) << 8U;
       }
       *p = word;
-      p += kPmaAccess;
+      p += PMA_WORD_STRIDE;
     }
   }
 
   static void PmaRead(uint8_t* dst, uint16_t addr, size_t len)
   {
     const volatile uint16_t* p = reinterpret_cast<const volatile uint16_t*>(
-        PmaBase() + static_cast<uintptr_t>(addr) * kPmaAccess);
+        PmaBase() + static_cast<uintptr_t>(addr) * PMA_WORD_STRIDE);
     for (size_t i = 0; i < len; i += 2)
     {
       const uint16_t word = *p;
-      p += kPmaAccess;
+      p += PMA_WORD_STRIDE;
       dst[i] = static_cast<uint8_t>(word & 0xFFU);
       if (i + 1 < len)
       {
@@ -318,7 +319,7 @@ struct Stm32FsDevClassicHw
   // HAL's PMA_ACCESS: the F1/F3 HAL does not define it, yet their PMA is accessed with
   // half-word stride 2 like F1 (the IP whose PMA is shared with CAN); the other classic
   // parts use 1.
-  static constexpr unsigned kPmaAccess =
+  static constexpr unsigned PMA_WORD_STRIDE =
 #if defined(PMA_ACCESS)
       PMA_ACCESS
 #elif defined(STM32F1) || defined(STM32F3)
@@ -352,36 +353,36 @@ using Stm32FsDevDrdHw = Stm32FsDevClassicHw;
 struct Stm32FsDevDrdHw
 {
   // H5 的 CMSIS 把 RXBD BLSIZE 移进了 LL USB 头；这里按 RM 直接取 RXBD count bit31。
-  static constexpr uint32_t kRxBdBlsize = 0x80000000UL;
-  static constexpr uint32_t kEpCtrRx = USB_CHEP_VTRX;
-  static constexpr uint32_t kEpDtogRx = USB_CHEP_DTOG_RX;
-  static constexpr uint32_t kEpStatRx = USB_CHEP_RX_STRX;
-  static constexpr uint32_t kEpSetup = USB_CHEP_SETUP;
-  static constexpr uint32_t kEpType = USB_CHEP_UTYPE;
-  static constexpr uint32_t kEpKind = USB_CHEP_KIND;
-  static constexpr uint32_t kEpCtrTx = USB_CHEP_VTTX;
-  static constexpr uint32_t kEpDtogTx = USB_CHEP_DTOG_TX;
-  static constexpr uint32_t kEpStatTx = USB_CHEP_TX_STTX;
-  static constexpr uint32_t kEpAddr = USB_CHEP_ADDR;
-  static constexpr uint32_t kEpErrRx = USB_CHEP_ERRRX;
-  static constexpr uint32_t kEpErrTx = USB_CHEP_ERRTX;
+  static constexpr uint32_t RX_BD_BLSIZE = 0x80000000UL;
+  static constexpr uint32_t EP_CTR_RX = USB_CHEP_VTRX;
+  static constexpr uint32_t EP_DTOG_RX = USB_CHEP_DTOG_RX;
+  static constexpr uint32_t EP_STAT_RX = USB_CHEP_RX_STRX;
+  static constexpr uint32_t EP_SETUP = USB_CHEP_SETUP;
+  static constexpr uint32_t EP_TYPE = USB_CHEP_UTYPE;
+  static constexpr uint32_t EP_KIND = USB_CHEP_KIND;
+  static constexpr uint32_t EP_CTR_TX = USB_CHEP_VTTX;
+  static constexpr uint32_t EP_DTOG_TX = USB_CHEP_DTOG_TX;
+  static constexpr uint32_t EP_STAT_TX = USB_CHEP_TX_STTX;
+  static constexpr uint32_t EP_ADDR = USB_CHEP_ADDR;
+  static constexpr uint32_t EP_ERR_RX = USB_CHEP_ERRRX;
+  static constexpr uint32_t EP_ERR_TX = USB_CHEP_ERRTX;
   // HAL USB_CHEP_REG_MASK：VTRX/VTTX/ERR/NAK/LSEP/DEVADDR 写 1 保持。
-  static constexpr uint32_t kEpKeepMask = USB_CHEP_REG_MASK;
+  static constexpr uint32_t EP_KEEP_MASK = USB_CHEP_REG_MASK;
 
-  static constexpr uint16_t kIstrCtr = USB_ISTR_CTR;
-  static constexpr uint16_t kIstrReset = USB_ISTR_RESET;
-  static constexpr uint16_t kIstrSof = USB_ISTR_SOF;
-  static constexpr uint16_t kIstrSusp = USB_ISTR_SUSP;
-  static constexpr uint16_t kIstrWkup = USB_ISTR_WKUP;
-  static constexpr uint16_t kIstrNoise = USB_ISTR_ESOF | USB_ISTR_ERR | USB_ISTR_PMAOVR;
-  static constexpr uint16_t kCntrRunMask =
+  static constexpr uint16_t ISTR_CTR = USB_ISTR_CTR;
+  static constexpr uint16_t ISTR_RESET = USB_ISTR_RESET;
+  static constexpr uint16_t ISTR_SOF = USB_ISTR_SOF;
+  static constexpr uint16_t ISTR_SUSP = USB_ISTR_SUSP;
+  static constexpr uint16_t ISTR_WKUP = USB_ISTR_WKUP;
+  static constexpr uint16_t ISTR_NOISE = USB_ISTR_ESOF | USB_ISTR_ERR | USB_ISTR_PMAOVR;
+  static constexpr uint16_t CNTR_RUN_MASK =
       USB_CNTR_CTRM | USB_CNTR_RESETM | USB_CNTR_SUSPM | USB_CNTR_WKUPM;
-  static constexpr uint16_t kCntrSofm = USB_CNTR_SOFM;
+  static constexpr uint16_t CNTR_SOFM = USB_CNTR_SOFM;
 
-  static constexpr uint8_t kEndpoints = 8U;
-  static constexpr size_t kPmaSize = LIBXR_STM32_USB_PMA_SIZE;
+  static constexpr uint8_t ENDPOINT_COUNT = 8U;
+  static constexpr size_t PMA_SIZE = LIBXR_STM32_USB_PMA_SIZE;
   // DRD 的 TXBD/RXBD 地址字段按 4 字节截断（& 0xFFFC），布局必须 4 字节对齐。
-  static constexpr size_t kPmaAlign = 4U;
+  static constexpr size_t PMA_ALIGN = 4U;
 
   static USB_DRD_TypeDef* Regs()
   {
@@ -449,13 +450,13 @@ struct Stm32FsDevDrdHw
   {
     if (mps == 0U)
     {
-      return kRxBdBlsize;
+      return RX_BD_BLSIZE;
     }
     if (mps <= 62U)
     {
       return (static_cast<uint32_t>(mps) + 1U) / 2U << 26U;
     }
-    return ((static_cast<uint32_t>(mps) + 31U) / 32U - 1U) << 26U | kRxBdBlsize;
+    return ((static_cast<uint32_t>(mps) + 31U) / 32U - 1U) << 26U | RX_BD_BLSIZE;
   }
 
   // PMA 只支持 32 位访问；尾部的 1–3 字节单独处理（HAL 同式）。

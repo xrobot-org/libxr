@@ -157,7 +157,7 @@ uint16_t ClampPacketSize(LibXR::USB::Endpoint::Type type, uint16_t requested)
       return static_cast<uint16_t>(std::min<uint16_t>(requested, 64U));
     case LibXR::USB::Endpoint::Type::BULK:
       return static_cast<uint16_t>(std::min<uint16_t>(requested, 64U));
-    case LibXR::USB::Endpoint::Type::INTERRUPT:
+    case LibXR::USB::Endpoint::Type::INTR:
       return static_cast<uint16_t>(std::min<uint16_t>(requested, 64U));
     case LibXR::USB::Endpoint::Type::ISOCHRONOUS:
       return static_cast<uint16_t>(std::min<uint16_t>(requested, 1023U));

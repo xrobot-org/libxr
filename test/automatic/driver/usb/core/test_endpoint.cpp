@@ -243,11 +243,10 @@ void TestGeometry()
   // 128 B as two slots of 64 B: a 128 B high-speed packet is NO_BUFF; the count never
   // drops to one.
   f.pool.SetSpeed(Speed::HIGH);
-  TEST_ASSERT(f.comm.Configure({Direction::IN, Type::INTERRUPT, 128}, false) ==
+  TEST_ASSERT(f.comm.Configure({Direction::IN, Type::INTR, 128}, false) ==
               ErrorCode::NO_BUFF);
   f.comm.Close(false);
-  TEST_ASSERT(f.comm.Configure({Direction::IN, Type::INTERRUPT, 64}, false) ==
-              ErrorCode::OK);
+  TEST_ASSERT(f.comm.Configure({Direction::IN, Type::INTR, 64}, false) == ErrorCode::OK);
   TEST_ASSERT(FreeSlots(f.comm) == 2 && f.comm.GetGranted().slot_capacity == 64);
   f.comm.Close(false);
   f.pool.SetSpeed(Speed::FULL);
@@ -257,8 +256,7 @@ void TestGeometry()
   MockEndpoint single{Number::EP4, Direction::IN, single_storage.Raw(), 1};
   TEST_ASSERT(single_pool.Put(&single) == ErrorCode::OK);
   single_pool.SetSpeed(Speed::HIGH);
-  TEST_ASSERT(single.Configure({Direction::IN, Type::INTERRUPT, 128}, false) ==
-              ErrorCode::OK);
+  TEST_ASSERT(single.Configure({Direction::IN, Type::INTR, 128}, false) == ErrorCode::OK);
   TEST_ASSERT(FreeSlots(single) == 1 && single.GetGranted().slot_capacity == 128);
   // EP0 is one slot holding one packet.
   Block<64> ep0_storage;
@@ -292,14 +290,14 @@ void TestGeometry()
   TEST_ASSERT(f.in.LargestPacketSize(Type::BULK) == 64);
   f.pool.SetSpeed(Speed::HIGH);
   TEST_ASSERT(f.in.LargestPacketSize(Type::BULK) == 0);  // 512 does not fit a 64 B slot.
-  TEST_ASSERT(f.in.LargestPacketSize(Type::INTERRUPT) == 64);
+  TEST_ASSERT(f.in.LargestPacketSize(Type::INTR) == 64);
   f.pool.SetSpeed(Speed::FULL);
   // A packet above the backend FIFO limit is ARG_ERR; a legal smaller one fits.
   f.in.limit = 32;
   TEST_ASSERT(f.in.LargestPacketSize(Type::BULK) == 32);
   f.in.limit = 40;  // Not a legal bulk size: the next smaller legal one.
   TEST_ASSERT(f.in.LargestPacketSize(Type::BULK) == 32 &&
-              f.in.LargestPacketSize(Type::INTERRUPT) == 40);
+              f.in.LargestPacketSize(Type::INTR) == 40);
   f.in.limit = 32;
   TEST_ASSERT(f.in.Configure({Direction::IN, Type::BULK, 64}, false) ==
               ErrorCode::ARG_ERR);

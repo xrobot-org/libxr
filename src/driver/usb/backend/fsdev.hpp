@@ -4,13 +4,13 @@
 
 #include "usb/core/ep.hpp"
 #include "usb/core/ep_pool.hpp"
-#include "usb/core/usb_macro_guard.hpp"
 #include "usb/device/dev_core.hpp"
 
 /**
  * @file fsdev.hpp
- * @brief STM32 FSDEV 与 CH32 DevFS 共用的 PMA 型寄存器运行期 / Shared register runtime
- *        for the PMA-based FSDEV peripherals (STM32 FSDEV and CH32 DevFS)
+ * @brief PMA 型全速设备控制器（FSDEV）的寄存器运行期，由多个平台共用
+ *        Register runtime of the PMA-based full-speed device controller (FSDEV), shared
+ *        by several platforms
  *
  * 硬件只有每方向一个 PMA 包缓冲；槽模型的两槽完全由软件实现（CPU 把数据在槽与
  * PMA 之间逐包拷贝）。停止 = STAT 写 NAK，立即生效并返回 `StopResult::DONE`；
@@ -23,30 +23,31 @@
  * endpoints are not supported.
  *
  * 芯片差异收敛在模板参数 `HW`（硬件访问 traits）上：寄存器位与掩码常量、
- * BTABLE/PMA 访问、上电复位与挂起/唤醒序列、上拉。经典型（F1/F3/F0/L0/G4/WB）与
- * DRD 变体（G0/C0/H5/U5/U0/U3 的 USB_DRD_FS）各有一份 traits。
+ * BTABLE/PMA 访问、上电复位与挂起/唤醒序列、上拉。经典型（16 位寄存器）与 DRD 变体
+ * （32 位寄存器）各有一份 traits，由使用它的平台提供。
  *
  * Chip differences are contained in the template parameter `HW`, the hardware-access
  * traits: register bits and masks, BTABLE/PMA access, the power-on reset and
- * suspend/resume sequences and the pull-up. The classic controllers (F1/F3/F0/L0/G4/WB)
- * and the DRD variant (USB_DRD_FS on G0/C0/H5/U5/U0/U3) each have one traits type.
+ * suspend/resume sequences and the pull-up. The classic controllers (16-bit registers)
+ * and the DRD variant (32-bit registers) each have one traits type, provided by the
+ * platform that uses it.
  *
  * Traits 约定 / Traits contract:
  * - 常量（uint32_t，经典 16 位寄存器零扩展）/ Constants (uint32_t, the classic 16-bit
- *   registers zero-extended): `kEpCtrRx kEpDtogRx kEpStatRx kEpSetup kEpType kEpKind
- *   kEpCtrTx kEpDtogTx kEpStatTx kEpAddr`；经典型的 `kEpErrRx = kEpErrTx = 0`；
- *   `kEpKeepMask` = 写 EPnR 时写 1 保持的全部位（CTR、SETUP、类型、KIND、地址，
+ *   registers zero-extended): `EP_CTR_RX EP_DTOG_RX EP_STAT_RX EP_SETUP EP_TYPE EP_KIND
+ *   EP_CTR_TX EP_DTOG_TX EP_STAT_TX EP_ADDR`；经典型的 `EP_ERR_RX = EP_ERR_TX = 0`；
+ *   `EP_KEEP_MASK` = 写 EPnR 时写 1 保持的全部位（CTR、SETUP、类型、KIND、地址，
  *   DRD 再加 ERR/NAK/DEVADDR/LSEP）。
- * - `kIstrCtr kIstrReset kIstrSof kIstrSusp kIstrWkup kIstrNoise`（噪声位 = ERR|
- *   PMAOVR|ESOF，只清标志）；`kCntrRunMask` = CTRM|RESETM|SUSPM|WKUPM；`kCntrSofm`。
+ * - `ISTR_CTR ISTR_RESET ISTR_SOF ISTR_SUSP ISTR_WKUP ISTR_NOISE`（噪声位 = ERR|
+ *   PMAOVR|ESOF，只清标志）；`CNTR_RUN_MASK` = CTRM|RESETM|SUSPM|WKUPM；`CNTR_SOFM`。
  * - 函数 / Functions: `ReadEp WriteEp`（EPnR，32 位视图）、`ReadCntr WriteCntr
  *   ReadIstr ClearIstr ReadFnr WriteDaddr`（CNTR/ISTR/FNR/DADDR；`ClearIstr` 用写 0
  *   清位、写 1 保持其余位的 ISTR 写法）、`SetTxBuf SetTxCount SetRxBuf
  *   SetRxCountEncoded GetRxCount`（BTABLE，地址与计数以存储字节为单位）、
  *   `PmaWrite PmaRead`（PMA 拷贝）、`InitRegs SuspendRegs SuspendClocked ResumeRegs
  *   Connect MspInit`、`EnterGuard ExitGuard`（硬件守卫：屏蔽本地中断，返回保存值）。
- *   CTR 的清除由运行期按 `kEpKeepMask` 公式统一完成，traits 不需要单独的函数。
- * - `kPmaSize`：PMA 存储字节；`kEndpoints`：硬件端点数。
+ *   CTR 的清除由运行期按 `EP_KEEP_MASK` 公式统一完成，traits 不需要单独的函数。
+ * - `PMA_SIZE`：PMA 存储字节；`ENDPOINT_COUNT`：硬件端点数。
  */
 
 namespace LibXR::USB
@@ -54,18 +55,18 @@ namespace LibXR::USB
 
 /// 经典型与 DRD 一致的 STAT/DTOG 目标值 / STAT and DTOG targets shared by both
 /// variants (classic 16-bit layout)
-constexpr uint32_t kFsDevStatTxDis = 0x0000U;
-constexpr uint32_t kFsDevStatTxStall =
+constexpr uint32_t FSDEV_STAT_TX_DIS = 0x0000U;
+constexpr uint32_t FSDEV_STAT_TX_STALL =
     0x0010U;  ///< STAT_TX = STALL，回复 STALL 握手 / Reply STALL
-constexpr uint32_t kFsDevStatTxNak = 0x0020U;  ///< STAT_TX = NAK，回复 NAK / Reply NAK
-constexpr uint32_t kFsDevStatTxValid =
+constexpr uint32_t FSDEV_STAT_TX_NAK = 0x0020U;  ///< STAT_TX = NAK，回复 NAK / Reply NAK
+constexpr uint32_t FSDEV_STAT_TX_VALID =
     0x0030U;  ///< STAT_TX = VALID，发送数据 / Send data
-constexpr uint32_t kFsDevStatRxDis =
+constexpr uint32_t FSDEV_STAT_RX_DIS =
     0x0000U;  ///< STAT_RX = DISABLED，不应答 / Ignore tokens
-constexpr uint32_t kFsDevStatRxStall =
+constexpr uint32_t FSDEV_STAT_RX_STALL =
     0x1000U;  ///< STAT_RX = STALL，回复 STALL 握手 / Reply STALL
-constexpr uint32_t kFsDevStatRxNak = 0x2000U;  ///< STAT_RX = NAK，回复 NAK / Reply NAK
-constexpr uint32_t kFsDevStatRxValid =
+constexpr uint32_t FSDEV_STAT_RX_NAK = 0x2000U;  ///< STAT_RX = NAK，回复 NAK / Reply NAK
+constexpr uint32_t FSDEV_STAT_RX_VALID =
     0x3000U;  ///< STAT_RX = VALID，接收数据 / Accept data
 
 /// 清除本方向 CTR（写 0），另一方向 CTR 与 ERR 写 1 保持；STAT/DTOG 写 0 不翻转。
@@ -74,10 +75,10 @@ constexpr uint32_t kFsDevStatRxValid =
 template <typename HW>
 inline void FsDevClearCtrTx(uint8_t num)
 {
-  constexpr uint32_t kSelf = HW::kEpCtrTx | HW::kEpErrTx;
-  constexpr uint32_t kOther = HW::kEpCtrRx | HW::kEpErrRx;
+  constexpr uint32_t SELF = HW::EP_CTR_TX | HW::EP_ERR_TX;
+  constexpr uint32_t OTHER = HW::EP_CTR_RX | HW::EP_ERR_RX;
   const uint32_t cur = HW::ReadEp(num);
-  HW::WriteEp(num, (cur & HW::kEpKeepMask & ~kSelf) | kOther);
+  HW::WriteEp(num, (cur & HW::EP_KEEP_MASK & ~SELF) | OTHER);
 }
 
 /// 清除接收方向 CTR（写 0），发送方向 CTR 与 ERR 写 1 保持；规则同 FsDevClearCtrTx。
@@ -86,10 +87,10 @@ inline void FsDevClearCtrTx(uint8_t num)
 template <typename HW>
 inline void FsDevClearCtrRx(uint8_t num)
 {
-  constexpr uint32_t kSelf = HW::kEpCtrRx | HW::kEpErrRx;
-  constexpr uint32_t kOther = HW::kEpCtrTx | HW::kEpErrTx;
+  constexpr uint32_t SELF = HW::EP_CTR_RX | HW::EP_ERR_RX;
+  constexpr uint32_t OTHER = HW::EP_CTR_TX | HW::EP_ERR_TX;
   const uint32_t cur = HW::ReadEp(num);
-  HW::WriteEp(num, (cur & HW::kEpKeepMask & ~kSelf) | kOther);
+  HW::WriteEp(num, (cur & HW::EP_KEEP_MASK & ~SELF) | OTHER);
 }
 
 /// EP_TYPE 编码（bits[9:8]）：CONTROL=01、ISO=10、BULK=00、INT=11 / EP_TYPE encoding
@@ -102,7 +103,7 @@ constexpr uint32_t FsDevTypeBits(Endpoint::Type type)
       return 0x0200U;
     case Endpoint::Type::ISOCHRONOUS:
       return 0x0400U;
-    case Endpoint::Type::INTERRUPT:
+    case Endpoint::Type::INTR:
       return 0x0600U;
     case Endpoint::Type::BULK:
     default:
@@ -134,8 +135,8 @@ class FSDevEndpoint : public Endpoint
    * @brief 构造端点并登记到所属设备的 IN/OUT 表 / Construct the endpoint and register it
    * in the owning device's IN/OUT table
    * @param device 所属设备 / Owning device
-   * @param number 端点号，须小于 HW::kEndpoints / Endpoint number, must be below
-   * HW::kEndpoints
+   * @param number 端点号，须小于 HW::ENDPOINT_COUNT / Endpoint number, must be below
+   * HW::ENDPOINT_COUNT
    * @param direction 端点方向 / Endpoint direction
    * @param buffer 槽使用的内存 / Memory used by the slots
    * @param pma_addr 该端点缓冲在 PMA 中的字节偏移 / Byte offset of the endpoint's buffer
@@ -152,7 +153,7 @@ class FSDevEndpoint : public Endpoint
         pma_addr_(pma_addr),
         pma_size_(pma_size)
   {
-    REQUIRE(EPNumberToInt8(GetNumber()) < HW::kEndpoints);
+    REQUIRE(EPNumberToInt8(GetNumber()) < HW::ENDPOINT_COUNT);
     if (direction == Direction::IN)
     {
       device_.in_[EPNumberToInt8(GetNumber())] = this;
@@ -235,17 +236,19 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
   struct EPConfig
   {
     RawData buffer;   ///< 槽使用的内存 / Memory used by the slots
-    size_t pma_size;  ///< 该端点 PMA 缓冲字节数，须按 HW::kPmaAlign 对齐 / PMA buffer
-                      ///< size in bytes, must be a multiple of HW::kPmaAlign
+    size_t pma_size;  ///< 该端点 PMA 缓冲字节数，须按 HW::PMA_ALIGN 对齐 / PMA buffer
+                      ///< size in bytes, must be a multiple of HW::PMA_ALIGN
   };
 
   /**
    * @brief 构造设备、分配 PMA 并创建全部端点 / Construct the device, lay out the PMA and
    * create every endpoint
-   * @param rx_ep_cfgs OUT 端点配置，第 i 项对应 EP i，EP0 必须提供，不超过 HW::kEndpoints
-   * / OUT endpoint configs, entry i is EP i, EP0 is mandatory, at most HW::kEndpoints
-   * @param tx_ep_cfgs IN 端点配置，第 i 项对应 EP i，EP0 必须提供，不超过 HW::kEndpoints
-   * / IN endpoint configs, entry i is EP i, EP0 is mandatory, at most HW::kEndpoints
+   * @param rx_ep_cfgs OUT 端点配置，第 i 项对应 EP i，EP0 必须提供，不超过
+   * HW::ENDPOINT_COUNT / OUT endpoint configs, entry i is EP i, EP0 is mandatory, at most
+   * HW::ENDPOINT_COUNT
+   * @param tx_ep_cfgs IN 端点配置，第 i 项对应 EP i，EP0 必须提供，不超过
+   * HW::ENDPOINT_COUNT / IN endpoint configs, entry i is EP i, EP0 is mandatory, at most
+   * HW::ENDPOINT_COUNT
    * @param packet_size 端点 0 最大包长 / EP0 max packet size
    * @param vid 厂商 ID / Vendor ID
    * @param pid 产品 ID / Product ID
@@ -273,9 +276,9 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
                                           packet_size, vid, pid, bcd, lang_list, configs,
                                           uid)
   {
-    REQUIRE(rx_ep_cfgs.size() > 0U && rx_ep_cfgs.size() <= HW::kEndpoints);
-    REQUIRE(tx_ep_cfgs.size() > 0U && tx_ep_cfgs.size() <= HW::kEndpoints);
-    const size_t limit = pma_limit != 0U ? pma_limit : HW::kPmaSize;
+    REQUIRE(rx_ep_cfgs.size() > 0U && rx_ep_cfgs.size() <= HW::ENDPOINT_COUNT);
+    REQUIRE(tx_ep_cfgs.size() > 0U && tx_ep_cfgs.size() <= HW::ENDPOINT_COUNT);
+    const size_t limit = pma_limit != 0U ? pma_limit : HW::PMA_SIZE;
 
     SetHardwareGuard(
         this, [](void*) -> uintptr_t { return HW::EnterGuard(); },
@@ -291,10 +294,10 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
 
     // BTABLE 之后按端点号依次分配：EP0 OUT、EP0 IN、EP1 OUT、EP1 IN、...
     // Allocated after the BTABLE in endpoint order: EP0 OUT, EP0 IN, EP1 OUT, EP1 IN, ...
-    EPConfig rx[kMaxEps] = {};
-    EPConfig tx[kMaxEps] = {};
-    uint16_t addr_out[kMaxEps] = {};
-    uint16_t addr_in[kMaxEps] = {};
+    EPConfig rx[MAX_EPS] = {};
+    EPConfig tx[MAX_EPS] = {};
+    uint16_t addr_out[MAX_EPS] = {};
+    uint16_t addr_in[MAX_EPS] = {};
     for (size_t i = 0; i < rx_ep_cfgs.size(); ++i)
     {
       rx[i] = rx_ep_cfgs.begin()[i];
@@ -314,16 +317,16 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     // aligned boundary (the classic type truncates the RX/TX ADDR field to even, DRD to 4
     // bytes), otherwise the address is silently truncated and a buffer overlaps the one
     // before it.
-    REQUIRE((offset % HW::kPmaAlign) == 0U);
+    REQUIRE((offset % HW::PMA_ALIGN) == 0U);
     for (size_t i = 0; i < rx_ep_cfgs.size(); ++i)
     {
-      REQUIRE((rx[i].pma_size % HW::kPmaAlign) == 0U);
+      REQUIRE((rx[i].pma_size % HW::PMA_ALIGN) == 0U);
       addr_out[i] = static_cast<uint16_t>(offset);
       offset += rx[i].pma_size;
     }
     for (size_t i = 0; i < tx_ep_cfgs.size(); ++i)
     {
-      REQUIRE((tx[i].pma_size % HW::kPmaAlign) == 0U);
+      REQUIRE((tx[i].pma_size % HW::PMA_ALIGN) == 0U);
       addr_in[i] = static_cast<uint16_t>(offset);
       offset += tx[i].pma_size;
     }
@@ -362,7 +365,7 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     // 中断源保持关闭，Start() 才打开；上拉在 Start() 最后接通。
     // The interrupt sources stay off until Start(); the pull-up comes on last in Start().
     HW::WriteCntr(
-        static_cast<uint16_t>(HW::ReadCntr() & ~(HW::kCntrRunMask | HW::kCntrSofm)));
+        static_cast<uint16_t>(HW::ReadCntr() & ~(HW::CNTR_RUN_MASK | HW::CNTR_SOFM)));
   }
 
   void Init(bool in_isr) override { DeviceCore<FullSpeedCapabilities>::Init(in_isr); }
@@ -386,14 +389,14 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
       EndpointPool::HardwareScope hardware(this);
       connected_ = true;
       uint16_t cntr = HW::ReadCntr();
-      cntr |= HW::kCntrRunMask;
+      cntr |= HW::CNTR_RUN_MASK;
       if (WantsBusTime())
       {
-        cntr |= HW::kCntrSofm;
+        cntr |= HW::CNTR_SOFM;
       }
       else
       {
-        cntr &= static_cast<uint16_t>(~HW::kCntrSofm);
+        cntr &= static_cast<uint16_t>(~HW::CNTR_SOFM);
       }
       HW::WriteCntr(cntr);
       // 上拉最后接通：前面的初始化不产生主机可见的变化。
@@ -413,7 +416,7 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
       connected_ = false;
       HW::Connect(false);
       HW::WriteCntr(
-          static_cast<uint16_t>(HW::ReadCntr() & ~(HW::kCntrRunMask | HW::kCntrSofm)));
+          static_cast<uint16_t>(HW::ReadCntr() & ~(HW::CNTR_RUN_MASK | HW::CNTR_SOFM)));
     }
     // 下拉之后主机不再通信；在途请求的完成事件不会再来，由下一次解绑或复位流程结束。
     // After the pull-up is off the host no longer talks; completions of requests in
@@ -458,11 +461,11 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     uint16_t cntr = HW::ReadCntr();
     if (WantsBusTime())
     {
-      cntr |= HW::kCntrSofm;
+      cntr |= HW::CNTR_SOFM;
     }
     else
     {
-      cntr &= static_cast<uint16_t>(~HW::kCntrSofm);
+      cntr &= static_cast<uint16_t>(~HW::CNTR_SOFM);
     }
     HW::WriteCntr(cntr);
   }
@@ -470,8 +473,8 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
   /// 本控制器只支持全速 / This controller is full-speed only
   Speed ReadBusSpeed() const override { return Speed::FULL; }
 
-  /// 中断入口（STM32 wrap 或 CH32 共享中断） / Interrupt entry (STM32 wrap or the
-  /// shared CH32 vector)
+  /// 中断入口，由平台的中断处理函数调用 / Interrupt entry, called from the interrupt
+  /// handler of the platform
   static void Dispatch()
   {
     FSDevDevice* device = self_;
@@ -485,7 +488,7 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
 
  protected:
   /// 支持的最大端点号数量 / Maximum number of endpoint numbers supported
-  static constexpr uint8_t kMaxEps = 8;
+  static constexpr uint8_t MAX_EPS = 8;
 
   template <typename U>
   friend class FSDevEndpoint;
@@ -505,9 +508,9 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
   void HandleSof();
 
   /// 按端点号索引的 IN 端点 / IN endpoints by number
-  FSDevEndpoint<HW>* in_[kMaxEps] = {};
+  FSDevEndpoint<HW>* in_[MAX_EPS] = {};
   /// 按端点号索引的 OUT 端点 / OUT endpoints by number
-  FSDevEndpoint<HW>* out_[kMaxEps] = {};
+  FSDevEndpoint<HW>* out_[MAX_EPS] = {};
   /// 使用的端点号数量（RX/TX 列表较长者）/ Endpoint numbers in use (the longer of the
   /// RX/TX lists)
   uint8_t endpoint_count_ = 1;
@@ -529,9 +532,9 @@ template <typename HW>
 void FSDevEndpoint<HW>::SetStat(bool in, uint32_t target)
 {
   const uint8_t num = Num();
-  const uint32_t stat_mask = in ? HW::kEpStatTx : HW::kEpStatRx;
-  const uint32_t ctr = in ? HW::kEpCtrTx : HW::kEpCtrRx;
-  const uint32_t valid = in ? kFsDevStatTxValid : kFsDevStatRxValid;
+  const uint32_t stat_mask = in ? HW::EP_STAT_TX : HW::EP_STAT_RX;
+  const uint32_t ctr = in ? HW::EP_CTR_TX : HW::EP_CTR_RX;
+  const uint32_t valid = in ? FSDEV_STAT_TX_VALID : FSDEV_STAT_RX_VALID;
   const bool arming = (target == valid);
   // 写 1 翻转：只写到达目标的增量。读与写（以及写与读回）之间硬件可能自己
   // 完成一次事务（结束 IN/OUT 并自行把 STAT 改回 NAK、锁存 CTR），按旧值算
@@ -557,7 +560,8 @@ void FSDevEndpoint<HW>::SetStat(bool in, uint32_t target)
   // (NAK/STALL/DISABLED) cannot arm twice: a transaction completed in the window only
   // moves STAT back to NAK, so recomputing from the new value and writing again
   // converges and must not give up early, or the stop path would not stop.
-  constexpr uint32_t kNoClear = HW::kEpCtrRx | HW::kEpCtrTx | HW::kEpErrRx | HW::kEpErrTx;
+  constexpr uint32_t NO_CLEAR =
+      HW::EP_CTR_RX | HW::EP_CTR_TX | HW::EP_ERR_RX | HW::EP_ERR_TX;
   for (unsigned attempt = 0U; attempt < 3U; ++attempt)
   {
     const uint32_t cur = HW::ReadEp(num);
@@ -566,7 +570,7 @@ void FSDevEndpoint<HW>::SetStat(bool in, uint32_t target)
       return;  // 本方向事务已完成，由 CTR 处理推进
     }
     const uint32_t value =
-        (cur & HW::kEpKeepMask) | ((cur ^ target) & stat_mask) | kNoClear;
+        (cur & HW::EP_KEEP_MASK) | ((cur ^ target) & stat_mask) | NO_CLEAR;
     HW::WriteEp(num, value);
     const uint32_t after = HW::ReadEp(num);
     if ((after & stat_mask) == target)
@@ -594,10 +598,11 @@ void FSDevEndpoint<HW>::WriteType(uint32_t bits)
   // TYPE/EA 在保持掩码内：先抹掉旧值再写新的。CTR/ERR 写 1 保持（同 SetStat）。
   // TYPE/EA are inside the keep mask: clear the old value before writing the new one.
   // CTR/ERR keep on a written 1 (as in SetStat).
-  constexpr uint32_t kNoClear = HW::kEpCtrRx | HW::kEpCtrTx | HW::kEpErrRx | HW::kEpErrTx;
+  constexpr uint32_t NO_CLEAR =
+      HW::EP_CTR_RX | HW::EP_CTR_TX | HW::EP_ERR_RX | HW::EP_ERR_TX;
   const uint32_t value =
-      (cur & HW::kEpKeepMask & ~(HW::kEpType | HW::kEpKind | HW::kEpAddr)) | bits |
-      Num() | kNoClear;
+      (cur & HW::EP_KEEP_MASK & ~(HW::EP_TYPE | HW::EP_KIND | HW::EP_ADDR)) | bits |
+      Num() | NO_CLEAR;
   HW::WriteEp(num, value);
 }
 
@@ -605,14 +610,15 @@ template <typename HW>
 void FSDevEndpoint<HW>::ClearDataToggle(bool in)
 {
   const uint8_t num = Num();
-  const uint32_t dtog = in ? HW::kEpDtogTx : HW::kEpDtogRx;
+  const uint32_t dtog = in ? HW::EP_DTOG_TX : HW::EP_DTOG_RX;
   // CTR/ERR 写 1 保持（同 SetStat）。
   // CTR/ERR keep on a written 1 (as in SetStat).
-  constexpr uint32_t kNoClear = HW::kEpCtrRx | HW::kEpCtrTx | HW::kEpErrRx | HW::kEpErrTx;
+  constexpr uint32_t NO_CLEAR =
+      HW::EP_CTR_RX | HW::EP_CTR_TX | HW::EP_ERR_RX | HW::EP_ERR_TX;
   const uint32_t cur = HW::ReadEp(num);
   if ((cur & dtog) != 0U)
   {
-    HW::WriteEp(num, (cur & HW::kEpKeepMask) | dtog | kNoClear);
+    HW::WriteEp(num, (cur & HW::EP_KEEP_MASK) | dtog | NO_CLEAR);
   }
 }
 
@@ -620,14 +626,14 @@ template <typename HW>
 void FSDevEndpoint<HW>::ArmTx(size_t bytes)
 {
   HW::SetTxCount(Num(), static_cast<uint16_t>(bytes));
-  SetStat(true, kFsDevStatTxValid);
+  SetStat(true, FSDEV_STAT_TX_VALID);
 }
 
 template <typename HW>
 void FSDevEndpoint<HW>::ArmRx()
 {
   HW::SetRxCountEncoded(Num(), MaxPacketSize());
-  SetStat(false, kFsDevStatRxValid);
+  SetStat(false, FSDEV_STAT_RX_VALID);
 }
 
 template <typename HW>
@@ -682,7 +688,7 @@ ErrorCode FSDevEndpoint<HW>::ConfigureHardware(const Config& cfg)
   // A new binding starts at DATA0; the hardware sets the EP0 DATA0/1 after SETUP.
   ClearDataToggle(true);
   ClearDataToggle(false);
-  SetStat(IsIn(), IsIn() ? kFsDevStatTxNak : kFsDevStatRxNak);
+  SetStat(IsIn(), IsIn() ? FSDEV_STAT_TX_NAK : FSDEV_STAT_RX_NAK);
   return ErrorCode::OK;
 }
 
@@ -695,7 +701,7 @@ void FSDevEndpoint<HW>::CloseHardware(bool in_isr)
   {
     return;  // EP0 常驻。
   }
-  SetStat(IsIn(), IsIn() ? kFsDevStatTxDis : kFsDevStatRxDis);
+  SetStat(IsIn(), IsIn() ? FSDEV_STAT_TX_DIS : FSDEV_STAT_RX_DIS);
 }
 
 template <typename HW>
@@ -737,17 +743,17 @@ Endpoint::StopResult FSDevEndpoint<HW>::StopHardware(bool in_isr)
     // 最后一个包可能刚被 ACK 而中断还没处理：计入进度。
     // The last packet may have just been ACKed while the interrupt has not run yet: count
     // it as progress.
-    if ((cur & HW::kEpCtrTx) != 0U)
+    if ((cur & HW::EP_CTR_TX) != 0U)
     {
       hw_progress_ +=
           LibXR::min(static_cast<size_t>(MaxPacketSize()), hw_length_ - hw_progress_);
       FsDevClearCtrTx<HW>(num);
     }
-    SetStat(true, kFsDevStatTxNak);
+    SetStat(true, FSDEV_STAT_TX_NAK);
     // SetStat 的读改写窗口里硬件可能又 ACK 完一包（CTR 已锁存）：补计一次。
     // In the read-modify-write window of SetStat the hardware may ACK one more packet
     // (CTR latched): count it once more.
-    if ((HW::ReadEp(num) & HW::kEpCtrTx) != 0U)
+    if ((HW::ReadEp(num) & HW::EP_CTR_TX) != 0U)
     {
       hw_progress_ +=
           LibXR::min(static_cast<size_t>(MaxPacketSize()), hw_length_ - hw_progress_);
@@ -759,7 +765,7 @@ Endpoint::StopResult FSDevEndpoint<HW>::StopHardware(bool in_isr)
   {
     // 收到但未处理的包读进槽并计入。
     // A packet received but not handled yet is read into the slot and counted.
-    if ((cur & HW::kEpCtrRx) != 0U)
+    if ((cur & HW::EP_CTR_RX) != 0U)
     {
       const size_t bytes = HW::GetRxCount(num);
       const size_t room = hw_length_ > hw_progress_ ? hw_length_ - hw_progress_ : 0U;
@@ -771,11 +777,11 @@ Endpoint::StopResult FSDevEndpoint<HW>::StopHardware(bool in_isr)
       hw_progress_ += take;
       FsDevClearCtrRx<HW>(num);
     }
-    SetStat(false, kFsDevStatRxNak);
+    SetStat(false, FSDEV_STAT_RX_NAK);
     // SetStat 的读改写窗口里硬件可能又收完一包（CTR 已锁存）：补收补计一次。
     // In the read-modify-write window of SetStat the hardware may receive one more packet
     // (CTR latched): receive and count it once more.
-    if ((HW::ReadEp(num) & HW::kEpCtrRx) != 0U)
+    if ((HW::ReadEp(num) & HW::EP_CTR_RX) != 0U)
     {
       const size_t bytes = HW::GetRxCount(num);
       const size_t room = hw_length_ > hw_progress_ ? hw_length_ - hw_progress_ : 0U;
@@ -805,7 +811,7 @@ template <typename HW>
 ErrorCode FSDevEndpoint<HW>::StallHardware(bool in_isr)
 {
   UNUSED(in_isr);
-  SetStat(IsIn(), IsIn() ? kFsDevStatTxStall : kFsDevStatRxStall);
+  SetStat(IsIn(), IsIn() ? FSDEV_STAT_TX_STALL : FSDEV_STAT_RX_STALL);
   return ErrorCode::OK;
 }
 
@@ -818,7 +824,7 @@ ErrorCode FSDevEndpoint<HW>::ClearStallHardware(bool in_isr)
     return ErrorCode::OK;  // 下一个 SETUP 清 EP0 的 STALL 与 DATA0/1。
   }
   ClearDataToggle(IsIn());  // 恢复 DATA0
-  SetStat(IsIn(), IsIn() ? kFsDevStatTxNak : kFsDevStatRxNak);
+  SetStat(IsIn(), IsIn() ? FSDEV_STAT_TX_NAK : FSDEV_STAT_RX_NAK);
   return ErrorCode::OK;
 }
 
@@ -884,40 +890,40 @@ template <typename HW>
 void FSDevDevice<HW>::HandleInterrupt()
 {
   const uint16_t istr = HW::ReadIstr();
-  if ((istr & HW::kIstrReset) != 0U)
+  if ((istr & HW::ISTR_RESET) != 0U)
   {
-    HW::ClearIstr(HW::kIstrReset);
+    HW::ClearIstr(HW::ISTR_RESET);
     OnBusResetRegs();
   }
-  if ((istr & HW::kIstrCtr) != 0U)
+  if ((istr & HW::ISTR_CTR) != 0U)
   {
     HandleCtr();
   }
-  if ((istr & HW::kIstrSof) != 0U)
+  if ((istr & HW::ISTR_SOF) != 0U)
   {
-    HW::ClearIstr(HW::kIstrSof);
+    HW::ClearIstr(HW::ISTR_SOF);
     HandleSof();
   }
-  if ((istr & HW::kIstrSusp) != 0U)
+  if ((istr & HW::ISTR_SUSP) != 0U)
   {
-    // 先进挂起再清标志、最后接时钟门控（HAL DRD 的顺序）；经典型的
+    // 先进挂起再清标志、最后接时钟门控（DRD 变体要求的顺序）；经典型的
     // SuspendClocked 为空。
-    // Enter suspend first, then clear the flags, then gate the clocks (the HAL DRD
-    // order); SuspendClocked is empty on the classic type.
+    // Enter suspend first, then clear the flags, then gate the clocks (the order the
+    // DRD variant requires); SuspendClocked is empty on the classic type.
     HW::SuspendRegs();
-    HW::ClearIstr(HW::kIstrSusp);
+    HW::ClearIstr(HW::ISTR_SUSP);
     HW::SuspendClocked();
     OnSuspend(true);
   }
-  if ((istr & HW::kIstrWkup) != 0U)
+  if ((istr & HW::ISTR_WKUP) != 0U)
   {
     HW::ResumeRegs();
-    HW::ClearIstr(HW::kIstrWkup);
+    HW::ClearIstr(HW::ISTR_WKUP);
     OnResume(true);
   }
-  if ((istr & HW::kIstrNoise) != 0U)
+  if ((istr & HW::ISTR_NOISE) != 0U)
   {
-    HW::ClearIstr(HW::kIstrNoise);
+    HW::ClearIstr(HW::ISTR_NOISE);
   }
 }
 
@@ -930,12 +936,12 @@ void FSDevDevice<HW>::HandleCtr()
   for (unsigned pass = 0; pass < 8U; ++pass)
   {
     const uint16_t istr = HW::ReadIstr();
-    if ((istr & HW::kIstrCtr) == 0U)
+    if ((istr & HW::ISTR_CTR) == 0U)
     {
       break;
     }
     HandleEp(static_cast<uint8_t>(istr & 0x000FU));
-    HW::ClearIstr(HW::kIstrCtr);
+    HW::ClearIstr(HW::ISTR_CTR);
   }
 }
 
@@ -943,9 +949,9 @@ template <typename HW>
 void FSDevDevice<HW>::HandleEp(uint8_t num)
 {
   const uint32_t epr = HW::ReadEp(num);
-  const bool ctr_tx = (epr & HW::kEpCtrTx) != 0U;
-  const bool ctr_rx = (epr & HW::kEpCtrRx) != 0U;
-  const bool setup = (epr & HW::kEpSetup) != 0U;
+  const bool ctr_tx = (epr & HW::EP_CTR_TX) != 0U;
+  const bool ctr_rx = (epr & HW::EP_CTR_RX) != 0U;
+  const bool setup = (epr & HW::EP_SETUP) != 0U;
 
   // 先 TX 后 RX：SETUP 会打断当前控制传输，之前的完成事件先走完。
   // TX before RX: a SETUP aborts the current control transfer, so earlier completions go
@@ -953,7 +959,7 @@ void FSDevDevice<HW>::HandleEp(uint8_t num)
   if (ctr_tx)
   {
     FsDevClearCtrTx<HW>(num);
-    FSDevEndpoint<HW>* ep = num < kMaxEps ? in_[num] : nullptr;
+    FSDevEndpoint<HW>* ep = num < MAX_EPS ? in_[num] : nullptr;
     if (ep != nullptr && !discard_)
     {
       ep->OnTxPacket();
@@ -974,7 +980,7 @@ void FSDevDevice<HW>::HandleEp(uint8_t num)
     }
     else
     {
-      FSDevEndpoint<HW>* ep = num < kMaxEps ? out_[num] : nullptr;
+      FSDevEndpoint<HW>* ep = num < MAX_EPS ? out_[num] : nullptr;
       if (ep != nullptr && !discard_)
       {
         ep->OnRxPacket(HW::GetRxCount(num));
@@ -997,7 +1003,7 @@ void FSDevDevice<HW>::OnBusResetRegs()
   HW::WriteDaddr(0x0080U);  // EF | 0
   if (out_[0] != nullptr)
   {
-    out_[0]->SetStat(false, kFsDevStatRxNak);  // EP0 OUT NAK：SETUP 照常接收
+    out_[0]->SetStat(false, FSDEV_STAT_RX_NAK);  // EP0 OUT NAK：SETUP 照常接收
   }
   OnBusReset(true);
 }

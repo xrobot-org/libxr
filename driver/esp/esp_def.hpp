@@ -6,9 +6,3 @@
 #include <FreeRTOS.h>
 
 #include "sdkconfig.h"
-
-// Xtensa/FreeRTOS headers may expose INTERRUPT macro and collide with
-// Endpoint::Type::INTERRUPT in generic USB core headers.
-#if defined(INTERRUPT)
-#undef INTERRUPT
-#endif
