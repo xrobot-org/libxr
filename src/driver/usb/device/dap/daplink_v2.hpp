@@ -401,6 +401,7 @@ class DapLinkV2Class : public DeviceClass
     // SyncSession); it is not touched here.
     ResetChannels();
 
+    in_ep_ref_.store(ep_data_in_, std::memory_order_release);
     inited_ = true;
     TopUpReceives(in_isr);
   }
@@ -413,6 +414,9 @@ class DapLinkV2Class : public DeviceClass
   void UnbindEndpoints(EndpointPool& endpoint_pool, bool in_isr) override
   {
     inited_ = false;
+    // Step 线程不再从这个绑定借 IN 槽 / The Step thread borrows no more IN slots from
+    // this binding.
+    in_ep_ref_.store(nullptr, std::memory_order_release);
 
     // 正在执行的传输尽快结束；Step 线程开始下一个会话时清掉这个标志。
     // End a transfer in progress soon; the Step thread clears the flag when the next
@@ -709,7 +713,7 @@ class DapLinkV2Class : public DeviceClass
   /// response is waiting; without one the staging slot is used.
   void TakeInSlot()
   {
-    Endpoint* ep = ep_data_in_;
+    Endpoint* ep = in_ep_ref_.load(std::memory_order_acquire);
     if (ep == nullptr || staged_outstanding_.load(std::memory_order_acquire) != 0u)
     {
       return;
@@ -4643,6 +4647,10 @@ class DapLinkV2Class : public DeviceClass
 
   Endpoint* ep_data_in_ = nullptr;   ///< 批量 IN 端点 / Bulk IN endpoint
   Endpoint* ep_data_out_ = nullptr;  ///< 批量 OUT 端点 / Bulk OUT endpoint
+  /// Step 线程借 IN 槽用的端点引用；ep_data_in_ 只在 owner 里读写 / IN endpoint reference
+  /// the Step thread borrows slots through; ep_data_in_ is read and written in the owner
+  /// only
+  std::atomic<Endpoint*> in_ep_ref_{nullptr};
 
   std::atomic<bool> inited_{false};  ///< 已初始化标志 / Initialized flag
   uint8_t interface_num_ = 0;        ///< 接口号 / Interface number
