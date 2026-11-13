@@ -840,9 +840,6 @@ void CH32EndpointOtgHs::TransferComplete(size_t size)
   // Toggle mismatch: the host resent a packet already taken (it missed our ACK). Drop
   // it and arm the receive again as it was; the request, the RX DMA position and the
   // received count stay, so the packets accepted earlier still count.
-  // TOG 不匹配表示数据同步失败：丢弃本包并按原请求重新挂接收。
-  // A TOG mismatch means data synchronization failed: drop this packet and re-arm the
-  // receive with the original request.
   if (!IS_EP0 && !IS_ISO)
   {
     const bool TOG_OK =
