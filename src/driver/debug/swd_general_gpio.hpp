@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <concepts>
 #include <cstdint>
 #include <type_traits>
 
@@ -20,9 +21,9 @@ enum class SwdIoDriveMode : uint8_t
 };
 
 /**
- * @brief SwdGeneralGPIO 的时序参数，单位是 CPU 周期的 1/10，与 CPU 主频无关。
- *        Timing parameters of SwdGeneralGPIO, in tenths of a CPU cycle, independent
- *        of the CPU clock.
+ * @brief SwdGeneralGPIO 的时序参数，单位是 CPU 周期，与 CPU 主频无关。
+ *        Timing parameters of SwdGeneralGPIO, in CPU cycles, independent of the CPU
+ *        clock.
  *
  * 带延时的路径上，一个 SWCLK 周期耗时 a + b·N 个 CPU 周期，N 是每个半周期的延时循环
  * 次数（一个周期有两个半周期，所以 b 是两次延时循环的耗时）；无延时路径每个 SWCLK
@@ -53,14 +54,126 @@ enum class SwdIoDriveMode : uint8_t
  * The defaults are conservative (one CPU cycle per delay iteration and per period,
  * zero intercept): on an uncalibrated platform the clock is usually much slower than
  * requested.
+ *
+ * 参数以周期数给出，可以带小数，例如 `SwdGpioTiming{9.0f, 16.9f, 11.4f}`。构造函数只在
+ * 编译期求值，把它们换算成整数保存，运行时只有整数运算，不引入浮点库。
+ * The parameters are given in cycles and may have a fraction, for example
+ * `SwdGpioTiming{9.0f, 16.9f, 11.4f}`. The constructor is evaluated at compile time only
+ * and stores them as integers, so the run time is integer-only and pulls in no
+ * floating-point helpers.
  */
-struct SwdGpioTiming
+class SwdGpioTiming
 {
-  uint32_t step_cycles_x10 =
-      20u;  ///< b：每个 N 的周期数 ×10 / b: cycles per step of N x10.
-  uint32_t intercept_cycles_x10 = 0u;  ///< a：截距 ×10 / a: intercept x10.
-  uint32_t fast_cycles_x10 =
-      10u;  ///< c：无延时路径每周期周期数 ×10 / c: cycles per period without delay x10.
+ public:
+  /// 保守的默认值：b = 2，a = 0，c = 1 / Conservative defaults: b = 2, a = 0, c = 1.
+  constexpr SwdGpioTiming() = default;
+
+  /**
+   * @brief 用标定出的周期数构造 / Construct from calibrated cycle counts
+   * @param step_cycles b：N 每加 1，每个 SWCLK 周期增加的 CPU 周期数 / b: CPU cycles
+   *        added to one SWCLK period per step of N.
+   * @param intercept_cycles a：带延时路径的截距 / a: intercept of the delayed path.
+   * @param fast_cycles c：无延时路径每个 SWCLK 周期的 CPU 周期数 / c: CPU cycles per
+   *        SWCLK period on the path without delay.
+   */
+  template <std::floating_point Step, std::floating_point Intercept,
+            std::floating_point Fast>
+  consteval SwdGpioTiming(Step step_cycles, Intercept intercept_cycles, Fast fast_cycles)
+      : step_(ToFixed(step_cycles)),
+        intercept_(ToFixed(intercept_cycles)),
+        fast_(ToFixed(fast_cycles))
+  {
+  }
+
+  /**
+   * @brief 每个半周期的延时循环次数 / Delay-loop count per half period.
+   *
+   * f >= f_cpu / c 时返回 0：无延时路径不会快于请求值。否则在 N >= 1（每周期 a + b·N）
+   * 中取每周期周期数最接近 f_cpu / f 的一档，两档一样近时取较慢的一档。无延时路径与
+   * N = 1 之间的间隔可能大于一档，所以只在它不超速时才用它。
+   * Returns 0 when f >= f_cpu / c: the path without delay is then never faster than
+   * requested. Otherwise, among N >= 1 (a + b·N per period), the one whose cycles per
+   * period are closest to f_cpu / f wins, and of two equally close ones the slower. The
+   * gap between the path without delay and N = 1 can be wider than a step, so that path
+   * is used only when it does not overshoot.
+   *
+   * @param cpu_hz CPU 主频（Hz），0 时返回 0 / CPU clock (Hz); 0 returns 0.
+   * @param hz 请求的 SWCLK 频率（Hz） / Requested SWCLK frequency (Hz).
+   * @return 延时循环次数 / Delay-loop count.
+   */
+  constexpr uint32_t DelayLoops(uint32_t cpu_hz, uint32_t hz) const
+  {
+    if (cpu_hz == 0u || hz == 0u)
+    {
+      return 0u;
+    }
+    // 都乘以 hz 比较，避免周期取整。误差 = |每周期周期数 × hz − f_cpu|。
+    // Compare after multiplying by hz, so the period is never rounded. The error is
+    // |cycles per period x hz - f_cpu|.
+    const uint64_t TARGET = static_cast<uint64_t>(cpu_hz) * FIXED_ONE;
+    const uint64_t REQ_HZ = hz;
+    if (static_cast<uint64_t>(fast_) * REQ_HZ >= TARGET)
+    {
+      return 0u;
+    }
+
+    const uint64_t A = intercept_;
+    const uint64_t B = (step_ == 0u) ? 1u : step_;
+
+    // 最接近的 N 是 floor((目标 − a) / b) 或它加 1（至少为 1）。
+    // The closest N is floor((target - a) / b) or one more (at least 1).
+    uint64_t lo = 1u;
+    if (TARGET > A * REQ_HZ)
+    {
+      lo = (TARGET - A * REQ_HZ) / (B * REQ_HZ);
+      if (lo < 1u)
+      {
+        lo = 1u;
+      }
+    }
+
+    uint64_t best_n = lo;
+    const uint64_t LO_ERR = AbsDiff((A + B * lo) * REQ_HZ, TARGET);
+    const uint64_t NEXT_ERR = AbsDiff((A + B * (lo + 1u)) * REQ_HZ, TARGET);
+    // 一样近时取较慢的一档 / On a tie take the slower step.
+    if (NEXT_ERR <= LO_ERR)
+    {
+      best_n = lo + 1u;
+    }
+    return (best_n >= UINT32_MAX) ? UINT32_MAX : static_cast<uint32_t>(best_n);
+  }
+
+ private:
+  /// 定点数里 1 个 CPU 周期的值 / Value of one CPU cycle in the fixed-point form.
+  static constexpr uint32_t FIXED_ONE = 10u;
+  /// 可接受的最大周期数 / Largest cycle count accepted.
+  static constexpr uint32_t MAX_CYCLES = 100'000u;
+
+  /// 只有声明：编译期求值走到这里就是编译错误，表示周期数超出范围
+  /// Declared only: reaching it during constant evaluation is a compile error and means
+  /// that a cycle count is out of range.
+  static void CycleCountOutOfRange();
+
+  /// 周期数换算成定点数，四舍五入 / Convert a cycle count to fixed point, rounded.
+  template <std::floating_point Cycles>
+  static consteval uint32_t ToFixed(Cycles cycles)
+  {
+    if (!(cycles >= Cycles{0}) || cycles > static_cast<Cycles>(MAX_CYCLES))
+    {
+      CycleCountOutOfRange();
+    }
+    return static_cast<uint32_t>(static_cast<double>(cycles) * FIXED_ONE + 0.5);
+  }
+
+  /// 两数之差的绝对值 / Absolute difference of two values.
+  static constexpr uint64_t AbsDiff(uint64_t x, uint64_t y)
+  {
+    return x > y ? x - y : y - x;
+  }
+
+  uint32_t step_ = 2u * FIXED_ONE;  ///< b，定点数 / b in fixed point.
+  uint32_t intercept_ = 0u;         ///< a，定点数 / a in fixed point.
+  uint32_t fast_ = FIXED_ONE;       ///< c，定点数 / c in fixed point.
 };
 
 /**
@@ -165,69 +278,8 @@ class SwdGeneralGPIO final : public Swd
     }
 
     clock_hz_ = hz;
-    half_period_loops_ = DelayLoops(cpu_hz_, hz, timing_);
+    half_period_loops_ = timing_.DelayLoops(cpu_hz_, hz);
     return ErrorCode::OK;
-  }
-
-  /**
-   * @brief 每个半周期的延时循环次数 / Delay-loop count per half period.
-   *
-   * f >= f_cpu / c 时返回 0：无延时路径不会快于请求值。否则在 N >= 1（每周期 a + b·N）
-   * 中取每周期周期数最接近 f_cpu / f 的一档，两档一样近时取较慢的一档。无延时路径与
-   * N = 1 之间的间隔可能大于一档，所以只在它不超速时才用它。只用整数运算，不引入浮点库。
-   * Returns 0 when f >= f_cpu / c: the path without delay is then never faster than
-   * requested. Otherwise, among N >= 1 (a + b·N per period), the one whose cycles per
-   * period are closest to f_cpu / f wins, and of two equally close ones the slower. The
-   * gap between the path without delay and N = 1 can be wider than a step, so that path
-   * is used only when it does not overshoot. Integer-only, so no floating-point helpers
-   * are pulled in.
-   *
-   * @param cpu_hz CPU 主频（Hz），0 时返回 0 / CPU clock (Hz); 0 returns 0.
-   * @param hz 请求的 SWCLK 频率（Hz） / Requested SWCLK frequency (Hz).
-   * @param timing 时序参数 / Timing parameters.
-   * @return 延时循环次数 / Delay-loop count.
-   */
-  static constexpr uint32_t DelayLoops(uint32_t cpu_hz, uint32_t hz,
-                                       const SwdGpioTiming& timing)
-  {
-    if (cpu_hz == 0u || hz == 0u)
-    {
-      return 0u;
-    }
-    // 都乘以 hz 比较，避免周期取整。误差 = |每周期周期数 × hz − f_cpu|，单位 1/10 周期。
-    // Compare after multiplying by hz, so the period is never rounded. The error is
-    // |cycles per period x hz - f_cpu|, in tenths of a cycle.
-    const uint64_t TARGET = static_cast<uint64_t>(cpu_hz) * 10u;
-    const uint64_t REQ_HZ = hz;
-    if (static_cast<uint64_t>(timing.fast_cycles_x10) * REQ_HZ >= TARGET)
-    {
-      return 0u;
-    }
-
-    const uint64_t A = timing.intercept_cycles_x10;
-    const uint64_t B = (timing.step_cycles_x10 == 0u) ? 1u : timing.step_cycles_x10;
-
-    // 最接近的 N 是 floor((目标 − a) / b) 或它加 1（至少为 1）。
-    // The closest N is floor((target - a) / b) or one more (at least 1).
-    uint64_t lo = 1u;
-    if (TARGET > A * REQ_HZ)
-    {
-      lo = (TARGET - A * REQ_HZ) / (B * REQ_HZ);
-      if (lo < 1u)
-      {
-        lo = 1u;
-      }
-    }
-
-    uint64_t best_n = lo;
-    const uint64_t LO_ERR = AbsDiff((A + B * lo) * REQ_HZ, TARGET);
-    const uint64_t NEXT_ERR = AbsDiff((A + B * (lo + 1u)) * REQ_HZ, TARGET);
-    // 一样近时取较慢的一档 / On a tie take the slower step.
-    if (NEXT_ERR <= LO_ERR)
-    {
-      best_n = lo + 1u;
-    }
-    return (best_n >= UINT32_MAX) ? UINT32_MAX : static_cast<uint32_t>(best_n);
   }
 
   void Close() override
@@ -340,12 +392,6 @@ class SwdGeneralGPIO final : public Swd
   }
 
  private:
-  /// 两数之差的绝对值 / Absolute difference of two values.
-  static constexpr uint64_t AbsDiff(uint64_t x, uint64_t y)
-  {
-    return x > y ? x - y : y - x;
-  }
-
   /// 32 位数据的奇偶校验位：1 的个数为奇数时是 1
   /// Parity bit of 32-bit data: 1 for an odd number of ones.
   static inline uint8_t Parity32(uint32_t x)

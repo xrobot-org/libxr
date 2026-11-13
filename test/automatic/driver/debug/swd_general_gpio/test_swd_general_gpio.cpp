@@ -109,31 +109,31 @@ using Gpio = Debug::SwdGeneralGPIO<ClockedPin, RecordingPin>;
 void TestDelayLoopsPickTheNearestStep()
 {
   constexpr uint32_t CPU = 100'000'000u;
-  constexpr Debug::SwdGpioTiming T{100u, 150u, 120u};
-  TEST_ASSERT(Gpio::DelayLoops(CPU, 3'000'000u, T) == 2u);  // 33.3: 35 beats 25
-  TEST_ASSERT(Gpio::DelayLoops(CPU, 4'000'000u, T) == 1u);  // 25: exact
-  TEST_ASSERT(Gpio::DelayLoops(CPU, 5'000'000u, T) == 1u);  // 20: 25 beats 12
+  constexpr Debug::SwdGpioTiming T{10.0f, 15.0f, 12.0f};
+  TEST_ASSERT(T.DelayLoops(CPU, 3'000'000u) == 2u);  // 33.3: 35 beats 25
+  TEST_ASSERT(T.DelayLoops(CPU, 4'000'000u) == 1u);  // 25: exact
+  TEST_ASSERT(T.DelayLoops(CPU, 5'000'000u) == 1u);  // 20: 25 beats 12
   // 16.7 周期：12 比 25 更近，但快于请求值，所以 N = 1。
   // 16.7 cycles: 12 would be nearer than 25 but faster than requested, so N = 1.
-  TEST_ASSERT(Gpio::DelayLoops(CPU, 6'000'000u, T) == 1u);
-  TEST_ASSERT(Gpio::DelayLoops(CPU, 10'000'000u, T) == 0u);  // 10: no delay
-  TEST_ASSERT(Gpio::DelayLoops(CPU, 1'000'000u, T) == 9u);   // 100: 95 / 105 tie -> 105
-  TEST_ASSERT(Gpio::DelayLoops(CPU, 2'000'000u, T) == 4u);   // 50: 45 / 55 tie -> 55
-  TEST_ASSERT(Gpio::DelayLoops(CPU, 50'000u, T) == 199u);    // 2000: 1995 / 2005 tie
+  TEST_ASSERT(T.DelayLoops(CPU, 6'000'000u) == 1u);
+  TEST_ASSERT(T.DelayLoops(CPU, 10'000'000u) == 0u);  // 10: no delay
+  TEST_ASSERT(T.DelayLoops(CPU, 1'000'000u) == 9u);   // 100: 95 / 105 tie -> 105
+  TEST_ASSERT(T.DelayLoops(CPU, 2'000'000u) == 4u);   // 50: 45 / 55 tie -> 55
+  TEST_ASSERT(T.DelayLoops(CPU, 50'000u) == 199u);    // 2000: 1995 / 2005 tie
   // 18.5 周期，在 12 和 25 正中间：无延时路径会超速。
   // 18.5 cycles, halfway between 12 and 25: the path without delay would overshoot.
-  TEST_ASSERT(Gpio::DelayLoops(37'000'000u, 2'000'000u, T) == 1u);
+  TEST_ASSERT(T.DelayLoops(37'000'000u, 2'000'000u) == 1u);
   // 正好 12 周期（f == f_cpu / c）：无延时路径不超速。
   // 12 cycles exactly (f == f_cpu / c): the path without delay does not overshoot.
-  TEST_ASSERT(Gpio::DelayLoops(96'000'000u, 8'000'000u, T) == 0u);
+  TEST_ASSERT(T.DelayLoops(96'000'000u, 8'000'000u) == 0u);
   // 12.5 周期：略大于 c，所以 N = 1，尽管 12 比 25 近得多。
   // 12.5 cycles: just above c, so N = 1 although 12 is far nearer than 25.
-  TEST_ASSERT(Gpio::DelayLoops(CPU, 8'000'000u, T) == 1u);
+  TEST_ASSERT(T.DelayLoops(CPU, 8'000'000u) == 1u);
   // CPU 主频未知时保持无延时路径 / An unknown CPU clock keeps the path without delay.
-  TEST_ASSERT(Gpio::DelayLoops(0u, 1'000'000u, T) == 0u);
+  TEST_ASSERT(T.DelayLoops(0u, 1'000'000u) == 0u);
   // 默认值：每档 2 周期，截距 0，无延时路径 1 周期。
   // Defaults: 2 cycles per step, no intercept, 1 cycle without delay.
-  TEST_ASSERT(Gpio::DelayLoops(CPU, 1'000'000u, Debug::SwdGpioTiming{}) == 50u);
+  TEST_ASSERT(Debug::SwdGpioTiming{}.DelayLoops(CPU, 1'000'000u) == 50u);
 }
 
 /// 扫一遍频率：无延时路径当且仅当不超速时被选中；否则选中的 N >= 1 不比相邻两档离请求
@@ -144,10 +144,15 @@ void TestDelayLoopsPickTheNearestStep()
 void TestDelayLoopsNearestStepSweep()
 {
   constexpr uint32_t CPU = 64'000'000u;
-  constexpr Debug::SwdGpioTiming T{88u, 160u, 110u};
+  // 判据用自己的定点数（1/10 周期）计算，不读被测类的内部表示。
+  // The oracle computes with its own fixed point (tenths of a cycle) and does not read
+  // the representation inside the class under test.
+  constexpr uint32_t B10 = 88u;
+  constexpr uint32_t A10 = 160u;
+  constexpr uint32_t C10 = 110u;
+  constexpr Debug::SwdGpioTiming T{8.8f, 16.0f, 11.0f};
   const uint64_t TARGET = static_cast<uint64_t>(CPU) * 10u;
-  auto cost = [&](uint32_t n) -> uint64_t
-  { return T.intercept_cycles_x10 + uint64_t{T.step_cycles_x10} * n; };
+  auto cost = [&](uint32_t n) -> uint64_t { return A10 + uint64_t{B10} * n; };
   auto err = [&](uint64_t c, uint32_t hz) -> uint64_t
   {
     const uint64_t X = c * hz;
@@ -155,8 +160,8 @@ void TestDelayLoopsNearestStepSweep()
   };
   for (uint32_t hz = 50'000u; hz <= 20'000'000u; hz += 25'000u)
   {
-    const uint32_t N = Gpio::DelayLoops(CPU, hz, T);
-    const bool FAST_OK = uint64_t{T.fast_cycles_x10} * hz >= TARGET;
+    const uint32_t N = T.DelayLoops(CPU, hz);
+    const bool FAST_OK = uint64_t{C10} * hz >= TARGET;
     TEST_ASSERT((N == 0u) == FAST_OK);
     if (N == 0u)
     {
@@ -180,10 +185,38 @@ void TestDelayLoopsNearestStepSweep()
     {
       // |a + b·N − 目标| <= b / 2，两边都乘以 hz 和 10。
       // |a + b·N - target| <= b / 2, all scaled by hz and by 10.
-      TEST_ASSERT(2u * E <= uint64_t{T.step_cycles_x10} * hz);
+      TEST_ASSERT(2u * E <= uint64_t{B10} * hz);
     }
   }
 }
+/// 周期数可以带一位小数，float 和 double 都接受，结果在编译期可用
+/// Cycle counts may carry one decimal, float and double are both accepted, and the
+/// result is usable at compile time.
+void TestTimingFromFractionalCycles()
+{
+  constexpr uint32_t CPU = 72'000'000u;
+  constexpr Debug::SwdGpioTiming T{9.0f, 16.9f, 11.4f};
+  // c = 11.4：无延时路径从 72 MHz / 11.4 = 6315789.47 Hz 起才不超速。
+  // c = 11.4: the path without delay stops overshooting at 72 MHz / 11.4 =
+  // 6315789.47 Hz.
+  static_assert(T.DelayLoops(CPU, 6'315'790u) == 0u);
+  static_assert(T.DelayLoops(CPU, 6'315'789u) == 1u);
+  // 1 MHz 是每周期 72 个周期：16.9 + 9.0 × 6 = 70.9 比 79.9 近。
+  // 1 MHz is 72 cycles per period: 16.9 + 9.0 x 6 = 70.9 is nearer than 79.9.
+  static_assert(T.DelayLoops(CPU, 1'000'000u) == 6u);
+  // 100 kHz 是 720 个周期：16.9 + 9.0 × 78 = 718.9 比 727.9 近；300 kHz 是 240 个周期：
+  // 16.9 + 9.0 × 25 = 241.9 比 232.9 近。
+  // 100 kHz is 720 cycles: 16.9 + 9.0 x 78 = 718.9 is nearer than 727.9; 300 kHz is 240
+  // cycles: 16.9 + 9.0 x 25 = 241.9 is nearer than 232.9.
+  static_assert(T.DelayLoops(CPU, 100'000u) == 78u);
+  static_assert(T.DelayLoops(CPU, 300'000u) == 25u);
+
+  constexpr Debug::SwdGpioTiming FROM_DOUBLE{9.0, 16.9, 11.4};
+  static_assert(FROM_DOUBLE.DelayLoops(CPU, 6'315'790u) == 0u);
+  static_assert(FROM_DOUBLE.DelayLoops(CPU, 6'315'789u) == 1u);
+  TEST_ASSERT(T.DelayLoops(CPU, 1'000'000u) == FROM_DOUBLE.DelayLoops(CPU, 1'000'000u));
+}
+
 /// 记录 BusyLoop() 调用的时基类，代替平台的时基类作为类型参数
 /// Timebase class that records the BusyLoop() calls, used as the type parameter in place
 /// of the timebase class of a platform.
@@ -211,14 +244,14 @@ void TestDelayedPathUsesTheTimebaseClass()
       Debug::SwdGeneralGPIO<ClockedPin, RecordingPin, Debug::SwdIoDriveMode::PUSH_PULL,
                             RecordingTimebase>;
   constexpr uint32_t CPU = 100'000'000u;
-  constexpr Debug::SwdGpioTiming T{100u, 150u, 120u};
+  constexpr Debug::SwdGpioTiming T{10.0f, 15.0f, 12.0f};
   ClockedPin swclk;
   RecordingPin swdio;
   swclk.data = &swdio;
   DelayedGpio swd(swclk, swdio, CPU, T);
 
   TEST_ASSERT(swd.SetClockHz(1'000'000u) == ErrorCode::OK);
-  const uint32_t LOOPS = DelayedGpio::DelayLoops(CPU, 1'000'000u, T);
+  const uint32_t LOOPS = T.DelayLoops(CPU, 1'000'000u);
   TEST_ASSERT(LOOPS >= 1u);
   RecordingTimebase::calls = 0;
   swclk.sampled.clear();
@@ -241,5 +274,6 @@ void test_swd_general_gpio()
   TestRequestOnTheWire();
   TestDelayLoopsPickTheNearestStep();
   TestDelayLoopsNearestStepSweep();
+  TestTimingFromFractionalCycles();
   TestDelayedPathUsesTheTimebaseClass();
 }
