@@ -2,20 +2,18 @@
 
 #include "main.h"
 
-// 先记下控制器是否存在：`USB` 宏（寄存器指针）与命名空间 `LibXR::USB` 冲突，下面要
-// #undef 它。守卫必须在 #undef 之前求值，否则永远为假（F1/F103 就是这样被整体跳过的）。
-// Record the controller first: the `USB` macro (register pointer) collides with the
-// `LibXR::USB` namespace and is undefined below, so the guard has to be evaluated
-// before that.
-#if defined(USB) || defined(USB_DRD_FS)
-#define LIBXR_STM32_USB_FSDEV_PRESENT 1
-#endif
-
+// 设备头文件的 `USB` 宏（寄存器指针）与命名空间 `LibXR::USB` 冲突，这里取消定义。
+// 控制器是否存在用 `USB_BASE`（经典型）和 `USB_DRD_FS`（DRD）判断：它们不受这个
+// #undef 影响，判断结果与头文件的包含顺序无关。
+// The `USB` macro of the device header (the register pointer) collides with the
+// `LibXR::USB` namespace and is undefined here. Whether the controller exists is told by
+// `USB_BASE` (classic) and `USB_DRD_FS` (DRD): the #undef does not touch them, so the
+// answer does not depend on the order in which headers are included.
 #undef USB
 
 #include "usb/backend/fsdev.hpp"
 
-#if defined(HAL_PCD_MODULE_ENABLED) && defined(LIBXR_STM32_USB_FSDEV_PRESENT)
+#if defined(HAL_PCD_MODULE_ENABLED) && (defined(USB_BASE) || defined(USB_DRD_FS))
 
 namespace LibXR
 {
