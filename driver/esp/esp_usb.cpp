@@ -116,15 +116,10 @@ uint16_t CalcRxFifoWords(uint16_t largest_packet_size, uint8_t ep_count)
                                2U * ep_count);
 }
 
-uint16_t CalcConfiguredRxFifoWords(uint16_t largest_packet_size, uint8_t ep_count,
-                                   bool dma_enabled)
+uint16_t CalcConfiguredRxFifoWords(uint16_t largest_packet_size, uint8_t ep_count)
 {
-  uint16_t words = CalcRxFifoWords(largest_packet_size, ep_count);
-  if (dma_enabled)
-  {
-    words = std::max<uint16_t>(words, ESP32_SX_FS_DMA_MIN_RX_FIFO_WORDS);
-  }
-  return words;
+  return std::max<uint16_t>(CalcRxFifoWords(largest_packet_size, ep_count),
+                            ESP32_SX_FS_DMA_MIN_RX_FIFO_WORDS);
 }
 
 uint16_t GetHardwareFifoDepthWords()
@@ -166,42 +161,10 @@ uint16_t ClampPacketSize(LibXR::USB::Endpoint::Type type, uint16_t requested)
   }
 }
 
-uint16_t CalcTxFifoWords(uint16_t packet_size, bool dma_enabled)
+uint16_t CalcTxFifoWords(uint16_t packet_size)
 {
-  uint16_t words = static_cast<uint16_t>((packet_size + 3U) / 4U);
-  if (dma_enabled)
-  {
-    words = std::max<uint16_t>(words, ESP32_SX_FS_MIN_TX_FIFO_WORDS);
-  }
-  return words;
-}
-
-volatile uint32_t* GetEndpointFifo(usb_dwc_dev_t* dev, uint8_t ep_num)
-{
-  uintptr_t base = reinterpret_cast<uintptr_t>(dev);
-  return reinterpret_cast<volatile uint32_t*>(
-      base + FIFO_BASE_OFFSET + static_cast<uintptr_t>(ep_num) * FIFO_STRIDE);
-}
-
-void WriteFifoPacket(volatile uint32_t* fifo, const uint8_t* src, size_t size)
-{
-  for (size_t offset = 0; offset < size; offset += WORD_SIZE)
-  {
-    uint32_t word = 0U;
-    const size_t chunk = std::min(WORD_SIZE, size - offset);
-    std::memcpy(&word, src + offset, chunk);
-    fifo[0] = word;
-  }
-}
-
-void ReadFifoPacket(const volatile uint32_t* fifo, uint8_t* dst, size_t size)
-{
-  for (size_t offset = 0; offset < size; offset += WORD_SIZE)
-  {
-    const uint32_t word = fifo[0];
-    const size_t chunk = std::min(WORD_SIZE, size - offset);
-    std::memcpy(dst + offset, &word, chunk);
-  }
+  return std::max<uint16_t>(static_cast<uint16_t>((packet_size + 3U) / 4U),
+                            ESP32_SX_FS_MIN_TX_FIFO_WORDS);
 }
 
 uint16_t PacketCount(size_t size, uint16_t max_packet_size)

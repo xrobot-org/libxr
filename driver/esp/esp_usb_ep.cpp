@@ -44,7 +44,7 @@ ErrorCode ESP32USBEndpoint::ConfigureHardware(const Config& cfg)
   // 槽内存就是 DMA 目标，没有备用缓冲：槽不满足 DMA 对齐/可达性时拒绝配置。
   // The slot memory is the DMA target and there is no fallback buffer: refuse the
   // configuration when a slot does not satisfy DMA alignment and reachability.
-  if (device_.DmaEnabled() && (buffer.size_ > 0U) &&
+  if ((buffer.size_ > 0U) &&
       !(cfg.direction == Direction::IN
             ? ESPUSBDetail::CanUseDirectInDmaBuffer(buffer.addr_, buffer.size_)
             : ESPUSBDetail::CanUseDirectOutDmaBuffer(buffer.addr_, buffer.size_)))
@@ -106,7 +106,6 @@ void ESP32USBEndpoint::CloseHardware(bool /*in_isr*/)
     }
     else
     {
-      dev->diepempmsk_reg.val &= ~(1UL << ep_num);
       if (dev->in_eps[ep_num - 1U].diepctl_reg.epena)
       {
         dev->in_eps[ep_num - 1U].diepctl_reg.snak = 1;
@@ -609,8 +608,6 @@ ErrorCode ESP32USBEndpoint::StartHardware(const HwRequest& request, bool /*in_is
   transfer_active_ = true;
   stopped_sent_all_ = false;
   transfer_request_size_ = size;
-  transfer_actual_size_ = 0U;
-  transfer_queued_size_ = 0U;
 
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
   if ((ep_num == 0U) && (GetDirection() == Direction::OUT))
@@ -685,23 +682,11 @@ void ESP32USBEndpoint::HandleInInterrupt(bool in_isr)
   // StartHardware on the same path, attaching the completion to the next request.
   const uint32_t tag = transfer_tag_;
 
-  if (!device_.DmaEnabled() && intr.txfemp)
-  {
-    WriteMoreTxData();
-    if (transfer_queued_size_ >= transfer_request_size_)
-    {
-      dev->diepempmsk_reg.val &= ~(1UL << ep_num);
-    }
-  }
-
   if (intr.xfercompl)
   {
-    const bool rearm_ep0_setup = (ep_num == 0U) && device_.DmaEnabled() &&
-                                 (transfer_request_size_ == 0U) &&
+    const bool rearm_ep0_setup = (ep_num == 0U) && (transfer_request_size_ == 0U) &&
                                  device_.LastSetupDirectionOut();
-    dev->diepempmsk_reg.val &= ~(1UL << ep_num);
-    const size_t actual =
-        device_.DmaEnabled() ? GetCompletedTransferSize() : transfer_request_size_;
+    const size_t actual = GetCompletedTransferSize();
     OnHardwareComplete(in_isr, tag, actual);
     if (rearm_ep0_setup)
     {
@@ -758,8 +743,7 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
       ((ep_num != 0U) || ((ep0_out_phase_ != Ep0OutPhase::SETUP) && !ep0_setup_related &&
                           has_active_ep0_transfer)))
   {
-    const size_t actual =
-        device_.DmaEnabled() ? GetCompletedTransferSize() : transfer_actual_size_;
+    const size_t actual = GetCompletedTransferSize();
     const auto finish_out_transfer_result = FinishOutTransfer(actual);
     REQUIRE_FROM_CALLBACK(finish_out_transfer_result, in_isr);
     if (ep_num == 0U)
@@ -767,7 +751,7 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
       FinishPendingEp0InStatus(in_isr);
     }
     OnHardwareComplete(in_isr, tag, actual);
-    if ((ep_num == 0U) && device_.DmaEnabled() && (transfer_request_size_ == 0U))
+    if ((ep_num == 0U) && (transfer_request_size_ == 0U))
     {
       device_.ReloadSetupPacketCount();
     }
@@ -782,20 +766,17 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
   // EP0 OUT was disabled by the core after a data packet or when the host entered the
   // status stage of a control write: enable it again for SETUP packets, with the NAK
   // kept. The end of a SETUP stage is handled below.
-  if ((ep_num == 0U) && device_.DmaEnabled() && !intr.setup &&
-      (intr.xfercompl || intr.stsphsercvd) && (dev->doepctl0_reg.epena == 0U))
+  if ((ep_num == 0U) && !intr.setup && (intr.xfercompl || intr.stsphsercvd) &&
+      (dev->doepctl0_reg.epena == 0U))
   {
     device_.ReloadSetupPacketCount(false);
   }
 
   if (intr.setup)
   {
-    if (device_.DmaEnabled())
-    {
-      const auto cache_sync_dma_buffer_result = ESPUSBDetail::CacheSyncDmaBuffer(
-          device_.setup_packet_, ESP32USBDevice::SETUP_DMA_BUFFER_BYTES, false);
-      REQUIRE_FROM_CALLBACK(cache_sync_dma_buffer_result, in_isr);
-    }
+    const auto cache_sync_dma_buffer_result = ESPUSBDetail::CacheSyncDmaBuffer(
+        device_.setup_packet_, ESP32USBDevice::SETUP_DMA_BUFFER_BYTES, false);
+    REQUIRE_FROM_CALLBACK(cache_sync_dma_buffer_result, in_isr);
     // 核心把每个 SETUP 写到 DOEPDMA0 当前的地址并前移 8 字节，要处理的是最后收到的那个，
     // 它就在这个地址之前：背靠背的 SETUP 依次排在 SETUP 缓冲区里；OUT 数据阶段已经挂上时
     // 到来的 SETUP 写在数据槽的开头。其余情况（刚重新装填过）取 SETUP 缓冲区的开头。
@@ -805,24 +786,21 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
     // arrives with an OUT data stage armed lands at the start of the data slot. Anything
     // else (the buffer was just reloaded) means the start of the SETUP buffer.
     const uint8_t* packet = device_.setup_packet_;
-    if (device_.DmaEnabled())
+    const uintptr_t start = reinterpret_cast<uintptr_t>(device_.setup_packet_);
+    const uintptr_t last = static_cast<uintptr_t>(dev->doepdma0_reg.val) -
+                           ESP32USBDevice::SETUP_PACKET_BYTES;
+    if (last > start && last + ESP32USBDevice::SETUP_PACKET_BYTES <=
+                            start + ESP32USBDevice::SETUP_DMA_BUFFER_BYTES)
     {
-      const uintptr_t start = reinterpret_cast<uintptr_t>(device_.setup_packet_);
-      const uintptr_t last = static_cast<uintptr_t>(dev->doepdma0_reg.val) -
-                             ESP32USBDevice::SETUP_PACKET_BYTES;
-      if (last > start && last + ESP32USBDevice::SETUP_PACKET_BYTES <=
-                              start + ESP32USBDevice::SETUP_DMA_BUFFER_BYTES)
-      {
-        packet = reinterpret_cast<const uint8_t*>(last);
-      }
-      else if (transfer_hw_buffer_ != nullptr &&
-               last == reinterpret_cast<uintptr_t>(transfer_hw_buffer_))
-      {
-        const auto slot_sync_result = ESPUSBDetail::CacheSyncDmaBuffer(
-            transfer_hw_buffer_, ESPUSBDetail::USB_DMA_ALIGNMENT, false);
-        REQUIRE_FROM_CALLBACK(slot_sync_result, in_isr);
-        packet = transfer_hw_buffer_;
-      }
+      packet = reinterpret_cast<const uint8_t*>(last);
+    }
+    else if (transfer_hw_buffer_ != nullptr &&
+             last == reinterpret_cast<uintptr_t>(transfer_hw_buffer_))
+    {
+      const auto slot_sync_result = ESPUSBDetail::CacheSyncDmaBuffer(
+          transfer_hw_buffer_, ESPUSBDetail::USB_DMA_ALIGNMENT, false);
+      REQUIRE_FROM_CALLBACK(slot_sync_result, in_isr);
+      packet = transfer_hw_buffer_;
     }
     device_.UpdateSetupState(packet);
     const auto* setup = reinterpret_cast<const USB::SetupPacket*>(packet);
@@ -839,65 +817,9 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
     // still enabled in the hardware with a packet in its FIFO, and the core stops it when
     // it handles the SETUP (StopHardware runs the disable and FIFO flush sequence).
 
-    if (device_.DmaEnabled())
-    {
-      device_.ReloadSetupPacketCount(!expect_out_data_stage);
-    }
+    device_.ReloadSetupPacketCount(!expect_out_data_stage);
     device_.OnSetupPacket(in_isr, setup);
   }
-}
-
-void ESP32USBEndpoint::HandleRxData(size_t size)
-{
-  uint8_t* const dst = (transfer_buffer_ != nullptr)
-                           ? (transfer_buffer_ + transfer_actual_size_)
-                           : nullptr;
-  const size_t remain = (transfer_request_size_ > transfer_actual_size_)
-                            ? (transfer_request_size_ - transfer_actual_size_)
-                            : 0U;
-  const size_t copy_size = std::min(size, remain);
-  const size_t drop_size = size - copy_size;
-
-  if (copy_size > 0U)
-  {
-    ESPUSBDetail::ReadFifoPacket(
-        ESPUSBDetail::GetEndpointFifo(
-            reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE), 0),
-        dst, copy_size);
-    transfer_actual_size_ += copy_size;
-  }
-
-  if (drop_size == 0U)
-  {
-    return;
-  }
-
-  uint8_t sink[64] = {};
-  size_t remain_drop = drop_size;
-  auto* fifo = ESPUSBDetail::GetEndpointFifo(
-      reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE), 0);
-  while (remain_drop > 0U)
-  {
-    const size_t chunk = std::min(remain_drop, sizeof(sink));
-    ESPUSBDetail::ReadFifoPacket(fifo, sink, chunk);
-    remain_drop -= chunk;
-  }
-}
-
-void ESP32USBEndpoint::ObserveDmaRxStatus(uint8_t pktsts, size_t size)
-{
-  if (!device_.DmaEnabled() || (GetDirection() != Direction::OUT))
-  {
-    return;
-  }
-
-  if (pktsts != ESPUSBDetail::RX_STATUS_DATA)
-  {
-    return;
-  }
-
-  dma_rx_status_seen_ = true;
-  dma_rx_status_bytes_ = std::min(transfer_request_size_, dma_rx_status_bytes_ + size);
 }
 
 void ESP32USBEndpoint::ResetTransferState()
@@ -907,10 +829,6 @@ void ESP32USBEndpoint::ResetTransferState()
   transfer_buffer_ = nullptr;
   transfer_hw_buffer_ = nullptr;
   transfer_request_size_ = 0U;
-  transfer_actual_size_ = 0U;
-  transfer_queued_size_ = 0U;
-  dma_rx_status_bytes_ = 0U;
-  dma_rx_status_seen_ = false;
   iso_abort_ = false;
 }
 
@@ -918,7 +836,7 @@ bool ESP32USBEndpoint::PrepareTransferBuffer(size_t size)
 {
   transfer_hw_buffer_ = transfer_buffer_;
 
-  if (!device_.DmaEnabled() || (size == 0U))
+  if (size == 0U)
   {
     return true;
   }
@@ -935,9 +853,7 @@ bool ESP32USBEndpoint::PrepareTransferBuffer(size_t size)
 
 bool ESP32USBEndpoint::FinishOutTransfer(size_t actual_size)
 {
-  transfer_actual_size_ = actual_size;
-
-  if (!device_.DmaEnabled() || (actual_size == 0U))
+  if (actual_size == 0U)
   {
     return true;
   }
@@ -974,11 +890,6 @@ size_t ESP32USBEndpoint::GetRemainingTransferSize() const
 
 size_t ESP32USBEndpoint::GetCompletedTransferSize() const
 {
-  if ((GetDirection() == Direction::OUT) && device_.DmaEnabled() && dma_rx_status_seen_)
-  {
-    return dma_rx_status_bytes_;
-  }
-
   const size_t remaining = GetRemainingTransferSize();
   return (remaining >= transfer_request_size_) ? 0U
                                                : (transfer_request_size_ - remaining);
@@ -1054,7 +965,7 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
     {
       dev->dieptsiz0_reg.xfersize = static_cast<uint32_t>(size);
       dev->dieptsiz0_reg.pktcnt = pkt_count;
-      if (device_.DmaEnabled() && (size > 0U))
+      if (size > 0U)
       {
         dev->diepdma0_reg.dmaaddr =
             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(transfer_hw_buffer_));
@@ -1067,7 +978,7 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
       tsiz.xfersize = static_cast<uint32_t>(size);
       tsiz.pktcnt = pkt_count;
       tsiz.mc = 1U;
-      if (device_.DmaEnabled() && (size > 0U))
+      if (size > 0U)
       {
         dev->in_eps[ep_num - 1U].diepdma_reg.dmaddr =
             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(transfer_hw_buffer_));
@@ -1085,15 +996,6 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
       }
       ESPUSBDetail::StartEndpointTransfer(dev->in_eps[ep_num - 1U].diepctl_reg);
     }
-
-    if (!device_.DmaEnabled() && (size > 0U))
-    {
-      WriteMoreTxData();
-      if ((ep_num != 0U) && (transfer_queued_size_ < transfer_request_size_))
-      {
-        dev->diepempmsk_reg.val |= (1UL << ep_num);
-      }
-    }
   }
   else
   {
@@ -1106,7 +1008,7 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
       tsiz.xfersize = static_cast<uint32_t>((size == 0U) ? MaxPacketSize() : size);
       tsiz.pktcnt = pkt_count;
       dev->doeptsiz0_reg.val = tsiz.val;
-      if (device_.DmaEnabled() && (size > 0U))
+      if (size > 0U)
       {
         dev->doepdma0_reg.dmaaddr =
             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(transfer_hw_buffer_));
@@ -1119,7 +1021,7 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
       tsiz.xfersize = static_cast<uint32_t>(size);
       tsiz.pktcnt = pkt_count;
       tsiz.rxdpid = 0U;
-      if (device_.DmaEnabled() && (size > 0U))
+      if (size > 0U)
       {
         dev->out_eps[ep_num - 1U].doepdma_reg.dmaaddr =
             static_cast<uint32_t>(reinterpret_cast<uintptr_t>(transfer_hw_buffer_));
@@ -1137,42 +1039,6 @@ void ESP32USBEndpoint::ProgramTransfer(size_t size)
       }
       ESPUSBDetail::StartEndpointTransfer(dev->out_eps[ep_num - 1U].doepctl_reg);
     }
-  }
-}
-
-void ESP32USBEndpoint::WriteMoreTxData()
-{
-  if (transfer_buffer_ == nullptr || transfer_queued_size_ >= transfer_request_size_)
-  {
-    return;
-  }
-
-  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
-  const uint8_t ep_num = EPNumberToInt8(GetNumber());
-  const volatile uint32_t* fifo = ESPUSBDetail::GetEndpointFifo(dev, ep_num);
-
-  while (transfer_queued_size_ < transfer_request_size_)
-  {
-    uint16_t fifo_words = 0U;
-    if (ep_num == 0U)
-    {
-      fifo_words = dev->dtxfsts0_reg.ineptxfspcavail;
-    }
-    else
-    {
-      fifo_words = dev->in_eps[ep_num - 1U].dtxfsts_reg.ineptxfspcavail;
-    }
-
-    const size_t remaining = transfer_request_size_ - transfer_queued_size_;
-    const size_t packet_size = std::min(remaining, static_cast<size_t>(MaxPacketSize()));
-    if (packet_size > static_cast<size_t>(fifo_words) * 4U)
-    {
-      break;
-    }
-
-    ESPUSBDetail::WriteFifoPacket(const_cast<volatile uint32_t*>(fifo),
-                                  transfer_buffer_ + transfer_queued_size_, packet_size);
-    transfer_queued_size_ += packet_size;
   }
 }
 

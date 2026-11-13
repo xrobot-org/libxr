@@ -19,14 +19,6 @@ namespace LibXR::ESPUSBDetail
 {
 
 inline constexpr uint32_t DWC2_FS_REG_BASE = 0x60080000UL;
-inline constexpr size_t FIFO_BASE_OFFSET = 0x1000U;
-inline constexpr size_t FIFO_STRIDE = 0x1000U;
-
-inline constexpr uint8_t RX_STATUS_GLOBAL_OUT_NAK = 1U;
-inline constexpr uint8_t RX_STATUS_DATA = 2U;
-inline constexpr uint8_t RX_STATUS_TRANSFER_COMPLETE = 3U;
-inline constexpr uint8_t RX_STATUS_SETUP_DONE = 4U;
-inline constexpr uint8_t RX_STATUS_SETUP_DATA = 6U;
 
 inline constexpr uint8_t ENUM_SPEED_FULL_30_TO_60_MHZ = 1U;
 inline constexpr uint8_t ENUM_SPEED_FULL_48_MHZ = 3U;
@@ -59,15 +51,11 @@ esp_dma_mem_info_t UsbDmaMemInfo();
 bool CanUseDirectInDmaBuffer(const void* ptr, size_t size);
 bool CanUseDirectOutDmaBuffer(const void* ptr, size_t size);
 uint16_t CalcRxFifoWords(uint16_t largest_packet_size, uint8_t ep_count);
-uint16_t CalcConfiguredRxFifoWords(uint16_t largest_packet_size, uint8_t ep_count,
-                                   bool dma_enabled);
+uint16_t CalcConfiguredRxFifoWords(uint16_t largest_packet_size, uint8_t ep_count);
 uint16_t GetHardwareFifoDepthWords();
 uint8_t EncodeEp0Mps(uint16_t packet_size);
 uint16_t ClampPacketSize(LibXR::USB::Endpoint::Type type, uint16_t requested);
-uint16_t CalcTxFifoWords(uint16_t packet_size, bool dma_enabled);
-volatile uint32_t* GetEndpointFifo(usb_dwc_dev_t* dev, uint8_t ep_num);
-void WriteFifoPacket(volatile uint32_t* fifo, const uint8_t* src, size_t size);
-void ReadFifoPacket(const volatile uint32_t* fifo, uint8_t* dst, size_t size);
+uint16_t CalcTxFifoWords(uint16_t packet_size);
 uint16_t PacketCount(size_t size, uint16_t max_packet_size);
 /// 有界自旋：条件成立返回 true，超过上限返回 false。用于硬件自清位的等待，使节拍和中断
 /// 里的等待有上界。

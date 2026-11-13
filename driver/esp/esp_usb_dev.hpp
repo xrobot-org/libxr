@@ -272,11 +272,6 @@ class ESP32USBDevice : public USB::EndpointPool,
   void HandleEndpointInterrupt(bool in_isr, bool in_dir);
 
   /**
-   * @brief 处理 RX FIFO level 事件 / Handle one RX-FIFO level event
-   */
-  void HandleRxFifoLevel();
-
-  /**
    * @brief 清空控制传输方向状态 / Reset the control-transfer direction state
    */
   void ResetControlState();
@@ -291,11 +286,6 @@ class ESP32USBDevice : public USB::EndpointPool,
    * uses an OUT data stage
    */
   bool LastSetupDirectionOut() const { return control_.setup_direction_out; }
-
-  /**
-   * @brief 返回当前是否启用 DMA 路径 / Return whether the DMA path is enabled
-   */
-  bool DmaEnabled() const { return true; }
 
   /**
    * @brief 为一个 IN endpoint 分配 TX FIFO / Allocate one TX FIFO for an IN endpoint

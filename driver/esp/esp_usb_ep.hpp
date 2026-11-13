@@ -89,8 +89,6 @@ class ESP32USBEndpoint : public USB::Endpoint
   void OnIsoIncomplete(bool ended_odd);
   void FinishPendingEp0InStatus(bool in_isr);
   void HandleOutInterrupt(bool in_isr);
-  void HandleRxData(size_t size);
-  void ObserveDmaRxStatus(uint8_t pktsts, size_t size);
   void ResetTransferState();
   bool PrepareTransferBuffer(size_t size);
   bool FinishOutTransfer(size_t actual_size);
@@ -98,7 +96,6 @@ class ESP32USBEndpoint : public USB::Endpoint
   size_t GetCompletedTransferSize() const;
   void ActivateHardwareEndpoint();
   void ProgramTransfer(size_t size);
-  void WriteMoreTxData();
 
   ESP32USBDevice& device_;
   bool fifo_allocated_ = false;
@@ -116,10 +113,6 @@ class ESP32USBEndpoint : public USB::Endpoint
   /// 停止 / The running disable sequence was started for an isochronous IN request that
   /// missed its frame: it ends the request with FAILED instead of confirming a stop
   bool iso_abort_ = false;
-  size_t transfer_actual_size_ = 0U;
-  size_t transfer_queued_size_ = 0U;
-  size_t dma_rx_status_bytes_ = 0U;
-  bool dma_rx_status_seen_ = false;
   Ep0OutPhase ep0_out_phase_ = Ep0OutPhase::SETUP;
 };
 
