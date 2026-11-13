@@ -56,6 +56,8 @@ bool Armed(const void* address, uint16_t length)
          fake_usbhsd.UEP1_TX_DMA == Address(address) && fake_usbhsd.UEP1_TX_LEN == length;
 }
 
+/// 端点把自己登记在静态映射表中，该表的生命周期长于每个用例的端点；每个用例都从空
+/// 映射表开始。
 /// Endpoints register themselves in a static map that outlives each case's endpoints;
 /// every case starts from an empty map.
 struct MapReset
@@ -92,8 +94,8 @@ struct Fixture
   }
 };
 
-// 516 字节的响应：512 + 4。第一个包的 ACK 被报告为 busy NAK。
-// A 516-byte response: 512 + 4. The ACK of the first packet is reported as a busy NAK.
+/// 516 字节的响应：512 + 4。第一个包的 ACK 被报告为 busy NAK。
+/// A 516-byte response: 512 + 4. The ACK of the first packet is reported as a busy NAK.
 void TestTwoPacketResponse()
 {
   Fixture f;
@@ -128,8 +130,8 @@ void TestTwoPacketResponse()
   TEST_ASSERT(f.rec.list.size() == 1);
 }
 
-// 恰好一个包加其 ZLP：ZLP 是第二次硬件请求。
-// Exactly one packet plus its ZLP: the ZLP is a second hardware request.
+/// 恰好一个包加其 ZLP：ZLP 是第二次硬件请求。
+/// Exactly one packet plus its ZLP: the ZLP is a second hardware request.
 void TestPacketAndZlp()
 {
   Fixture f;
@@ -149,9 +151,9 @@ void TestPacketAndZlp()
   TEST_ASSERT(f.rec.list[0].result == ErrorCode::OK && f.rec.list[0].actual == 512);
 }
 
-// 两个排队的响应：第二个在第一个完成后才启动，其起始 toggle 是第一个留下的值。
-// Two queued responses: the second starts only after the first is complete, and the
-// starting toggle of the second is the one the first left behind.
+/// 两个排队的响应：第二个在第一个完成后才启动，其起始 toggle 是第一个留下的值。
+/// Two queued responses: the second starts only after the first is complete, and the
+/// starting toggle of the second is the one the first left behind.
 void TestQueuedResponses()
 {
   Fixture f;
@@ -173,13 +175,13 @@ void TestQueuedResponses()
   TEST_ASSERT(f.rec.list.size() == 2 && f.rec.list[1].actual == 3);
 }
 
-// STALL 之后的 EP0。下一个 SETUP 在设备核心清除端点 halt 之前，
-// 先在中断里把 EP0 恢复为 NAK/DATA1；该清除不能复位 toggle，否则数据阶段以 DATA0 开始，
-// 主机把它当作重复包丢弃，STALL 之后的请求就会超时。
-// EP0 after a STALL. The next SETUP restores EP0 to NAK/DATA1 in the interrupt before
-// the device core clears the endpoint's halt; that clear must not reset the toggle, or
-// the data stage starts with DATA0, the host drops it as a repeat and the request after
-// a STALL times out.
+/// STALL 之后的 EP0。下一个 SETUP 在设备核心清除端点 halt 之前，先在中断里把 EP0
+/// 恢复为 NAK/DATA1；该清除不能复位 toggle，否则数据阶段以 DATA0 开始，主机把它当作
+/// 重复包丢弃，STALL 之后的请求就会超时。
+/// EP0 after a STALL. The next SETUP restores EP0 to NAK/DATA1 in the interrupt before
+/// the device core clears the endpoint's halt; that clear must not reset the toggle, or
+/// the data stage starts with DATA0, the host drops it as a repeat and the request after
+/// a STALL times out.
 void TestEp0StallClearKeepsData1()
 {
   fake_usbhsd = {};
@@ -200,7 +202,12 @@ void TestEp0StallClearKeepsData1()
   TEST_ASSERT(fake_usbhsd.UEP0_TX_CTRL == (USBHS_UEP_T_TOG_DATA1 | USBHS_UEP_T_RES_NAK));
 }
 
-// --- Toggle advances the controller loses while the other direction is armed ---------
+// --- 另一方向挂包期间控制器丢失的 toggle 推进 ---
+// --- Toggle advances the controller loses while the other direction is armed ---
+// UEPn_TX_LEN、TX_CTRL 和 RX_CTRL 共用一个 32 位字：当某个包完成的同时，有一次挂包
+// 在写另一方向的寄存器，控制器对该包的 TOG_AUTO 推进可能丢失。挂包会记录写入之前的
+// toggle（tog_window_）；该方向的下一个正常包到来时若 toggle 没有变化，就推进一次。
+// 这里由测试按这样的挂包留下的样子设置 tog_window_。
 // UEPn_TX_LEN, TX_CTRL and RX_CTRL share one 32-bit word: when a packet completes while
 // an arm writes the other direction's registers, the controller's TOG_AUTO advance of
 // that packet can be lost. The arm records the toggle from before its writes
@@ -227,6 +234,7 @@ struct OutFixture
                 ErrorCode::OK);
     TEST_ASSERT(ep.Receive(512, false) == ErrorCode::OK);
   }
+  /// 一个 `size` 字节的包到达；`tog_ok` 是 INT_ST 对它报告的结果。
   /// A packet of `size` bytes lands; `tog_ok` is what INT_ST reports for it.
   void HostSends(size_t size, bool tog_ok)
   {
@@ -235,30 +243,35 @@ struct OutFixture
   }
 };
 
-// The advance of a good OUT packet was lost: the toggle is advanced once.
+/// 一个正常 OUT 包的推进丢失了：toggle 被推进一次。
+/// The advance of a good OUT packet was lost: the toggle is advanced once.
 void TestLostRxAdvanceRepaired()
 {
   OutFixture f;
   TEST_ASSERT(RxToggle() == 0u);
   f.ep.tog_window_ = CH32EndpointOtgHs::TOG_WINDOW | 0u;
-  f.HostSends(3, true);  // the controller did not move the toggle
+  // 控制器没有改变 toggle / The controller did not move the toggle.
+  f.HostSends(3, true);
   TEST_ASSERT(f.rec.list.size() == 1 && f.rec.list[0].actual == 3);
   TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1 && f.ep.tog_window_ == 0u);
 }
 
-// The advance was not lost: the toggle stays where the controller put it.
+/// 推进没有丢失：toggle 保持在控制器设置的位置。
+/// The advance was not lost: the toggle stays where the controller put it.
 void TestKeptRxAdvanceUntouched()
 {
   OutFixture f;
   f.ep.tog_window_ = CH32EndpointOtgHs::TOG_WINDOW | 0u;
-  fake_usbhsd.UEP1_RX_CTRL ^= USBHS_UEP_R_TOG_DATA1;  // TOG_AUTO advanced
+  // TOG_AUTO 已推进 / TOG_AUTO advanced.
+  fake_usbhsd.UEP1_RX_CTRL ^= USBHS_UEP_R_TOG_DATA1;
   f.HostSends(3, true);
   TEST_ASSERT(f.rec.list.size() == 1);
   TEST_ASSERT(RxToggle() == USBHS_UEP_R_TOG_DATA1 && f.ep.tog_window_ == 0u);
 }
 
-// A resend (TOG mismatch) does not advance the toggle and ends the window without a
-// repair; the request is armed again.
+/// 重发（TOG 不匹配）不推进 toggle，并在不修复的情况下结束窗口；请求被重新挂包。
+/// A resend (TOG mismatch) does not advance the toggle and ends the window without a
+/// repair; the request is armed again.
 void TestResendEndsWindow()
 {
   OutFixture f;
@@ -268,10 +281,13 @@ void TestResendEndsWindow()
   TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_RES_MASK) == USBHS_UEP_R_RES_ACK);
 }
 
-// A multi-packet OUT request: the host resends a packet that was already taken (it
-// missed the ACK). The resend is dropped and the receive armed again as it was: the
-// request, the DMA position and the received count stay, so the packets accepted earlier
-// still count. Restarting the request from its start lost them.
+/// 多包 OUT 请求：主机重发一个已被取走的包（它没收到 ACK）。重发的包被丢弃，接收按
+/// 原样重新挂包：请求、DMA 位置和已接收计数保持不变，所以之前已接受的包仍然有效。
+/// 此前从头重启请求会丢掉这些包。
+/// A multi-packet OUT request: the host resends a packet that was already taken (it
+/// missed the ACK). The resend is dropped and the receive armed again as it was: the
+/// request, the DMA position and the received count stay, so the packets accepted earlier
+/// still count. Restarting the request from its start lost them.
 void TestResendKeepsAcceptedPackets()
 {
   MapReset reset;
@@ -289,37 +305,44 @@ void TestResendKeepsAcceptedPackets()
   const uint32_t first_dma = fake_usbhsd.UEP1_RX_DMA;
 
   fake_usbhsd.INT_ST = USBHS_UIS_TOG_OK;
-  ep.TransferComplete(512);  // first packet taken
+  ep.TransferComplete(512);  // 第一个包已取走 / first packet taken
   TEST_ASSERT(rec.list.empty());
   const uint32_t second_dma = fake_usbhsd.UEP1_RX_DMA;
   TEST_ASSERT(second_dma == first_dma + 512u);
 
-  fake_usbhsd.INT_ST = 0u;  // the host resends: TOG mismatch
+  // 主机重发：TOG 不匹配 / The host resends: TOG mismatch.
+  fake_usbhsd.INT_ST = 0u;
   ep.TransferComplete(512);
   TEST_ASSERT(rec.list.empty());
   TEST_ASSERT(fake_usbhsd.UEP1_RX_DMA == second_dma);
   TEST_ASSERT((fake_usbhsd.UEP1_RX_CTRL & USBHS_UEP_R_RES_MASK) == USBHS_UEP_R_RES_ACK);
 
   fake_usbhsd.INT_ST = USBHS_UIS_TOG_OK;
-  ep.TransferComplete(512);  // second packet taken
+  ep.TransferComplete(512);  // 第二个包已取走 / second packet taken
   TEST_ASSERT(rec.list.size() == 1 && rec.list[0].actual == 1024);
 }
 
-// The advance of an ACKed IN packet was lost: the next response would go out with the
-// old phase and be dropped by the host as a repeat, so the toggle is advanced once.
+/// 一个已 ACK 的 IN 包的推进丢失了：下一个响应会以旧的相位发出，被主机当作重复包
+/// 丢弃，所以 toggle 被推进一次。
+/// The advance of an ACKed IN packet was lost: the next response would go out with the
+/// old phase and be dropped by the host as a repeat, so the toggle is advanced once.
 void TestLostTxAdvanceRepaired()
 {
   Fixture f;
   const auto slot = f.Submit(3, false);
   TEST_ASSERT(Armed(slot.data.addr_, 3) && TxToggle() == USBHS_UEP_T_TOG_DATA0);
   f.ep.tog_window_ = CH32EndpointOtgHs::TOG_WINDOW | USBHS_UEP_T_TOG_DATA0;
-  f.ep.TransferComplete(0u);  // INT_ST reports the ACK; the toggle did not move
+  // INT_ST 报告了 ACK，toggle 没有改变。
+  // INT_ST reports the ACK; the toggle did not move.
+  f.ep.TransferComplete(0u);
   TEST_ASSERT(f.rec.list.size() == 1 && f.rec.list[0].actual == 3);
   TEST_ASSERT(TxToggle() == USBHS_UEP_T_TOG_DATA1 && f.ep.tog_window_ == 0u);
 }
 
-// An arm records nothing when no transaction completed during its writes, including
-// when UIF_TRANSFER was already set before them (the controller busy-NAKs then).
+/// 若挂包写入期间没有事务完成，则挂包什么也不记录，包括 UIF_TRANSFER 在写入之前就已
+/// 置位的情况（此时控制器回 busy NAK）。
+/// An arm records nothing when no transaction completed during its writes, including
+/// when UIF_TRANSFER was already set before them (the controller busy-NAKs then).
 void TestArmWithoutCompletionRecordsNothing()
 {
   fake_usbhsd = {};

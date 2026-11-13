@@ -1,3 +1,5 @@
+// CH32 USBFS 端点主机测试用的假 CH32V30x 配置头文件：把 ch32v30x.h 的 USBOTG_FS 设备
+// 寄存器块做成普通内存，并给出端点用到的 ch32v30x_usb.h 寄存器位。
 // Fake CH32V30x configuration header for host tests of the CH32 USBFS endpoint: the
 // USBOTG_FS device register block of ch32v30x.h as plain memory, and the register bits
 // of ch32v30x_usb.h the endpoint uses.
