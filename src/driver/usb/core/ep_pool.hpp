@@ -116,19 +116,19 @@ class EndpointPool
    */
   void SetEndpoint0(Endpoint* ep0_in, Endpoint* ep0_out);
 
-  /// 进入硬件临界区的回调，返回的令牌原样交给 HardwareLeave / Callback that enters the
-  /// hardware critical region; the returned token is passed back to HardwareLeave
-  using HardwareEnter = uintptr_t (*)(void*);
-  /// 离开硬件临界区的回调，参数为 context 与 HardwareEnter 返回的令牌 / Callback that
-  /// leaves the critical region, given the context and the token from HardwareEnter
-  using HardwareLeave = void (*)(void*, uintptr_t);
+  /// 进入硬件临界区的回调，返回的令牌原样交给 HardwareLeaveFun / Callback that enters the
+  /// hardware critical region; the returned token is passed back to HardwareLeaveFun
+  using HardwareEnterFun = uintptr_t (*)(void*);
+  /// 离开硬件临界区的回调，参数为 context 与 HardwareEnterFun 返回的令牌 / Callback that
+  /// leaves the critical region, given the context and the token from HardwareEnterFun
+  using HardwareLeaveFun = void (*)(void*, uintptr_t);
   /**
    * @brief 设置后端的硬件临界区回调 / Set the backend's hardware critical-region hooks
    * @param context 回调的用户指针 / User pointer passed to both callbacks
    * @param enter 进入回调，可为空（不加保护）/ Enter callback, may be null (no guard)
    * @param leave 离开回调，可为空 / Leave callback, may be null
    */
-  void SetHardwareGuard(void* context, HardwareEnter enter, HardwareLeave leave)
+  void SetHardwareGuard(void* context, HardwareEnterFun enter, HardwareLeaveFun leave)
   {
     hardware_context_ = context;
     hardware_enter_ = enter;
@@ -395,8 +395,8 @@ class EndpointPool
   SlotUse use_[SLOT_COUNT][DIR_COUNT] = {};      ///< 对应槽占用状态 / Per-slot usage
 
   void* hardware_context_ = nullptr;
-  HardwareEnter hardware_enter_ = nullptr;
-  HardwareLeave hardware_leave_ = nullptr;
+  HardwareEnterFun hardware_enter_ = nullptr;
+  HardwareLeaveFun hardware_leave_ = nullptr;
   std::atomic<uint32_t> interrupt_depth_{0};
   /// IRQ 批处理期间记录了工作 / Work was recorded during an IRQ batch.
   std::atomic<uint32_t> irq_deferred_{0};

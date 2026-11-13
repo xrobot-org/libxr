@@ -177,11 +177,11 @@ class DapLinkV2Class : public DeviceClass
   /// 命令钩子：在标准命令分发之前调用。返回 true 表示命令已被处理（包括写入响应）。
   /// Command hook called before the standard dispatch. Returning true means the command
   /// was handled (the response, if any, has been written).
-  using CommandHook = bool (*)(void* ctx, const uint8_t* req, uint16_t req_len,
-                               uint8_t* resp, uint16_t resp_cap, uint16_t& out_len);
+  using CommandHookFun = bool (*)(void* ctx, const uint8_t* req, uint16_t req_len,
+                                  uint8_t* resp, uint16_t resp_cap, uint16_t& out_len);
 
   /// 注册命令钩子，ctx 原样传回。 / Register the command hook; ctx is passed through.
-  void SetCommandHook(CommandHook hook, void* ctx = nullptr)
+  void SetCommandHook(CommandHookFun hook, void* ctx = nullptr)
   {
     command_hook_ = hook;
     command_hook_ctx_ = ctx;
@@ -4613,8 +4613,8 @@ class DapLinkV2Class : public DeviceClass
       0u;  ///< 这次传输还剩的补零字节 / Padding bytes this transfer still has
   std::atomic<bool> transfer_abort_{false};  ///< DAP_TransferAbort 标志 / Abort flag
 
-  CommandHook command_hook_ = nullptr;  ///< 命令钩子 / Command hook
-  void* command_hook_ctx_ = nullptr;    ///< 钩子上下文 / Hook context
+  CommandHookFun command_hook_ = nullptr;  ///< 命令钩子 / Command hook
+  void* command_hook_ctx_ = nullptr;       ///< 钩子上下文 / Hook context
 
  private:
   SwdPort& swd_;  ///< SWD 链路 / SWD link
