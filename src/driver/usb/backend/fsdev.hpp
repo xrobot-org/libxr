@@ -376,8 +376,9 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     }
   }
 
-  /// 打开 CTR/RESET/SUSP/WKUP 与 SOF 中断并最后接通上拉 / Enable the CTR, RESET, SUSP,
-  /// WKUP and SOF interrupts, then connect the pull-up last
+  /// 打开 CTR/RESET/SUSP/WKUP 中断，有类需要总线时间时同时打开 SOF 中断，最后接通上拉
+  /// Enable the CTR, RESET, SUSP and WKUP interrupts, and the SOF interrupt when a class
+  /// wants the bus time, then connect the pull-up last
   void Start(bool in_isr) override
   {
     UNUSED(in_isr);

@@ -233,8 +233,7 @@ class STM32OtgEndpoint : public USB::Endpoint
   ErrorCode StartHardware(const HwRequest& request, bool in_isr) override;
   StopResult StopHardware(bool in_isr) override;
   size_t ReapProgress(const HwRequest& request, bool& retired) override;
-  /// 置位 STALL（EP0 OUT 在 DMA 下同时重新装填 SETUP）/ Set STALL (with DMA, EP0 OUT
-  /// also re-arms SETUP)
+  /// 置位本方向的 STALL / Set STALL on this direction
   ErrorCode StallHardware(bool in_isr) override;
   /// 清除 STALL；EP0 的 STALL 由下一个 SETUP 清除，批量/中断端点复位为 DATA0 / Clear
   /// STALL; the next SETUP clears an EP0 STALL, bulk/interrupt endpoints reset to DATA0

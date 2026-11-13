@@ -1207,12 +1207,14 @@ class DFUClass : public DfuInterfaceClassBase
    *        the busy states
    *
    * 非 Class 请求交给基类。方向（UPLOAD/GETSTATUS/GETSTATE 为 IN）、接收者（接口）或
-   * GETSTATUS/GETSTATE 的 wLength 不符返回 ARG_ERR；DNBUSY/MANIFEST 期间除 GETSTATUS
-   * 外的请求被 STALL，其余转给 OnClassRequest。
+   * GETSTATUS/GETSTATE 的 wLength 不符返回 ARG_ERR。DNBUSY/MANIFEST 期间，轮询期限到期
+   * 之前的任何请求都被 STALL；到期后状态转为对应的 SYNC 状态，请求转给
+   * OnClassRequest。其余状态下请求直接转给 OnClassRequest。
    * Non-class requests go to the base class. A wrong direction (UPLOAD, GETSTATUS and
    * GETSTATE are IN), recipient (interface) or GETSTATUS/GETSTATE wLength returns
-   * ARG_ERR; in DNBUSY/MANIFEST every request except GETSTATUS is stalled; the rest go
-   * to OnClassRequest.
+   * ARG_ERR. In DNBUSY/MANIFEST every request is stalled until the poll deadline has
+   * passed; after it the state moves to the matching SYNC state and the request goes to
+   * OnClassRequest. In the other states the request goes to OnClassRequest directly.
    *
    * @param in_isr 是否在 ISR 中 / Whether in ISR context
    * @param setup  SETUP 包 / SETUP packet
@@ -1247,9 +1249,8 @@ class DFUClass : public DfuInterfaceClassBase
                           setup.wIndex, result);
   }
 
-  /// DNLOAD 被中止时让后端放弃会话；已锁存的错误态保留给下一次 GETSTATUS / When DNLOAD
-  /// is aborted the backend drops its session; a latched error stays for the next
-  /// GETSTATUS
+  /// DNLOAD 被中止时让后端放弃会话，并清除错误态，回到 DFU_IDLE / When DNLOAD is aborted
+  /// the backend drops its session and the error state is cleared, back to DFU_IDLE
   void OnControlAbort(bool, const SetupPacket& setup) override
   {
     if (setup.bRequest == static_cast<uint8_t>(DFURequest::DNLOAD))

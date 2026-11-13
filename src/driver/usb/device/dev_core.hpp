@@ -108,8 +108,8 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   /// @param in_isr 是否在 ISR / Whether in ISR context
   void OnResume(bool in_isr) { RequestPower(in_isr, false); }
 
-  /// 后端在每个帧起始（SOF）调用，用于端点停止超时计数和帧节拍 / Called by the backend
-  /// on every start of frame; drives endpoint-stop timeout counting and frame ticks
+  /// 后端在每个帧起始（SOF）调用，用于端点停止超时计数和总线时间 / Called by the backend
+  /// on every start of frame; drives endpoint-stop timeout counting and the bus time
   /// @param in_isr 是否在 ISR / Whether in ISR context
   /// @param frame 帧号（11 位，0xffff 表示未知）/ Frame number (11 bits, 0xffff when
   /// unknown)
@@ -128,8 +128,10 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   /// requires
   /// @param address 主机分配的地址（0-127）/ Address assigned by the host (0-127)
   /// @param context 当前所处的控制传输阶段 / Current control-transfer phase
-  /// @return 错误码；非 OK 时 SET_ADDRESS 被 STALL / Error code; a non-OK result stalls
-  /// SET_ADDRESS
+  /// @return 错误码；状态阶段完成之前返回非 OK 时 SET_ADDRESS 被 STALL，
+  /// STATUS_IN_COMPLETE 阶段的返回值不使用 / Error code; a non-OK result before the
+  /// status stage completes stalls SET_ADDRESS, the result of the STATUS_IN_COMPLETE
+  /// phase is not used
   virtual ErrorCode SetAddress(uint8_t address, Context context) = 0;
 
   /// 主机 SET_FEATURE(DEVICE_REMOTE_WAKEUP) 时调用，后端据此允许远程唤醒 / Called on

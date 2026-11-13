@@ -143,8 +143,10 @@ class DfuInterfaceClassBase : public DeviceClass
   uint8_t interface_num_ = 0u;  ///< 本 DFU 接口在配置内的接口号 / Interface number of
                                 ///< this DFU interface within the configuration
   uint8_t current_alt_setting_ = 0u;  ///< 当前备用设置号 / Current alternate setting
-  bool inited_ = false;  ///< 端点已绑定且后端接受了备用设置 / Bound and the backend
-                         ///< accepted the alternate setting
+  /// 类已绑定，可以处理请求；Bootloader DFU 还要求后端接受了备用设置 / The class is
+  /// bound and can serve requests; bootloader DFU also requires that the backend
+  /// accepted the alternate setting
+  bool inited_ = false;
 
  private:
   const char* interface_string_ = nullptr;
