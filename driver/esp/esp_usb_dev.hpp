@@ -9,6 +9,7 @@
 #include "esp_intr_alloc.h"
 #include "freertos/FreeRTOS.h"
 #include "libxr_type.hpp"
+#include "soc/soc_caps.h"
 #include "usb/core/ep_pool.hpp"
 #include "usb/device/dev_core.hpp"
 

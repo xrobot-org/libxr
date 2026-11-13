@@ -1,5 +1,7 @@
 #pragma once
 
+#include "esp_def.hpp"
+#include "soc/soc_caps.h"
 #include "usb/core/ep.hpp"
 
 #if (SOC_USB_OTG_SUPPORTED && defined(CONFIG_IDF_TARGET_ESP32S3) && \

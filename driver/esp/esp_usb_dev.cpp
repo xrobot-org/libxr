@@ -961,17 +961,15 @@ bool ESP32USBDevice::EnsureRxFifo(uint16_t packet_size)
   return true;
 }
 
-}  // namespace LibXR
-
-#endif
-
-#if SOC_USB_OTG_SUPPORTED && defined(CONFIG_IDF_TARGET_ESP32S3) && \
-    CONFIG_IDF_TARGET_ESP32S3
-void LibXR::ESP32USBDevice::OnControllerReset()
+void ESP32USBDevice::OnControllerReset()
 {
   ResetDeviceState();
   ResetEndpointHardwareState();
   ResetFifoState();
 }
-void LibXR::ESP32USBDevice::OnControlReady() { ReloadSetupPacketCount(); }
+
+void ESP32USBDevice::OnControlReady() { ReloadSetupPacketCount(); }
+
+}  // namespace LibXR
+
 #endif
