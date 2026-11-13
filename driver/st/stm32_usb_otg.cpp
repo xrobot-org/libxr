@@ -18,6 +18,10 @@ constexpr uint8_t OTG_HS_INDEX = 1;
 constexpr uint8_t OTG_FS_ENDPOINTS = USB_OTG_FS_MAX_IN_ENDPOINTS;
 #elif defined(STM32H7) || defined(STM32N6)
 constexpr uint8_t OTG_FS_ENDPOINTS = 9;
+#elif defined(STM32F1)
+// F105/F107：EP0 加 3 个 IN、3 个 OUT 端点（RM0008 "OTG_FS main features"）。
+// F105/F107: EP0 plus 3 IN and 3 OUT endpoints (RM0008 "OTG_FS main features").
+constexpr uint8_t OTG_FS_ENDPOINTS = 4;
 #else
 constexpr uint8_t OTG_FS_ENDPOINTS = 6;
 #endif
@@ -44,6 +48,10 @@ constexpr size_t OTG_HS_FIFO = 4096;
 #endif
 
 constexpr uint32_t PKTCNT_POS = 19U;
+// DIEPTSIZ 的 MULCNT 字段（位 30:29）；器件头文件里的名字不统一（MULCNT、MCNT）。
+// MULCNT field of DIEPTSIZ (bits 30:29); the device headers name it differently (MULCNT,
+// MCNT).
+constexpr uint32_t MULCNT_POS = 29U;
 // EP0 OUT 可接收的连续 SETUP 包数。
 // Back-to-back SETUP packets EP0 OUT accepts.
 constexpr uint32_t SETUP_COUNT = 3U;
@@ -97,6 +105,16 @@ STM32USBOtgDevice::STM32USBOtgDevice(
   REQUIRE(rx_ep_cfgs.size() > 0 && rx_ep_cfgs.size() <= endpoint_count);
   REQUIRE(tx_ep_cfgs.size() > 0 && tx_ep_cfgs.size() <= endpoint_count);
   REQUIRE(rx_fifo_size % 4U == 0U && 64U * rx_ep_cfgs.size() <= rx_fifo_size);
+  // RX FIFO 除了一个最大包及其状态字，还要容纳 SETUP（5 × 控制端点数 + 8）、每个 OUT
+  // 端点的传输完成状态（2 × OUT 端点数，含 EP0）和全局 OUT NAK（1），单位为 32 位字
+  // （RM0090 "FIFO RAM allocation"，设备模式）。剩下的才是一个 OUT 包能用的空间。
+  // Besides one largest packet and its status word the RX FIFO holds the SETUP packets
+  // (5 x control endpoints + 8), the transfer-complete status of every OUT endpoint (2 x
+  // OUT endpoints, EP0 included) and the global OUT NAK (1), in 32-bit words (RM0090
+  // "FIFO RAM allocation", device mode). What is left is the room of one OUT packet.
+  const size_t rx_overhead = (5U + 8U + 1U + 2U * rx_ep_cfgs.size() + 1U) * 4U;
+  REQUIRE(rx_fifo_size > rx_overhead);
+  rx_packet_limit_ = rx_fifo_size - rx_overhead;
   REQUIRE(!hw.dma || (hw.ep0_dma_buffer.addr_ != nullptr &&
                       hw.ep0_dma_buffer.size_ >= EP0_DMA_SIZE &&
                       Address(hw.ep0_dma_buffer.addr_) % 32U == 0U));
@@ -129,10 +147,22 @@ STM32USBOtgDevice::STM32USBOtgDevice(
   core_->GAHBCFG &= ~USB_OTG_GAHBCFG_GINT;
   USB_OTG_CfgTypeDef cfg = {};
   cfg.dev_endpoints = endpoint_count_;
+  // 只有全速 OTG 的系列（F105/F107、L4、U575 等），HAL 没有高速和 ULPI 的定义。
+  // On families whose OTG is full speed only (F105/F107, L4, U575 ...) HAL has no
+  // definitions for high speed and ULPI.
+#if defined(USBD_HS_SPEED)
   cfg.speed = hw.high_speed ? USBD_HS_SPEED : USBD_FS_SPEED;
+#else
+  REQUIRE(!hw.high_speed);
+  cfg.speed = USBD_FS_SPEED;
+#endif
   cfg.dma_enable = hw.dma ? 1U : 0U;
   cfg.phy_itface = USB_OTG_EMBEDDED_PHY;
+#if defined(USB_OTG_ULPI_PHY)
   if (hw.phy == Phy::ULPI) cfg.phy_itface = USB_OTG_ULPI_PHY;
+#else
+  REQUIRE(hw.phy != Phy::ULPI);
+#endif
 #if defined(USB_OTG_HS_EMBEDDED_PHY)
   if (hw.phy == Phy::EMBEDDED_HS) cfg.phy_itface = USB_OTG_HS_EMBEDDED_PHY;
 #else
@@ -140,6 +170,9 @@ STM32USBOtgDevice::STM32USBOtgDevice(
 #endif
   cfg.vbus_sensing_enable = hw.vbus_sensing ? 1U : 0U;
   REQUIRE(USB_CoreInit(core_, cfg) == HAL_OK);
+  // GSNPSID 紧跟在 CID 之后（偏移 0x40）；器件头文件没有这个成员，HAL 也这样读。
+  // GSNPSID follows CID (offset 0x40); the device headers have no member for it, and HAL
+  // reads it the same way.
   core_id_ = *(reinterpret_cast<const volatile uint32_t*>(&core_->CID) + 1U);
   REQUIRE(USB_SetCurrentMode(core_, USB_DEVICE_MODE) == HAL_OK);
   REQUIRE(USB_DevInit(core_, cfg) == HAL_OK);
@@ -352,7 +385,6 @@ void STM32USBOtgDevice::HandleInterrupt()
   // One snapshot, a fixed order, no re-read: a bus reset first, so that endpoint events
   // of the old session in the same snapshot are ended by the reset.
   const uint32_t status = core_->GINTSTS & core_->GINTMSK;
-  if (status & USB_OTG_GINTSTS_MMIS) core_->GINTSTS = USB_OTG_GINTSTS_MMIS;
   if (status & USB_OTG_GINTSTS_USBRST) OnUsbReset();
   if (status & USB_OTG_GINTSTS_ENUMDNE) OnEnumerationDone();
   if (status & USB_OTG_GINTSTS_RXFLVL) DrainRxFifo();
@@ -414,7 +446,11 @@ void STM32USBOtgDevice::OnEnumerationDone()
   core_->GINTSTS = USB_OTG_GINTSTS_ENUMDNE;
   (void)USB_ActivateSetup(core_);
   const uint8_t speed = USB_GetDevSpeed(core_);
+#if defined(USBD_HS_SPEED)
   bus_speed_ = speed == USBD_HS_SPEED ? USB::Speed::HIGH : USB::Speed::FULL;
+#else
+  bus_speed_ = USB::Speed::FULL;
+#endif
   (void)USB_SetTurnaroundTime(core_, HAL_RCC_GetHCLKFreq(), speed);
   OnBusReset(true);
 }
@@ -723,7 +759,12 @@ STM32OtgEndpoint::STM32OtgEndpoint(STM32USBOtgDevice& device, EPNumber number,
 
 size_t STM32OtgEndpoint::MaxPacketSizeLimit(Type type) const
 {
-  return type == Type::CONTROL ? 64U : fifo_size_;
+  // 一个包必须整个放进它的 FIFO：IN 是该端点自己的 TX FIFO，OUT 是 RX FIFO 扣除固定
+  // 开销之后的部分。
+  // A packet has to fit into its FIFO as a whole: the endpoint's own TX FIFO for IN, the
+  // RX FIFO less its fixed overhead for OUT.
+  const size_t room = IsIn() ? fifo_size_ : device_.rx_packet_limit_;
+  return type == Type::CONTROL ? LibXR::min<size_t>(64U, room) : room;
 }
 
 ErrorCode STM32OtgEndpoint::ConfigureHardware(const Config& cfg)
@@ -801,12 +842,23 @@ ErrorCode STM32OtgEndpoint::StartHardware(const HwRequest& request, bool in_isr)
   const uint8_t num = Num();
   const uint32_t packet = Packet();
   const bool iso = GetConfig().type == Type::ISOCHRONOUS;
+  if (num != 0U)
+  {
+    // 包数和长度要放得进 DxEPTSIZ 的 PKTCNT 和 XFRSIZ 字段（两个方向的字段宽度相同）。
+    // The packet count and the length have to fit the PKTCNT and XFRSIZ fields of
+    // DxEPTSIZ (the fields are equally wide in both directions).
+    const size_t packets = (request.length + packet - 1U) / packet;
+    if (packets > (USB_OTG_DIEPTSIZ_PKTCNT >> PKTCNT_POS) ||
+        request.length > USB_OTG_DIEPTSIZ_XFRSIZ - 3U)
+      return ErrorCode::SIZE_ERR;
+  }
   hw_tag_ = request.tag;
   hw_data_ = static_cast<uint8_t*>(request.slot.addr_);
   hw_length_ = request.length;
   hw_capacity_ = request.slot.size_;
   hw_done_ = 0U;
   stopped_actual_ = 0U;
+  stopped_sent_all_ = false;
   const bool odd_frame =
       (((device_.Device()->DSTS & USB_OTG_DSTS_FNSOF) >> USB_OTG_DSTS_FNSOF_Pos) & 1U) !=
       0U;
@@ -817,7 +869,7 @@ ErrorCode STM32OtgEndpoint::StartHardware(const HwRequest& request, bool in_isr)
     const uint32_t length = static_cast<uint32_t>(request.length);
     const uint32_t packets = length == 0U ? 1U : (length + packet - 1U) / packet;
     uint32_t size = (packets << PKTCNT_POS) | length;
-    if (iso) size |= 1UL << USB_OTG_DIEPTSIZ_MULCNT_Pos;
+    if (iso) size |= 1UL << MULCNT_POS;
     regs->DIEPTSIZ = size;
     if (Dma())
     {
@@ -972,9 +1024,13 @@ USB::Endpoint::StopResult STM32OtgEndpoint::StopHardware(bool in_isr)
     device_.Device()->DIEPEMPMSK &= ~(1UL << num);
     if ((regs->DIEPCTL & USB_OTG_DIEPCTL_EPENA) == 0U)
     {
+      // 端点已不在使能状态：请求已经在硬件里发完。它的 XFRC 可能还没处理，也可能在这次
+      // 停止返回之后、ReapProgress 之前被中断清掉，所以在这里记下“已全部发出”。
+      // The endpoint is no longer enabled: the request has been sent in the hardware. Its
+      // XFRC may be unhandled, or be cleared by the interrupt after this stop returns and
+      // before ReapProgress, so "everything was sent" is recorded here.
+      stopped_sent_all_ = hw_tag_ != 0U;
       ResetTransfer();
-      // 已完成；尚未处理的 XFRC 是迟到的事件。
-      // Finished; a pending XFRC is a late fact.
       return StopResult::DONE;
     }
     // RM0090 "IN endpoint disable"：SNAK、INEPNE、EPDIS、EPDISD，然后刷新 FIFO。
@@ -1124,9 +1180,10 @@ size_t STM32OtgEndpoint::ReapProgress(const HwRequest& request, bool& retired)
   retired = false;
   if (!IsIn()) return stopped_actual_;
   auto* regs = device_.InEp(Num());
-  // 只有尚未处理的传输完成才证明主机已取走全部数据。
-  // Only a transfer complete not handled yet proves the host took everything.
-  retired = (regs->DIEPINT & USB_OTG_DIEPINT_XFRC) != 0U;
+  // 停止时已发完，或者有尚未处理的传输完成：主机已取走全部数据。
+  // Sent completely when the stop came, or a transfer complete is still unhandled: the
+  // host took everything.
+  retired = stopped_sent_all_ || (regs->DIEPINT & USB_OTG_DIEPINT_XFRC) != 0U;
   if (retired) return request.length;
   const size_t packet = Packet();
   const size_t remaining = (regs->DIEPTSIZ & USB_OTG_DIEPTSIZ_PKTCNT) >> PKTCNT_POS;

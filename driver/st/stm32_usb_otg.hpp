@@ -205,6 +205,9 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   // 已看到总线复位，owner 尚未应用。
   // Bus reset seen, the owner has not applied it yet.
   bool discard_ = false;
+  // RX FIFO 扣除固定开销后一个 OUT 包可用的字节数。
+  // Bytes one OUT packet can use in the RX FIFO after its fixed overhead.
+  size_t rx_packet_limit_ = 0;
   uint8_t global_nak_users_ = 0;
   // 位 n：TX FIFO n；位 16：所有 TX FIFO。
   // Bit n: TX FIFO n; bit 16: every TX FIFO.
@@ -217,16 +220,16 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
 /**
  * @brief STM32 OTG 端点 / STM32 OTG endpoint
  *
- * 非 DMA 时 IN 由 CPU 写 TX FIFO（启动时写第一个包，其余在 TXFE 中断里按 FIFO
- * 空间写），OUT 由 RXFLVL 中断读进槽；DMA 时 core 直接读写槽，EP0 OUT
+ * 非 DMA 时 IN 由 CPU 写 TX FIFO（启动时写当前放得下的整包，其余在 TXFE 中断里按
+ * FIFO 空间写），OUT 由 RXFLVL 中断读进槽；DMA 时 core 直接读写槽，EP0 OUT
  * 例外，始终收进设备的 EP0 缓冲区再 拷进槽。停止由硬件事件推进：IN 为 SNAK → INEPNE →
  * EPDIS → EPDISD → 清 TX FIFO；OUT 为全局 OUT NAK → EPDIS → EPDISD。
  *
- * Without DMA the CPU writes IN data to the TX FIFO (the first packet at start, the rest
- * in TXFE interrupts as FIFO space allows) and reads OUT data into the slot on RXFLVL;
- * with DMA the core reads and writes the slot itself, except EP0 OUT, which always
- * receives into the device's EP0 buffer and is copied into the slot. Stops advance on
- * hardware events: IN goes SNAK → INEPNE → EPDIS → EPDISD → TX FIFO flush; OUT goes
+ * Without DMA the CPU writes IN data to the TX FIFO (the whole packets that fit at start,
+ * the rest in TXFE interrupts as FIFO space allows) and reads OUT data into the slot on
+ * RXFLVL; with DMA the core reads and writes the slot itself, except EP0 OUT, which
+ * always receives into the device's EP0 buffer and is copied into the slot. Stops advance
+ * on hardware events: IN goes SNAK → INEPNE → EPDIS → EPDISD → TX FIFO flush; OUT goes
  * global OUT NAK → EPDIS → EPDISD.
  */
 class STM32OtgEndpoint : public USB::Endpoint
@@ -311,6 +314,9 @@ class STM32OtgEndpoint : public USB::Endpoint
   // IN: bytes written to the FIFO; OUT: bytes received.
   size_t hw_done_ = 0;
   size_t stopped_actual_ = 0;
+  // IN：停止时请求已在硬件里发完。
+  // IN: the request had been sent completely in the hardware when the stop came.
+  bool stopped_sent_all_ = false;
   StopStage stop_stage_ = StopStage::NONE;
 };
 
