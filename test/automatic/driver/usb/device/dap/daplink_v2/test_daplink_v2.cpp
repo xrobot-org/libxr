@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -273,10 +274,26 @@ void TestUnbindWhileHoldingInSlot()
   DapFixture f;
   f.dap.BindEndpoints(f.pool, 0, false);
 
-  f.out.HostSends({DELAY, 0x10, 0x27});  // 10000 us
-  std::thread dap_thread([&f]() { (void)f.dap.Step(1000); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  // 用最长的 DAP_Delay（65535 us），让解绑落在延时之内。Step 开始一个会话时最后调用
+  // SetClockHz，随后为响应借 IN 槽：等到这次调用就说明 Step 已持有这条命令，解绑在几微秒
+  // 之内跟上。随后检查 Step
+  // 尚未返回，所以错过这个窗口时测试失败，而不是悄悄少覆盖一条路径。 The longest
+  // DAP_Delay, 65535 us, so that the unbind lands inside it. Step ends the start of a
+  // session with SetClockHz and then borrows an IN slot for the response: waiting for
+  // that call means Step holds the command, and the unbind follows within microseconds.
+  // The test then checks that Step had not returned yet, so a missed window is a failure
+  // and not a silent loss of coverage.
+  f.out.HostSends({DELAY, 0xFF, 0xFF});
+  std::atomic<bool> step_returned{false};
+  std::thread dap_thread(
+      [&]()
+      {
+        (void)f.dap.Step(1000);
+        step_returned.store(true);
+      });
+  TEST_ASSERT(WaitUntil([&]() { return f.swd.clock_calls.load() != 0U; }));
   f.dap.UnbindEndpoints(f.pool, false);
+  TEST_ASSERT(!step_returned.load());
   dap_thread.join();
   TEST_ASSERT(f.in.starts.empty());
   // 应用循环再次 Step；处于未绑定状态时，Step 归还它持有的内容。
@@ -379,15 +396,27 @@ void TestNextCommandReceivedDuringDelay()
   DapFixture f;
   f.dap.BindEndpoints(f.pool, 0, false);
 
-  f.out.HostSends({DELAY, 0x10, 0x27});  // 10000 us
-  std::thread dap_thread([&f]() { (void)f.dap.Step(1000); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  // 最长的 DAP_Delay（65535 us）；第二条命令在 Step 开始执行第一条之后发出（见
+  // TestUnbindWhileHoldingInSlot），随后检查 Step 尚未返回。
+  // The longest DAP_Delay (65535 us); the second command goes in after Step has begun the
+  // first one (see TestUnbindWhileHoldingInSlot), and the test checks that Step had not
+  // returned by then.
+  f.out.HostSends({DELAY, 0xFF, 0xFF});
+  std::atomic<bool> step_returned{false};
+  std::thread dap_thread(
+      [&]()
+      {
+        (void)f.dap.Step(1000);
+        step_returned.store(true);
+      });
+  TEST_ASSERT(WaitUntil([&]() { return f.swd.clock_calls.load() != 0U; }));
 
   // 延时挂起期间主机发来下一条命令：它被收下（USB 一侧不等待 DAP 线程），但不执行，
   // 也没有应答。
   // The host sends the next command while the delay is pending: it is received (the USB
   // side does not wait for the DAP thread) but not executed, and nothing answers.
   f.out.HostSends({INFO, PACKET_SIZE_ID});
+  TEST_ASSERT(!step_returned.load());
   dap_thread.join();
 
   // 延时响应先发；收到的命令在其之后应答。
@@ -603,11 +632,21 @@ void TestRebindDuringBatchThenDelay()
   f.dap.BindEndpoints(f.pool, 0, false);
   const uint8_t EXECUTE = static_cast<uint8_t>(CommandId::EXECUTE_COMMANDS);
 
-  // [EXECUTE, 2, DAP_Delay 20000 us, DAP_Info(PACKET_SIZE)].
-  f.out.HostSends({EXECUTE, 2, DELAY, 0x20, 0x4E, INFO, PACKET_SIZE_ID});
-  std::thread dap_thread([&f]() { (void)f.dap.Step(1000); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  // [EXECUTE, 2, DAP_Delay 65535 us, DAP_Info(PACKET_SIZE)]；解绑在 Step 开始执行这个批次
+  // 之后发出（见 TestUnbindWhileHoldingInSlot）。
+  // [EXECUTE, 2, DAP_Delay 65535 us, DAP_Info(PACKET_SIZE)]; the unbind goes in once Step
+  // has begun the batch (see TestUnbindWhileHoldingInSlot).
+  f.out.HostSends({EXECUTE, 2, DELAY, 0xFF, 0xFF, INFO, PACKET_SIZE_ID});
+  std::atomic<bool> step_returned{false};
+  std::thread dap_thread(
+      [&]()
+      {
+        (void)f.dap.Step(1000);
+        step_returned.store(true);
+      });
+  TEST_ASSERT(WaitUntil([&]() { return f.swd.clock_calls.load() != 0U; }));
   f.dap.UnbindEndpoints(f.pool, false);
+  TEST_ASSERT(!step_returned.load());
   dap_thread.join();
   // 未绑定期间应用循环继续 Step / the application's loop goes on stepping while unbound
   Run(f);

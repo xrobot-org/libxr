@@ -14,9 +14,11 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include "ep.hpp"
@@ -25,6 +27,26 @@
 
 namespace LibXR::USB::Test
 {
+/// 轮询到条件成立，最多 timeout_ms，返回条件的值。测试线程要等另一个线程到达某个状态时，
+/// 等的是那个状态本身，不用固定时长的睡眠：主机负载高时睡眠不够长，测试会漏掉它要覆盖的
+/// 路径，或者偶尔失败。
+/// Poll until the condition holds, for timeout_ms at most, and return the condition. A
+/// test thread that waits for another thread to reach a state waits for the state itself
+/// and not for a fixed sleep: on a loaded host the sleep is too short, and the test
+/// misses the path it wants to cover or fails now and then.
+template <typename Condition>
+bool WaitUntil(Condition condition, unsigned timeout_ms = 5000)
+{
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+  while (!condition())
+  {
+    if (std::chrono::steady_clock::now() >= deadline) return false;
+    std::this_thread::sleep_for(std::chrono::microseconds(50));
+  }
+  return true;
+}
+
 using Direction = Endpoint::Direction;
 using Number = Endpoint::EPNumber;
 using Type = Endpoint::Type;

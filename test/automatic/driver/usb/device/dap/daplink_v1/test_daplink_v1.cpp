@@ -13,6 +13,7 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -282,14 +283,27 @@ void TestNoStaleResponseAfterRebind()
   Fixture f;
   TestDap dap(Number::EP1, Number::EP2, swd);
   dap.BindEndpoints(f.pool, 0, false);
-  Run(dap);
 
-  // DAP_Delay 10000 us.
-  f.out.HostSends(Report({static_cast<uint8_t>(CommandId::DELAY), 0x10, 0x27}));
-  std::thread dap_thread([&dap]() { (void)dap.Step(1000); });
-  std::this_thread::sleep_for(std::chrono::milliseconds(3));
+  // 用最长的 DAP_Delay（65535 us），让解绑落在延时之内。会话的第一次 Step 在开始会话时
+  // 最后调用 SetClockHz，随后为响应借 IN 槽：等到这次调用就说明 Step 已持有这条命令。随后
+  // 检查 Step 尚未返回，所以错过这个窗口时测试失败，而不是悄悄少覆盖一条路径。
+  // The longest DAP_Delay, 65535 us, so that the unbind lands inside it. The first Step
+  // of a session ends the start of the session with SetClockHz and then borrows the IN
+  // slot for the response: waiting for that call means Step holds the command. The test
+  // then checks that Step had not returned, so a missed window is a failure and not a
+  // silent loss of coverage.
+  f.out.HostSends(Report({static_cast<uint8_t>(CommandId::DELAY), 0xFF, 0xFF}));
+  std::atomic<bool> step_returned{false};
+  std::thread dap_thread(
+      [&]()
+      {
+        (void)dap.Step(1000);
+        step_returned.store(true);
+      });
+  TEST_ASSERT(WaitUntil([&]() { return swd.clock_calls.load() != 0U; }));
   dap.UnbindEndpoints(f.pool, false);
   dap.BindEndpoints(f.pool, 0, false);
+  TEST_ASSERT(!step_returned.load());
   dap_thread.join();
   Run(dap);
   TEST_ASSERT(f.in.starts.empty());

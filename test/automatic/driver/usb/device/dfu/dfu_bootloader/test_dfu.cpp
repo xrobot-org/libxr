@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <thread>
@@ -26,6 +27,7 @@
 #include "dfu_bootloader.hpp"
 #include "dfu_runtime.hpp"
 #include "driver/usb/device/usb_device_test_common.hpp"
+#include "driver/usb/usb_test_common.hpp"
 #include "ep_pool.hpp"
 #include "flash.hpp"
 #include "test_assert.hpp"
@@ -153,28 +155,61 @@ void TestRuntimeDetach()
 /// from the status stage, has expired; no Timer task or class service is involved.
 void TestRuntimeJumpsFromProcess()
 {
-  g_jumps = 0;
-  TestRuntime rt(&JumpToBootloader, nullptr, 20u);
-  EndpointPool pool{2};
-  rt.BindEndpoints(pool, 3, false);
-  TestRuntime::ControlTransferResult result;
+  // 20 ms 的超时本身是被测内容，所以有两处要小心处理：
+  // - “超时从状态阶段开始”：DETACH 与状态阶段之间经过 30 ms（比超时长），Process() 不得
+  //   跳转。这里要的就是时间流逝，停得更久也不会破坏它。
+  // - “状态阶段刚结束时还没到期”：OnControlComplete 之后紧接着运行 Process()，不得跳转。
+  //   这只在两者之间线程没有被调度出去超过超时的情况下成立，而负载高的主机做得到这一点。
+  //   用单调时钟量这段间隔；达到 10 ms 时这次尝试说明不了类的行为，换一个新对象重来（最多
+  //   20 次；始终得不到一次干净的尝试时测试失败）。
+  // 跳转本身靠轮询 Process() 等到，不用固定时长的睡眠。
+  // The 20 ms timeout is part of what is tested, so two things are handled with care:
+  // - "The timeout starts at the status stage": 30 ms (more than the timeout) pass
+  //   between DETACH and the status stage, and Process() must not jump. Time passing is
+  //   the point here, and a longer pause cannot break it.
+  // - "Not expired right after the status stage": Process() runs a moment after
+  //   OnControlComplete and must not jump. That holds only if the thread was not
+  //   descheduled for longer than the timeout in between, which a loaded host can do. The
+  //   steady clock measures the gap; when it was 10 ms or more the attempt says nothing
+  //   about the class and is repeated with a fresh object (up to 20 times, and a test
+  //   that never gets a clean attempt fails).
+  // The jump itself is waited for by polling Process(), not by a fixed sleep.
+  bool clean = false;
+  for (unsigned attempt = 0; attempt < 20U && !clean; ++attempt)
+  {
+    g_jumps = 0;
+    TestRuntime rt(&JumpToBootloader, nullptr, 20u);
+    EndpointPool pool{2};
+    rt.BindEndpoints(pool, 3, false);
+    TestRuntime::ControlTransferResult result;
 
-  rt.Process();
-  TEST_ASSERT(g_jumps == 0);
-  TEST_ASSERT(rt.OnClassRequest(false, DFU_DETACH, 0, 0, 3, result) == ErrorCode::OK);
-  // 超时从状态阶段开始 / The timeout starts at the status stage.
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
-  rt.Process();
-  TEST_ASSERT(g_jumps == 0);
-  rt.OnControlComplete(false, SetupPacket{0x21, DFU_DETACH, 0, 3, 0});
-  rt.Process();
-  TEST_ASSERT(g_jumps == 0);
-  std::this_thread::sleep_for(std::chrono::milliseconds(30));
-  rt.Process();
-  TEST_ASSERT(g_jumps == 1);
-  // 跳转只发生一次 / The jump happens once.
-  rt.Process();
-  TEST_ASSERT(g_jumps == 1);
+    rt.Process();
+    TEST_ASSERT(g_jumps == 0);
+    TEST_ASSERT(rt.OnClassRequest(false, DFU_DETACH, 0, 0, 3, result) == ErrorCode::OK);
+    // 超时从状态阶段开始 / The timeout starts at the status stage.
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    rt.Process();
+    TEST_ASSERT(g_jumps == 0);
+    const auto begin = std::chrono::steady_clock::now();
+    rt.OnControlComplete(false, SetupPacket{0x21, DFU_DETACH, 0, 3, 0});
+    rt.Process();
+    const auto gap = std::chrono::steady_clock::now() - begin;
+    if (gap >= std::chrono::milliseconds(10)) continue;
+    clean = true;
+    TEST_ASSERT(g_jumps == 0);
+    // 超时到期后跳转 / The jump comes once the timeout has expired.
+    TEST_ASSERT(LibXR::USB::Test::WaitUntil(
+        [&]()
+        {
+          rt.Process();
+          return g_jumps != 0;
+        }));
+    TEST_ASSERT(g_jumps == 1);
+    // 跳转只发生一次 / The jump happens once.
+    rt.Process();
+    TEST_ASSERT(g_jumps == 1);
+  }
+  TEST_ASSERT(clean);
 }
 
 /// bootloader 类、其 RAM flash，以及为其提供服务池的组合

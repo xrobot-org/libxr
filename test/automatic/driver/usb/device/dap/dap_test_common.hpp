@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -30,6 +31,12 @@ class FakeSwd : public LibXR::Debug::Swd
   unsigned writes = 0;
   unsigned reads = 0;     ///< 读传输次数 / Read transfers.
   uint32_t clock_hz = 0;  ///< 最近一次 SetClockHz() 的值 / Last SetClockHz() value.
+  /// SetClockHz() 的次数，可以从另一个线程读。Step 线程开始一个会话时最后调用它，所以等到
+  /// 这次调用就知道 Step 已经开始执行手里的命令。
+  /// Calls of SetClockHz(), readable from another thread. The Step thread ends the start
+  /// of a session with one, so a test that waits for it knows that Step has begun the
+  /// command it holds.
+  std::atomic<unsigned> clock_calls{0};
   std::vector<std::thread::id> callers;  ///< 每次调用的线程 / Thread of every call.
   /// SeqWriteBits() 执行期间调用一次，随后清空；测试用它在命令执行中途插入动作
   /// Called once inside SeqWriteBits() and then cleared; a test uses it to act while a
@@ -40,6 +47,7 @@ class FakeSwd : public LibXR::Debug::Swd
   {
     Note();
     clock_hz = hz;
+    clock_calls.fetch_add(1);
     return ErrorCode::OK;
   }
   void Close() override
