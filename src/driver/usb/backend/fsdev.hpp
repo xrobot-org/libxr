@@ -55,13 +55,18 @@ namespace LibXR::USB
 /// 经典型与 DRD 一致的 STAT/DTOG 目标值 / STAT and DTOG targets shared by both
 /// variants (classic 16-bit layout)
 constexpr uint32_t kFsDevStatTxDis = 0x0000U;
-constexpr uint32_t kFsDevStatTxStall = 0x0010U;
-constexpr uint32_t kFsDevStatTxNak = 0x0020U;
-constexpr uint32_t kFsDevStatTxValid = 0x0030U;
-constexpr uint32_t kFsDevStatRxDis = 0x0000U;
-constexpr uint32_t kFsDevStatRxStall = 0x1000U;
-constexpr uint32_t kFsDevStatRxNak = 0x2000U;
-constexpr uint32_t kFsDevStatRxValid = 0x3000U;
+constexpr uint32_t kFsDevStatTxStall =
+    0x0010U;  ///< STAT_TX = STALL，回复 STALL 握手 / Reply STALL
+constexpr uint32_t kFsDevStatTxNak = 0x0020U;  ///< STAT_TX = NAK，回复 NAK / Reply NAK
+constexpr uint32_t kFsDevStatTxValid =
+    0x0030U;  ///< STAT_TX = VALID，发送数据 / Send data
+constexpr uint32_t kFsDevStatRxDis =
+    0x0000U;  ///< STAT_RX = DISABLED，不应答 / Ignore tokens
+constexpr uint32_t kFsDevStatRxStall =
+    0x1000U;  ///< STAT_RX = STALL，回复 STALL 握手 / Reply STALL
+constexpr uint32_t kFsDevStatRxNak = 0x2000U;  ///< STAT_RX = NAK，回复 NAK / Reply NAK
+constexpr uint32_t kFsDevStatRxValid =
+    0x3000U;  ///< STAT_RX = VALID，接收数据 / Accept data
 
 /// 清除本方向 CTR（写 0），另一方向 CTR 与 ERR 写 1 保持；STAT/DTOG 写 0 不翻转。
 /// Clears the direction's CTR (write 0) while keeping the other direction's CTR and
@@ -75,6 +80,9 @@ inline void FsDevClearCtrTx(uint8_t num)
   HW::WriteEp(num, (cur & HW::kEpKeepMask & ~kSelf) | kOther);
 }
 
+/// 清除接收方向 CTR（写 0），发送方向 CTR 与 ERR 写 1 保持；规则同 FsDevClearCtrTx。
+/// Clears the receive direction's CTR (write 0) while keeping the transmit direction's
+/// CTR and ERR (write 1); same rules as FsDevClearCtrTx.
 template <typename HW>
 inline void FsDevClearCtrRx(uint8_t num)
 {
@@ -122,6 +130,20 @@ template <typename HW>
 class FSDevEndpoint : public Endpoint
 {
  public:
+  /**
+   * @brief 构造端点并登记到所属设备的 IN/OUT 表 / Construct the endpoint and register it
+   * in the owning device's IN/OUT table
+   * @param device 所属设备 / Owning device
+   * @param number 端点号，须小于 HW::kEndpoints / Endpoint number, must be below
+   * HW::kEndpoints
+   * @param direction 端点方向 / Endpoint direction
+   * @param buffer 槽使用的内存 / Memory used by the slots
+   * @param pma_addr 该端点缓冲在 PMA 中的字节偏移 / Byte offset of the endpoint's buffer
+   * in the PMA
+   * @param pma_size 该端点 PMA 缓冲的字节数 / Size of the endpoint's PMA buffer in bytes
+   * @param slot_count 槽数量，0 为基类默认值 / Number of slots, 0 selects the base-class
+   * default
+   */
   FSDevEndpoint(FSDevDevice<HW>& device, EPNumber number, Direction direction,
                 RawData buffer, uint16_t pma_addr, size_t pma_size,
                 uint8_t slot_count = 0)
@@ -147,7 +169,11 @@ class FSDevEndpoint : public Endpoint
   ErrorCode StartHardware(const HwRequest& request, bool in_isr) override;
   StopResult StopHardware(bool in_isr) override;
   size_t ReapProgress(const HwRequest& request, bool& retired) override;
+  /// 把本方向 STAT 置为 STALL / Set this direction's STAT to STALL
   ErrorCode StallHardware(bool in_isr) override;
+  /// 清 STALL：EP0 无操作（下一个 SETUP 清除），其余端点复位 DATA0 并置 NAK / Clear
+  /// STALL: a no-op on EP0 (the next SETUP clears it); other endpoints reset DATA0 and
+  /// go to NAK
   ErrorCode ClearStallHardware(bool in_isr) override;
   size_t MaxPacketSizeLimit(Type type) const override;
 
@@ -208,13 +234,31 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
   /// bytes
   struct EPConfig
   {
-    RawData buffer;
-    size_t pma_size;
+    RawData buffer;   ///< 槽使用的内存 / Memory used by the slots
+    size_t pma_size;  ///< 该端点 PMA 缓冲字节数，须按 HW::kPmaAlign 对齐 / PMA buffer
+                      ///< size in bytes, must be a multiple of HW::kPmaAlign
   };
 
   /**
+   * @brief 构造设备、分配 PMA 并创建全部端点 / Construct the device, lay out the PMA and
+   * create every endpoint
+   * @param rx_ep_cfgs OUT 端点配置，第 i 项对应 EP i，EP0 必须提供，不超过 HW::kEndpoints
+   * / OUT endpoint configs, entry i is EP i, EP0 is mandatory, at most HW::kEndpoints
+   * @param tx_ep_cfgs IN 端点配置，第 i 项对应 EP i，EP0 必须提供，不超过 HW::kEndpoints
+   * / IN endpoint configs, entry i is EP i, EP0 is mandatory, at most HW::kEndpoints
+   * @param packet_size 端点 0 最大包长 / EP0 max packet size
+   * @param vid 厂商 ID / Vendor ID
+   * @param pid 产品 ID / Product ID
+   * @param bcd 设备版本号（bcdDevice）/ Device release number (bcdDevice)
+   * @param lang_list 字符串描述符语言包列表 / String descriptor language packs
+   * @param configs 每个 configuration 的 class/描述符项列表 / Class and descriptor items
+   * of each configuration
+   * @param uid 可选的唯一标识字节，作为序列号字符串的后缀 / Optional unique ID bytes
+   * used as the suffix of the serial-number string
    * @param pma_limit PMA 可用字节（构造期断言）；0 = 全部 / Usable PMA bytes
    *                  (asserted at construction); 0 = all of it
+   * @param slot_count 每个端点的槽数量，0 为基类默认值 / Number of slots per endpoint, 0
+   * selects the base-class default
    */
   FSDevDevice(
       const std::initializer_list<EPConfig>& rx_ep_cfgs,
@@ -332,6 +376,8 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     }
   }
 
+  /// 打开 CTR/RESET/SUSP/WKUP 与 SOF 中断并最后接通上拉 / Enable the CTR, RESET, SUSP,
+  /// WKUP and SOF interrupts, then connect the pull-up last
   void Start(bool in_isr) override
   {
     UNUSED(in_isr);
@@ -356,6 +402,8 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     }
   }
 
+  /// 先断开上拉再关闭上述中断 / Disconnect the pull-up first, then disable those
+  /// interrupts
   void Stop(bool in_isr) override
   {
     UNUSED(in_isr);
@@ -371,6 +419,8 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     // flight never arrive, and the next unbind or reset ends them.
   }
 
+  /// 仅在状态阶段 IN 完成时写 DADDR（EF | address）/ Write DADDR (EF | address) only
+  /// when the status-stage IN has completed
   ErrorCode SetAddress(uint8_t address, ControlContext context) override
   {
     // 经典型在状态阶段 IN 完成后写 DADDR（RM0008 §23.4.5）。
@@ -384,6 +434,8 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     return ErrorCode::OK;
   }
 
+  /// 复位已被 owner 应用，不再丢弃端点事件 / The reset has been applied by the owner, so
+  /// endpoint events are no longer discarded
   void OnControllerReset() override { discard_ = false; }
 
   void OnStopsSettled() override
@@ -414,6 +466,7 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     HW::WriteCntr(cntr);
   }
 
+  /// 本控制器只支持全速 / This controller is full-speed only
   Speed ReadBusSpeed() const override { return Speed::FULL; }
 
   /// 中断入口（STM32 wrap 或 CH32 共享中断） / Interrupt entry (STM32 wrap or the
@@ -430,25 +483,40 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
   }
 
  protected:
+  /// 支持的最大端点号数量 / Maximum number of endpoint numbers supported
   static constexpr uint8_t kMaxEps = 8;
 
   template <typename U>
   friend class FSDevEndpoint;
 
+  /// 读 ISTR 并按 RESET、CTR、SOF、SUSP、WKUP、噪声的顺序处理 / Read ISTR and handle
+  /// RESET, CTR, SOF, SUSP, WKUP and noise in that order
   void HandleInterrupt();
+  /// 循环（最多 8 轮）处理 CTR 事件 / Handle CTR events in a loop (at most 8 passes)
   void HandleCtr();
+  /// 处理端点 num 的 CTR_TX/CTR_RX；EP0 的 SETUP 交给核心 / Handle CTR_TX/CTR_RX of
+  /// endpoint num; a SETUP on EP0 goes to the core
   void HandleEp(uint8_t num);
+  /// 总线复位：地址归零、恢复 EP0 接收并通知核心 / Bus reset: clear the address, restore
+  /// EP0 reception and notify the core
   void OnBusResetRegs();
+  /// 把 FNR 的 11 位帧号交给核心 / Pass the 11-bit frame number from FNR to the core
   void HandleSof();
 
+  /// 按端点号索引的 IN 端点 / IN endpoints by number
   FSDevEndpoint<HW>* in_[kMaxEps] = {};
+  /// 按端点号索引的 OUT 端点 / OUT endpoints by number
   FSDevEndpoint<HW>* out_[kMaxEps] = {};
+  /// 使用的端点号数量（RX/TX 列表较长者）/ Endpoint numbers in use (the longer of the
+  /// RX/TX lists)
   uint8_t endpoint_count_ = 1;
   bool connected_ = false;  ///< Start/Stop：设备是否属于总线 / Whether the device
                             ///< belongs on the bus
   bool discard_ = false;    ///< 复位已见、owner 未应用 / Reset seen, not yet applied
+  /// SETUP 包暂存 / SETUP packet staging
   alignas(4) uint8_t setup_[8] = {};
 
+  /// 唯一实例，Dispatch 的入口 / The single instance, entry of Dispatch
   static inline FSDevDevice* self_ = nullptr;
 };
 

@@ -48,17 +48,18 @@ class GsUsbClass : public DeviceClass
 {
  public:
   static_assert(CanChNum > 0 && CanChNum <= 255, "CanChNum must be in (0, 255]");
+  /// CAN 通道数 / Number of CAN channels
   static constexpr uint8_t CAN_CH_NUM = static_cast<uint8_t>(CanChNum);
-  // GS USB 功能的默认接口字符串。
-  // Default interface string for the GS USB function.
+  /// GS USB 功能的默认接口字符串。
+  /// Default interface string for the GS USB function.
   static constexpr const char* DEFAULT_INTERFACE_STRING = "XRUSB GS USB";
 
-  // SET_USER_ID 落库周期（暂定 100 ms）。
-  // USER_ID write-back period (tentatively 100 ms).
+  /// SET_USER_ID 落库周期（暂定 100 ms）。
+  /// USER_ID write-back period (tentatively 100 ms).
   static constexpr uint32_t USER_ID_WRITE_PERIOD_MS = 100;
 
-  // 每通道错误帧队列容量。
-  // Per-channel error-frame queue capacity.
+  /// 每通道错误帧队列容量。
+  /// Per-channel error-frame queue capacity.
   static constexpr std::size_t ERR_QUEUE_SIZE = 8;
 
  private:

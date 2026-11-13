@@ -12,6 +12,8 @@
 
 namespace LibXR
 {
+/// 设备核心类型：带 OTG HS 的器件按高速能力实例化，否则按全速 / Device core type:
+/// high-speed capabilities on parts with OTG HS, full-speed otherwise
 #if defined(USB_OTG_HS)
 using STM32USBDeviceCore = USB::DeviceCore<USB::HighSpeedCapabilities>;
 #else
@@ -62,10 +64,10 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   /// 控制器配置 / Controller configuration
   struct HardwareConfig
   {
-    Phy phy = Phy::EMBEDDED_FS;
-    bool dma = false;           ///< 使用 core 内部 DMA / Use the core's internal DMA
-    bool vbus_sensing = false;  ///< VBUS 检测 / VBUS sensing
-    bool high_speed = false;    ///< 以高速枚举（需高速 PHY）/ Enumerate at high speed
+    Phy phy = Phy::EMBEDDED_FS;  ///< PHY 接口 / PHY interface
+    bool dma = false;            ///< 使用 core 内部 DMA / Use the core's internal DMA
+    bool vbus_sensing = false;   ///< VBUS 检测 / VBUS sensing
+    bool high_speed = false;     ///< 以高速枚举（需高速 PHY）/ Enumerate at high speed
     /// DMA 时 EP0 OUT 的驱动缓冲区：≥ 64 B，32 字节对齐，DMA 可达 / The EP0 OUT buffer of
     /// the driver with DMA: ≥ 64 B, 32-byte aligned, reachable by DMA
     RawData ep0_dma_buffer{nullptr, 0};
@@ -74,8 +76,9 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   /// IN 端点：槽内存与 TX FIFO 字节数 / IN endpoint: slot memory and TX FIFO bytes
   struct EPInConfig
   {
-    RawData buffer;
-    size_t fifo_size;
+    RawData buffer;    ///< 该端点的槽内存 / Slot memory of the endpoint
+    size_t fifo_size;  ///< TX FIFO 字节数，至少 8 且为 4 的倍数 / TX FIFO bytes, at least
+                       ///< 8 and a multiple of 4
   };
 
   /// 中断入口：控制器 core 的中断 / Interrupt entry for the controller core
@@ -83,10 +86,39 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
 
   void Init(bool in_isr) override { STM32USBDeviceCore::Init(in_isr); }
   void Deinit(bool in_isr) override { STM32USBDeviceCore::Deinit(in_isr); }
+  /// 使能中断并连接总线 / Enable interrupts and connect to the bus
   void Start(bool in_isr) override;
+  /// 断开总线、关闭中断，并确认所有等待中的端点停止 / Disconnect from the bus, disable
+  /// interrupts and confirm every waiting endpoint stop
   void Stop(bool in_isr) override;
 
  protected:
+  /**
+   * @brief 构造并初始化 OTG core 与全部端点 / Construct and initialize the OTG core and
+   *        all endpoints
+   * @param index core 编号（小于 2）/ Core index (below 2)
+   * @param core OTG core 寄存器 / OTG core registers
+   * @param endpoint_count core 的端点数（不超过 16）/ Endpoint count of the core (at most
+   *        16)
+   * @param total_fifo core 的 FIFO RAM 总字节数 / Total FIFO RAM of the core in bytes
+   * @param hw 控制器配置 / Controller configuration
+   * @param rx_fifo_size 共享 RX FIFO 字节数，为 4 的倍数且不小于 64 乘以 OUT 端点数 /
+   *        Shared RX FIFO bytes, a multiple of 4 and at least 64 times the OUT endpoint
+   *        count
+   * @param rx_ep_cfgs 各 OUT 端点的槽内存，第一项属于 EP0 / Slot memory of each OUT
+   *        endpoint, the first entry belongs to EP0
+   * @param tx_ep_cfgs 各 IN 端点的配置，第一项属于 EP0；RX 与全部 TX FIFO 之和不得超过
+   *        total_fifo / Configuration of each IN endpoint, the first entry belongs to
+   * EP0; the RX and all TX FIFOs together must fit in total_fifo
+   * @param packet_size EP0 最大包长 / EP0 maximum packet size
+   * @param vid 厂商 ID / Vendor ID
+   * @param pid 产品 ID / Product ID
+   * @param bcd 设备版本（bcdDevice）/ Device release number (bcdDevice)
+   * @param lang_list 字符串描述符的语言包列表 / Language packs of the string descriptors
+   * @param configs 各配置的描述符项列表 / Descriptor items of each configuration
+   * @param uid 设备唯一 ID，用于序列号字符串，可为空 / Unique device ID used for the
+   * serial number string, may be empty
+   */
   STM32USBOtgDevice(
       uint8_t index, USB_OTG_GlobalTypeDef* core, uint8_t endpoint_count,
       size_t total_fifo, const HardwareConfig& hw, size_t rx_fifo_size,
@@ -99,11 +131,15 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
           const std::initializer_list<USB::ConfigDescriptorItem*>>& configs,
       ConstRawData uid);
 
+  /// 在状态阶段之前把设备地址写入 DCFG / Write the device address to DCFG before the
+  /// status stage
   ErrorCode SetAddress(uint8_t address, USB::ControlContext context) override;
   void OnControllerReset() override;
+  /// 重新装填 EP0 OUT 以接收下一个 SETUP / Re-arm EP0 OUT to receive the next SETUP
   void OnControlReady() override;
   void OnStopTimeout(bool in_isr) override;
   void OnStopsSettled() override;
+  /// 返回枚举完成后记录的总线速度 / Return the bus speed recorded at enumeration
   USB::Speed ReadBusSpeed() const override;
 
  private:
@@ -182,6 +218,12 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
 class STM32OtgEndpoint : public USB::Endpoint
 {
  public:
+  /// @param device 所属 OTG 设备 / Owning OTG device
+  /// @param number 端点号 / Endpoint number
+  /// @param direction 端点方向 / Endpoint direction
+  /// @param fifo_size FIFO 字节数（OUT 为共享 RX FIFO 大小）/ FIFO bytes (the shared RX
+  /// FIFO size for OUT)
+  /// @param buffer 该端点的槽内存 / Slot memory of the endpoint
   STM32OtgEndpoint(STM32USBOtgDevice& device, EPNumber number, Direction direction,
                    size_t fifo_size, RawData buffer);
 
@@ -191,7 +233,11 @@ class STM32OtgEndpoint : public USB::Endpoint
   ErrorCode StartHardware(const HwRequest& request, bool in_isr) override;
   StopResult StopHardware(bool in_isr) override;
   size_t ReapProgress(const HwRequest& request, bool& retired) override;
+  /// 置位 STALL（EP0 OUT 在 DMA 下同时重新装填 SETUP）/ Set STALL (with DMA, EP0 OUT
+  /// also re-arms SETUP)
   ErrorCode StallHardware(bool in_isr) override;
+  /// 清除 STALL；EP0 的 STALL 由下一个 SETUP 清除，批量/中断端点复位为 DATA0 / Clear
+  /// STALL; the next SETUP clears an EP0 STALL, bulk/interrupt endpoints reset to DATA0
   ErrorCode ClearStallHardware(bool in_isr) override;
   size_t MaxPacketSizeLimit(Type type) const override;
 
@@ -245,6 +291,23 @@ class STM32OtgEndpoint : public USB::Endpoint
 class STM32USBDeviceOtgFS : public STM32USBOtgDevice
 {
  public:
+  /**
+   * @brief 构造 OTG FS 设备并初始化 core / Construct the OTG FS device and initialize the
+   * core
+   * @param hw 控制器配置 / Controller configuration
+   * @param rx_fifo_size 共享 RX FIFO 字节数 / Shared RX FIFO bytes
+   * @param RX_EP_CFGS 各 OUT 端点的槽内存，第一项属于 EP0 / Slot memory of each OUT
+   *        endpoint, the first entry belongs to EP0
+   * @param TX_EP_CFGS 各 IN 端点的配置，第一项属于 EP0 / Configuration of each IN
+   *        endpoint, the first entry belongs to EP0
+   * @param packet_size EP0 最大包长 / EP0 maximum packet size
+   * @param vid 厂商 ID / Vendor ID
+   * @param pid 产品 ID / Product ID
+   * @param bcd 设备版本（bcdDevice）/ Device release number (bcdDevice)
+   * @param LANG_LIST 字符串描述符的语言包列表 / Language packs of the string descriptors
+   * @param CONFIGS 各配置的描述符项列表 / Descriptor items of each configuration
+   * @param uid 设备唯一 ID，可为空 / Unique device ID, may be empty
+   */
   STM32USBDeviceOtgFS(
       const HardwareConfig& hw, size_t rx_fifo_size,
       const std::initializer_list<RawData> RX_EP_CFGS,
@@ -265,6 +328,23 @@ class STM32USBDeviceOtgFS : public STM32USBOtgDevice
 class STM32USBDeviceOtgHS : public STM32USBOtgDevice
 {
  public:
+  /**
+   * @brief 构造 OTG HS 设备并初始化 core / Construct the OTG HS device and initialize the
+   * core
+   * @param hw 控制器配置 / Controller configuration
+   * @param rx_fifo_size 共享 RX FIFO 字节数 / Shared RX FIFO bytes
+   * @param RX_EP_CFGS 各 OUT 端点的槽内存，第一项属于 EP0 / Slot memory of each OUT
+   *        endpoint, the first entry belongs to EP0
+   * @param TX_EP_CFGS 各 IN 端点的配置，第一项属于 EP0 / Configuration of each IN
+   *        endpoint, the first entry belongs to EP0
+   * @param packet_size EP0 最大包长 / EP0 maximum packet size
+   * @param vid 厂商 ID / Vendor ID
+   * @param pid 产品 ID / Product ID
+   * @param bcd 设备版本（bcdDevice）/ Device release number (bcdDevice)
+   * @param LANG_LIST 字符串描述符的语言包列表 / Language packs of the string descriptors
+   * @param CONFIGS 各配置的描述符项列表 / Descriptor items of each configuration
+   * @param uid 设备唯一 ID，可为空 / Unique device ID, may be empty
+   */
   STM32USBDeviceOtgHS(
       const HardwareConfig& hw, size_t rx_fifo_size,
       const std::initializer_list<RawData> RX_EP_CFGS,

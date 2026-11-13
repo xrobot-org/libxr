@@ -15,7 +15,11 @@ namespace LibXR::USB
 class DfuBootloaderBackend
 {
  public:
+  /// 跳转到应用的回调，参数为 jump_app_ctx / Callback that jumps to the application;
+  /// its argument is jump_app_ctx
   using JumpCallback = void (*)(void*);
+  /// seal 记录的魔数（ASCII "SEAL" 小端）/ Magic of the seal record (ASCII "SEAL",
+  /// little-endian)
   static constexpr uint32_t SEAL_MAGIC = 0x4C414553u;  // "SEAL"
 
   LIBXR_PACKED_BEGIN
@@ -24,10 +28,11 @@ class DfuBootloaderBackend
    */
   struct SealRecord
   {
-    uint32_t magic = SEAL_MAGIC;
-    uint32_t image_size = 0u;
-    uint32_t crc32 = 0u;
-    uint32_t crc32_inv = 0u;
+    uint32_t magic = SEAL_MAGIC;  ///< 固定为 SEAL_MAGIC / Always SEAL_MAGIC
+    uint32_t image_size = 0u;     ///< 镜像字节数 / Image size in bytes
+    uint32_t crc32 = 0u;          ///< 镜像的 CRC32 / CRC32 of the image
+    uint32_t crc32_inv = 0u;      ///< crc32 的按位取反，用于自检 / Bitwise inverse of
+                                  ///< crc32, used as a self-check
   };
   LIBXR_PACKED_END
 
@@ -39,6 +44,21 @@ class DfuBootloaderBackend
   // - own download/upload/manifest bookkeeping
   // - drive flash erase/write/read through the Flash base interface
   // - maintain image validity and seal metadata
+  /**
+   * @brief 构造后端并探测已存储的镜像 / Construct the backend and probe the stored image
+   *
+   * @param flash 承载镜像与 seal 的 Flash / Flash that holds the image and the seal
+   * @param image_offset 镜像区在 Flash 内的起始偏移 / Start offset of the image region in
+   * the flash
+   * @param image_size_limit 镜像区总字节数（含 seal）/ Total bytes of the image region,
+   * seal included
+   * @param seal_offset seal 记录相对镜像区起点的偏移，也是 payload 上限 / Offset of the
+   * seal record from the image start, which is also the payload limit
+   * @param jump_to_app 启动应用的回调 / Application launch callback
+   * @param jump_app_ctx 传给回调的参数 / Argument passed to the callback
+   * @param autorun manifest 完成并复位后是否自动请求启动应用 / Whether to request an app
+   * launch automatically once manifestation completes and the device resets
+   */
   DfuBootloaderBackend(Flash& flash, size_t image_offset, size_t image_size_limit,
                        size_t seal_offset, JumpCallback jump_to_app,
                        void* jump_app_ctx = nullptr, bool autorun = true)
@@ -110,6 +130,8 @@ class DfuBootloaderBackend
     return caps;
   }
 
+  /// 仅支持 alt 0，其余返回 NOT_SUPPORT / Only alternate 0 is supported; others return
+  /// NOT_SUPPORT
   ErrorCode DfuSetAlternate(uint8_t alt)
   {
     return (alt == 0u) ? ErrorCode::OK : ErrorCode::NOT_SUPPORT;
@@ -130,6 +152,24 @@ class DfuBootloaderBackend
    */
   void DfuClearStatus(uint8_t alt) { DfuAbort(alt); }
 
+  /**
+   * @brief 接收一个 DNLOAD 数据块并暂存为待执行的写入
+   *        Accept one DNLOAD block and stage it as a pending write
+   *
+   * 数据只拷入内部缓冲，真正的擦写在 RunPendingWork() 中完成。block 0 开启新会话，
+   * 之后块号必须连续，累计字节不得越过 seal 之前的 payload 区。
+   * The data is only copied into an internal buffer; erase and program happen in
+   * RunPendingWork(). Block 0 starts a new session, later block numbers must be
+   * consecutive, and the total must not run past the payload area before the seal.
+   *
+   * @param alt 备用设置号 / Alternate setting
+   * @param block_num DFU 块号 / DFU block number
+   * @param data 块数据，长度不得超过传输大小 / Block data; must not exceed the transfer
+   * size
+   * @param poll_timeout_ms 输出：主机应等待的轮询时间（毫秒）/ Output: poll timeout the
+   * host should wait, in milliseconds
+   * @return DFU 状态码；OK 表示已接受 / DFU status code; OK means accepted
+   */
   DFUStatusCode DfuDownload(uint8_t alt, uint16_t block_num, ConstRawData data,
                             uint32_t& poll_timeout_ms)
   {
@@ -195,6 +235,15 @@ class DfuBootloaderBackend
     return DFUStatusCode::OK;
   }
 
+  /**
+   * @brief 查询 DNLOAD 写入的异步状态 / Query the async status of the DNLOAD write
+   *
+   * @param alt 备用设置号 / Alternate setting
+   * @param busy 输出：写入是否仍在进行 / Output: whether a write is still pending
+   * @param poll_timeout_ms 输出：busy 时的剩余等待时间（毫秒），否则为 0 / Output:
+   * remaining wait in milliseconds while busy, else 0
+   * @return 最近一次写入的状态码 / Status code of the latest write
+   */
   DFUStatusCode DfuGetDownloadStatus(uint8_t alt, bool& busy, uint32_t& poll_timeout_ms)
   {
     if (alt != 0u)
@@ -208,6 +257,23 @@ class DfuBootloaderBackend
     return download_.last_status;
   }
 
+  /**
+   * @brief 处理 UPLOAD 请求，从 Flash 读回已存储的镜像
+   *        Handle an UPLOAD request by reading the stored image back from flash
+   *
+   * block 0 开启新会话并锁定当前镜像大小，之后块号必须连续；没有有效镜像时返回
+   * ERR_FIRMWARE。
+   * Block 0 starts a new session and latches the current image size; later block numbers
+   * must be consecutive. Without a valid image ERR_FIRMWARE is returned.
+   *
+   * @param alt 备用设置号 / Alternate setting
+   * @param block_num DFU 块号 / DFU block number
+   * @param data 输出缓冲区 / Output buffer
+   * @param status 输出：DFU 状态码 / Output: DFU status code
+   * @param poll_timeout_ms 输出：轮询时间，恒为 0 / Output: poll timeout, always 0
+   * @return 写入 data 的字节数；0 表示结束或出错 / Bytes written into data; 0 means end
+   * of image or an error
+   */
   size_t DfuUpload(uint8_t alt, uint16_t block_num, RawData data, DFUStatusCode& status,
                    uint32_t& poll_timeout_ms)
   {
@@ -321,8 +387,12 @@ class DfuBootloaderBackend
   // DFUClass::Process() 的调用者上下文里执行。
   // Owner context only: commit the result of finished work. Erase, program and verify
   // run in RunPendingWork(), in the context that calls DFUClass::Process().
+  /// 提交已完成工作的结果，仅 owner 上下文 / Commit the result of finished work; owner
+  /// context only
   void Process() { CommitWorkResult(); }
 
+  /// 把已暂存（STAGED）的工作放行为可执行（READY），供 RunPendingWork() 取走 / Release
+  /// staged work as ready so that RunPendingWork() can take it
   void AllowPendingWork()
   {
     uint32_t expected = STAGED;
@@ -330,6 +400,13 @@ class DfuBootloaderBackend
                                              std::memory_order_relaxed);
   }
 
+  /**
+   * @brief 执行已放行的擦写或 manifest 校验 / Run the released erase/program or
+   * manifest verify
+   *
+   * @return 本次是否取到并执行了工作；没有 READY 的工作时为 false / Whether work was
+   * taken and run; false when nothing is READY
+   */
   bool RunPendingWork()
   {
     uint32_t expected = READY;
@@ -373,6 +450,9 @@ class DfuBootloaderBackend
     return true;
   }
 
+  /// 把 DONE 状态的工作结果写入下载/manifest 状态并释放工作槽；被取消的工作只释放不提交
+  /// / Fold a DONE job into the download/manifest state and free the job slot; a
+  /// cancelled job is freed without committing
   void CommitWorkResult()
   {
     const uint32_t state = job_state_.load(std::memory_order_acquire);
@@ -410,6 +490,8 @@ class DfuBootloaderBackend
     job_state_.store(EMPTY, std::memory_order_release);
   }
 
+  /// 请求启动应用；有未完成工作或没有有效镜像时拒绝并返回 false / Request an app launch;
+  /// refused (false) while work is pending or no valid image exists
   bool TryRequestRunApp()
   {
     if (HasPendingWork() || published_image_size_.load(std::memory_order_acquire) == 0U)
@@ -418,12 +500,19 @@ class DfuBootloaderBackend
     return true;
   }
 
+  /// manifest 完成并等待复位时调用；autorun 开启且镜像有效则登记启动请求 / Called when
+  /// manifestation completes and the device waits for reset; records a launch request
+  /// when autorun is on and the image is valid
   void DfuCommitManifestWaitReset(uint8_t alt)
   {
     if (alt == 0U && autorun_ && HasValidImage())
       launch_request_.store(1U, std::memory_order_release);
   }
 
+  /// 若有启动请求且无未完成工作、镜像有效，则消费请求并调用 jump_to_app，返回 true；
+  /// 参数（当前时间）未使用 / Consume a launch request and call jump_to_app when one is
+  /// pending, no work is pending and the image is valid; returns true then. The argument
+  /// (current time) is unused
   bool TryConsumeAppLaunch(uint32_t)
   {
     if (HasPendingWork() || !HasValidImage() ||
@@ -433,12 +522,17 @@ class DfuBootloaderBackend
     return true;
   }
 
+  /// 是否有尚未被 CommitWorkResult 取走的工作 / Whether a job has not yet been collected
+  /// by CommitWorkResult
   bool HasPendingWork() const
   {
     return job_state_.load(std::memory_order_acquire) != EMPTY;
   }
 
+  /// 是否已有通过 manifest 校验的镜像 / Whether a manifest-verified image is stored
   bool HasValidImage() const { return ImageSize() != 0U; }
+  /// 已发布的镜像字节数，没有有效镜像时为 0；可跨上下文读取 / Published image size in
+  /// bytes, 0 without a valid image; readable from any context
   size_t ImageSize() const
   {
     return published_image_size_.load(std::memory_order_acquire);
@@ -845,12 +939,15 @@ class DFUClass : public DfuInterfaceClassBase
    */
   struct FunctionalDescriptor
   {
-    uint8_t bLength = 9;
-    uint8_t bDescriptorType = 0x21;
-    uint8_t bmAttributes = 0;
-    uint16_t wDetachTimeOut = 0;
-    uint16_t wTransferSize = 0;
-    uint16_t bcdDFUVersion = DFU_VERSION;
+    uint8_t bLength = 9;             ///< 描述符长度 / Descriptor length
+    uint8_t bDescriptorType = 0x21;  ///< DFU 功能描述符类型 / DFU functional descriptor
+                                     ///< type
+    uint8_t bmAttributes = 0;        ///< 能力位图 / Capability bitmap
+    uint16_t wDetachTimeOut = 0;     ///< DETACH 后等待复位的毫秒数 / Milliseconds to wait
+                                     ///< for reset after DETACH
+    uint16_t wTransferSize = 0;  ///< 单次控制传输的最大字节数 / Maximum bytes per control
+                                 ///< transfer
+    uint16_t bcdDFUVersion = DFU_VERSION;  ///< DFU 规范版本 / DFU specification version
   };
 
   /**
@@ -858,11 +955,14 @@ class DFUClass : public DfuInterfaceClassBase
    */
   struct StatusResponse
   {
-    uint8_t bStatus = 0;
-    uint8_t bwPollTimeout[3] = {0, 0, 0};
-    uint8_t bState = 0;
-    uint8_t iString = 0;
+    uint8_t bStatus = 0;                   ///< 状态码 / Status code
+    uint8_t bwPollTimeout[3] = {0, 0, 0};  ///< 轮询超时（毫秒，24 位小端）/ Poll timeout
+                                           ///< in milliseconds, 24-bit little-endian
+    uint8_t bState = 0;                    ///< 当前 DFU 状态 / Current DFU state
+    uint8_t iString = 0;  ///< 字符串索引，0 为无 / String index, 0 = none
 
+    /// 把毫秒值的低 24 位写入 bwPollTimeout / Store the low 24 bits of a millisecond
+    /// value into bwPollTimeout
     void SetPollTimeout(uint32_t timeout_ms)
     {
       bwPollTimeout[0] = static_cast<uint8_t>(timeout_ms & 0xFFu);
@@ -885,8 +985,9 @@ class DFUClass : public DfuInterfaceClassBase
         INTERFACE_CLASS,
         INTERFACE_SUB_CLASS,
         INTERFACE_PROTOCOL,
-        0};
-    FunctionalDescriptor func_desc = {};
+        0};  ///< DFU 接口描述符（类 0xFE、子类 1、协议 2）/ DFU interface descriptor
+             ///< (class 0xFE, subclass 1, protocol 2)
+    FunctionalDescriptor func_desc = {};  ///< DFU 功能描述符 / DFU functional descriptor
   };
   LIBXR_PACKED_END
 
@@ -895,7 +996,10 @@ class DFUClass : public DfuInterfaceClassBase
   static_assert(sizeof(StatusResponse) == 6, "DFU status response size mismatch.");
 
  public:
+  /// 默认接口字符串 / Default interface string
   static constexpr const char* DEFAULT_INTERFACE_STRING = "XRUSB DFU";
+  /// 默认的 WinUSB 设备接口 GUID，取自基类 / Default WinUSB device interface GUID, taken
+  /// from the base class
   static constexpr const char* DEFAULT_WINUSB_DEVICE_INTERFACE_GUID =
       DfuInterfaceClassBase::DEFAULT_WINUSB_DEVICE_INTERFACE_GUID;
 
@@ -950,11 +1054,17 @@ class DFUClass : public DfuInterfaceClassBase
     if (backend_.RunPendingWork()) this->RequestClassService(false);
   }
 
+  /// 在 owner 中提交后端已完成的工作结果 / Commit the finished backend work in the owner
   void OnService(bool) override { backend_.CommitWorkResult(); }
 
+  /// 控制 OUT 数据阶段的接收容量，等于 MAX_TRANSFER_SIZE / Control OUT data-stage receive
+  /// capacity, equal to MAX_TRANSFER_SIZE
   size_t GetControlReceiveCapacity() const override { return MAX_TRANSFER_SIZE; }
 
  protected:
+  /// 发布单接口描述符并校验后端能力；不使用任何端点，只占 start_itf_num 这一个接口号 /
+  /// Publish the single interface descriptor and validate the backend capabilities; no
+  /// endpoint is used, only the interface number start_itf_num
   void BindEndpoints(EndpointPool&, uint8_t start_itf_num, bool) override
   {
     // 固件态 DFU 在绑定阶段发布单接口描述符，并校验 backend 能力。
@@ -989,6 +1099,8 @@ class DFUClass : public DfuInterfaceClassBase
     inited_ = true;
   }
 
+  /// 解绑：先让后端放弃当前会话，再复位协议状态 / Unbind: abort the backend session, then
+  /// reset the protocol state
   void UnbindEndpoints(EndpointPool&, bool) override
   {
     if (inited_)
@@ -1003,9 +1115,16 @@ class DFUClass : public DfuInterfaceClassBase
     ResetProtocolState();
   }
 
+  /// 固定占用 1 个接口 / Always occupies one interface
   size_t GetInterfaceCount() override { return 1u; }
+  /// 单接口，不需要 IAD / A single interface, no IAD needed
   bool HasIAD() override { return false; }
+  /// 配置描述符中本类占用的最大字节数 / Maximum bytes this class takes in the
+  /// configuration descriptor
   size_t GetMaxConfigSize() override { return sizeof(desc_block_); }
+  /// 把设备描述符的类/子类/协议设为 Application Specific（DFU 子类 1、协议 2）/ Set
+  /// the device descriptor class/subclass/protocol to Application Specific (DFU
+  /// subclass 1, protocol 2)
   ErrorCode WriteDeviceDescriptor(DeviceDescriptor& header) override
   {
     header.data_.bDeviceClass = DeviceDescriptor::ClassID::APPLICATION_SPECIFIC;
@@ -1014,6 +1133,15 @@ class DFUClass : public DfuInterfaceClassBase
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief 切换备用设置 / Switch the alternate setting
+   *
+   * @param itf 接口号 / Interface number
+   * @param alt 备用设置号；仅支持 0 / Alternate setting; only 0 is supported
+   * @return OK；接口号不符为 NOT_FOUND，alt 非 0 为 NOT_SUPPORT，DNBUSY/MANIFEST 阶段为
+   * BUSY / OK; NOT_FOUND for a wrong interface, NOT_SUPPORT for a non-zero alt, BUSY
+   * while in DNBUSY/MANIFEST phases
+   */
   ErrorCode SetAltSetting(uint8_t itf, uint8_t alt) override
   {
     if (itf != interface_num_)
@@ -1044,6 +1172,8 @@ class DFUClass : public DfuInterfaceClassBase
     return ErrorCode::OK;
   }
 
+  /// 读取当前备用设置；接口号不符返回 NOT_FOUND / Read the current alternate setting;
+  /// NOT_FOUND for a wrong interface number
   ErrorCode GetAltSetting(uint8_t itf, uint8_t& alt) override
   {
     if (itf != interface_num_)
@@ -1054,6 +1184,9 @@ class DFUClass : public DfuInterfaceClassBase
     return ErrorCode::OK;
   }
 
+  /// 响应 DFU 功能描述符（类型 0x21）的 GET_DESCRIPTOR，其余类型返回 NOT_SUPPORT /
+  /// Answer GET_DESCRIPTOR for the DFU functional descriptor (type 0x21); other types
+  /// return NOT_SUPPORT
   ErrorCode OnGetDescriptor(bool, uint8_t, uint16_t wValue, uint16_t,
                             ConstRawData& out_data) override
   {
@@ -1068,6 +1201,24 @@ class DFUClass : public DfuInterfaceClassBase
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief 校验 DFU 类请求的方向、接收者与长度，并处理忙状态
+   *        Validate direction, recipient and length of a DFU class request and handle
+   *        the busy states
+   *
+   * 非 Class 请求交给基类。方向（UPLOAD/GETSTATUS/GETSTATE 为 IN）、接收者（接口）或
+   * GETSTATUS/GETSTATE 的 wLength 不符返回 ARG_ERR；DNBUSY/MANIFEST 期间除 GETSTATUS
+   * 外的请求被 STALL，其余转给 OnClassRequest。
+   * Non-class requests go to the base class. A wrong direction (UPLOAD, GETSTATUS and
+   * GETSTATE are IN), recipient (interface) or GETSTATUS/GETSTATE wLength returns
+   * ARG_ERR; in DNBUSY/MANIFEST every request except GETSTATUS is stalled; the rest go
+   * to OnClassRequest.
+   *
+   * @param in_isr 是否在 ISR 中 / Whether in ISR context
+   * @param setup  SETUP 包 / SETUP packet
+   * @param result 输出：控制传输结果 / Output: control transfer result
+   * @return 错误码 / Error code
+   */
   ErrorCode OnControlRequest(bool in_isr, const SetupPacket& setup,
                              ControlTransferResult& result) override
   {
@@ -1096,6 +1247,9 @@ class DFUClass : public DfuInterfaceClassBase
                           setup.wIndex, result);
   }
 
+  /// DNLOAD 被中止时让后端放弃会话；已锁存的错误态保留给下一次 GETSTATUS / When DNLOAD
+  /// is aborted the backend drops its session; a latched error stays for the next
+  /// GETSTATUS
   void OnControlAbort(bool, const SetupPacket& setup) override
   {
     if (setup.bRequest == static_cast<uint8_t>(DFURequest::DNLOAD))
@@ -1113,6 +1267,22 @@ class DFUClass : public DfuInterfaceClassBase
     }
   }
 
+  /**
+   * @brief 按 DFU 请求码分发到对应处理函数
+   *        Dispatch to the handler of the DFU request code
+   *
+   * 未绑定返回 INIT_ERR，wIndex 低字节不是本接口号返回 NOT_FOUND，未知请求码 STALL。
+   * Returns INIT_ERR when unbound, NOT_FOUND when the low byte of wIndex is not this
+   * interface, and stalls unknown request codes.
+   *
+   * @param bRequest 请求码 / Request code
+   * @param wValue   wValue（DNLOAD/UPLOAD 为块号）/ wValue (block number for
+   * DNLOAD/UPLOAD)
+   * @param wLength  数据阶段长度 / Data stage length
+   * @param wIndex   wIndex（接口号）/ wIndex (interface number)
+   * @param result   输出：控制传输结果 / Output: control transfer result
+   * @return 错误码 / Error code
+   */
   ErrorCode OnClassRequest(bool, uint8_t bRequest, uint16_t wValue, uint16_t wLength,
                            uint16_t wIndex, ControlTransferResult& result) override
   {
@@ -1153,6 +1323,19 @@ class DFUClass : public DfuInterfaceClassBase
     }
   }
 
+  /**
+   * @brief 处理 DNLOAD 的 OUT 数据阶段，把整块交给后端暂存
+   *        Handle the DNLOAD OUT data stage and hand the whole block to the backend
+   *
+   * 长度必须等于 SETUP 中承诺的 wLength，否则 STALL；后端拒绝时进入 DFU_ERROR。
+   * The length must equal the wLength promised by SETUP, otherwise the request is
+   * stalled; a backend rejection enters DFU_ERROR.
+   *
+   * @param bRequest 请求码；只有 DNLOAD 有数据阶段 / Request code; only DNLOAD has a data
+   * stage
+   * @param data     数据阶段数据 / Data stage payload
+   * @return 错误码 / Error code
+   */
   ErrorCode OnClassData(bool, uint8_t bRequest, LibXR::ConstRawData& data) override
   {
     const auto request = static_cast<DFURequest>(bRequest);
@@ -1202,6 +1385,9 @@ class DFUClass : public DfuInterfaceClassBase
     return ErrorCode::OK;
   }
 
+  /// GETSTATUS 的 STATUS OUT 完成后：忙状态下放行后端工作，MANIFEST_WAIT_RESET 下提交
+  /// autorun / After the GETSTATUS STATUS OUT completes: release the backend work in the
+  /// busy states and commit autorun in MANIFEST_WAIT_RESET
   void OnClassInDataStatusComplete(bool, uint8_t bRequest) override
   {
     if (static_cast<DFURequest>(bRequest) != DFURequest::GETSTATUS)
@@ -1575,8 +1761,11 @@ class DFUClass : public DfuInterfaceClassBase
 class DfuBootloaderClassStorage
 {
  protected:
+  /// 跳转到应用的回调类型 / Type of the application jump callback
   using JumpCallback = DfuBootloaderBackend::JumpCallback;
 
+  /// 参数含义同 DfuBootloaderBackend 构造函数 / Parameters have the meaning of the
+  /// DfuBootloaderBackend constructor
   DfuBootloaderClassStorage(Flash& flash, size_t image_base, size_t image_limit,
                             size_t seal_offset, JumpCallback jump_to_app,
                             void* jump_app_ctx = nullptr, bool autorun = true)
@@ -1588,10 +1777,12 @@ class DfuBootloaderClassStorage
   {
   }
 
-  DfuBootloaderBackend backend_;
-  size_t image_base_ = 0u;
-  size_t image_limit_ = 0u;
-  size_t seal_offset_ = 0u;
+  DfuBootloaderBackend backend_;  ///< Flash 后端 / Flash backend
+  size_t image_base_ = 0u;        ///< 镜像区起始偏移 / Start offset of the image region
+  size_t image_limit_ = 0u;       ///< 镜像区总字节数（含 seal）/ Total bytes of the image
+                                  ///< region, seal included
+  size_t seal_offset_ = 0u;       ///< seal 记录相对镜像区起点的偏移 / Offset of the seal
+                                  ///< record from the image start
 };
 
 /**
@@ -1606,9 +1797,32 @@ class DfuBootloaderClassT : private DfuBootloaderClassStorage,
   using Base = DFUClass<DfuBootloaderBackend, MAX_TRANSFER_SIZE>;
 
  public:
+  /// 跳转到应用的回调类型 / Type of the application jump callback
   using JumpCallback = DfuBootloaderBackend::JumpCallback;
+  /// 厂商请求码：请求启动应用（无数据阶段，wValue 必须为 0）/ Vendor request code that
+  /// asks to run the application (no data stage, wValue must be 0)
   static constexpr uint8_t VENDOR_REQUEST_RUN_APP = 0x5Au;
 
+  /**
+   * @brief 构造 bootloader DFU 类 / Construct the bootloader DFU class
+   *
+   * @param flash 存放镜像的 Flash / Flash that stores the image
+   * @param image_base 镜像区在 Flash 内的起始偏移 / Start offset of the image region
+   * @param image_limit 镜像区总字节数（含 seal）/ Total bytes of the image region, seal
+   * included
+   * @param seal_offset seal 记录相对镜像区起点的偏移 / Offset of the seal record from the
+   * image start
+   * @param jump_to_app 启动应用的回调 / Application launch callback
+   * @param jump_app_ctx 传给回调的参数 / Argument passed to the callback
+   * @param autorun manifest 完成并复位后是否自动请求启动应用 / Whether to request an app
+   * launch automatically after manifestation and reset
+   * @param interface_string 接口字符串 / Interface string
+   * @param webusb_landing_page_url WebUSB 落地页 URL；nullptr 表示不启用 / WebUSB landing
+   * page URL; nullptr disables WebUSB
+   * @param webusb_vendor_code WebUSB 厂商请求码 / WebUSB vendor request code
+   * @param winusb_device_interface_guid WinUSB 设备接口 GUID / WinUSB device interface
+   * GUID
+   */
   DfuBootloaderClassT(
       Flash& flash, size_t image_base, size_t image_limit, size_t seal_offset,
       JumpCallback jump_to_app, void* jump_app_ctx = nullptr, bool autorun = true,
@@ -1629,21 +1843,36 @@ class DfuBootloaderClassT : private DfuBootloaderClassStorage,
   // Process() comes from DFUClass and only advances the backend's erase/program/verify
   // work; launching the app stays an explicit TryConsumeAppLaunch() call.
   using Base::Process;
+  /// 请求启动应用；有未完成工作或没有有效镜像时返回 false / Request an app launch; false
+  /// while work is pending or no valid image exists
   bool RequestRunApp() { return Storage::backend_.TryRequestRunApp(); }
 
+  /// 若已有启动请求且条件满足则调用跳转回调并返回 true；now_ms 当前未被后端使用 / Run the
+  /// jump callback and return true when a launch is requested and allowed; now_ms is
+  /// currently unused by the backend
   bool TryConsumeAppLaunch(uint32_t now_ms)
   {
     return Storage::backend_.TryConsumeAppLaunch(now_ms);
   }
 
+  /// 是否有未完成的擦写或 manifest 工作 / Whether erase/program or manifest work is
+  /// pending
   bool HasPendingWork() const { return Storage::backend_.HasPendingWork(); }
+  /// 是否已有通过校验的镜像 / Whether a verified image is stored
   bool HasValidImage() const { return Storage::backend_.HasValidImage(); }
+  /// 已存储镜像的字节数，无镜像为 0 / Stored image size in bytes; 0 without an image
   size_t ImageSize() const { return Storage::backend_.ImageSize(); }
+  /// 镜像区起始偏移 / Start offset of the image region
   size_t ImageBase() const { return Storage::image_base_; }
+  /// 镜像区总字节数（含 seal）/ Total bytes of the image region, seal included
   size_t ImageLimit() const { return Storage::image_limit_; }
+  /// seal 记录相对镜像区起点的偏移 / Offset of the seal record from the image start
   size_t SealOffset() const { return Storage::seal_offset_; }
 
  protected:
+  /// 先走 DFU 基类处理；若是 RUN_APP 厂商请求，则在其状态阶段完成后登记启动请求 / Run the
+  /// DFU base handling first; for the RUN_APP vendor request, record the launch request
+  /// once its status stage completes
   void OnControlComplete(bool in_isr, const SetupPacket& setup) override
   {
     Base::OnControlComplete(in_isr, setup);

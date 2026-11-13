@@ -43,7 +43,9 @@ template <typename SwdPort, uint16_t DefaultDapPacketSize = 512u,
 class DapLinkV2Class : public DeviceClass
 {
  public:
+  /// 编译期是否包含 JTAG 支持 / Whether JTAG support is compiled in
   static constexpr bool JTAG_ENABLED = DapLinkV2BuildConfig::kEnableJtag;
+  /// 默认的接口字符串 / Default interface string
   static constexpr const char* DEFAULT_INTERFACE_STRING = "CMSIS-DAP v2";
 
   /**
@@ -71,6 +73,8 @@ class DapLinkV2Class : public DeviceClass
    * @param data_out_ep_num Bulk OUT endpoint number (required)
    * @param swd_link        SWD link reference
    * @param nreset_gpio     Optional nRESET GPIO
+   * @param interface_string Interface string returned for the class's interface; must
+   *                         stay valid
    *
    */
   explicit DapLinkV2Class(Endpoint::EPNumber data_in_ep_num,
@@ -111,6 +115,11 @@ class DapLinkV2Class : public DeviceClass
    */
   void SetInfoStrings(const InfoStrings& info) { info_ = info; }
 
+  /**
+   * @brief Set the JTAG backend
+   * @param jtag JTAG driver; its clock is set to the current SWJ clock. Ignored when
+   *             JTAG is not compiled in
+   */
   void SetJtag(LibXR::Debug::Jtag* jtag)
   {
     if constexpr (JTAG_ENABLED)

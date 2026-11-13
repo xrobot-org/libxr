@@ -51,92 +51,145 @@ LIBXR_PACKED_BEGIN
 
 // ---- MS OS 2.0 basic blocks ----
 
-// 9.22.1 MS OS 2.0 descriptor set header
+/**
+ * @brief MS OS 2.0 描述符集头（规范 9.22.1）/ MS OS 2.0 descriptor set header
+ *        (specification 9.22.1)
+ */
 struct MsOs20SetHeader
 {
-  uint16_t wLength = 0x000A;
-  uint16_t wDescriptorType = MS_OS_20_SET_HEADER_DESCRIPTOR;
-  uint32_t dwWindowsVersion = 0x06030000;  // 0x06030000 = Win 8.1
-  uint16_t wTotalLength = 0;               // sizeof(whole set)
+  uint16_t wLength = 0x000A;  ///< 本头长度，固定 10 / Length of this header, always 10
+  uint16_t wDescriptorType =
+      MS_OS_20_SET_HEADER_DESCRIPTOR;  ///< 描述符类型 / Descriptor type
+  uint32_t dwWindowsVersion =
+      0x06030000;  ///< 目标 Windows 版本，0x06030000 = Win 8.1 / Target Windows version
+  uint16_t wTotalLength = 0;  ///< 整个描述符集的字节数 / Size of the whole set in bytes
 };
 
-// 9.22.2 Configuration subset header
+/**
+ * @brief 配置子集头（规范 9.22.2）/ Configuration subset header (specification 9.22.2)
+ */
 struct MsOs20SubsetHeaderConfiguration
 {
-  uint16_t wLength = 0x0008;
-  uint16_t wDescriptorType = MS_OS_20_SUBSET_HEADER_CONFIGURATION;
-  // MS OS 2.0 uses a zero-based configuration index here. This is not the
-  // USB configuration descriptor's bConfigurationValue, which normally starts at 1.
+  uint16_t wLength = 0x0008;  ///< 本头长度，固定 8 / Length of this header, always 8
+  uint16_t wDescriptorType =
+      MS_OS_20_SUBSET_HEADER_CONFIGURATION;  ///< 描述符类型 / Descriptor type
+  /// 配置索引，从 0 起；不是 USB 配置描述符的 bConfigurationValue（通常从 1 起）/
+  /// Zero-based configuration index; this is not the USB configuration descriptor's
+  /// bConfigurationValue, which normally starts at 1.
   uint8_t bConfigurationValue = 0;
-  uint8_t bReserved = 0;
-  uint16_t wTotalLength = 0;  // sizeof(this cfg subset)
+  uint8_t bReserved = 0;      ///< 保留，置 0 / Reserved, zero
+  uint16_t wTotalLength = 0;  ///< 本配置子集的字节数 / Size of this configuration subset
 };
 
-// 9.22.3 Function subset header
+/**
+ * @brief 功能子集头（规范 9.22.3）/ Function subset header (specification 9.22.3)
+ */
 struct MsOs20SubsetHeaderFunction
 {
-  uint16_t wLength = 0x0008;
-  uint16_t wDescriptorType = MS_OS_20_SUBSET_HEADER_FUNCTION;
-  uint8_t bFirstInterface = 0;
-  uint8_t bReserved = 0;
-  uint16_t wTotalLength = 0;  // sizeof(this function subset)
+  uint16_t wLength = 0x0008;  ///< 本头长度，固定 8 / Length of this header, always 8
+  uint16_t wDescriptorType =
+      MS_OS_20_SUBSET_HEADER_FUNCTION;  ///< 描述符类型 / Descriptor type
+  uint8_t bFirstInterface =
+      0;                  ///< 该功能的首个接口号 / First interface number of the function
+  uint8_t bReserved = 0;  ///< 保留，置 0 / Reserved, zero
+  uint16_t wTotalLength = 0;  ///< 本功能子集的字节数 / Size of this function subset
 };
 
-// 9.22.4 Compatible ID descriptor
+/**
+ * @brief Compatible ID 描述符（规范 9.22.4）/ Compatible ID descriptor (specification
+ * 9.22.4)
+ */
 struct MsOs20FeatureCompatibleId
 {
-  uint16_t wLength = 0x0014;
-  uint16_t wDescriptorType = MS_OS_20_FEATURE_COMPATIBLE_ID;
+  uint16_t wLength = 0x0014;  ///< 本描述符长度，固定 20 / Descriptor length, always 20
+  uint16_t wDescriptorType =
+      MS_OS_20_FEATURE_COMPATIBLE_ID;  ///< 描述符类型 / Descriptor type
 
-  // "WINUSB" + padding NULs
+  /// "WINUSB" 加填充 NUL / "WINUSB" followed by padding NULs
   uint8_t CompatibleID[8] = {'W', 'I', 'N', 'U', 'S', 'B', 0x00, 0x00};
 
-  // Optional; usually all zeros
+  /// 可选，通常全 0 / Optional, usually all zeros
   uint8_t SubCompatibleID[8] = {0};
 };
 
-// 9.22.5 Registry property descriptor header (common part)
+/**
+ * @brief 注册表属性描述符的公共头（规范 9.22.5）/ Common header of the registry property
+ * descriptor (specification 9.22.5)
+ */
 struct MsOs20FeatureRegPropertyHeader
 {
-  uint16_t wLength = 0;  // sizeof(whole reg property feature)
-  uint16_t wDescriptorType = MS_OS_20_FEATURE_REG_PROPERTY;
-  uint16_t wPropertyDataType = 0;  // e.g. REG_MULTI_SZ
-  uint16_t wPropertyNameLength = 0;
+  uint16_t wLength = 0;  ///< 整个注册表属性描述符的字节数 / Size of the whole registry
+                         ///< property descriptor
+  uint16_t wDescriptorType =
+      MS_OS_20_FEATURE_REG_PROPERTY;  ///< 描述符类型 / Descriptor type
+  uint16_t wPropertyDataType = 0;     ///< 属性数据类型，如 REG_MULTI_SZ / Property data
+                                      ///< type, e.g. REG_MULTI_SZ
+  uint16_t wPropertyNameLength = 0;   ///< 属性名的字节数（含 NUL）/ Size of the property
+                                      ///< name in bytes, including the NUL
 };
 
 // ---- MS OS 2.0 Platform Capability (BOS Device Capability) ----
-//
-// Exposed via BOS Platform Capability. Host can query the MS OS 2.0 descriptor
-// set using a vendor request with matching bMS_VendorCode and wIndex=0x0007.
+
+/**
+ * @brief MS OS 2.0 BOS 平台能力描述符 / MS OS 2.0 BOS platform capability descriptor
+ *
+ * 通过 BOS 平台能力公布；主机用匹配 bMS_VendorCode、wIndex=0x0007 的 vendor 请求读取
+ * MS OS 2.0 描述符集。
+ * Exposed via the BOS platform capability. The host queries the MS OS 2.0 descriptor set
+ * with a vendor request carrying the matching bMS_VendorCode and wIndex=0x0007.
+ */
 struct MsOs20PlatformCapability
 {
-  uint8_t bLength = 0x1C;
-  uint8_t bDescriptorType = 0x10;     // DEVICE_CAPABILITY
-  uint8_t bDevCapabilityType = 0x05;  // PLATFORM
-  uint8_t bReserved = 0x00;
+  uint8_t bLength = 0x1C;          ///< 描述符长度，固定 28 / Descriptor length, always 28
+  uint8_t bDescriptorType = 0x10;  ///< DEVICE_CAPABILITY
+  uint8_t bDevCapabilityType = 0x05;  ///< PLATFORM
+  uint8_t bReserved = 0x00;           ///< 保留，置 0 / Reserved, zero
 
+  /// MS OS 2.0 平台能力 UUID / MS OS 2.0 platform capability UUID
   uint8_t PlatformCapabilityUUID[16] = {
       0xDF, 0x60, 0xDD, 0xD8, 0x89, 0x45, 0xC7, 0x4C,
       0x9C, 0xD2, 0x65, 0x9D, 0x9E, 0x64, 0x8A, 0x9F,
   };
 
-  uint32_t dwWindowsVersion = 0x06030000;      // Win 8.1+
-  uint16_t wMSOSDescriptorSetTotalLength = 0;  // sizeof(MS OS 2.0 set)
-  uint8_t bMS_VendorCode = 0x20;               // vendor request bRequest
-  uint8_t bAltEnumCode = 0x00;                 // optional, often 0
+  uint32_t dwWindowsVersion = 0x06030000;  ///< 最低 Windows 版本，Win 8.1+ / Minimum
+                                           ///< Windows version, Win 8.1+
+  uint16_t wMSOSDescriptorSetTotalLength =
+      0;  ///< MS OS 2.0 描述符集的字节数 / Size of the MS OS 2.0 descriptor set in bytes
+  uint8_t bMS_VendorCode = 0x20;  ///< 读取描述符集所用 vendor 请求的 bRequest / bRequest
+                                  ///< of the vendor request that fetches the set
+  uint8_t bAltEnumCode = 0x00;  ///< 备用枚举命令码，0 表示不支持 / Alternate enumeration
+                                ///< code, 0 means not supported
 };
 
+/**
+ * @brief DeviceInterfaceGUIDs 注册表属性（REG_MULTI_SZ）/ DeviceInterfaceGUIDs registry
+ * property (REG_MULTI_SZ)
+ * @tparam PropertyDataBytes 属性数据区字节数，至少 4（双 NUL 结尾）/ Size of the
+ * property data area in bytes, at least 4 (double-NUL terminator)
+ */
 template <uint16_t PropertyDataBytes>
 struct DeviceInterfaceGuidsRegProperty
 {
   static_assert(PropertyDataBytes >= 4u,
                 "REG_MULTI_SZ property data must fit the double-NUL terminator");
 
-  MsOs20FeatureRegPropertyHeader header;
-  uint8_t name[PROP_NAME_DEVICE_INTERFACE_GUIDS_BYTES];
-  uint16_t wPropertyDataLength = 0;
-  uint8_t data[PropertyDataBytes] = {};
+  MsOs20FeatureRegPropertyHeader header;  ///< 公共头 / Common header
+  uint8_t
+      name[PROP_NAME_DEVICE_INTERFACE_GUIDS_BYTES];  ///< 属性名 "DeviceInterfaceGUIDs"
+                                                     ///< （UTF-16LE，含 NUL）/ Property
+                                                     ///< name (UTF-16LE, with NUL)
+  uint16_t wPropertyDataLength = 0;  ///< 属性数据的有效字节数 / Valid property data bytes
+  uint8_t data[PropertyDataBytes] =
+      {};  ///< 属性数据：GUID 的 UTF-16LE 加双 NUL / Property
+           ///< data: the GUID in UTF-16LE plus a double NUL
 
+  /**
+   * @brief 填充属性 / Fill in the property
+   * @param guid 形如 "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" 的 GUID 字符串；空指针得到
+   * 空列表，超出 38 个字符或数据区容量的部分被截断 / GUID string such as
+   * "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}"; null yields an empty list, characters
+   * beyond 38 or beyond the data area are truncated
+   */
   void Init(const char* guid)
   {
     *this = DeviceInterfaceGuidsRegProperty<PropertyDataBytes>{};
@@ -173,13 +226,25 @@ struct DeviceInterfaceGuidsRegProperty
   }
 };
 
+/**
+ * @brief 设备级 WinUSB 描述符集：集头 + Compatible ID + GUID 属性 / Device-scoped WinUSB
+ * descriptor set: set header, compatible ID and GUID property
+ * @tparam PropertyDataBytes GUID 属性数据区字节数 / Size of the GUID property data area
+ */
 template <uint16_t PropertyDataBytes>
 struct DeviceScopedWinUsbMsOs20DescSet
 {
-  MsOs20SetHeader set;
-  MsOs20FeatureCompatibleId compat;
-  DeviceInterfaceGuidsRegProperty<PropertyDataBytes> prop;
+  MsOs20SetHeader set;               ///< 描述符集头 / Descriptor set header
+  MsOs20FeatureCompatibleId compat;  ///< WINUSB Compatible ID
+  DeviceInterfaceGuidsRegProperty<PropertyDataBytes>
+      prop;  ///< 接口 GUID 属性 / Interface GUID property
 
+  /**
+   * @brief 填充整个描述符集 / Fill in the whole descriptor set
+   * @param guid 设备接口 GUID 字符串 / Device interface GUID string
+   * @param windows_version 写入集头的目标 Windows 版本，默认 Win 8.1 / Target Windows
+   * version written into the set header, Win 8.1 by default
+   */
   void Init(const char* guid, uint32_t windows_version = 0x06030000)
   {
     *this = DeviceScopedWinUsbMsOs20DescSet<PropertyDataBytes>{};
@@ -196,15 +261,31 @@ struct DeviceScopedWinUsbMsOs20DescSet
   }
 };
 
+/**
+ * @brief 功能级 WinUSB 描述符集：集头 + 配置子集 + 功能子集 + Compatible ID + GUID 属性 /
+ * Function-scoped WinUSB descriptor set: set header, configuration subset, function
+ * subset, compatible ID and GUID property
+ * @tparam PropertyDataBytes GUID 属性数据区字节数 / Size of the GUID property data area
+ */
 template <uint16_t PropertyDataBytes>
 struct FunctionScopedWinUsbMsOs20DescSet
 {
-  MsOs20SetHeader set;
-  MsOs20SubsetHeaderConfiguration cfg;
-  MsOs20SubsetHeaderFunction func;
-  MsOs20FeatureCompatibleId compat;
-  DeviceInterfaceGuidsRegProperty<PropertyDataBytes> prop;
+  MsOs20SetHeader set;                  ///< 描述符集头 / Descriptor set header
+  MsOs20SubsetHeaderConfiguration cfg;  ///< 配置子集头 / Configuration subset header
+  MsOs20SubsetHeaderFunction func;      ///< 功能子集头 / Function subset header
+  MsOs20FeatureCompatibleId compat;     ///< WINUSB Compatible ID
+  DeviceInterfaceGuidsRegProperty<PropertyDataBytes>
+      prop;  ///< 接口 GUID 属性 / Interface GUID property
 
+  /**
+   * @brief 填充整个描述符集，子集长度按各自到集尾的距离计算 / Fill in the whole set; the
+   * subset lengths are the distance from each subset header to the end of the set
+   * @param configuration_index 从 0 起的配置索引 / Zero-based configuration index
+   * @param first_interface 功能的首个接口号 / First interface number of the function
+   * @param guid 设备接口 GUID 字符串 / Device interface GUID string
+   * @param windows_version 写入集头的目标 Windows 版本，默认 Win 8.1 / Target Windows
+   * version written into the set header, Win 8.1 by default
+   */
   void Init(uint8_t configuration_index, uint8_t first_interface, const char* guid,
             uint32_t windows_version = 0x06030000)
   {
@@ -237,6 +318,11 @@ struct FunctionScopedWinUsbMsOs20DescSet
     prop.Init(guid);
   }
 
+  /**
+   * @brief 修改功能子集头中的首个接口号 / Change the first interface number in the
+   * function subset header
+   * @param first_interface 新的首个接口号 / New first interface number
+   */
   void SetFirstInterface(uint8_t first_interface)
   {
     func.bFirstInterface = first_interface;
@@ -277,6 +363,8 @@ class WinUsbDescriptorSet
 {
  public:
   /// @param functions Functions in configuration order
+  /// @param count Number of entries in functions; 0 (or a null pointer) leaves the set
+  /// empty
   /// @param device_level Device-level form; needs exactly one function
   void Build(const WinUsbFunctionInfo* functions, size_t count, bool device_level)
   {
@@ -364,6 +452,8 @@ class WinUsbDescriptorSet
     size_ = total;
   }
 
+  /// The built descriptor set; empty until Build() has produced one. The memory is
+  /// allocated by Build() and stays valid for the life of the program.
   LibXR::ConstRawData Data() const { return LibXR::ConstRawData{data_, size_}; }
 
  private:
@@ -387,16 +477,28 @@ inline void init_msos20_platform_capability(MsOs20PlatformCapability& cap,
   cap.bAltEnumCode = 0x00;
 }
 
-// ---- BOS capability wrapper ----
-//
-// Purpose:
-// - Register a BOS Platform Capability (MS OS 2.0) to BosManager.
-// - Handle vendor requests:
-//   - wIndex=0x0007 (IN): return MS OS 2.0 descriptor set.
-//   - wIndex=0x0008 (OUT): Set Alt Enumeration (usually no data stage).
+/**
+ * @brief MS OS 2.0 BOS 平台能力包装器 / MS OS 2.0 BOS platform capability wrapper
+ *
+ * 向 BosManager 登记 MS OS 2.0 平台能力，并处理 vendor 请求：wIndex=0x0007（IN）返回
+ * MS OS 2.0 描述符集，wIndex=0x0008（OUT）为 Set Alt Enumeration（通常无数据阶段）。
+ * Registers the MS OS 2.0 platform capability with the BosManager and handles the vendor
+ * requests: wIndex=0x0007 (IN) returns the MS OS 2.0 descriptor set, wIndex=0x0008 (OUT)
+ * is Set Alt Enumeration (usually without a data stage).
+ */
 class MsOs20BosCapability final : public LibXR::USB::BosCapability
 {
  public:
+  /**
+   * @brief 构造能力对象 / Construct the capability
+   * @param descriptor_set 描述符集字节，须保持有效；大于 0xFFFF 字节时能力里的总长度为 0
+   * / Descriptor set bytes, must stay valid; above 0xFFFF bytes the total length in the
+   * capability is 0
+   * @param vendor_code 读取描述符集所用 vendor 请求的 bRequest / bRequest of the vendor
+   * request that fetches the set
+   * @param windows_version 目标 Windows 版本，默认 Win 8.1 / Target Windows version, Win
+   * 8.1 by default
+   */
   explicit MsOs20BosCapability(LibXR::ConstRawData descriptor_set,
                                uint8_t vendor_code = 0x20,
                                uint32_t windows_version = 0x06030000)
@@ -407,12 +509,23 @@ class MsOs20BosCapability final : public LibXR::USB::BosCapability
     RefreshPlatformCap();
   }
 
+  /**
+   * @brief 更换描述符集并刷新能力里的总长度 / Replace the descriptor set and refresh the
+   * total length in the capability
+   * @param descriptor_set 新的描述符集字节，须保持有效 / New descriptor set bytes, must
+   * stay valid
+   */
   void SetDescriptorSet(LibXR::ConstRawData descriptor_set)
   {
     descriptor_set_ = descriptor_set;
     RefreshPlatformCap();
   }
 
+  /**
+   * @brief 修改 vendor 请求码并同步到能力描述符 / Change the vendor request code and
+   * mirror it into the capability descriptor
+   * @param vendor_code 新的 bRequest / New bRequest
+   */
   void SetVendorCode(uint8_t vendor_code)
   {
     vendor_code_ = vendor_code;
@@ -424,6 +537,18 @@ class MsOs20BosCapability final : public LibXR::USB::BosCapability
     return LibXR::ConstRawData(&platform_cap_, sizeof(platform_cap_));
   }
 
+  /**
+   * @brief 处理 MS OS 2.0 的 vendor 请求 / Handle the MS OS 2.0 vendor requests
+   *
+   * 请求必须是 Vendor 类型、Device 接收者，bRequest 等于 vendor 码；否则返回
+   * NOT_SUPPORT。wIndex=0x0007 的 IN 请求返回描述符集，wIndex=0x0008 的 OUT 请求只回
+   * 状态阶段。空 setup 返回 ARG_ERR，描述符集为空或超过 0xFFFF 字节时返回 ARG_ERR。
+   * The request must be of Vendor type with a Device recipient and bRequest equal to the
+   * vendor code, otherwise NOT_SUPPORT is returned. An IN request with wIndex=0x0007
+   * returns the descriptor set, an OUT request with wIndex=0x0008 only completes the
+   * status stage. A null setup yields ARG_ERR, as does an empty descriptor set or one
+   * larger than 0xFFFF bytes.
+   */
   ErrorCode OnVendorRequest(bool /*in_isr*/, const SetupPacket* setup,
                             LibXR::USB::BosVendorResult& result) override
   {

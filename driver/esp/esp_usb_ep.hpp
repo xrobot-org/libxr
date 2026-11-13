@@ -17,6 +17,10 @@ class ESP32USBDevice;
 class ESP32USBEndpoint : public USB::Endpoint
 {
  public:
+  /// @param device 所属 USB 设备 / Owning USB device
+  /// @param number 端点号 / Endpoint number
+  /// @param direction 端点方向 / Endpoint direction
+  /// @param buffer 该端点的数据缓冲区 / Data buffer of this endpoint
   ESP32USBEndpoint(ESP32USBDevice& device, EPNumber number, Direction direction,
                    RawData buffer);
 
@@ -24,7 +28,9 @@ class ESP32USBEndpoint : public USB::Endpoint
 
   ErrorCode ConfigureHardware(const Config& cfg) override;
   void CloseHardware(bool in_isr) override;
+  /// 置位该端点的 STALL / Set STALL on this endpoint
   ErrorCode StallHardware(bool in_isr) override;
+  /// 清除该端点的 STALL / Clear STALL on this endpoint
   ErrorCode ClearStallHardware(bool in_isr) override;
   ErrorCode StartHardware(const HwRequest& request, bool in_isr) override;
   StopResult StopHardware(bool in_isr) override;
