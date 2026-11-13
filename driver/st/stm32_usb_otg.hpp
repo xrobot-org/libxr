@@ -153,6 +153,8 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   static constexpr uint8_t MAX_DEVICES = 2;
   static constexpr uint8_t NO_FLUSH = 0xFF;
   static constexpr uint8_t FLUSH_ALL = 0x10;
+  // FNSOF 只有 14 位 / FNSOF has 14 bits.
+  static constexpr uint32_t NO_SOF_POSITION = 0xFFFFFFFFU;
 
   // 本 core 的寄存器块 / Register blocks of this core.
   USB_OTG_DeviceTypeDef* Device() const;
@@ -209,6 +211,12 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   // RX FIFO 扣除固定开销后一个 OUT 包可用的字节数。
   // Bytes one OUT packet can use in the RX FIFO after its fixed overhead.
   size_t rx_packet_limit_ = 0;
+  // 最近处理的 SOF 的 DSTS.FNSOF（高速时低 3 位是微帧号）。核心可能对同一个 SOF 令牌把
+  // 帧中断置位两次，帧号相同的第二次被忽略；连接和总线复位时置为无效值。
+  // DSTS.FNSOF of the SOF handled last (the low 3 bits are the microframe at high speed).
+  // The core may flag one SOF token twice and the second one with the same number is
+  // ignored; set to an invalid value at connect and at bus reset.
+  uint32_t last_sof_position_ = NO_SOF_POSITION;
   uint8_t global_nak_users_ = 0;
   // 位 n：TX FIFO n；位 16：所有 TX FIFO。
   // Bit n: TX FIFO n; bit 16: every TX FIFO.
