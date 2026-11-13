@@ -333,6 +333,12 @@ class ESP32USBDevice : public USB::EndpointPool,
   /// 确认所有等待中的停止（控制器复位路径）/ Confirm every waiting stop (the
   /// controller-reset path)
   void ForceStopAll(bool in_isr);
+  /// 申请全局 OUT NAK，由所有正在停止的 OUT 端点共用 / Request the global OUT NAK, shared
+  /// by every OUT endpoint that is stopping
+  void AcquireGlobalOutNak();
+  /// 归还全局 OUT NAK，最后一个端点归还时撤销 / Give the global OUT NAK back; it is
+  /// released when the last endpoint gives it back
+  void ReleaseGlobalOutNak();
   /// 停止超时后控制器复位链的阶段。每个阶段等一个寄存器条件，由毫秒节拍检查；条件成立后
   /// 做下一步并等下一个条件 / Stage of the controller-reset chain after a stop timeout.
   /// Every stage waits for one register condition, checked on the millisecond tick; when
@@ -381,6 +387,8 @@ class ESP32USBDevice : public USB::EndpointPool,
   /// maximum packet): a late packet lands here instead of in the returned slot; the DMA
   /// address register needs word alignment
   alignas(uint32_t) uint8_t ep0_out_scratch_[64] = {};
+  /// 正在用全局 OUT NAK 的端点数 / Endpoints holding the global OUT NAK
+  uint8_t global_out_nak_users_ = 0U;
   ControlState control_ = {};  ///< 需跨 status completion 保留的 EP0 setup 状态 / EP0
                                ///< setup state that must survive until status completion
 };

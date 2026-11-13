@@ -27,6 +27,8 @@ namespace
 // only the wanted bit: assigning a bit-field member reads the register and writes it
 // back, which clears every other flag that is set at that moment.
 constexpr uint32_t GINTSTS_SOF = 1UL << 3U;
+// GINTMSK 里的屏蔽位在同一位 / The mask bit in GINTMSK is the same bit
+constexpr uint32_t GINTSTS_GOUTNAKEFF = 1UL << 7U;
 constexpr uint32_t GINTSTS_USBSUSP = 1UL << 11U;
 constexpr uint32_t GINTSTS_USBRST = 1UL << 12U;
 constexpr uint32_t GINTSTS_ENUMDONE = 1UL << 13U;
@@ -496,8 +498,25 @@ void ESP32USBDevice::ResetDone(void* arg, ErrorCode result)
   }
 }
 
+void ESP32USBDevice::AcquireGlobalOutNak()
+{
+  if (global_out_nak_users_++ != 0U) return;
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  dev->gintmsk_reg.val |= GINTSTS_GOUTNAKEFF;
+  dev->dctl_reg.sgoutnak = 1;
+}
+
+void ESP32USBDevice::ReleaseGlobalOutNak()
+{
+  if (global_out_nak_users_ == 0U || --global_out_nak_users_ != 0U) return;
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  dev->gintmsk_reg.val &= ~GINTSTS_GOUTNAKEFF;
+  dev->dctl_reg.cgoutnak = 1;
+}
+
 void ESP32USBDevice::ForceStopAll(bool in_isr)
 {
+  global_out_nak_users_ = 0U;
   for (size_t i = 0U; i < ESP32USBDevice::ENDPOINT_COUNT; ++i)
   {
     if (endpoint_map_.in[i] != nullptr)
@@ -572,6 +591,7 @@ void ESP32USBDevice::ResetDeviceState()
   // reset, clear the device-level register state first; each endpoint later rebuilds its
   // own concrete hardware configuration.
   ResetFifoState();
+  global_out_nak_users_ = 0U;
   // Init() 在 Start() 打开内核时钟之前也会重置账本，此时读到的深度为 0；
   // 这里内核已经上电。
   // Init() also resets the bookkeeping before Start() clocks the core, when the depth
@@ -741,6 +761,23 @@ void ESP32USBDevice::HandleInterrupt()
       HandleEndpointInterrupt(true, false);
     }
 
+    if (pending.goutnakeff)
+    {
+      // 全局 OUT NAK 期间这个标志一直为 1，通知一次就够：先关掉它的中断，再让等它的
+      // OUT 端点往下走。
+      // The flag stays set while the global OUT NAK is on and one notification is enough:
+      // mask it, then let the OUT endpoints that wait for it go on.
+      dev->gintmsk_reg.val &= ~GINTSTS_GOUTNAKEFF;
+      for (uint8_t i = 1; i < ENDPOINT_COUNT; ++i)
+      {
+        if (endpoint_map_.out[i] != nullptr)
+        {
+          (void)static_cast<ESP32USBEndpoint*>(endpoint_map_.out[i])
+              ->AdvanceStop(true, 0U);
+        }
+      }
+    }
+
     if (pending.iepint)
     {
       HandleEndpointInterrupt(true, true);
@@ -792,6 +829,28 @@ void ESP32USBDevice::HandleBusReset(bool in_isr)
   // cycles (EP0 OUT must not get EPDIS and does not take part in the check). If they
   // do not clear the controller cannot be trusted and the controller-reset escalation
   // takes over.
+  // 禁用 OUT 端点之前全局 OUT NAK 必须已经生效。本后端只用内部 DMA，核心自己处理接收
+  // FIFO，GOUTNAKEFF 不需要应用去读 FIFO 就会置位，所以这里可以有界地等它。
+  // The global OUT NAK must be in effect before an OUT endpoint is disabled. This backend
+  // only uses the internal DMA, where the core handles the receive FIFO itself and
+  // GOUTNAKEFF is set without the application reading the FIFO, so a bounded wait works.
+  bool out_enabled = false;
+  for (uint8_t i = 1; i < ENDPOINT_COUNT; ++i)
+  {
+    out_enabled = out_enabled || (dev->out_eps[i - 1U].doepctl_reg.epena != 0U);
+  }
+  if (out_enabled)
+  {
+    if (dev->gintsts_reg.goutnakeff == 0U)
+    {
+      dev->dctl_reg.sgoutnak = 1;
+    }
+    if (!ESPUSBDetail::SpinUntil([dev]() { return dev->gintsts_reg.goutnakeff != 0U; }))
+    {
+      OnStopTimeout(in_isr);
+      return;
+    }
+  }
   ESPUSBDetail::RequestOutDisable(dev->doepctl0_reg, false);
   for (uint8_t i = 1; i < ENDPOINT_COUNT; ++i)
   {
@@ -831,6 +890,15 @@ void ESP32USBDevice::HandleBusReset(bool in_isr)
   {
     OnStopTimeout(in_isr);
     return;
+  }
+  // 端点都已禁用：撤销全局 OUT NAK（这里置的，或被复位打断的停止置的）。
+  // Every endpoint is disabled: release the global OUT NAK (set here, or by a stop this
+  // reset cut short).
+  global_out_nak_users_ = 0U;
+  dev->gintmsk_reg.val &= ~GINTSTS_GOUTNAKEFF;
+  if (dev->dctl_reg.goutnaksts != 0U)
+  {
+    dev->dctl_reg.cgoutnak = 1;
   }
 
   dev->daintmsk_reg.val = 0U;

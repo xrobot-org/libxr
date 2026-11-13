@@ -51,8 +51,10 @@ class ESP32USBEndpoint : public USB::Endpoint
   /// stop sequence
   /// @param in_isr 是否在中断上下文 / Whether the call is in interrupt context
   /// @param status 中断入口处读出并清掉的那一份端点中断状态（IN 为 DIEPINT，OUT 为
-  ///        DOEPINT）/ The endpoint interrupt status that the handler read and cleared on
-  ///        entry (DIEPINT for IN, DOEPINT for OUT)
+  ///        DOEPINT）；不在端点自己的中断里调用时为 0（全局 OUT NAK 生效时）/ The
+  ///        endpoint interrupt status that the handler read and cleared on entry (DIEPINT
+  ///        for IN, DOEPINT for OUT); 0 when called outside the endpoint's own interrupt
+  ///        (when the global OUT NAK takes effect)
   /// @return 在途请求在这里结束时为 true，这一份状态里的其余标志都属于它 / True when
   ///         the request in flight ended here; the other flags of that status belong to
   ///         it

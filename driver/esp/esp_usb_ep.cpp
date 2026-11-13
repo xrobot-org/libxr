@@ -202,7 +202,6 @@ ErrorCode ESP32USBEndpoint::ClearStallHardware(bool /*in_isr*/)
 
 USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
 {
-  UNUSED(in_isr);
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
   const bool is_in = (GetDirection() == Direction::IN);
@@ -314,17 +313,17 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
     transfer_active_ = false;
     return StopResult::DONE;
   }
-  // 非 EP0 OUT：先按端点 SNAK（本核的 DCTL 没有 SGONAK/CGONAK，无法做全局 OUT
-  // NAK；单个端点用 SNAK 挡住新事务、EPDIS 结束在途事务，效果等价），再 EPDIS，
-  // 中断确认 EPDISD 后完成。
-  // Non-EP0 OUT: per-endpoint SNAK first (this core's DCTL has no SGONAK/CGONAK, so
-  // there is no global OUT NAK; for a single endpoint SNAK blocks new transactions
-  // and EPDIS ends the in-flight one, which is equivalent), then EPDIS; the
-  // EPDISD interrupt confirms the stop.
-  dev->out_eps[ep_num - 1U].doepctl_reg.snak = 1;
-  dev->doepmsk_reg.epdisbldmsk = 1;
-  dev->out_eps[ep_num - 1U].doepctl_reg.epdis = 1;
-  stop_phase_ = StopPhase::DIS_WAIT;
+  // 非 EP0 OUT：禁用 OUT 端点之前要先让全局 OUT NAK 生效（DCTL.SGOUTNAK，等
+  // GINTSTS.GOUTNAKEFF），再写 SNAK 和 EPDIS，中断确认 EPDISD 后撤销全局 OUT NAK。
+  // 全局 OUT NAK 由所有正在停止的 OUT 端点共用；已经生效时这里直接走到 EPDIS。
+  // Non-EP0 OUT: the global OUT NAK has to be in effect before an OUT endpoint is
+  // disabled (DCTL.SGOUTNAK, then GINTSTS.GOUTNAKEFF); SNAK and EPDIS follow, and once
+  // the EPDISD interrupt confirms the stop the global OUT NAK is released. It is shared
+  // by every OUT endpoint that is stopping; when it is already in effect this goes on to
+  // EPDIS at once.
+  stop_phase_ = StopPhase::SNAK_WAIT;
+  device_.AcquireGlobalOutNak();
+  (void)AdvanceStop(in_isr, 0U);
   return StopResult::PENDING;
 }
 
@@ -435,16 +434,35 @@ bool ESP32USBEndpoint::AdvanceStop(bool in_isr, uint32_t status)
     return true;
   }
 
+  if (stop_phase_ == StopPhase::SNAK_WAIT)
+  {
+    if (dev->gintsts_reg.goutnakeff == 0U) return false;
+    auto& ctl = dev->out_eps[ep_num - 1U].doepctl_reg;
+    if (ctl.epena == 0U)
+    {
+      // 等全局 OUT NAK 期间传输已经收完，端点已禁用：不能再写 EPDIS。
+      // The transfer completed while the global OUT NAK was awaited and the endpoint is
+      // disabled: EPDIS must not be written.
+      device_.ReleaseGlobalOutNak();
+      stop_phase_ = StopPhase::NONE;
+      transfer_active_ = false;
+      OnHardwareStopped(in_isr);
+      return true;
+    }
+    dev->doepmsk_reg.epdisbldmsk = 1;
+    ESPUSBDetail::RequestOutDisable(ctl, true);
+    stop_phase_ = StopPhase::DIS_WAIT;
+    return false;
+  }
+
   usb_dwc_doepint_reg_t intr = {};
   intr.val = status;
-  if (stop_phase_ == StopPhase::DIS_WAIT && intr.epdisbld != 0U)
-  {
-    stop_phase_ = StopPhase::NONE;
-    transfer_active_ = false;
-    OnHardwareStopped(in_isr);
-    return true;
-  }
-  return false;
+  if (intr.epdisbld == 0U) return false;
+  device_.ReleaseGlobalOutNak();
+  stop_phase_ = StopPhase::NONE;
+  transfer_active_ = false;
+  OnHardwareStopped(in_isr);
+  return true;
 }
 
 void ESP32USBEndpoint::ConfirmStopAfterReset(bool in_isr)
