@@ -226,6 +226,25 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
   // interrupt advance the rest and call OnHardwareStopped when it is done.
   if (is_in)
   {
+    if (iso_abort_)
+    {
+      // 错过帧的禁用序列已经在跑：它改为以这次停止结束。
+      // A missed-frame disable is already running; it now ends as this stop.
+      iso_abort_ = false;
+      // 端点已经自己禁用（传输先完成了），没有 EPDISD 会来：这里直接结束，请求已全部
+      // 发出。
+      // The endpoint has disabled itself (the transfer completed first) and no EPDISD
+      // will come: end the stop here; the request has been sent completely.
+      if (dev->in_eps[ep_num - 1U].diepctl_reg.epena == 0U)
+      {
+        stopped_sent_all_ = true;
+        ESPUSBDetail::FlushTxFifo(dev, ep_num);
+        stop_phase_ = StopPhase::NONE;
+        transfer_active_ = false;
+        return StopResult::DONE;
+      }
+      return StopResult::PENDING;
+    }
     bool enabled = false;
     if (ep_num == 0U)
     {
@@ -364,14 +383,54 @@ bool ESP32USBEndpoint::AdvanceStop(bool in_isr, uint32_t status)
       stop_phase_ = StopPhase::DIS_WAIT;
       return false;
     }
-    if (intr.epdisbld == 0U) return false;
+    if (intr.epdisbld == 0U)
+    {
+      // 只有传输完成标志能说明传输先结束了：普通的禁用里 EPENA 可能比 EPDISD 早一点清掉。
+      // Only a transfer-complete flag shows that the transfer ended first: in an ordinary
+      // disable EPENA may clear a moment before the EPDISD flag is raised.
+      const bool enabled = (ep_num == 0U)
+                               ? (dev->diepctl0_reg.epena != 0U)
+                               : (dev->in_eps[ep_num - 1U].diepctl_reg.epena != 0U);
+      if (enabled || intr.xfercompl == 0U) return false;
+      // 端点没有等到 EPDIS 生效就先把传输发完了（主机的令牌排在 EPDIS 前面）：核心在
+      // 传输完成时自己清 EPENA，EPDIS 写到一个已禁用的端点上，EPDISD 不会再来，等它只会
+      // 一直等到超时。等待中的错过帧中止作废（数据其实发出去了），完成由调用者照常报告；
+      // 等待中的停止在这里结束，请求已全部发出。
+      // The endpoint finished its transfer before the EPDIS took effect (the host's token
+      // came ahead of it): the core clears EPENA itself at the end of a transfer, EPDIS
+      // lands on an endpoint that is already disabled, and no EPDISD follows, so waiting
+      // for it would only end in the timeout. A missed-frame abort that was waiting is
+      // void (the data went out) and the caller reports the completion as usual; a
+      // waiting stop ends here with the request sent completely.
+      stop_phase_ = StopPhase::NONE;
+      if (iso_abort_)
+      {
+        iso_abort_ = false;
+        return false;
+      }
+      ESPUSBDetail::FlushTxFifo(dev, ep_num);
+      stopped_sent_all_ = true;
+      transfer_active_ = false;
+      OnHardwareStopped(in_isr);
+      return true;
+    }
     ESPUSBDetail::FlushTxFifo(dev, ep_num);
+    stop_phase_ = StopPhase::NONE;
+    transfer_active_ = false;
+    if (iso_abort_)
+    {
+      // 错过帧的请求以 FAILED 结束，设备类据此提交下一帧。
+      // The request that missed its frame ends with FAILED, on which the class submits
+      // the next frame.
+      const uint32_t tag = transfer_tag_;
+      ResetTransferState();
+      OnHardwareComplete(in_isr, tag, 0U, ErrorCode::FAILED);
+      return true;
+    }
     // 禁用生效的同时主机取走了最后一个包：请求已全部发出。
     // The host took the last packet as the disable took effect: the request has been
     // sent completely.
     if (intr.xfercompl != 0U) stopped_sent_all_ = true;
-    stop_phase_ = StopPhase::NONE;
-    transfer_active_ = false;
     OnHardwareStopped(in_isr);
     return true;
   }
@@ -400,7 +459,43 @@ void ESP32USBEndpoint::ConfirmStopAfterReset(bool in_isr)
   }
   stop_phase_ = StopPhase::NONE;
   transfer_active_ = false;
+  if (iso_abort_)
+  {
+    // 没有停止在等确认；请求由复位的收尾流程结束。
+    // No stop is waiting for a confirmation; the reset teardown ends the request.
+    iso_abort_ = false;
+    return;
+  }
   OnHardwareStopped(in_isr);
+}
+
+// 等时 IN 传输没有在安排的那一帧发出去（主机没有取，或令牌出错）：核心只报告“至少有
+// 一个等时 IN 端点没发”，应用要逐个读等时 IN 端点的控制寄存器找出是哪个。端点仍使能、
+// 且奇偶帧位（EONUM）等于刚结束那一帧的奇偶（ended_odd）时，它就是为那一帧安排的；为下
+// 一帧安排的端点奇偶相反，请求保持。对未完成的端点置 NAK 并禁用，等端点禁用中断，再冲刷
+// 发送 FIFO。请求以 FAILED 结束，设备类据此提交下一帧。
+// An isochronous IN transfer was not sent in the frame it was scheduled for (the host
+// did not take it, or the token was corrupted): the core only reports that at least one
+// isochronous IN endpoint did not send, and the application reads the control register of
+// every isochronous IN endpoint to find which. An endpoint that is still enabled and
+// whose even/odd frame bit (EONUM) equals the parity of the frame that ended (ended_odd)
+// was armed for that frame; one armed for the next frame has the other parity and keeps
+// its request. The incomplete endpoint gets the NAK and is disabled, the application
+// waits for the endpoint-disabled interrupt and flushes the transmit FIFO. The request
+// ends with FAILED, on which the class submits the next frame.
+void ESP32USBEndpoint::OnIsoIncomplete(bool ended_odd)
+{
+  if (GetDirection() != Direction::IN || GetConfig().type != Type::ISOCHRONOUS) return;
+  if (!transfer_active_ || stop_phase_ != StopPhase::NONE) return;
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  auto& ctl = dev->in_eps[EPNumberToInt8(GetNumber()) - 1U].diepctl_reg;
+  if (ctl.epena == 0U) return;
+  if ((ctl.dpid != 0U) != ended_odd) return;
+  iso_abort_ = true;
+  dev->diepmsk_reg.epdisbldmsk = 1;
+  ctl.snak = 1;
+  ctl.epdis = 1;
+  stop_phase_ = StopPhase::DIS_WAIT;
 }
 
 void ESP32USBEndpoint::ForceStop(bool in_isr)
@@ -760,6 +855,7 @@ void ESP32USBEndpoint::ResetTransferState()
   transfer_queued_size_ = 0U;
   dma_rx_status_bytes_ = 0U;
   dma_rx_status_seen_ = false;
+  iso_abort_ = false;
 }
 
 bool ESP32USBEndpoint::PrepareTransferBuffer(size_t size)

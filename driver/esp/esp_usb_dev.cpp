@@ -30,6 +30,7 @@ constexpr uint32_t GINTSTS_SOF = 1UL << 3U;
 constexpr uint32_t GINTSTS_USBSUSP = 1UL << 11U;
 constexpr uint32_t GINTSTS_USBRST = 1UL << 12U;
 constexpr uint32_t GINTSTS_ENUMDONE = 1UL << 13U;
+constexpr uint32_t GINTSTS_INCOMPISOIN = 1UL << 20U;
 constexpr uint32_t GINTSTS_WKUPINT = 1UL << 31U;
 }  // namespace
 
@@ -375,6 +376,7 @@ void ESP32USBDevice::FinishBaseline()
   dev->gintmsk_reg.rxflvlmsk = DmaEnabled() ? 0U : 1U;
   dev->gintmsk_reg.oepintmsk = 1;
   dev->gintmsk_reg.iepintmsk = 1;
+  dev->gintmsk_reg.incompisoinmsk = 1;
   dev->gintmsk_reg.otgintmsk = 1;
   dev->gintmsk_reg.sofmsk = 1;
 }
@@ -742,6 +744,28 @@ void ESP32USBDevice::HandleInterrupt()
     if (pending.iepint)
     {
       HandleEndpointInterrupt(true, true);
+    }
+
+    if (pending.incompisoin)
+    {
+      // 帧号在清标志之前读一次。ESP32-S3 在新一帧的 SOF 到达时才报这个中断，此时 DSTS
+      // 里已经是新一帧的帧号（板上实测：中断总是在同一帧的 SOF 之后几微秒到达，读到的
+      // 帧号等于那个 SOF 的帧号），刚结束的是前一帧，所以结束帧的奇偶与读到的相反。
+      // The frame number is read once, before the flag is cleared. The ESP32-S3 raises
+      // this interrupt when the SOF of the new frame arrives, and DSTS already holds the
+      // number of the new frame (measured on the board: the interrupt always comes a few
+      // microseconds after the SOF of the same frame, and the number read equals that
+      // SOF's number). The frame that ended is the previous one, so its parity is the
+      // opposite of the one read.
+      const bool ended_odd = (dev->dsts_reg.soffn & 1U) == 0U;
+      dev->gintsts_reg.val = GINTSTS_INCOMPISOIN;
+      for (uint8_t i = 1; i < ENDPOINT_COUNT; ++i)
+      {
+        if (endpoint_map_.in[i] != nullptr)
+        {
+          static_cast<ESP32USBEndpoint*>(endpoint_map_.in[i])->OnIsoIncomplete(ended_odd);
+        }
+      }
     }
 
     if (pending.otgint)

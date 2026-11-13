@@ -77,6 +77,11 @@ class ESP32USBEndpoint : public USB::Endpoint
   /// reset: confirm a stop that is still waiting
   void ConfirmStopAfterReset(bool in_isr);
   void HandleInInterrupt(bool in_isr);
+  /// 等时 IN 错过了它的帧：禁用端点，请求以 FAILED 结束；只处理为刚结束的那一帧（奇偶位
+  /// 等于 ended_odd）安排的端点 / An isochronous IN transfer missed its frame: disable
+  /// the endpoint and end the request with FAILED; only an endpoint armed for the frame
+  /// that ended (its even/odd bit equals ended_odd) is handled
+  void OnIsoIncomplete(bool ended_odd);
   void FinishPendingEp0InStatus(bool in_isr);
   void HandleOutInterrupt(bool in_isr);
   void HandleRxData(size_t size);
@@ -102,6 +107,10 @@ class ESP32USBEndpoint : public USB::Endpoint
   /// IN：停止时请求已在硬件里发完 / IN: the request had been sent completely in the
   /// hardware when the stop came
   bool stopped_sent_all_ = false;
+  /// 正在跑的禁用序列是为错过帧的等时 IN 请求发起的：结束时报 FAILED，而不是确认一次
+  /// 停止 / The running disable sequence was started for an isochronous IN request that
+  /// missed its frame: it ends the request with FAILED instead of confirming a stop
+  bool iso_abort_ = false;
   size_t transfer_actual_size_ = 0U;
   size_t transfer_queued_size_ = 0U;
   size_t dma_rx_status_bytes_ = 0U;
