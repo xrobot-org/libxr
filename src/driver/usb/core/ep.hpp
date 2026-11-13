@@ -159,16 +159,18 @@ class Endpoint
   };
 
   /// 槽句柄：槽号加借出戳。核心每借出一次槽就换一个戳；Submit/ReleaseSlot/ReturnSlot
-  /// 只接受当前这次借出的句柄 / Slot handle: slot index plus lend stamp. The core stamps
-  /// a new value each time it lends the slot; Submit/ReleaseSlot/ReturnSlot accept only
-  /// the handle of the current lend
+  /// 只接受当前这次借出的句柄。戳是该槽的 32 位借出序号，同一个槽借出 2^32 次之后才会重复
+  /// Slot handle: slot index plus lend stamp. The core stamps a new value each time it
+  /// lends the slot; Submit/ReleaseSlot/ReturnSlot accept only the handle of the current
+  /// lend. The stamp is the 32-bit lend serial of the slot and repeats only after 2^32
+  /// lends of the same slot
   struct Slot
   {
     /// IN：可写区域；OUT 租约：收到的字节
     /// IN: writable region; OUT lease: the bytes received
     RawData data{nullptr, 0};
     uint8_t index = 0xFF;  ///< 槽号；0xFF 为无效句柄 / Slot index; 0xFF = invalid handle
-    uint8_t token = 0;     ///< 借出戳，由核心填写 / Lend stamp, written by the core
+    uint32_t token = 0;    ///< 借出戳，由核心填写 / Lend stamp, written by the core
     /// 句柄是否指向某个槽（index 不是 0xFF）/ Whether the handle refers to a slot (index
     /// is not 0xFF)
     bool Valid() const { return index != 0xFF; }
@@ -353,6 +355,8 @@ class Endpoint
   // 绑定代数 [31:23]。非 owner 调用者做决定所依据的全部信息都在这个字里；
   // 代数使 CAS 在重新绑定前后失败。槽每次转入 LENT 都会推进其借出计数，
   // 句柄携带其借出时的计数，因此持有较早借出句柄的持有者的 CAS 会失败。
+  // 计数只有 6 位，每 64 次借出回绕一次，所以每个槽另有一个 32 位借出序号
+  // （lend_serial_），其低 6 位就是这个计数；句柄携带完整的序号，两者都相符才被接受。
   // 槽在多次绑定之间保持其位置和计数，所以过期的槽只会阻塞自己，其持有者仍可归还它。
   // State word: slot 0 [2:0], slot 1 [5:3], head [6] (slot 1 was queued first), enabled
   // [7], zero-length queued [8], zero-length in flight [9], IN [10], lend count of slot 0
@@ -360,8 +364,11 @@ class Endpoint
   // non-owner caller decides on is in this word; the generation makes a CAS fail across a
   // rebinding. Every transition of a slot to LENT advances its lend count, and a handle
   // carries the count of its lend, so a holder's CAS fails for a handle of an earlier
-  // lend. A slot keeps its place and its count across bindings, so a stale slot only ever
-  // blocks itself and its holder can still return it.
+  // lend. The count has 6 bits and wraps every 64 lends, so each slot also has a 32-bit
+  // lend serial (lend_serial_) whose low 6 bits are this count; a handle carries the full
+  // serial and is accepted only when both match. A slot keeps its place and its count
+  // across bindings, so a stale slot only ever blocks itself and its holder can still
+  // return it.
   static constexpr uint32_t SLOT_BITS = 3U;
   static constexpr uint32_t SLOT_MASK = 7U;
   static constexpr uint32_t SLOT_FIELDS = (SLOT_MASK << SLOT_BITS) | SLOT_MASK;
@@ -404,10 +411,27 @@ class Endpoint
     word = (word & ~(LEND_MASK << shift)) | (count << shift);
     return WithSlot(word, index, LENT);
   }
-  // 句柄是否指向该槽当前的借出 / Whether the handle names the slot's current lend.
-  LIBXR_ALWAYS_INLINE static bool Holds(uint32_t word, const Slot& slot)
+  // 在把槽转入 LENT 的 CAS 成功之后、句柄交出之前调用，返回这次借出的序号。此时槽是
+  // LENT 且没有句柄在外，只有持有者能释放它，所以同一个槽的两次 Stamp 不会并发。
+  // Called after the CAS that made the slot LENT has succeeded and before the handle is
+  // handed out; returns the serial of this lend. The slot is LENT with no handle out at
+  // that point and only a holder can free it, so two Stamp calls of one slot never run
+  // concurrently.
+  LIBXR_ALWAYS_INLINE uint32_t Stamp(uint8_t index)
   {
-    return LendOf(word, slot.index) == slot.token;
+    const uint32_t serial = lend_serial_[index].load(std::memory_order_relaxed) + 1U;
+    lend_serial_[index].store(serial, std::memory_order_release);
+    return serial;
+  }
+  // 句柄是否指向该槽当前的借出。状态字里的计数由随后的 CAS 验证；序号排除计数回绕之后
+  // 数值相同的旧句柄。
+  // Whether the handle names the slot's current lend. The count in the state word is
+  // validated by the CAS that follows; the serial rules out an old handle whose count is
+  // equal again after a wrap.
+  LIBXR_ALWAYS_INLINE bool Holds(uint32_t word, const Slot& slot) const
+  {
+    return LendOf(word, slot.index) == (slot.token & LEND_MASK) &&
+           lend_serial_[slot.index].load(std::memory_order_acquire) == slot.token;
   }
   LIBXR_ALWAYS_INLINE static uint32_t Enqueue(uint32_t word, uint8_t index)
   {
@@ -485,6 +509,10 @@ class Endpoint
   std::atomic<uint32_t> packet_{0};
   std::atomic<uint32_t> receive_size_{0};
   SlotMeta meta_[2];
+  /// 每个槽的借出序号，低 6 位等于状态字里的借出计数；由 Stamp 写入。
+  /// Lend serial of each slot; its low 6 bits equal the lend count in the state word.
+  /// Written by Stamp.
+  std::atomic<uint32_t> lend_serial_[2]{};
 
   // Owner 专用的请求状态 / Owner-only request state.
   uint8_t inflight_ = NO_REQUEST;

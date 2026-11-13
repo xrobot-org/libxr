@@ -525,11 +525,13 @@ void Endpoint::FinishInflight(bool in_isr, ErrorCode result, size_t actual)
     next = lease ? Lend(old, index) : WithSlot(old, index, FREE);
   } while (!word_.compare_exchange_weak(old, next, std::memory_order_acq_rel,
                                         std::memory_order_acquire));
+  // 序号在提前启动之前写入：这时槽还没有句柄在外。
+  // The serial is written before the early start: no handle of the slot is out yet.
+  const uint32_t token = lease ? Stamp(index) : 0U;
   const bool early = StartEarly(in_isr);
   if (lease)
     Deliver(in_isr, result, actual,
-            {RawData{SlotData(index, 0U).addr_, actual}, index,
-             static_cast<uint8_t>(LendOf(next, index))});
+            {RawData{SlotData(index, 0U).addr_, actual}, index, token});
   else
     Deliver(in_isr, result, actual);
   DeliverAborts(in_isr);
@@ -613,7 +615,7 @@ ErrorCode Endpoint::AcquireSlot(Slot& slot, bool in_isr)
                                         std::memory_order_acquire));
   slot.data = SlotData(pick, capacity);
   slot.index = pick;
-  slot.token = static_cast<uint8_t>(LendOf(next, pick));
+  slot.token = Stamp(pick);
   return ErrorCode::OK;
 }
 
@@ -706,6 +708,7 @@ ErrorCode Endpoint::Receive(size_t bytes, bool in_isr)
   } while (!word_.compare_exchange_weak(old, next, std::memory_order_acq_rel,
                                         std::memory_order_acquire));
   // 被认领的槽在入队之前是私有的 / The claimed slot is private until it is queued.
+  Stamp(pick);
   meta_[pick] = {bytes, false};
   old = next;
   do

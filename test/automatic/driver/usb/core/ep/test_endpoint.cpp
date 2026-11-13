@@ -519,6 +519,34 @@ void TestStaleSlotBlocksOnlyItself()
 // lent again, and a release after Submit returned ABORTED are all refused, and the
 // slot's current holder keeps its lease: it can still submit or return it, and nobody
 // else is lent the same slot meanwhile.
+/// 同一个槽又借出 64 次之后，旧句柄仍然被拒绝：状态字里的借出计数只有 6
+/// 位，会回绕到旧句柄 的值，完整的借出序号另外保存。 After 64 more lends of the same slot
+/// an old handle is still rejected: the lend count in the state word has 6 bits and comes
+/// back to the value of the old handle, and the full lend serial is kept beside it.
+void TestStaleHandleAfterLendCountWraps()
+{
+  Fixture f;
+  TEST_ASSERT(f.in.Configure({Direction::IN, Type::BULK, 64}, false) == ErrorCode::OK);
+  Slot old;
+  TEST_ASSERT(f.in.AcquireSlot(old, false) == ErrorCode::OK);
+  TEST_ASSERT(f.in.ReleaseSlot(old, false) == ErrorCode::OK);
+  Slot holder;
+  for (unsigned i = 0; i < 64U; ++i)
+  {
+    TEST_ASSERT(f.in.AcquireSlot(holder, false) == ErrorCode::OK &&
+                holder.index == old.index);
+    if (i + 1U < 64U)
+    {
+      TEST_ASSERT(f.in.ReleaseSlot(holder, false) == ErrorCode::OK);
+    }
+  }
+  // holder 是 old 之后的第 64 次借出，仍被持有。
+  // holder is the 64th lend after old and is still held.
+  TEST_ASSERT(f.in.ReleaseSlot(old, false) == ErrorCode::STATE_ERR);
+  TEST_ASSERT(f.in.Submit(old, 4, false, false) == ErrorCode::STATE_ERR);
+  TEST_ASSERT(f.in.ReleaseSlot(holder, false) == ErrorCode::OK);
+}
+
 void TestStaleHandleRejected()
 {
   // 对期间已被再次借出的 IN 槽重复释放。
@@ -1500,6 +1528,7 @@ void test_usb_endpoint()
   TestStall();
   TestStaleSlotBlocksOnlyItself();
   TestStaleHandleRejected();
+  TestStaleHandleAfterLendCountWraps();
   for (uint32_t seed = 1; seed <= 4; ++seed)
   {
     TestRandomModel(Direction::IN, seed);
