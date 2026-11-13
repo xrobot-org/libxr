@@ -19,6 +19,20 @@
 namespace LibXR
 {
 
+namespace
+{
+// GINTSTS 的标志位。这些标志写 1 清除，清除时整字写入只含目标位的值：对位域成员赋值会
+// 读出整个寄存器再写回，把当时已置位的其他标志一起清掉。
+// Flag bits of GINTSTS. They are cleared by writing 1, with a whole-word write that holds
+// only the wanted bit: assigning a bit-field member reads the register and writes it
+// back, which clears every other flag that is set at that moment.
+constexpr uint32_t GINTSTS_SOF = 1UL << 3U;
+constexpr uint32_t GINTSTS_USBSUSP = 1UL << 11U;
+constexpr uint32_t GINTSTS_USBRST = 1UL << 12U;
+constexpr uint32_t GINTSTS_ENUMDONE = 1UL << 13U;
+constexpr uint32_t GINTSTS_WKUPINT = 1UL << 31U;
+}  // namespace
+
 // 构造时先建立 endpoint 对象映射，再交给上层 USB core 统一驱动 / Build the
 // endpoint-object map first, then hand it to the shared USB core.
 ESP32USBDevice::ESP32USBDevice(
@@ -618,19 +632,19 @@ void ESP32USBDevice::HandleInterrupt()
 
     if (pending.sof)
     {
-      dev->gintsts_reg.val = 1U << 3U;
+      dev->gintsts_reg.val = GINTSTS_SOF;
       OnSof(true, static_cast<uint16_t>((dev->dsts_reg.val >> 8U) & 0x7ffU));
     }
     if (pending.usbrst)
     {
-      dev->gintsts_reg.usbrst = 1;
+      dev->gintsts_reg.val = GINTSTS_USBRST;
       HandleBusReset(true);
       continue;
     }
 
     if (pending.enumdone)
     {
-      dev->gintsts_reg.enumdone = 1;
+      dev->gintsts_reg.val = GINTSTS_ENUMDONE;
       const uint32_t enum_speed = dev->dsts_reg.enumspd;
       if (enum_speed != ESPUSBDetail::ENUM_SPEED_FULL_30_TO_60_MHZ &&
           enum_speed != ESPUSBDetail::ENUM_SPEED_FULL_48_MHZ)
@@ -641,13 +655,13 @@ void ESP32USBDevice::HandleInterrupt()
 
     if (pending.usbsusp)
     {
-      dev->gintsts_reg.usbsusp = 1;
+      dev->gintsts_reg.val = GINTSTS_USBSUSP;
       OnSuspend(true);
     }
 
     if (pending.wkupint)
     {
-      dev->gintsts_reg.wkupint = 1;
+      dev->gintsts_reg.val = GINTSTS_WKUPINT;
       OnResume(true);
     }
 
