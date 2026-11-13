@@ -249,7 +249,6 @@ class HID : public DeviceClass
     }
 
     inited_ = true;
-    input_in_flight_.store(0U, std::memory_order_release);
     in_ep_ref_.store(ep_in_, std::memory_order_release);
   }
 
@@ -266,7 +265,10 @@ class HID : public DeviceClass
     // Drop the reference before closing: a new SendInputReport fails at once and does
     // not race the next binding.
     in_ep_ref_.store(nullptr, std::memory_order_release);
-    input_in_flight_.store(0U, std::memory_order_release);
+    // 结束这次绑定里的发送声明：还没提交的发送方随后会发现自己的声明已失效。
+    // End the send claim of this binding: a sender that has not submitted yet then finds
+    // its claim gone.
+    EndInputClaim();
     if (ep_in_)
     {
       ep_in_->Close(in_isr);
@@ -621,11 +623,12 @@ class HID : public DeviceClass
    *
    * 取槽 → 拷贝 → 提交，同一时刻只有一条报告在途；上一条报告完成前返回 BUSY。
    * 取槽之后发生复位/解绑时 Submit 返回 ABORTED，本方法与未绑定时一样返回 FAILED：
-   * 报告未发布，不重试。
+   * 报告未发布，不重试。调用期间发生解绑的发送同样返回 FAILED，即使端点已重新绑定。
    * Acquire a slot, copy and submit, with one report in flight at a time; BUSY while the
    * previous report is outstanding. A reset or unbind after the slot was acquired makes
    * Submit return ABORTED; this returns FAILED, as for an unbound endpoint: the report
-   * was never published and is not retried.
+   * was never published and is not retried. A send that an unbind interrupts returns
+   * FAILED as well, even when the endpoint is bound again by then.
    *
    * @param report 输入报告数据指针及长度 / Input report data and length
    * @param in_isr 是否在中断中 / Whether in ISR
@@ -635,29 +638,99 @@ class HID : public DeviceClass
   {
     if (report.addr_ == nullptr || report.size_ == 0U || report.size_ > TX_REPORT_LEN)
       return ErrorCode::ARG_ERR;
-    uint32_t expected = 0U;
-    if (!input_in_flight_.compare_exchange_strong(expected, 1U,
-                                                  std::memory_order_acq_rel))
-      return ErrorCode::BUSY;
+    uint32_t claim;
+    if (!ClaimInput(claim)) return ErrorCode::BUSY;
+    return SendClaimedReport(claim, report, in_isr);
+  }
+
+  /**
+   * @brief 取得发送声明 / Take the send claim
+   *
+   * 声明字的 bit 0 表示已被占用，其余位是声明序号：每次声明结束序号加一，所以过期的声明
+   * 不会与后来的声明相等。
+   * Bit 0 of the claim word means claimed and the other bits are the claim serial: the
+   * serial advances each time a claim ends, so an old claim never equals a later one.
+   *
+   * @param claim 取到的声明 / The claim taken
+   * @return 是否取到；已有声明时为 false / Whether it was taken; false while one is held
+   */
+  bool ClaimInput(uint32_t& claim)
+  {
+    uint32_t cur = input_in_flight_.load(std::memory_order_acquire);
+    do
+    {
+      if ((cur & INPUT_CLAIMED) != 0U) return false;
+      claim = cur | INPUT_CLAIMED;
+    } while (!input_in_flight_.compare_exchange_weak(
+        cur, claim, std::memory_order_acq_rel, std::memory_order_acquire));
+    return true;
+  }
+
+  /// 放弃自己的声明；它已经被解绑或完成事件结束时什么也不做 / Drop the caller's own
+  /// claim; does nothing when an unbind or a completion has already ended it
+  void DropInputClaim(uint32_t claim)
+  {
+    (void)input_in_flight_.compare_exchange_strong(claim, claim + 1U,
+                                                   std::memory_order_acq_rel);
+  }
+
+  /// 结束当前的声明（不论属于谁）并推进序号 / End the current claim, whoever holds it,
+  /// and advance the serial
+  void EndInputClaim()
+  {
+    uint32_t cur = input_in_flight_.load(std::memory_order_acquire);
+    while (!input_in_flight_.compare_exchange_weak(cur, (cur | INPUT_CLAIMED) + 1U,
+                                                   std::memory_order_acq_rel,
+                                                   std::memory_order_acquire))
+    {
+    }
+  }
+
+  /**
+   * @brief 用已取得的声明发送一条输入报告 / Send one input report under a claim already
+   * taken
+   *
+   * 失败时放弃这个声明；成功时声明保留到报告的完成事件。
+   * Drops the claim on failure; on success the claim lasts until the completion of the
+   * report.
+   *
+   * @param claim ClaimInput 取到的声明 / The claim from ClaimInput
+   * @param report 输入报告数据指针及长度 / Input report data and length
+   * @param in_isr 是否在中断中 / Whether in ISR
+   * @return ErrorCode OK/BUSY/FAILED/ARG_ERR / Error code
+   */
+  ErrorCode SendClaimedReport(uint32_t claim, ConstRawData report, bool in_isr)
+  {
     Endpoint* ep = in_ep_ref_.load(std::memory_order_acquire);
     if (ep == nullptr)
     {
-      input_in_flight_.store(0U, std::memory_order_release);
+      DropInputClaim(claim);
       return ErrorCode::FAILED;
     }
     Endpoint::Slot slot;
     ErrorCode ans = ep->AcquireSlot(slot, in_isr);
     if (ans != ErrorCode::OK)
     {
-      input_in_flight_.store(0U, std::memory_order_release);
+      DropInputClaim(claim);
       // 端点未绑定（STATE_ERR）时返回 FAILED。
       // An unbound endpoint (STATE_ERR) returns FAILED.
       return ans == ErrorCode::STATE_ERR ? ErrorCode::FAILED : ans;
     }
+    // 声明在取槽之后复核。声明取得之后发生过解绑，它就已被结束：这个槽可能属于新的绑定，
+    // 而新绑定的在途标志不归这次调用所有。复核之后再解绑，槽会过期，Submit 返回 ABORTED。
+    // The claim is checked again after the slot is acquired. An unbind since the claim
+    // was taken has ended it: the slot may belong to the new binding, whose in-flight
+    // flag this call does not own. An unbind after this check makes the slot stale and
+    // Submit returns ABORTED.
+    if (input_in_flight_.load(std::memory_order_acquire) != claim)
+    {
+      ep->ReleaseSlot(slot, in_isr);
+      return ErrorCode::FAILED;
+    }
     if (report.size_ > slot.data.size_)
     {
       ep->ReleaseSlot(slot, in_isr);
-      input_in_flight_.store(0U, std::memory_order_release);
+      DropInputClaim(claim);
       return ErrorCode::ARG_ERR;
     }
     Memory::FastCopy(slot.data.addr_, report.addr_, report.size_);
@@ -674,7 +747,7 @@ class HID : public DeviceClass
       {
         ep->ReleaseSlot(slot, in_isr);
       }
-      input_in_flight_.store(0U, std::memory_order_release);
+      DropInputClaim(claim);
       return ErrorCode::FAILED;
     }
     return ErrorCode::OK;
@@ -782,15 +855,17 @@ class HID : public DeviceClass
   static void OnDataInCompleteStatic(bool in_isr, HID* self,
                                      const Endpoint::Completion& completion)
   {
-    // 单条在途：报告完成（无论结果）即释放写者标志。
-    // One report in flight: its completion (whatever the result) frees the writer flag.
-    self->input_in_flight_.store(0U, std::memory_order_release);
+    // 单条在途：报告完成（无论结果）即结束它的发送声明。
+    // One report in flight: its completion (whatever the result) ends its send claim.
+    self->EndInputClaim();
     if (!self->inited_ || self->ep_in_ == nullptr) return;
     self->OnDataInComplete(in_isr, completion);
   }
 
-  std::atomic<uint32_t> input_in_flight_{
-      0};  ///< 单条在途标志 / One input report in flight
+  static constexpr uint32_t INPUT_CLAIMED = 1U;
+  /// 发送声明字：bit 0 已占用，[31:1] 声明序号 / Send claim word: bit 0 claimed, [31:1]
+  /// claim serial
+  std::atomic<uint32_t> input_in_flight_{0};
   std::atomic<Endpoint*> in_ep_ref_{
       nullptr};  ///< SendInputReport 的 IN 端点 / IN endpoint doorbell
 

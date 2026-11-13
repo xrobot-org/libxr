@@ -48,11 +48,14 @@ class TestHid : public TestHidBase
   }
 
   using TestHidBase::BindEndpoints;
+  using TestHidBase::ClaimInput;
+  using TestHidBase::DropInputClaim;
   using TestHidBase::GetIDLERate;
   using TestHidBase::GetInEndpoint;
   using TestHidBase::GetOutEndpoint;
   using TestHidBase::OnClassData;
   using TestHidBase::OnClassRequest;
+  using TestHidBase::SendClaimedReport;
   using TestHidBase::SendInputReport;
   using TestHidBase::UnbindEndpoints;
 
@@ -175,6 +178,76 @@ void TestInputReportAcrossReset()
   hid.UnbindEndpoints(f.pool, false);
   TEST_ASSERT(hid.SendInputReport({report.data(), report.size()}, false) ==
               ErrorCode::FAILED);
+}
+
+/// 一次发送在取得声明之后被解绑打断，端点随后重新绑定并由另一次发送占用。旧的发送失败时
+/// 只放弃自己的声明，新报告的在途标志保持不变。测试分步调用 SendInputReport 的两个阶段
+/// 来构造这个顺序。
+/// A send is interrupted by an unbind after it took the claim; the endpoint is bound
+/// again and another send takes it. When the old send fails it drops only its own claim
+/// and the in-flight flag of the new report stays. The test calls the two stages of
+/// SendInputReport separately to build this order.
+void TestInterruptedSendKeepsNewClaim()
+{
+  Fixture f;
+  TestHid hid(Number::EP1, Number::EP2, false);
+  hid.BindEndpoints(f.pool, 0, false);
+  std::array<uint8_t, 8> report{};
+
+  uint32_t old_claim = 0;
+  TEST_ASSERT(hid.ClaimInput(old_claim));
+  TEST_ASSERT(hid.SendInputReport({report.data(), report.size()}, false) ==
+              ErrorCode::BUSY);
+
+  hid.UnbindEndpoints(f.pool, false);
+  hid.BindEndpoints(f.pool, 0, false);
+  TEST_ASSERT(hid.SendInputReport({report.data(), report.size()}, false) ==
+              ErrorCode::OK);
+  TEST_ASSERT(f.in.active && f.in.starts.size() == 1);
+
+  // 旧的发送此时失败并放弃声明：新报告仍在途，下一次发送返回 BUSY。
+  // The old send fails now and drops its claim: the new report is still in flight and
+  // the next send is BUSY.
+  hid.DropInputClaim(old_claim);
+  TEST_ASSERT(hid.SendInputReport({report.data(), report.size()}, false) ==
+              ErrorCode::BUSY);
+
+  f.in.Complete();
+  TEST_ASSERT(hid.SendInputReport({report.data(), report.size()}, false) ==
+              ErrorCode::OK);
+  f.in.Complete();
+}
+
+/// 取得声明之后发生过解绑的发送不会在新的绑定里提交报告：它返回 FAILED 并归还取到的槽。
+/// A send whose claim an unbind has ended does not submit a report in the new binding:
+/// it returns FAILED and gives the slot back.
+void TestInterruptedSendDoesNotSubmit()
+{
+  Fixture f;
+  TestHid hid(Number::EP1, Number::EP2, false);
+  hid.BindEndpoints(f.pool, 0, false);
+  std::array<uint8_t, 8> report{};
+
+  uint32_t old_claim = 0;
+  TEST_ASSERT(hid.ClaimInput(old_claim));
+  hid.UnbindEndpoints(f.pool, false);
+  hid.BindEndpoints(f.pool, 0, false);
+
+  TEST_ASSERT(hid.SendClaimedReport(old_claim, {report.data(), report.size()}, false) ==
+              ErrorCode::FAILED);
+  TEST_ASSERT(f.in.starts.empty());
+
+  // 两个槽都还可用，在途标志空闲 / Both slots are still usable and the flag is free.
+  Endpoint::Slot first;
+  Endpoint::Slot second;
+  TEST_ASSERT(f.in.AcquireSlot(first, false) == ErrorCode::OK);
+  TEST_ASSERT(f.in.AcquireSlot(second, false) == ErrorCode::OK);
+  TEST_ASSERT(f.in.ReleaseSlot(first, false) == ErrorCode::OK);
+  TEST_ASSERT(f.in.ReleaseSlot(second, false) == ErrorCode::OK);
+  TEST_ASSERT(hid.SendInputReport({report.data(), report.size()}, false) ==
+              ErrorCode::OK);
+  f.in.Complete();
+  TEST_ASSERT(hid.in_completions == 1 && hid.last_in_result == ErrorCode::OK);
 }
 
 void TestOutReportLease()
@@ -397,6 +470,8 @@ void test_usb_hid()
 {
   TestSendInputReport();
   TestInputReportAcrossReset();
+  TestInterruptedSendKeepsNewClaim();
+  TestInterruptedSendDoesNotSubmit();
   TestOutReportLease();
   TestOutResumeRearms();
   TestIdleRate();
