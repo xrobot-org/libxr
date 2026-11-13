@@ -869,16 +869,19 @@ class HID : public DeviceClass
   std::atomic<Endpoint*> in_ep_ref_{
       nullptr};  ///< SendInputReport 的 IN 端点 / IN endpoint doorbell
 
-  uint8_t in_ep_interval_;         ///< 输入端点间隔 / IN endpoint interval
-  uint8_t out_ep_interval_;        ///< 输出端点间隔 / OUT endpoint interval
-  HIDDescBlockINOUT desc_;         ///< HID 描述符块/ Descriptor block
-  Endpoint::EPNumber in_ep_num_;   ///< 输入端点号 / IN endpoint number
-  Endpoint::EPNumber out_ep_num_;  ///< 输出端点号 / OUT endpoint number
-  Endpoint* ep_in_ = nullptr;      ///< 输入端点指针 / IN endpoint pointer
-  Endpoint* ep_out_ = nullptr;     ///< 输出端点指针 / OUT endpoint pointer
-  bool enable_out_endpoint_;  ///< 是否启用 OUT 端点 / Whether OUT endpoint is enabled
-  bool inited_ = false;       ///< 初始化标志 / Initialization flag
-  size_t itf_num_;            ///< 接口号 / Interface number
+  uint8_t in_ep_interval_ = 0;   ///< 输入端点间隔 / IN endpoint interval
+  uint8_t out_ep_interval_ = 0;  ///< 输出端点间隔 / OUT endpoint interval
+  HIDDescBlockINOUT desc_;       ///< HID 描述符块/ Descriptor block
+  /// 输入端点号 / IN endpoint number
+  Endpoint::EPNumber in_ep_num_ = Endpoint::EPNumber::EP_INVALID;
+  /// 输出端点号 / OUT endpoint number
+  Endpoint::EPNumber out_ep_num_ = Endpoint::EPNumber::EP_INVALID;
+  Endpoint* ep_in_ = nullptr;   ///< 输入端点指针 / IN endpoint pointer
+  Endpoint* ep_out_ = nullptr;  ///< 输出端点指针 / OUT endpoint pointer
+  /// 是否启用 OUT 端点 / Whether OUT endpoint is enabled
+  bool enable_out_endpoint_ = false;
+  bool inited_ = false;                     ///< 初始化标志 / Initialization flag
+  size_t itf_num_ = 0;                      ///< 接口号 / Interface number
   const char* interface_string_ = nullptr;  ///< 接口字符串 / Interface string
 
   Protocol protocol_ = Protocol::REPORT;  ///< 当前协议类型 / Current protocol

@@ -201,9 +201,9 @@ class FSDevEndpoint : public Endpoint
   void OnRxPacket(size_t bytes);
 
   FSDevDevice<HW>& device_;
-  uint16_t pma_addr_;  ///< PMA 存储字节偏移，构造期固定 / PMA byte offset, fixed at
-                       ///< construction
-  size_t pma_size_;
+  uint16_t pma_addr_ = 0;  ///< PMA 存储字节偏移，构造期固定 / PMA byte offset, fixed at
+                           ///< construction
+  size_t pma_size_ = 0;
 
   // 在途请求状态：owner 在硬件守卫内写，ISR 读 / The owner writes it inside the
   // hardware guard, the ISR reads it.

@@ -1229,14 +1229,14 @@ class UAC1MicrophoneQ : public DeviceClass
 
   // 端点与接口状态。
   // Endpoint and interface state.
-  Endpoint::EPNumber iso_in_ep_num_;
+  Endpoint::EPNumber iso_in_ep_num_ = Endpoint::EPNumber::EP_INVALID;
   Endpoint* ep_iso_in_ = nullptr;
   uint8_t itf_ac_num_ = 0;
   uint8_t itf_as_num_ = 0;
-  const char* control_interface_string_ =
-      nullptr;  ///< 控制接口字符串 / Control interface string
-  const char* streaming_interface_string_ =
-      nullptr;  ///< 流接口字符串 / Streaming interface string
+  /// 控制接口字符串 / Control interface string
+  const char* control_interface_string_ = nullptr;
+  /// 流接口字符串 / Streaming interface string
+  const char* streaming_interface_string_ = nullptr;
 
   // 运行态状态。
   // Runtime state.
@@ -1252,13 +1252,13 @@ class UAC1MicrophoneQ : public DeviceClass
   int16_t vol_cur_ = 0;  // 0 dB
   int16_t vol_min_, vol_max_, vol_res_;
 
-  uint8_t interval_;
-  Speed speed_;
+  uint8_t interval_ = 0;
+  Speed speed_ = Speed::FULL;
 
   // 采样与分帧参数。
   // Sampling and framing parameters.
-  uint32_t sr_hz_;
-  const uint32_t supported_rate_;
+  uint32_t sr_hz_ = 0;
+  const uint32_t supported_rate_ = 0;
   static constexpr size_t FRAME_BYTES = CHANNELS * K_SUBFRAME_SIZE;
   uint32_t base_frames_per_service_ = 0;
   uint32_t rem_frames_per_service_ = 0;

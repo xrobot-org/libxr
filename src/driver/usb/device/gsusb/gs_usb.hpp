@@ -915,8 +915,10 @@ class GsUsbClass : public DeviceClass
 
   uint8_t can_count_ = CAN_CH_NUM;  ///< 实际通道数 / Actual channel count
 
-  Endpoint::EPNumber data_in_ep_num_;   ///< Bulk IN 端点号 / Bulk IN endpoint number
-  Endpoint::EPNumber data_out_ep_num_;  ///< Bulk OUT 端点号 / Bulk OUT endpoint number
+  /// Bulk IN 端点号 / Bulk IN endpoint number
+  Endpoint::EPNumber data_in_ep_num_ = Endpoint::EPNumber::EP_INVALID;
+  /// Bulk OUT 端点号 / Bulk OUT endpoint number
+  Endpoint::EPNumber data_out_ep_num_ = Endpoint::EPNumber::EP_INVALID;
 
   Endpoint* ep_data_in_ = nullptr;   ///< Bulk IN 端点对象 / Bulk IN endpoint object
   Endpoint* ep_data_out_ = nullptr;  ///< Bulk OUT 端点对象 / Bulk OUT endpoint object
@@ -925,8 +927,8 @@ class GsUsbClass : public DeviceClass
   uint8_t interface_num_ = 0;               ///< 接口号 / Interface number
   const char* interface_string_ = nullptr;  ///< 接口字符串 / Interface string
 
-  LibXR::GPIO* identify_gpio_ =
-      nullptr;  ///< Identify GPIO（可选） / Identify GPIO (optional)
+  /// Identify GPIO（可选） / Identify GPIO (optional)
+  LibXR::GPIO* identify_gpio_ = nullptr;
   std::array<LibXR::GPIO*, CanChNum>
       termination_gpios_{};  ///< 终端电阻 GPIO（可选） / Termination GPIOs (optional)
 

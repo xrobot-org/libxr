@@ -493,8 +493,8 @@ class Endpoint
     return stopping_ || GetState() != State::IDLE;
   }
 
-  EPNumber number_;
-  Direction avail_direction_;
+  EPNumber number_ = EPNumber::EP_INVALID;
+  Direction avail_direction_ = Direction::BOTH;
   RawData memory_;
   uint8_t slot_count_ = 1;  // Fixed at construction.
   /// 每个槽的字节数；槽 1 从此处开始。为缓存行的整数倍。

@@ -174,7 +174,7 @@ class EndpointPool
     }
 
    private:
-    EndpointPool* pool_;
+    EndpointPool* pool_ = nullptr;
     uintptr_t token_ = 0;
   };
 

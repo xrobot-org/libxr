@@ -265,9 +265,9 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   EndpointPool& pool_;
   DeviceComposition composition_;
   DeviceDescriptor device_desc_;
-  Speed speed_;
-  const uint16_t ep0_packet_size_;
-  const uint32_t profile_speeds_;
+  Speed speed_ = Speed::FULL;
+  const uint16_t ep0_packet_size_ = 0;
+  const uint32_t profile_speeds_ = 0;
   std::atomic<uint32_t> desired_enabled_{0};
   std::atomic<uint32_t> inited_{0};
   std::atomic<uint32_t> requested_suspend_{0};

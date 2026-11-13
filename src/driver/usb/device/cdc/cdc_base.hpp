@@ -748,13 +748,16 @@ class CDCBase : public DeviceClass
  private:
   // 端点号。
   // Endpoint numbers.
-  Endpoint::EPNumber data_in_ep_num_;   ///< 数据IN端点号 / Data IN endpoint number
-  Endpoint::EPNumber data_out_ep_num_;  ///< 数据OUT端点号 / Data OUT endpoint number
-  Endpoint::EPNumber comm_ep_num_;      ///< 通信端点号 / Communication endpoint number
-  const char* control_interface_string_ =
-      nullptr;  ///< 控制接口字符串 / Control interface string
-  const char* data_interface_string_ =
-      nullptr;  ///< 数据接口字符串 / Data interface string
+  /// 数据IN端点号 / Data IN endpoint number
+  Endpoint::EPNumber data_in_ep_num_ = Endpoint::EPNumber::EP_INVALID;
+  /// 数据OUT端点号 / Data OUT endpoint number
+  Endpoint::EPNumber data_out_ep_num_ = Endpoint::EPNumber::EP_INVALID;
+  /// 通信端点号 / Communication endpoint number
+  Endpoint::EPNumber comm_ep_num_ = Endpoint::EPNumber::EP_INVALID;
+  /// 控制接口字符串 / Control interface string
+  const char* control_interface_string_ = nullptr;
+  /// 数据接口字符串 / Data interface string
+  const char* data_interface_string_ = nullptr;
 
   // 端点指针。
   // Endpoint pointers.
@@ -793,7 +796,7 @@ class CDCBase : public DeviceClass
 
   // 接口信息。
   // Interface metadata.
-  uint8_t itf_comm_in_num_;  ///< 通信接口号 / Communication interface number
+  uint8_t itf_comm_in_num_ = 0;  ///< 通信接口号 / Communication interface number
 
   // CDC 参数。
   // CDC parameters.

@@ -4553,8 +4553,8 @@ class DapLinkV2Class : public DeviceClass
   /// thread Takes, executes and Releases.
   LibXR::SlotPool<CommandSlot> cmd_pool_{CMD_SLOT_COUNT};
   size_t rx_slot_ = SLOT_NONE;  ///< USB 侧正在拼装的命令槽 / Command slot being assembled
-  size_t cur_cmd_ =
-      SLOT_NONE;  ///< Step 线程持有的命令槽 / Command slot the Step thread holds
+  /// Step 线程持有的命令槽 / Command slot the Step thread holds
+  size_t cur_cmd_ = SLOT_NONE;
   /// 响应池（暂存）：Step 线程 Acquire、写入、Publish，USB 服务上下文 Take、拷进 IN
   /// 槽提交、 Release。槽数等于通告的在途命令数，所以执行不必等主机取走前面的响应。
   /// Response pool (staging): the Step thread Acquires, writes and Publishes; the USB
@@ -4562,8 +4562,8 @@ class DapLinkV2Class : public DeviceClass
   /// slots as the advertised commands in flight, so execution does not wait for the host
   /// to take earlier responses.
   LibXR::SlotPool<ResponseSlot> resp_pool_{PACKET_COUNT_EFFECTIVE};
-  size_t cur_resp_ =
-      SLOT_NONE;  ///< Step 线程持有的暂存响应槽 / Staging slot the Step thread holds
+  /// Step 线程持有的暂存响应槽 / Staging slot the Step thread holds
+  size_t cur_resp_ = SLOT_NONE;
   size_t send_idx_ = SLOT_NONE;  ///< USB 侧已取出、等 IN 槽的暂存响应 / Staged response
                                  ///< taken by the USB side, waiting for an IN slot
   /// 已发布、还没进端点队列的暂存响应数：为 0 时 Step 才直接提交，响应顺序不变。
@@ -4646,8 +4646,10 @@ class DapLinkV2Class : public DeviceClass
 
   const char* interface_string_ = nullptr;  ///< 接口字符串 / Interface string
 
-  Endpoint::EPNumber data_in_ep_num_;   ///< 批量 IN 端点号 / Bulk IN EP number
-  Endpoint::EPNumber data_out_ep_num_;  ///< 批量 OUT 端点号 / Bulk OUT EP number
+  /// 批量 IN 端点号 / Bulk IN EP number
+  Endpoint::EPNumber data_in_ep_num_ = Endpoint::EPNumber::EP_INVALID;
+  /// 批量 OUT 端点号 / Bulk OUT EP number
+  Endpoint::EPNumber data_out_ep_num_ = Endpoint::EPNumber::EP_INVALID;
 
   Endpoint* ep_data_in_ = nullptr;   ///< 批量 IN 端点 / Bulk IN endpoint
   Endpoint* ep_data_out_ = nullptr;  ///< 批量 OUT 端点 / Bulk OUT endpoint
