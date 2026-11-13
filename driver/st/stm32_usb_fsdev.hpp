@@ -440,14 +440,13 @@ struct Stm32FsDevDrdHw
   static uint16_t ReadFnr() { return static_cast<uint16_t>(Regs()->FNR); }
   static void WriteDaddr(uint16_t value) { Regs()->DADDR = value; }
 
-  static uintptr_t PmaBase()
-  {
-#if defined(USB_DRD_PMAADDR)
-    return USB_DRD_PMAADDR;
-#else
-    return reinterpret_cast<uintptr_t>(Regs()) + 0x800U;
+  // 包内存的地址由设备头文件给出：它与寄存器块的间距随系列不同，不能从寄存器基址推算。
+  // The address of the packet memory comes from the device header: its distance from the
+  // register block differs between families and cannot be derived from the register base.
+#if !defined(USB_DRD_PMAADDR)
+#error "USB_DRD_PMAADDR is not defined by the device header of this USB_DRD_FS part."
 #endif
-  }
+  static uintptr_t PmaBase() { return USB_DRD_PMAADDR; }
 
   static volatile uint32_t* Bd(uint8_t num, bool rx)
   {
@@ -476,6 +475,15 @@ struct Stm32FsDevDrdHw
   }
   static uint16_t GetRxCount(uint8_t num)
   {
+    // 接收完成后，RX 缓冲描述符里的计数要过几个周期才更新；HAL 的 PCD_GET_EP_RX_CNT
+    // 同样先空转 PCD_RX_PMA_CNT 次再读。
+    // After a reception the count in the RX buffer descriptor takes a few cycles to
+    // update; HAL's PCD_GET_EP_RX_CNT spins PCD_RX_PMA_CNT times before it reads, too.
+    volatile uint32_t settle = PCD_RX_PMA_CNT;
+    while (settle > 0U)
+    {
+      settle = settle - 1U;
+    }
     return static_cast<uint16_t>((*Bd(num, true) >> 16U) & 0x03FFU);
   }
 
