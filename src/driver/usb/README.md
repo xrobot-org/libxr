@@ -146,12 +146,18 @@ buffer. Old code fails to compile and no compatibility shims are provided.
   设备的 owner 中执行。owner 由赢得 `SerializedService::Invoke` 的调用者执行：控制器中断，或者任何调用
   Submit/Receive/ReturnSlot/RequestClassService/Init 的应用线程，所以每个回调都可能在中断里
   （`in_isr=true`）或任意应用线程里（`in_isr=false`）运行，必须不阻塞。线程持有 owner 时，中断只发布工作，
-  要等这个线程处理 / Class callbacks (BindEndpoints/UnbindEndpoints, OnDeviceEvent, control requests,
+  要等这个线程处理。所以调用这些接口的线程优先级不能太低：它持有 owner 时被抢占，控制传输和端点完成都要
+  等它恢复运行 / Class callbacks (BindEndpoints/UnbindEndpoints, OnDeviceEvent, control requests,
   OnService, OnBusTime, endpoint completions) all run in the device's owner. The owner pass runs in
   whichever caller wins `SerializedService::Invoke`: the controller interrupt, or any application
   thread that calls Submit/Receive/ReturnSlot/RequestClassService/Init. Every callback can therefore run
   in an interrupt (`in_isr=true`) or in an arbitrary application thread (`in_isr=false`), and must not
-  block. While a thread owns, interrupt work is only published and waits for that thread.
+  block. While a thread owns, interrupt work is only published and waits for that thread. A thread
+  that calls these interfaces therefore must not run at a low priority: when it is preempted while it
+  owns, control transfers and endpoint completions wait until it runs again.
+- `Endpoint::Type::INTERRUPT` 改名为 `Endpoint::Type::INTR`：原来的名字与某些平台头文件里的宏同名 /
+  `Endpoint::Type::INTERRUPT` is now `Endpoint::Type::INTR`: the former name is a macro in the headers
+  of some platforms.
 - 总线复位以 `DeviceEvent::RESET` 通知各设备类（`OnDeviceEvent`）；后端不另外提供复位计数 / A bus reset
   reaches every class as `DeviceEvent::RESET` (`OnDeviceEvent`); backends provide no separate reset
   counter.
