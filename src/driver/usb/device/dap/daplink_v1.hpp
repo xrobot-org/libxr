@@ -22,7 +22,7 @@ namespace LibXR::USB
 #define LIBXR_USB_DAPLINK_V1_BUILD_CONFIG_DEFINED
 namespace DapLinkV1BuildConfig
 {
-static constexpr bool kEnableJtag = true;
+static constexpr bool ENABLE_JTAG = true;
 }
 #endif
 
@@ -63,7 +63,7 @@ class DapLinkV1Class
 {
  public:
   /// 编译期是否包含 JTAG 支持 / Whether JTAG support is compiled in
-  static constexpr bool JTAG_ENABLED = DapLinkV1BuildConfig::kEnableJtag;
+  static constexpr bool JTAG_ENABLED = DapLinkV1BuildConfig::ENABLE_JTAG;
   /// 默认的接口字符串 / Default interface string
   static constexpr const char* DEFAULT_INTERFACE_STRING = "CMSIS-DAP";
 
