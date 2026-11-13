@@ -623,7 +623,7 @@ class GsUsbClass : public DeviceClass
         // 只读 RAM 值；构造期已从 Database 载入，SET 后由 Timer 任务落库。
         // Read the RAM value only; it was loaded from the Database at construction and
         // SET writes it back through the Timer task.
-        ctrl_buf_.user_id = user_id_ram_;
+        ctrl_buf_.user_id = user_id_ram_.load(std::memory_order_relaxed);
         if (wLength < sizeof(ctrl_buf_.user_id))
         {
           return ErrorCode::ARG_ERR;
@@ -803,16 +803,22 @@ class GsUsbClass : public DeviceClass
         return HandleSetTermination(ctrl_target_channel_, ctrl_buf_.term);
 
       case GsUsb::BReq::SET_USER_ID:
+      {
         if (data.size_ != sizeof(uint32_t))
         {
           return ErrorCode::ARG_ERR;
         }
-        // 中断/owner 里只改内存值并置待写标志，Database 由 Timer 周期任务写入。
+        // 中断/owner 里只改内存值并置待写标志，Database 由 Timer 周期任务写入。内存值整字
+        // 写入：Timer 任务读到的是完整的旧值或新值。
         // Only update the in-memory value and set the pending flag here; the Timer task
-        // writes the Database.
-        Memory::FastCopy(&user_id_ram_, data.addr_, sizeof(uint32_t));
+        // writes the Database. The value is stored as one word: the Timer task reads the
+        // whole old value or the whole new one.
+        uint32_t user_id = 0;
+        Memory::FastCopy(&user_id, data.addr_, sizeof(user_id));
+        user_id_ram_.store(user_id, std::memory_order_relaxed);
         user_id_write_pending_.store(1U, std::memory_order_release);
         return ErrorCode::OK;
+      }
 
       case GsUsb::BReq::DEVICE_CONFIG:
       case GsUsb::BReq::BT_CONST:
@@ -926,7 +932,9 @@ class GsUsbClass : public DeviceClass
 
   LibXR::Database* database_ = nullptr;  ///< 数据库存储（可选，用于 USER_ID） / Database
                                          ///< storage (optional, used by USER_ID)
-  uint32_t user_id_ram_ = 0;             ///< USER_ID 的 RAM 值 / USER_ID RAM value
+  /// USER_ID 的 RAM 值；owner 写，Timer 任务读 / USER_ID RAM value; written in the owner
+  /// and read by the Timer task
+  std::atomic<uint32_t> user_id_ram_{0};
   // 构造期创建一次的数据库键；SET_USER_ID 只置标志，Timer 任务负责写库。
   // Database key created once at construction; SET_USER_ID only sets a flag, the Timer
   // task writes it back.
@@ -1200,9 +1208,8 @@ class GsUsbClass : public DeviceClass
       return;
     }
 
-    user_id_key_ =
-        new LibXR::Database::Key<uint32_t>(*database_, "user_id", user_id_ram_);
-    user_id_ram_ = static_cast<uint32_t>(*user_id_key_);
+    user_id_key_ = new LibXR::Database::Key<uint32_t>(*database_, "user_id", 0U);
+    user_id_ram_.store(static_cast<uint32_t>(*user_id_key_), std::memory_order_relaxed);
 
     user_id_timer_ =
         LibXR::Timer::CreateTask(OnUserIdTimerStatic, this, USER_ID_WRITE_PERIOD_MS);
@@ -1221,7 +1228,7 @@ class GsUsbClass : public DeviceClass
     }
     if (self->user_id_key_ != nullptr)
     {
-      (void)self->user_id_key_->Set(self->user_id_ram_);
+      (void)self->user_id_key_->Set(self->user_id_ram_.load(std::memory_order_relaxed));
     }
   }
 
