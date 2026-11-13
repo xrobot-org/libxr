@@ -107,7 +107,7 @@ class StubCan : public LibXR::CAN
     pack.id = id;
     pack.type = type;
     pack.dlc = static_cast<uint8_t>(data.size());
-    std::memcpy(pack.data, data.data(), data.size());
+    std::copy(data.begin(), data.end(), pack.data);
     OnMessage(pack, false);
   }
 
