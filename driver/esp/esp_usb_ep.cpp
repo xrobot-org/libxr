@@ -590,8 +590,36 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
           device_.setup_packet_, ESP32USBDevice::SETUP_DMA_BUFFER_BYTES, false);
       REQUIRE_FROM_CALLBACK(cache_sync_dma_buffer_result, in_isr);
     }
-    device_.UpdateSetupState(device_.setup_packet_);
-    const auto* setup = reinterpret_cast<const USB::SetupPacket*>(device_.setup_packet_);
+    // 核心把每个 SETUP 写到 DOEPDMA0 当前的地址并前移 8 字节，要处理的是最后收到的那个，
+    // 它就在这个地址之前：背靠背的 SETUP 依次排在 SETUP 缓冲区里；OUT 数据阶段已经挂上时
+    // 到来的 SETUP 写在数据槽的开头。其余情况（刚重新装填过）取 SETUP 缓冲区的开头。
+    // The core stores each SETUP at the current address of DOEPDMA0 and advances it by 8
+    // bytes, and the one to process is the last received, right below that address:
+    // back-to-back SETUP packets follow one another in the SETUP buffer, and a SETUP that
+    // arrives with an OUT data stage armed lands at the start of the data slot. Anything
+    // else (the buffer was just reloaded) means the start of the SETUP buffer.
+    const uint8_t* packet = device_.setup_packet_;
+    if (device_.DmaEnabled())
+    {
+      const uintptr_t start = reinterpret_cast<uintptr_t>(device_.setup_packet_);
+      const uintptr_t last = static_cast<uintptr_t>(dev->doepdma0_reg.val) -
+                             ESP32USBDevice::SETUP_PACKET_BYTES;
+      if (last > start && last + ESP32USBDevice::SETUP_PACKET_BYTES <=
+                              start + ESP32USBDevice::SETUP_DMA_BUFFER_BYTES)
+      {
+        packet = reinterpret_cast<const uint8_t*>(last);
+      }
+      else if (transfer_hw_buffer_ != nullptr &&
+               last == reinterpret_cast<uintptr_t>(transfer_hw_buffer_))
+      {
+        const auto slot_sync_result = ESPUSBDetail::CacheSyncDmaBuffer(
+            transfer_hw_buffer_, ESPUSBDetail::USB_DMA_ALIGNMENT, false);
+        REQUIRE_FROM_CALLBACK(slot_sync_result, in_isr);
+        packet = transfer_hw_buffer_;
+      }
+    }
+    device_.UpdateSetupState(packet);
+    const auto* setup = reinterpret_cast<const USB::SetupPacket*>(packet);
     const bool expect_out_data_stage =
         ((setup->bmRequestType & 0x80U) == 0U) && (setup->wLength > 0U);
 
