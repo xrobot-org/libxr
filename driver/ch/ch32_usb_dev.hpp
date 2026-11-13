@@ -39,10 +39,14 @@ class CH32USBDevice : public USB::EndpointPool,
   {
   }
 
+  /// 请求初始化设备（转给设备核心）/ Request the initialization of the device (forwarded
+  /// to the device core)
   void Init(bool in_isr) override
   {
     USB::DeviceCore<USB::FullSpeedCapabilities>::Init(in_isr);
   }
+  /// 请求反初始化设备（转给设备核心）/ Request the deinitialization of the device
+  /// (forwarded to the device core)
   void Deinit(bool in_isr) override
   {
     USB::DeviceCore<USB::FullSpeedCapabilities>::Deinit(in_isr);

@@ -14,6 +14,8 @@ struct FullSpeedCapabilities
   static constexpr uint32_t SPEEDS = SpeedBit(Speed::FULL);
   /// 是否编译 BOS 描述符支持 / Whether BOS descriptor support is compiled in
   static constexpr bool BOS = true;
+  /// 是否编译总线时间（按 SOF 向类报告经过的帧数）的支持 / Whether support for the bus
+  /// time (elapsed frames reported to the classes at SOF) is compiled in
   static constexpr bool BUS_TIME = true;
 };
 

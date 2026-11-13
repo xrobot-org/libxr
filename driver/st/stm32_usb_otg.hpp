@@ -84,7 +84,11 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   /// 中断入口：控制器 core 的中断 / Interrupt entry for the controller core
   static void Dispatch(USB_OTG_GlobalTypeDef* core);
 
+  /// 请求初始化设备（转给设备核心）/ Request the initialization of the device (forwarded
+  /// to the device core)
   void Init(bool in_isr) override { STM32USBDeviceCore::Init(in_isr); }
+  /// 请求反初始化设备（转给设备核心）/ Request the deinitialization of the device
+  /// (forwarded to the device core)
   void Deinit(bool in_isr) override { STM32USBDeviceCore::Deinit(in_isr); }
   /// 使能中断并连接总线 / Enable interrupts and connect to the bus
   void Start(bool in_isr) override;

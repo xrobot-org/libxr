@@ -56,7 +56,13 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   DeviceCore(const DeviceCore&) = delete;
   DeviceCore& operator=(const DeviceCore&) = delete;
 
+  /// 请求初始化设备；由 owner 执行 / Request the initialization of the device; the owner
+  /// carries it out
+  /// @param in_isr 是否在 ISR / Whether in ISR context
   virtual void Init(bool in_isr) { RequestLifecycle(in_isr, INIT_EVENT, true); }
+  /// 请求反初始化设备；由 owner 执行 / Request the deinitialization of the device; the
+  /// owner carries it out
+  /// @param in_isr 是否在 ISR / Whether in ISR context
   virtual void Deinit(bool in_isr) { RequestLifecycle(in_isr, DEINIT_EVENT, false); }
   /**
    * @brief 启动控制器并接通总线（例如接通 D+ 上拉），由后端实现 / Start the controller
@@ -116,6 +122,9 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   /// @param microframe 微帧号 0-7；0xff 表示控制器只报告完整帧 / Microframe 0-7; 0xff
   /// when the controller only reports full frames
   void OnSof(bool in_isr, uint16_t frame, uint8_t microframe = 0xff);
+  /// 当前配置中是否有类需要总线时间；后端据此决定是否打开 SOF 中断 / Whether a class of
+  /// the current configuration wants the bus time; the backend uses it to decide whether
+  /// to enable the SOF interrupt
   bool WantsBusTime() const
   {
     if constexpr (Capabilities::BUS_TIME) return composition_.WantsBusTime();

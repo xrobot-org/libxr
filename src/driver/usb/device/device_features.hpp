@@ -78,16 +78,28 @@ struct HighSpeedFeature<true>
   bool other_speed_descriptor = false;
 };
 
+/// 总线时间功能的状态；功能关闭时为空 / State of the bus time feature; empty when the
+/// feature is off
 template <bool Enabled>
 struct BusTimeFeature
 {
 };
+/// 总线时间功能开启时的状态 / State of the bus time feature when it is on
 template <>
 struct BusTimeFeature<true>
 {
+  /// 最近一次 SOF：低 16 位是帧号（0xffff 表示未知），高 16 位是微帧号；全 1 表示还没有
+  /// 收到 SOF。由后端在 SOF 时写入。
+  /// The latest SOF: the frame number in the low 16 bits (0xffff when unknown) and the
+  /// microframe in the high 16 bits; all ones before the first SOF. Written by the
+  /// backend at SOF.
   std::atomic<uint32_t> observed{0xffffffffU};
+  /// 最近一次 SOF 时的毫秒时间 / Millisecond time of the latest SOF
   std::atomic<uint32_t> observed_ms{0};
+  /// 上一次交给类时的 observed，用来计算经过的帧数 / observed at the previous delivery
+  /// to the classes, used to compute the elapsed frames
   uint32_t previous = 0xffffffffU;
+  /// 上一次交给类时的 observed_ms / observed_ms at the previous delivery to the classes
   uint32_t previous_ms = 0;
 };
 }  // namespace LibXR::USB::Detail

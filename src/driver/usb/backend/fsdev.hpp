@@ -368,7 +368,11 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
         static_cast<uint16_t>(HW::ReadCntr() & ~(HW::CNTR_RUN_MASK | HW::CNTR_SOFM)));
   }
 
+  /// 请求初始化设备（转给设备核心）/ Request the initialization of the device (forwarded
+  /// to the device core)
   void Init(bool in_isr) override { DeviceCore<FullSpeedCapabilities>::Init(in_isr); }
+  /// 请求反初始化设备（转给设备核心）/ Request the deinitialization of the device
+  /// (forwarded to the device core)
   void Deinit(bool in_isr) override { DeviceCore<FullSpeedCapabilities>::Deinit(in_isr); }
 
   ~FSDevDevice() override
@@ -442,6 +446,9 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
   /// endpoint events are no longer discarded
   void OnControllerReset() override { discard_ = false; }
 
+  /// 所有端点停止都已确认后，按是否有类需要总线时间重新决定 SOF 中断的开关
+  /// Once every endpoint stop is confirmed, decide again whether the SOF interrupt is on,
+  /// depending on whether a class wants the bus time
   void OnStopsSettled() override
   {
     if (!connected_)
