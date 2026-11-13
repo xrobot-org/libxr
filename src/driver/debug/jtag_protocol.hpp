@@ -32,7 +32,10 @@ enum class Ack : uint8_t
 /**
  * @brief JTAG 传输请求 / JTAG transfer request
  *
- * @note request 位域与 SWD 一致：APnDP/RnW/A2/A3。JTAG 中由 DPACC/APACC IR 选择端口。
+ * @note 请求的位域与 SWD 相同：APnDP、RnW、A2、A3。JTAG 中由 DPACC 或 APACC 指令选择
+ *       端口。
+ *       The request fields are those of SWD: APnDP, RnW, A2, A3. In JTAG the DPACC or
+ *       APACC instruction selects the port.
  */
 struct Request
 {
@@ -55,18 +58,18 @@ struct Response
 /**
  * @brief JTAG IR 指令码 / JTAG IR codes
  */
-inline constexpr uint32_t JTAG_IR_ABORT = 0x08u;
-inline constexpr uint32_t JTAG_IR_DPACC = 0x0Au;
-inline constexpr uint32_t JTAG_IR_APACC = 0x0Bu;
-inline constexpr uint32_t JTAG_IR_IDCODE = 0x0Eu;
-inline constexpr uint32_t JTAG_IR_BYPASS = 0x0Fu;
+inline constexpr uint32_t JTAG_IR_ABORT = 0x08u;   ///< ABORT
+inline constexpr uint32_t JTAG_IR_DPACC = 0x0Au;   ///< DPACC：访问 DP / DP access
+inline constexpr uint32_t JTAG_IR_APACC = 0x0Bu;   ///< APACC：访问 AP / AP access
+inline constexpr uint32_t JTAG_IR_IDCODE = 0x0Eu;  ///< IDCODE
+inline constexpr uint32_t JTAG_IR_BYPASS = 0x0Fu;  ///< BYPASS
 
 /**
  * @brief JTAG Sequence 信息字段 / JTAG sequence info fields
  */
-inline constexpr uint8_t JTAG_SEQUENCE_TCK = 0x3Fu;  ///< TCK count (1..64, 0->64)
-inline constexpr uint8_t JTAG_SEQUENCE_TMS = 0x40u;  ///< TMS value
-inline constexpr uint8_t JTAG_SEQUENCE_TDO = 0x80u;  ///< TDO capture
+inline constexpr uint8_t JTAG_SEQUENCE_TCK = 0x3Fu;  ///< TCK 个数 / TCK count (0: 64).
+inline constexpr uint8_t JTAG_SEQUENCE_TMS = 0x40u;  ///< TMS 电平 / TMS value.
+inline constexpr uint8_t JTAG_SEQUENCE_TDO = 0x80u;  ///< 采集 TDO / Capture TDO.
 
 /**
  * @brief JTAG-DP DR 长度（bit）/ JTAG-DP DR length in bits
@@ -74,12 +77,18 @@ inline constexpr uint8_t JTAG_SEQUENCE_TDO = 0x80u;  ///< TDO capture
 inline constexpr uint32_t JTAG_DP_DR_LEN = 35u;
 
 /**
- * @brief JTAG ACK 原始值映射（JTAG-DP 与 SWD ACK 编码不同）
+ * @brief 把 JTAG-DP 的 3 位原始 ACK 映射成 Ack / Map the raw 3-bit ACK of a JTAG-DP to
+ * Ack
  *
- * JTAG 原始 3-bit：OK=0x2, WAIT=0x1, FAULT=0x4
- * 映射后使用本枚举（OK=0x1, WAIT=0x2, FAULT=0x4）
+ * JTAG-DP 的编码与 SWD 不同：原始值 OK = 0x2、WAIT = 0x1、FAULT = 0x4；全 0 视为无应答，
+ * 其余组合都是协议错误。
+ * The encoding of a JTAG-DP differs from SWD: raw OK = 0x2, WAIT = 0x1, FAULT = 0x4; all
+ * zero is taken as no answer, every other pattern is a protocol error.
+ *
+ * @param raw_ack 原始 ACK，只看低 3 位 / Raw ACK; only the low 3 bits are used
+ * @return 映射后的 ACK / Mapped ACK
  */
-constexpr Ack map_jtag_ack(uint8_t raw_ack)
+constexpr Ack MapJtagAck(uint8_t raw_ack)
 {
   switch (raw_ack & 0x7u)
   {
@@ -99,7 +108,8 @@ constexpr Ack map_jtag_ack(uint8_t raw_ack)
 /**
  * @brief JTAG 设备链配置 / JTAG device chain configuration
  *
- * @note 该结构仅描述设备链参数，不分配内存。
+ * @note 该结构只描述设备链的参数，不分配内存。
+ *       The structure only describes the chain; it allocates nothing.
  */
 struct ChainConfig
 {
@@ -109,7 +119,9 @@ struct ChainConfig
   const uint16_t* ir_before = nullptr;  ///< 当前设备前的 bypass 位数 / Bypass bits before
   const uint16_t* ir_after = nullptr;   ///< 当前设备后的 bypass 位数 / Bypass bits after
 
-  // 运行期缓存（可选）：用于减少每次 Shift 计算
+  // 可选的运行期缓存，由 UpdateChainCache() 填写，省去每次移位时的计算。
+  // Optional run-time cache filled by UpdateChainCache(); saves the computation on every
+  // shift.
   uint32_t ir_before_bits_len = 0;  ///< 前面设备 IR 总位数 / IR bits before
   uint32_t ir_after_bits_len = 0;   ///< 后面设备 IR 总位数 / IR bits after
   uint32_t dr_before_bits_len = 0;  ///< 前面设备 DR 总位数 / DR bits before
@@ -119,7 +131,11 @@ struct ChainConfig
 /**
  * @brief 更新链路缓存（可选） / Update chain cache (optional).
  *
- * @note 默认假设 index=0 为 TDO 侧设备；缓存仅用于加速，不强制依赖。
+ * @note index = 0 是最靠近 TDO 的设备；缓存只用于加速，可以不用。
+ *       Index 0 is the device nearest to TDO; the cache only saves time and is optional.
+ *
+ * @param cfg 设备链配置，其中的缓存字段被重写 / Chain configuration; its cache fields
+ *        are rewritten
  */
 inline void UpdateChainCache(ChainConfig& cfg)
 {
@@ -150,13 +166,17 @@ inline void UpdateChainCache(ChainConfig& cfg)
 }
 
 /**
- * @brief 将 Request 组装为 35-bit DR（LSB-first）。
+ * @brief 把 Request 组装成 35 位 DR，LSB 在先 / Pack a Request into the 35-bit DR, LSB
+ *        first
  *
- * 布局（LSB-first）：
+ * 布局 / Layout：
  *   bit0: RnW
  *   bit1: A2
  *   bit2: A3
  *   bit3..34: DATA[31:0]
+ *
+ * @param req 请求（用 rnw、addr2b、wdata） / Request (rnw, addr2b and wdata are used)
+ * @return 35 位 DR 值 / The 35-bit DR value
  */
 inline uint64_t PackDpDr(const Request& req)
 {
@@ -167,29 +187,45 @@ inline uint64_t PackDpDr(const Request& req)
 }
 
 /**
- * @brief 解析 35-bit DR（TDO LSB-first）到 Response。
+ * @brief 把移出的 35 位 DR 解析成 Response / Unpack the 35-bit DR shifted out into a
+ *        Response
  *
- * @note JTAG ACK 编码与 SWD 不同，需使用 map_jtag_ack 进行映射。
+ * 低 3 位是原始 ACK，经 MapJtagAck() 映射；其后 32 位是读数据。
+ * The low 3 bits are the raw ACK, mapped by MapJtagAck(); the next 32 bits are the read
+ * data.
+ *
+ * @param dr_lsb_first 从 TDO 移出的 DR，LSB 在先 / DR shifted out of TDO, LSB first
+ * @param resp 解析结果 / Unpacked response
  */
 inline void UnpackDpDr(uint64_t dr_lsb_first, Response& resp)
 {
   const uint8_t RAW_ACK = static_cast<uint8_t>(dr_lsb_first & 0x7u);
-  resp.ack = map_jtag_ack(RAW_ACK);
+  resp.ack = MapJtagAck(RAW_ACK);
   resp.rdata = static_cast<uint32_t>((dr_lsb_first >> 3) & 0xFFFF'FFFFu);
 }
 
 /**
  * @brief 构造 DP 请求 / Build DP request
+ *
+ * @param rnw true 为读，false 为写 / true for a read, false for a write
+ * @param addr2b A[3:2]（0..3）/ A[3:2] (0..3)
+ * @param wdata 写数据，读请求不用 / Write data; unused by a read
+ * @return 请求 / Request
  */
-constexpr Request make_dp_req(bool rnw, uint8_t addr2b, uint32_t wdata = 0u)
+constexpr Request MakeDpRequest(bool rnw, uint8_t addr2b, uint32_t wdata = 0u)
 {
   return Request{Port::DP, rnw, static_cast<uint8_t>(addr2b & 0x03u), wdata};
 }
 
 /**
  * @brief 构造 AP 请求 / Build AP request
+ *
+ * @param rnw true 为读，false 为写 / true for a read, false for a write
+ * @param addr2b A[3:2]（0..3）/ A[3:2] (0..3)
+ * @param wdata 写数据，读请求不用 / Write data; unused by a read
+ * @return 请求 / Request
  */
-constexpr Request make_ap_req(bool rnw, uint8_t addr2b, uint32_t wdata = 0u)
+constexpr Request MakeApRequest(bool rnw, uint8_t addr2b, uint32_t wdata = 0u)
 {
   return Request{Port::AP, rnw, static_cast<uint8_t>(addr2b & 0x03u), wdata};
 }

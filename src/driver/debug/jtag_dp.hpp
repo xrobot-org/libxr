@@ -33,7 +33,7 @@ class JtagDp final
   ErrorCode DpRead(uint8_t addr2b, uint32_t& val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
-    const ErrorCode EC = Transfer(JtagProtocol::make_dp_req(true, addr2b, 0u), resp);
+    const ErrorCode EC = Transfer(JtagProtocol::MakeDpRequest(true, addr2b, 0u), resp);
     ack = resp.ack;
     val = resp.rdata;
     return EC;
@@ -42,7 +42,7 @@ class JtagDp final
   ErrorCode DpWrite(uint8_t addr2b, uint32_t val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
-    const ErrorCode EC = Transfer(JtagProtocol::make_dp_req(false, addr2b, val), resp);
+    const ErrorCode EC = Transfer(JtagProtocol::MakeDpRequest(false, addr2b, val), resp);
     ack = resp.ack;
     return EC;
   }
@@ -50,7 +50,7 @@ class JtagDp final
   ErrorCode DpReadTxn(uint8_t addr2b, uint32_t& val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
-    ErrorCode EC = Transfer(JtagProtocol::make_dp_req(true, addr2b, 0u), resp);
+    ErrorCode EC = Transfer(JtagProtocol::MakeDpRequest(true, addr2b, 0u), resp);
     ack = resp.ack;
     if (EC != ErrorCode::OK)
     {
@@ -61,7 +61,7 @@ class JtagDp final
       return ErrorCode::OK;
     }
     // 读为管线化：第二次读取 RDBUFF 拿到结果
-    EC = Transfer(JtagProtocol::make_dp_req(true, 3u, 0u), resp);
+    EC = Transfer(JtagProtocol::MakeDpRequest(true, 3u, 0u), resp);
     ack = resp.ack;
     if (EC != ErrorCode::OK || resp.ack != JtagProtocol::Ack::OK)
     {
@@ -95,7 +95,7 @@ class JtagDp final
   ErrorCode ApReadTxn(uint8_t addr2b, uint32_t& val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
-    ErrorCode EC = Transfer(JtagProtocol::make_ap_req(true, addr2b, 0u), resp);
+    ErrorCode EC = Transfer(JtagProtocol::MakeApRequest(true, addr2b, 0u), resp);
     ack = resp.ack;
     if (EC != ErrorCode::OK)
     {
@@ -106,7 +106,7 @@ class JtagDp final
       return ErrorCode::OK;
     }
     // AP 读同样是 posted：读 RDBUFF 获取实际数据
-    EC = Transfer(JtagProtocol::make_dp_req(true, 3u, 0u), resp);
+    EC = Transfer(JtagProtocol::MakeDpRequest(true, 3u, 0u), resp);
     ack = resp.ack;
     if (EC != ErrorCode::OK || resp.ack != JtagProtocol::Ack::OK)
     {
@@ -119,7 +119,7 @@ class JtagDp final
   ErrorCode ApWriteTxn(uint8_t addr2b, uint32_t val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
-    const ErrorCode EC = Transfer(JtagProtocol::make_ap_req(false, addr2b, val), resp);
+    const ErrorCode EC = Transfer(JtagProtocol::MakeApRequest(false, addr2b, val), resp);
     ack = resp.ack;
     return EC;
   }
@@ -158,7 +158,7 @@ class JtagDp final
 
     uint64_t out_dr = 0u;
     const ErrorCode EC2 = ShiftValueThroughChain(
-        JtagProtocol::PackDpDr(JtagProtocol::make_dp_req(false, 0u, data)),
+        JtagProtocol::PackDpDr(JtagProtocol::MakeDpRequest(false, 0u, data)),
         JtagProtocol::JTAG_DP_DR_LEN, out_dr);
     if (EC2 != ErrorCode::OK)
     {

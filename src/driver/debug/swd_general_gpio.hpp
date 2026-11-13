@@ -659,7 +659,7 @@ class SwdGeneralGPIO final : public Swd
     resp.rdata = 0u;
     resp.parity_ok = true;
 
-    const uint8_t REQUEST_BYTE = SwdProtocol::MakeRequest(req);
+    const uint8_t REQUEST_BYTE = SwdProtocol::EncodeRequest(req);
 
     (void)SetSwdioDriveMode();
     WriteByteLSB<DELAYED>(REQUEST_BYTE);

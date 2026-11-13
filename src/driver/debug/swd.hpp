@@ -169,7 +169,7 @@ class Swd
   ErrorCode DpRead(SwdProtocol::DpReadReg reg, uint32_t& val, SwdProtocol::Ack& ack)
   {
     SwdProtocol::Response resp;
-    const ErrorCode EC = Transfer(SwdProtocol::make_dp_read_req(reg), resp);
+    const ErrorCode EC = Transfer(SwdProtocol::MakeDpReadRequest(reg), resp);
     if (EC != ErrorCode::OK)
     {
       ack = SwdProtocol::Ack::PROTOCOL;
@@ -197,7 +197,7 @@ class Swd
   ErrorCode DpWrite(SwdProtocol::DpWriteReg reg, uint32_t val, SwdProtocol::Ack& ack)
   {
     SwdProtocol::Response resp;
-    const ErrorCode EC = Transfer(SwdProtocol::make_dp_write_req(reg, val), resp);
+    const ErrorCode EC = Transfer(SwdProtocol::MakeDpWriteRequest(reg, val), resp);
     if (EC != ErrorCode::OK)
     {
       ack = SwdProtocol::Ack::PROTOCOL;
@@ -218,7 +218,7 @@ class Swd
   ErrorCode DpReadTxn(SwdProtocol::DpReadReg reg, uint32_t& val, SwdProtocol::Ack& ack)
   {
     SwdProtocol::Response resp;
-    const ErrorCode EC = TransferWithRetry(SwdProtocol::make_dp_read_req(reg), resp);
+    const ErrorCode EC = TransferWithRetry(SwdProtocol::MakeDpReadRequest(reg), resp);
     ack = resp.ack;
 
     if (EC != ErrorCode::OK)
@@ -246,7 +246,7 @@ class Swd
   {
     SwdProtocol::Response resp;
     const ErrorCode EC =
-        TransferWithRetry(SwdProtocol::make_dp_write_req(reg, val), resp);
+        TransferWithRetry(SwdProtocol::MakeDpWriteRequest(reg, val), resp);
     ack = resp.ack;
 
     if (EC != ErrorCode::OK)
@@ -274,7 +274,7 @@ class Swd
   ErrorCode ApReadTxn(uint8_t addr2b, uint32_t& val, SwdProtocol::Ack& ack)
   {
     SwdProtocol::Response resp;
-    const ErrorCode EC = TransferWithRetry(SwdProtocol::make_ap_read_req(addr2b), resp);
+    const ErrorCode EC = TransferWithRetry(SwdProtocol::MakeApReadRequest(addr2b), resp);
     ack = resp.ack;
 
     if (EC != ErrorCode::OK)
@@ -306,7 +306,7 @@ class Swd
   ErrorCode ApReadPostedTxn(uint8_t addr2b, uint32_t& posted_val, SwdProtocol::Ack& ack)
   {
     SwdProtocol::Response resp;
-    const ErrorCode EC = TransferWithRetry(SwdProtocol::make_ap_read_req(addr2b), resp);
+    const ErrorCode EC = TransferWithRetry(SwdProtocol::MakeApReadRequest(addr2b), resp);
     ack = resp.ack;
 
     if (EC != ErrorCode::OK)
@@ -344,7 +344,7 @@ class Swd
   {
     SwdProtocol::Response resp;
     const ErrorCode EC =
-        TransferWithRetry(SwdProtocol::make_ap_write_req(addr2b, val), resp);
+        TransferWithRetry(SwdProtocol::MakeApWriteRequest(addr2b, val), resp);
     ack = resp.ack;
 
     if (EC != ErrorCode::OK)

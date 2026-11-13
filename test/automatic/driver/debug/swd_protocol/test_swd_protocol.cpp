@@ -33,17 +33,17 @@ void TestRequestEncoding()
 {
   // 注释列出各请求中为 1 的位 / The comments list the bits that are set.
   // DP read IDCODE (A = 0x0): Start, RnW, Parity, Park.
-  TEST_ASSERT(MakeRequest(make_dp_read_req(DpReadReg::IDCODE)) == 0xA5u);
+  TEST_ASSERT(EncodeRequest(MakeDpReadRequest(DpReadReg::IDCODE)) == 0xA5u);
   // DP read RDBUFF (A = 0xC): Start, RnW, A2, A3, Parity, Park.
-  TEST_ASSERT(MakeRequest(make_dp_read_req(DpReadReg::RDBUFF)) == 0xBDu);
+  TEST_ASSERT(EncodeRequest(MakeDpReadRequest(DpReadReg::RDBUFF)) == 0xBDu);
   // DP write ABORT (A = 0x0): Start and Park only.
-  TEST_ASSERT(MakeRequest(make_dp_write_req(DpWriteReg::ABORT, 0u)) == 0x81u);
+  TEST_ASSERT(EncodeRequest(MakeDpWriteRequest(DpWriteReg::ABORT, 0u)) == 0x81u);
   // DP write SELECT (A = 0x8): Start, A3, Parity, Park.
-  TEST_ASSERT(MakeRequest(make_dp_write_req(DpWriteReg::SELECT, 0u)) == 0xB1u);
+  TEST_ASSERT(EncodeRequest(MakeDpWriteRequest(DpWriteReg::SELECT, 0u)) == 0xB1u);
   // AP read, A = 0x0: Start, APnDP, RnW, Park (even parity of two ones is zero).
-  TEST_ASSERT(MakeRequest(make_ap_read_req(0u)) == 0x87u);
+  TEST_ASSERT(EncodeRequest(MakeApReadRequest(0u)) == 0x87u);
   // AP write, A = 0xC: Start, APnDP, A2, A3, Parity, Park.
-  TEST_ASSERT(MakeRequest(make_ap_write_req(3u, 0u)) == 0xBBu);
+  TEST_ASSERT(EncodeRequest(MakeApWriteRequest(3u, 0u)) == 0xBBu);
 
   // 所有组合都与包格式比较；写数据不影响请求字节。
   // Every combination against the packet definition; the write data does not matter.
@@ -53,11 +53,11 @@ void TestRequestEncoding()
     const bool rnw = (v & 2u) != 0u;
     const uint8_t addr2b = static_cast<uint8_t>(v >> 2);
     const Request req{apndp ? Port::AP : Port::DP, rnw, addr2b, 0xFFFFFFFFu};
-    TEST_ASSERT(MakeRequest(req) ==
+    TEST_ASSERT(EncodeRequest(req) ==
                 Packet(apndp, rnw, (addr2b & 1u) != 0u, (addr2b & 2u) != 0u));
   }
-  static_assert(MakeRequest(make_dp_read_req(DpReadReg::IDCODE)) == 0xA5u,
-                "MakeRequest is usable in constant expressions");
+  static_assert(EncodeRequest(MakeDpReadRequest(DpReadReg::IDCODE)) == 0xA5u,
+                "EncodeRequest is usable in constant expressions");
 }
 
 void TestAckDecoding()

@@ -2396,7 +2396,7 @@ class DapLinkV2Class : public DeviceClass
   ErrorCode DpReadRdbuffFast(uint32_t& val, LibXR::Debug::SwdProtocol::Ack& ack_out)
   {
     LibXR::Debug::SwdProtocol::Response swd_resp = {};
-    const auto req = LibXR::Debug::SwdProtocol::make_dp_read_req(
+    const auto req = LibXR::Debug::SwdProtocol::MakeDpReadRequest(
         LibXR::Debug::SwdProtocol::DpReadReg::RDBUFF);
     const ErrorCode ec = TransferTxnFast(req, swd_resp);
     ack_out = swd_resp.ack;
@@ -2421,7 +2421,7 @@ class DapLinkV2Class : public DeviceClass
   ErrorCode CheckPostedApWriteFast(LibXR::Debug::SwdProtocol::Ack& ack_out)
   {
     LibXR::Debug::SwdProtocol::Response swd_resp = {};
-    const auto req = LibXR::Debug::SwdProtocol::make_dp_read_req(
+    const auto req = LibXR::Debug::SwdProtocol::MakeDpReadRequest(
         LibXR::Debug::SwdProtocol::DpReadReg::CTRL_STAT);
     const ErrorCode ec = TransferTxnFast(req, swd_resp);
     ack_out = swd_resp.ack;
@@ -2440,7 +2440,7 @@ class DapLinkV2Class : public DeviceClass
                              LibXR::Debug::SwdProtocol::Ack& ack_out)
   {
     LibXR::Debug::SwdProtocol::Response swd_resp = {};
-    const auto req = LibXR::Debug::SwdProtocol::make_ap_read_req(addr2b);
+    const auto req = LibXR::Debug::SwdProtocol::MakeApReadRequest(addr2b);
     const ErrorCode ec = TransferTxnFast(req, swd_resp);
     ack_out = swd_resp.ack;
     if (ec != ErrorCode::OK)
@@ -3069,7 +3069,7 @@ class DapLinkV2Class : public DeviceClass
       }
       if (AP)
       {
-        auto swd_req = LibXR::Debug::SwdProtocol::make_ap_write_req(ADDR2B, 0u);
+        auto swd_req = LibXR::Debug::SwdProtocol::MakeApWriteRequest(ADDR2B, 0u);
         LibXR::Debug::SwdProtocol::Response swd_resp = {};
         for (uint32_t i = 0; i < count; ++i)
         {
@@ -3186,7 +3186,7 @@ class DapLinkV2Class : public DeviceClass
         return ErrorCode::OK;
       }
 
-      auto ap_read_req = LibXR::Debug::SwdProtocol::make_ap_read_req(ADDR2B);
+      auto ap_read_req = LibXR::Debug::SwdProtocol::MakeApReadRequest(ADDR2B);
       LibXR::Debug::SwdProtocol::Response ap_read_resp = {};
       ErrorCode ec = TransferTxnFast(ap_read_req, ap_read_resp);
       xresp = MapAckToDapResp(ap_read_resp.ack);

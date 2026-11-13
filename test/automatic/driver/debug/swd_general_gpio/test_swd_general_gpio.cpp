@@ -83,7 +83,7 @@ void TestRequestOnTheWire()
 
   Debug::SwdProtocol::Response resp{};
   (void)swd.Transfer(
-      Debug::SwdProtocol::make_dp_read_req(Debug::SwdProtocol::DpReadReg::IDCODE), resp);
+      Debug::SwdProtocol::MakeDpReadRequest(Debug::SwdProtocol::DpReadReg::IDCODE), resp);
   TEST_ASSERT(swclk.sampled.size() >= 8);
   uint8_t request = 0;
   for (unsigned i = 0; i < 8; ++i)
