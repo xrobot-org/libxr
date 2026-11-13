@@ -195,7 +195,7 @@ void ESP32USBDevice::Start(bool)
   runtime_.started = true;
 }
 
-void ESP32USBDevice::Stop(bool)
+void ESP32USBDevice::Stop(bool in_isr)
 {
   // Stop 只关中断和软断开，不回收一次性 runtime 资源 / Stop only masks interrupts and
   // soft-disconnects; it does not release one-time runtime resources.
@@ -208,13 +208,19 @@ void ESP32USBDevice::Stop(bool)
     reset_stage_ = ResetStage::IDLE;
     dev->gahbcfg_reg.glbllntrmsk = 0;
     dev->gintmsk_reg.val = 0;
+    dev->dctl_reg.sftdiscon = 1;
   }
   if (runtime_.intr_handle != nullptr)
   {
     esp_intr_disable(runtime_.intr_handle);
   }
-  dev->dctl_reg.sftdiscon = 1;
   runtime_.started = false;
+  // 离开总线、关掉中断之后不再有事件到达端点；确认所有等待中的停止。Start() 会重建
+  // 控制器寄存器和 FIFO 记账。
+  // Off the bus and with its interrupt off nothing reaches an endpoint any more; confirm
+  // every waiting stop. Start() rebuilds the controller registers and the FIFO
+  // bookkeeping.
+  ForceStopAll(in_isr);
 }
 
 void ESP32USBDevice::IsrEntry(void* arg)

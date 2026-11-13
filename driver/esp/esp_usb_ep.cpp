@@ -555,12 +555,19 @@ void ESP32USBEndpoint::ForceStop(bool in_isr)
   // can no longer be trusted (the DMA may still be writing the slot, but the reset
   // aborts everything). Only the software state is dropped here; the device layer
   // rebuilds the registers after the reset and the host enumerates again.
+  // 只有核心在等的停止才确认：错过帧的禁用序列没有停止在等，没有停止的端点更没有。核心
+  // 不会在下一次停止开始时清掉确认标志，多报的确认会让那次停止在硬件停下之前就结束。
+  // Only a stop the core is waiting for is confirmed: a missed-frame disable has no stop
+  // waiting, and an endpoint without a stop even less. The core does not clear the
+  // confirmation when the next stop starts, so a confirmation too many would end that
+  // stop before the hardware has stopped.
+  const bool stop_waiting = (stop_phase_ != StopPhase::NONE) && !iso_abort_;
   stop_phase_ = StopPhase::NONE;
   // 复位后 FIFO 记账和传输状态都要重建（端点会在下一次 Configure 重新分配）。
   // The FIFO bookkeeping and transfer state are rebuilt after the reset (endpoints
   // re-allocate on the next Configure).
   ResetHardwareState();
-  OnHardwareStopped(in_isr);
+  if (stop_waiting) OnHardwareStopped(in_isr);
 }
 
 size_t ESP32USBEndpoint::ReapProgress(const HwRequest& request, bool& retired)
