@@ -1215,6 +1215,11 @@ ErrorCode STM32OtgEndpoint::StallHardware(bool in_isr)
     if ((regs->DOEPCTL & USB_OTG_DOEPCTL_EPENA) == 0U && num != 0U)
       regs->DOEPCTL &= ~USB_OTG_DOEPCTL_EPDIS;
     regs->DOEPCTL |= USB_OTG_DOEPCTL_STALL;
+    // 使用 DMA 时只有 EP0 OUT 处于使能状态 core 才保存 SETUP；被 STALL 的请求没有状态阶段
+    // 来重新使能它（HAL_PCD_EP_SetStall 也这样做）。
+    // With DMA a SETUP is stored only while EP0 OUT is enabled, and a stalled request has
+    // no status stage to enable it again (as HAL_PCD_EP_SetStall does).
+    if (num == 0U && Dma()) device_.ArmSetup();
   }
   return ErrorCode::OK;
 }
