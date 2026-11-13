@@ -333,6 +333,9 @@ class ESP32USBDevice : public USB::EndpointPool,
   /// 确认所有等待中的停止（控制器复位路径）/ Confirm every waiting stop (the
   /// controller-reset path)
   void ForceStopAll(bool in_isr);
+  /// 复位期间的假挂起：软断开再连接，见 HandleInterrupt / A suspend inside a bus reset:
+  /// soft disconnect and connect, see HandleInterrupt
+  void RecoverFalseSuspend();
   /// 申请全局 OUT NAK，由所有正在停止的 OUT 端点共用 / Request the global OUT NAK, shared
   /// by every OUT endpoint that is stopping
   void AcquireGlobalOutNak();
@@ -389,6 +392,8 @@ class ESP32USBDevice : public USB::EndpointPool,
   alignas(uint32_t) uint8_t ep0_out_scratch_[64] = {};
   /// 正在用全局 OUT NAK 的端点数 / Endpoints holding the global OUT NAK
   uint8_t global_out_nak_users_ = 0U;
+  /// 总线复位之后、ENUMDONE 之前 / Between a bus reset and its ENUMDONE
+  bool reset_enum_pending_ = false;
   ControlState control_ = {};  ///< 需跨 status completion 保留的 EP0 setup 状态 / EP0
                                ///< setup state that must survive until status completion
 };

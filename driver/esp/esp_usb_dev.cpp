@@ -12,6 +12,7 @@
 #include "esp_attr.h"
 #include "esp_err.h"
 #include "esp_private/usb_phy.h"
+#include "esp_rom_sys.h"
 #include "esp_usb.hpp"
 #include "esp_usb_ep.hpp"
 #include "soc/interrupts.h"
@@ -343,6 +344,7 @@ bool ESP32USBDevice::RebuildCoreRegisters()
 
 void ESP32USBDevice::BeginBaseline()
 {
+  reset_enum_pending_ = false;
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
 
   dev->pcgcctl_reg.stoppclk = 0;
@@ -724,6 +726,7 @@ void ESP32USBDevice::HandleInterrupt()
     if (pending.enumdone)
     {
       dev->gintsts_reg.val = GINTSTS_ENUMDONE;
+      reset_enum_pending_ = false;
       const uint32_t enum_speed = dev->dsts_reg.enumspd;
       if (enum_speed != ESPUSBDetail::ENUM_SPEED_FULL_30_TO_60_MHZ &&
           enum_speed != ESPUSBDetail::ENUM_SPEED_FULL_48_MHZ)
@@ -735,6 +738,16 @@ void ESP32USBDevice::HandleInterrupt()
     if (pending.usbsusp)
     {
       dev->gintsts_reg.val = GINTSTS_USBSUSP;
+      if (reset_enum_pending_)
+      {
+        // ESP32-S3 板上实测：总线复位的 SE0 期间核心会在 ENUMDONE 之前报 USBSUSP，随后
+        // 线路一直是 SE0，设备不再回到总线；在复位窗口内软断开再连接可恢复枚举。
+        // Measured on an ESP32-S3: during the SE0 of a bus reset the core can raise
+        // USBSUSP before ENUMDONE, after which the line stays SE0 and the device does not
+        // come back; a soft disconnect and connect inside the reset restores enumeration.
+        RecoverFalseSuspend();
+        continue;
+      }
       dev->gintmsk_reg.sofmsk = 0;
       OnSuspend(true);
     }
@@ -811,6 +824,18 @@ void ESP32USBDevice::HandleInterrupt()
       dev->gotgint_reg.val = otg_status;
     }
   }
+}
+
+void ESP32USBDevice::RecoverFalseSuspend()
+{
+  // 软断开 20 us 再连接，在主机的复位窗口内完成（20 us 是板上试出的取值）。
+  // A soft disconnect of 20 us, then connect, inside the host's reset window (20 us is
+  // the value tried on the board).
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  reset_enum_pending_ = false;
+  dev->dctl_reg.sftdiscon = 1;
+  esp_rom_delay_us(20);
+  dev->dctl_reg.sftdiscon = 0;
 }
 
 void ESP32USBDevice::HandleBusReset(bool in_isr)
@@ -936,6 +961,7 @@ void ESP32USBDevice::HandleBusReset(bool in_isr)
 
   dev->dcfg_reg.devaddr = 0U;
 
+  reset_enum_pending_ = true;
   OnBusReset(in_isr);
 }
 
