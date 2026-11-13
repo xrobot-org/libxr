@@ -290,6 +290,9 @@ class STM32OtgEndpoint : public USB::Endpoint
   void PollStop();
   void ConfirmStop(bool in_isr);
   void ResetTransfer();
+  /// 使用 DMA 的 OUT 请求已收到的字节数：编程的大小减去 DOEPTSIZ 里剩余的大小 / Bytes a
+  /// DMA OUT request has received: the programmed size minus what DOEPTSIZ still holds
+  size_t DmaOutBytes() const;
 
   STM32USBOtgDevice& device_;
   size_t fifo_size_;

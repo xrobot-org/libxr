@@ -926,6 +926,13 @@ void STM32OtgEndpoint::ReadFifo(size_t bytes)
   hw_done_ += take;
 }
 
+size_t STM32OtgEndpoint::DmaOutBytes() const
+{
+  const size_t remaining = device_.OutEp(Num())->DOEPTSIZ & USB_OTG_DOEPTSIZ_XFRSIZ;
+  const size_t actual = hw_programmed_ > remaining ? hw_programmed_ - remaining : 0U;
+  return LibXR::min(actual, hw_capacity_);
+}
+
 void STM32OtgEndpoint::OnTransferComplete()
 {
   const uint32_t tag = hw_tag_;
@@ -935,9 +942,7 @@ void STM32OtgEndpoint::OnTransferComplete()
   {
     if (Dma())
     {
-      const size_t remaining = device_.OutEp(Num())->DOEPTSIZ & USB_OTG_DOEPTSIZ_XFRSIZ;
-      actual = hw_programmed_ > remaining ? hw_programmed_ - remaining : 0U;
-      actual = LibXR::min(actual, hw_capacity_);
+      actual = DmaOutBytes();
       if (Num() == 0U)
       {
         STM32_InvalidateDCacheByAddr(device_.hw_.ep0_dma_buffer.addr_, EP0_DMA_SIZE);
@@ -994,7 +999,20 @@ USB::Endpoint::StopResult STM32OtgEndpoint::StopHardware(bool in_isr)
   }
   if ((regs->DOEPCTL & USB_OTG_DOEPCTL_EPENA) == 0U)
   {
-    stopped_actual_ = Dma() ? 0U : hw_done_;
+    // 端点已经不在使能状态：请求可能已在硬件里完成，只是完成中断还没被处理，这时数据
+    // 已经在槽里，按 DOEPTSIZ 如实报告。
+    // The endpoint is no longer enabled: the request may already have completed in the
+    // hardware with its completion interrupt not handled yet, in which case the data is
+    // in the slot and is reported from DOEPTSIZ.
+    if (Dma() && hw_data_ != nullptr)
+    {
+      stopped_actual_ = DmaOutBytes();
+      if (stopped_actual_ != 0U) STM32_InvalidateDCacheByAddr(hw_data_, stopped_actual_);
+    }
+    else
+    {
+      stopped_actual_ = Dma() ? 0U : hw_done_;
+    }
     ResetTransfer();
     return StopResult::DONE;
   }
@@ -1087,9 +1105,7 @@ void STM32OtgEndpoint::ConfirmStop(bool in_isr)
   {
     if (Dma() && Num() != 0U && hw_data_ != nullptr)
     {
-      const size_t remaining = device_.OutEp(Num())->DOEPTSIZ & USB_OTG_DOEPTSIZ_XFRSIZ;
-      stopped_actual_ = hw_programmed_ > remaining ? hw_programmed_ - remaining : 0U;
-      stopped_actual_ = LibXR::min(stopped_actual_, hw_capacity_);
+      stopped_actual_ = DmaOutBytes();
       if (stopped_actual_ != 0U) STM32_InvalidateDCacheByAddr(hw_data_, stopped_actual_);
     }
     else if (!Dma())
