@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "stm32_dcache.hpp"
+#include "stm32_usb_wrap.hpp"
 
 using namespace LibXR;
 
@@ -141,6 +142,7 @@ STM32USBOtgDevice::STM32USBOtgDevice(
     msp.Instance = core_;
     HAL_PCD_MspInit(&msp);
   }
+  STM32USBRequireWrap();
 
   // 与 HAL_PCD_Init() 相同的 core 初始化，但不使用句柄。
   // The same core initialization as HAL_PCD_Init(), without the handle.

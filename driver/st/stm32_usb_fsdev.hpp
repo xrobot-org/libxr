@@ -121,8 +121,10 @@ namespace LibXR
     "Unknown STM32 USB FS/DRD with PMA. Please define LIBXR_STM32_USB_PMA_SIZE manually."
 #endif
 
-/// 链接期确认 HAL_PCD_IRQHandler 已被 --wrap 接管（stm32_usb_wrap.cpp）。
-/// Checks at link time that HAL_PCD_IRQHandler is wrapped by stm32_usb_wrap.cpp.
+/// 把 stm32_usb_fsdev.cpp（分发函数所在的文件）拉进链接，并确认 HAL_PCD_IRQHandler 的
+/// --wrap 已生效（STM32USBRequireWrap）。
+/// Pulls stm32_usb_fsdev.cpp, the file with the dispatch function, into the link and
+/// checks that the wrap of HAL_PCD_IRQHandler is in effect (STM32USBRequireWrap).
 void STM32FsDevRequireWrap();
 
 /**
