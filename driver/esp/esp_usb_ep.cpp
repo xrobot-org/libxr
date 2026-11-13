@@ -82,12 +82,15 @@ ErrorCode ESP32USBEndpoint::ConfigureHardware(const Config& cfg)
 
 void ESP32USBEndpoint::CloseHardware(bool /*in_isr*/)
 {
-  // 核心保证先停止、确认后才关闭，所以到这里端点已经是禁用的；这里只收掉中断掩码，
-  // 万一硬件仍是使能，发出禁用请求但不等待（等待由停止状态机和 SOF 超时负责）。
+  // 核心保证先停止、确认后才关闭，所以到这里端点已经是禁用的；这里收掉中断掩码并清
+  // USBAEP 停用端点（EP0 始终激活），之后核心不再应答发给它的令牌。万一硬件仍是使能，
+  // 发出禁用请求但不等待（等待由停止状态机和 SOF 超时负责）。
   // The core stops an endpoint and waits for the confirmation before closing it, so the
-  // endpoint is already disabled here; only the interrupt masks are dropped. If the
-  // hardware is still enabled, a disable request goes out without waiting (waiting
-  // belongs to the stop state machine and the SOF timeout).
+  // endpoint is already disabled here; the interrupt masks are dropped and the endpoint
+  // is deactivated by clearing USBAEP (EP0 is always active), after which the controller
+  // no longer answers tokens sent to it. If the hardware is still enabled, a disable
+  // request goes out without waiting (waiting belongs to the stop state machine and the
+  // SOF timeout).
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
 
@@ -109,6 +112,7 @@ void ESP32USBEndpoint::CloseHardware(bool /*in_isr*/)
         dev->in_eps[ep_num - 1U].diepctl_reg.snak = 1;
         dev->in_eps[ep_num - 1U].diepctl_reg.epdis = 1;
       }
+      dev->in_eps[ep_num - 1U].diepctl_reg.usbactep = 0;
     }
     dev->daintmsk_reg.val &= ~(1UL << ep_num);
   }
@@ -121,6 +125,7 @@ void ESP32USBEndpoint::CloseHardware(bool /*in_isr*/)
     else
     {
       ESPUSBDetail::RequestOutDisable(dev->out_eps[ep_num - 1U].doepctl_reg, true);
+      dev->out_eps[ep_num - 1U].doepctl_reg.usbactep = 0;
     }
     dev->daintmsk_reg.val &= ~(1UL << (16U + ep_num));
   }
