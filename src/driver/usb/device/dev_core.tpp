@@ -91,7 +91,6 @@ void DeviceCore<C>::ProcessEvents(bool in_isr, uint32_t events)
   // While an endpoint stop is unconfirmed nothing else proceeds; the confirmation
   // posts STOP_DONE_EVENT and the held events run then.
   if ((events & STOP_TIMEOUT_EVENT) && pool_.AnyStopping()) OnStopTimeout(in_isr);
-  if ((events & STOP_DONE_EVENT) && !pool_.AnyStopping()) OnStopsSettled();
   events = (events | deferred_events_) & ~(STOP_DONE_EVENT | STOP_TIMEOUT_EVENT);
   deferred_events_ = 0;
   // 被暂缓的生命周期事件同时也暂缓每个端点的启动。

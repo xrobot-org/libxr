@@ -736,9 +736,15 @@ void TestBusResetEndsTransfers()
   TEST_ASSERT((FakeHw::ReadEp(1) & FakeHw::EP_STAT_TX) != 0x0030U);
 }
 
+/// 帧中断（SOFM）在设备上总线且没有挂起时打开：Start 和枚举之后是开的，挂起后关，恢复后
+/// 开，挂起中的总线复位后也开，Stop 后关。
+/// The frame interrupt (SOFM) is on while the device is on the bus and not suspended: on
+/// after Start and after enumeration, off after a suspend, on after the resume, on after
+/// a bus reset during suspend and off after Stop.
 void TestSuspendResume()
 {
   Fixture f;
+  TEST_ASSERT((FakeHw::ReadCntr() & FakeHw::CNTR_SOFM) != 0U);
   // 无在途控制传输时的噪声包，读掉丢弃
   // A noise packet with no control transfer in flight; it is read and discarded.
   FakeHw::RxPacket(0, nullptr, 0U, false);
@@ -746,9 +752,19 @@ void TestSuspendResume()
   FakeHw::SuspendLine();
   Pump();
   TEST_ASSERT((FakeHw::ReadCntr() & 0x0008U) != 0U);  // FSUSP 置位 / FSUSP is set
+  TEST_ASSERT((FakeHw::ReadCntr() & FakeHw::CNTR_SOFM) == 0U);
   FakeHw::ResumeLine();
   Pump();
   TEST_ASSERT((FakeHw::ReadCntr() & 0x0008U) == 0U);
+  TEST_ASSERT((FakeHw::ReadCntr() & FakeHw::CNTR_SOFM) != 0U);
+  FakeHw::SuspendLine();
+  Pump();
+  TEST_ASSERT((FakeHw::ReadCntr() & FakeHw::CNTR_SOFM) == 0U);
+  FakeHw::BusReset();
+  Pump();
+  TEST_ASSERT((FakeHw::ReadCntr() & FakeHw::CNTR_SOFM) != 0U);
+  f.device.Stop(false);
+  TEST_ASSERT((FakeHw::ReadCntr() & FakeHw::CNTR_SOFM) == 0U);
 }
 
 void TestIsochronousRejected()

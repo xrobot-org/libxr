@@ -514,6 +514,7 @@ void FSDevDevice<HW>::HandleInterrupt()
     // SuspendClocked 为空。
     // Enter suspend first, then clear the flags, then gate the clocks (the order the
     // DRD variant requires); SuspendClocked is empty on the classic type.
+    HW::WriteCntr(static_cast<uint16_t>(HW::ReadCntr() & ~HW::CNTR_SOFM));
     HW::SuspendRegs();
     HW::ClearIstr(HW::ISTR_SUSP);
     HW::SuspendClocked();
@@ -522,6 +523,7 @@ void FSDevDevice<HW>::HandleInterrupt()
   if ((istr & HW::ISTR_WKUP) != 0U)
   {
     HW::ResumeRegs();
+    HW::WriteCntr(static_cast<uint16_t>(HW::ReadCntr() | HW::CNTR_SOFM));
     HW::ClearIstr(HW::ISTR_WKUP);
     OnResume(true);
   }
@@ -610,6 +612,9 @@ void FSDevDevice<HW>::OnBusResetRegs()
     // EP0 OUT NAK：SETUP 照常接收 / EP0 OUT answers NAK; a SETUP is still received.
     out_[0]->SetStat(false, FSDEV_STAT_RX_NAK);
   }
+  // 复位把总线从挂起中唤醒，帧中断随之打开。
+  // A reset wakes the bus from suspend, so the frame interrupt is on again.
+  HW::WriteCntr(static_cast<uint16_t>(HW::ReadCntr() | HW::CNTR_SOFM));
   OnBusReset(true);
 }
 

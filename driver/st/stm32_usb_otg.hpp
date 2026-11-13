@@ -142,7 +142,6 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   /// 重新装填 EP0 OUT 以接收下一个 SETUP / Re-arm EP0 OUT to receive the next SETUP
   void OnControlReady() override;
   void OnStopTimeout(bool in_isr) override;
-  void OnStopsSettled() override;
   /// 返回枚举完成后记录的总线速度 / Return the bus speed recorded at enumeration
   USB::Speed ReadBusSpeed() const override;
 
@@ -186,9 +185,6 @@ class STM32USBOtgDevice : public USB::EndpointPool, public STM32USBDeviceCore
   // TX FIFO flushes: one at a time in GRSTCTL, never waited for.
   void RequestTxFlush(uint8_t fifo);
   void PollTxFlush();
-  // 停止或刷新在等待时，或需要总线时间时，总线 tick（SOF）保持运行。
-  // The bus tick (SOF) runs while a stop or a flush waits, or bus time is wanted.
-  void UpdateTick();
   void ForceStopAll(bool in_isr);
 
   void Connect();

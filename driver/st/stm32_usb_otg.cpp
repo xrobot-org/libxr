@@ -278,11 +278,10 @@ void STM32USBOtgDevice::Connect()
   uint32_t mask = USB_OTG_GINTMSK_USBRST | USB_OTG_GINTMSK_ENUMDNEM |
                   USB_OTG_GINTMSK_USBSUSPM | USB_OTG_GINTMSK_WUIM |
                   USB_OTG_GINTMSK_IEPINT | USB_OTG_GINTMSK_OEPINT |
-                  USB_OTG_GINTMSK_IISOIXFRM;
+                  USB_OTG_GINTMSK_IISOIXFRM | USB_OTG_GINTMSK_SOFM;
   if (!hw_.dma) mask |= USB_OTG_GINTMSK_RXFLVLM;
   if (hw_.vbus_sensing) mask |= USB_OTG_GINTMSK_SRQIM | USB_OTG_GINTMSK_OTGINT;
   core_->GINTMSK = mask;
-  UpdateTick();
   core_->GAHBCFG |= USB_OTG_GAHBCFG_GINT;
   (void)USB_DevConnect(core_);
 }
@@ -293,6 +292,7 @@ void STM32USBOtgDevice::Stop(bool in_isr)
     USB::EndpointPool::HardwareScope hardware(this);
     (void)USB_DevDisconnect(core_);
     core_->GAHBCFG &= ~USB_OTG_GAHBCFG_GINT;
+    core_->GINTMSK &= ~USB_OTG_GINTMSK_SOFM;
     if (devices_[index_] == this) devices_[index_] = nullptr;
   }
   // 离开总线后不再有事件到达端点；确认所有等待中的停止。
@@ -311,15 +311,10 @@ void STM32USBOtgDevice::OnStopTimeout(bool in_isr)
     USB::EndpointPool::HardwareScope hardware(this);
     (void)USB_DevDisconnect(core_);
     core_->GAHBCFG &= ~USB_OTG_GAHBCFG_GINT;
+    core_->GINTMSK &= ~USB_OTG_GINTMSK_SOFM;
   }
   ForceStopAll(in_isr);
   OnDisconnect(in_isr);
-}
-
-void STM32USBOtgDevice::OnStopsSettled()
-{
-  USB::EndpointPool::HardwareScope hardware(this);
-  UpdateTick();
 }
 
 USB::Speed STM32USBOtgDevice::ReadBusSpeed() const { return bus_speed_; }
@@ -400,12 +395,17 @@ void STM32USBOtgDevice::HandleInterrupt()
   if (status & USB_OTG_GINTSTS_USBSUSP)
   {
     core_->GINTSTS = USB_OTG_GINTSTS_USBSUSP;
-    if ((Device()->DSTS & USB_OTG_DSTS_SUSPSTS) != 0U) OnSuspend(true);
+    if ((Device()->DSTS & USB_OTG_DSTS_SUSPSTS) != 0U)
+    {
+      core_->GINTMSK &= ~USB_OTG_GINTMSK_SOFM;
+      OnSuspend(true);
+    }
   }
   if (status & USB_OTG_GINTSTS_WKUINT)
   {
     core_->GINTSTS = USB_OTG_GINTSTS_WKUINT;
     Device()->DCTL &= ~USB_OTG_DCTL_RWUSIG;
+    core_->GINTMSK |= USB_OTG_GINTMSK_SOFM;
     OnResume(true);
   }
   if (status & USB_OTG_GINTSTS_SRQINT) core_->GINTSTS = USB_OTG_GINTSTS_SRQINT;
@@ -413,7 +413,11 @@ void STM32USBOtgDevice::HandleInterrupt()
   {
     const uint32_t otg = core_->GOTGINT;
     core_->GOTGINT = otg;
-    if ((otg & USB_OTG_GOTGINT_SEDET) != 0U) OnDisconnect(true);
+    if ((otg & USB_OTG_GOTGINT_SEDET) != 0U)
+    {
+      core_->GINTMSK &= ~USB_OTG_GINTMSK_SOFM;
+      OnDisconnect(true);
+    }
   }
   PollTxFlush();
 }
@@ -458,6 +462,7 @@ void STM32USBOtgDevice::OnEnumerationDone()
   bus_speed_ = USB::Speed::FULL;
 #endif
   (void)USB_SetTurnaroundTime(core_, HAL_RCC_GetHCLKFreq(), speed);
+  core_->GINTMSK |= USB_OTG_GINTMSK_SOFM;
   OnBusReset(true);
 }
 
@@ -696,7 +701,6 @@ void STM32USBOtgDevice::ReleaseGlobalOutNak()
 void STM32USBOtgDevice::RequestTxFlush(uint8_t fifo)
 {
   flush_pending_ |= fifo == FLUSH_ALL ? (1UL << 16U) : (1UL << fifo);
-  core_->GINTMSK |= USB_OTG_GINTMSK_SOFM;
   PollTxFlush();
 }
 
@@ -716,13 +720,7 @@ void STM32USBOtgDevice::PollTxFlush()
       for (uint8_t i = 0; i < endpoint_count_; ++i)
         if (in_[i] != nullptr && (done == FLUSH_ALL || done == i)) in_[i]->OnFlushDone();
     }
-    if (flush_pending_ == 0U)
-    {
-      // 使总线 tick 保持开启的刷新已完成。
-      // The flush that kept the bus tick on has finished.
-      UpdateTick();
-      return;
-    }
+    if (flush_pending_ == 0U) return;
     if ((core_->GRSTCTL & USB_OTG_GRSTCTL_AHBIDL) == 0U) return;
     uint8_t fifo;
     if ((flush_pending_ & (1UL << 16U)) != 0U)
@@ -738,21 +736,6 @@ void STM32USBOtgDevice::PollTxFlush()
     core_->GRSTCTL = USB_OTG_GRSTCTL_TXFFLSH | (static_cast<uint32_t>(fifo) << 6U);
     flush_active_ = fifo;
   }
-}
-
-void STM32USBOtgDevice::UpdateTick()
-{
-  bool needed = WantsBusTime() || flush_pending_ != 0U || flush_active_ != NO_FLUSH;
-  for (uint8_t i = 0; i < endpoint_count_ && !needed; ++i)
-  {
-    needed =
-        (in_[i] != nullptr && in_[i]->stop_stage_ != STM32OtgEndpoint::StopStage::NONE) ||
-        (out_[i] != nullptr && out_[i]->stop_stage_ != STM32OtgEndpoint::StopStage::NONE);
-  }
-  if (needed)
-    core_->GINTMSK |= USB_OTG_GINTMSK_SOFM;
-  else
-    core_->GINTMSK &= ~USB_OTG_GINTMSK_SOFM;
 }
 
 void STM32USBOtgDevice::ForceStopAll(bool in_isr)
@@ -1093,7 +1076,6 @@ USB::Endpoint::StopResult STM32OtgEndpoint::StopHardware(bool in_isr)
     stop_stage_ = StopStage::IN_NAK;
     device_.UpdateInNakMask();
     regs->DIEPCTL |= USB_OTG_DIEPCTL_SNAK;
-    device_.UpdateTick();
     return StopResult::PENDING;
   }
   auto* regs = device_.OutEp(num);
@@ -1135,7 +1117,6 @@ USB::Endpoint::StopResult STM32OtgEndpoint::StopHardware(bool in_isr)
     regs->DOEPCTL |= USB_OTG_DOEPCTL_SNAK | USB_OTG_DOEPCTL_EPDIS;
     stop_stage_ = StopStage::OUT_DISABLE;
   }
-  device_.UpdateTick();
   return StopResult::PENDING;
 }
 
@@ -1225,7 +1206,6 @@ void STM32OtgEndpoint::OnIsoIncomplete(bool ended_odd)
   stop_stage_ = StopStage::IN_NAK;
   device_.UpdateInNakMask();
   regs->DIEPCTL |= USB_OTG_DIEPCTL_SNAK;
-  device_.UpdateTick();
 }
 
 void STM32OtgEndpoint::OnNakEffective() { PollStop(); }
@@ -1264,7 +1244,6 @@ void STM32OtgEndpoint::ConfirmStop(bool in_isr)
   device_.UpdateInNakMask();
   if (iso_abort)
   {
-    device_.UpdateTick();
     OnHardwareComplete(in_isr, tag, 0U, ErrorCode::FAILED);
     return;
   }

@@ -288,26 +288,18 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     }
   }
 
-  /// 打开 CTR/RESET/SUSP/WKUP 中断，有类需要总线时间时同时打开 SOF 中断，最后接通上拉
-  /// Enable the CTR, RESET, SUSP and WKUP interrupts, and the SOF interrupt when a class
-  /// wants the bus time, then connect the pull-up last
+  /// 打开 CTR/RESET/SUSP/WKUP 和 SOF 中断，最后接通上拉。SOF 中断在设备上总线且没有挂起
+  /// 时保持打开：挂起时关，恢复和总线复位时开，Stop() 时关
+  /// Enable the CTR, RESET, SUSP, WKUP and SOF interrupts, then connect the pull-up last.
+  /// The SOF interrupt stays on while the device is on the bus and not suspended: off at
+  /// a suspend, on at a resume and at a bus reset, off in Stop()
   void Start(bool in_isr) override
   {
     UNUSED(in_isr);
     {
       EndpointPool::HardwareScope hardware(this);
-      connected_ = true;
-      uint16_t cntr = HW::ReadCntr();
-      cntr |= HW::CNTR_RUN_MASK;
-      if (WantsBusTime())
-      {
-        cntr |= HW::CNTR_SOFM;
-      }
-      else
-      {
-        cntr &= static_cast<uint16_t>(~HW::CNTR_SOFM);
-      }
-      HW::WriteCntr(cntr);
+      HW::WriteCntr(
+          static_cast<uint16_t>(HW::ReadCntr() | HW::CNTR_RUN_MASK | HW::CNTR_SOFM));
       // 上拉最后接通：前面的初始化不产生主机可见的变化。
       // The pull-up comes on last: the initialization before it changes nothing the host
       // can see.
@@ -322,7 +314,6 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     UNUSED(in_isr);
     {
       EndpointPool::HardwareScope hardware(this);
-      connected_ = false;
       HW::Connect(false);
       HW::WriteCntr(
           static_cast<uint16_t>(HW::ReadCntr() & ~(HW::CNTR_RUN_MASK | HW::CNTR_SOFM)));
@@ -350,37 +341,6 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
   /// 复位已被 owner 应用，不再丢弃端点事件 / The reset has been applied by the owner, so
   /// endpoint events are no longer discarded
   void OnControllerReset() override { discard_ = false; }
-
-  /// 所有端点停止都已确认后，按是否有类需要总线时间重新决定 SOF 中断的开关
-  /// Once every endpoint stop is confirmed, decide again whether the SOF interrupt is on,
-  /// depending on whether a class wants the bus time
-  void OnStopsSettled() override
-  {
-    if (!connected_)
-    {
-      // 已 Stop（上拉拉低）之后不会再有 SOF；不重开 SOFM，
-      // 避免未连接状态下出现"中断使能开着却没有事务"的困惑。
-      // After Stop() (pull-up off) no SOF comes; SOFM is not unmasked again, so a
-      // disconnected device never shows an enabled interrupt without traffic.
-      return;
-    }
-    EndpointPool::HardwareScope hardware(this);
-    // 配置切换后重估 SOFM（与 OTG 的 UpdateTick 对齐）：WantsBusTime() 为真时开，
-    // 否则关。SOFM 只是中断使能，设备未 Start 时写它无副作用。
-    // Re-evaluate SOFM after a configuration change (as UpdateTick in OTG): on while
-    // WantsBusTime() is true, off otherwise. SOFM is only an interrupt enable; writing it
-    // before Start() has no side effect.
-    uint16_t cntr = HW::ReadCntr();
-    if (WantsBusTime())
-    {
-      cntr |= HW::CNTR_SOFM;
-    }
-    else
-    {
-      cntr &= static_cast<uint16_t>(~HW::CNTR_SOFM);
-    }
-    HW::WriteCntr(cntr);
-  }
 
   /// 本控制器只支持全速 / This controller is full-speed only
   Speed ReadBusSpeed() const override { return Speed::FULL; }
@@ -426,9 +386,7 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
   /// 使用的端点号数量（RX/TX 列表较长者）/ Endpoint numbers in use (the longer of the
   /// RX/TX lists)
   uint8_t endpoint_count_ = 1;
-  bool connected_ = false;  ///< Start/Stop：设备是否属于总线 / Whether the device
-                            ///< belongs on the bus
-  bool discard_ = false;    ///< 复位已见、owner 未应用 / Reset seen, not yet applied
+  bool discard_ = false;  ///< 复位已见、owner 未应用 / Reset seen, not yet applied
   /// SETUP 包暂存 / SETUP packet staging
   alignas(4) uint8_t setup_[8] = {};
 

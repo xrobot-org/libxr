@@ -130,13 +130,6 @@ class ESP32USBDevice : public USB::EndpointPool,
    */
   void OnStopTimeout(bool in_isr) override;
 
-  /**
-   * @brief 所有等待中的停止都已确认：按 WantsBusTime 重新决定是否保留 SOF 中断
-   *        All waiting stops are confirmed: decide again whether the SOF interrupt
-   *        stays on from WantsBusTime
-   */
-  void OnStopsSettled() override;
-
  private:
   friend class ESP32USBEndpoint;
 
@@ -334,10 +327,6 @@ class ESP32USBDevice : public USB::EndpointPool,
   /// FIFO 冲刷之后：设备状态、中断标志和中断掩码 / After the FIFO flushes: device state,
   /// interrupt flags and interrupt masks
   void FinishBaseline();
-  /// 重新计算 SOF 中断是否需要打开：类要总线时间，或有停止在等（核心靠 SOF 帧数判停止
-  /// 超时）/ Recompute whether the SOF interrupt must be on: a class wants bus time, or a
-  /// stop is waiting (the core counts SOF frames to detect a stop timeout)
-  void UpdateTick();
   /// 确认所有等待中的停止（控制器复位路径）/ Confirm every waiting stop (the
   /// controller-reset path)
   void ForceStopAll(bool in_isr);

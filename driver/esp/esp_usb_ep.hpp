@@ -56,9 +56,6 @@ class ESP32USBEndpoint : public USB::Endpoint
   ///        endpoint is in effect
   /// @param disabled EPDISD：端点已禁用 / EPDISD: the endpoint is disabled
   void AdvanceStop(bool in_isr, bool nak_effective, bool disabled);
-  /// 有停止在等硬件确认（设备据此打开 SOF，核心靠帧数判停止超时）/ A stop is waiting for
-  /// the hardware (the device keeps SOF on for it; the core counts frames to time it out)
-  bool StopPending() const { return stop_phase_ != StopPhase::NONE; }
 
   /// 控制器复位升级路径：收掉软件状态并确认停止（不再碰寄存器）/ Controller-reset
   /// escalation: drop the software state and confirm the stop (no register access)

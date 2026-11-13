@@ -116,17 +116,21 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   /// @param in_isr 是否在 ISR / Whether in ISR context
   void OnResume(bool in_isr) { RequestPower(in_isr, false); }
 
-  /// 后端在每个帧起始（SOF）调用，用于端点停止超时计数和总线时间 / Called by the backend
-  /// on every start of frame; drives endpoint-stop timeout counting and the bus time
+  /// 后端在每个帧起始（SOF）调用，用于端点停止超时计数和总线时间。STM32 OTG、ESP32 和
+  /// FSDEV 后端的 SOF 中断在设备上总线且没有挂起时保持打开，不看设备类是否需要总线时间；
+  /// CH32 OTG FS/HS 只在控制端点就绪时按 WantsBusTime() 打开它 / Called by the backend
+  /// on every start of frame; drives endpoint-stop timeout counting and the bus time. The
+  /// STM32 OTG, ESP32 and FSDEV backends keep their SOF interrupt on while the device is
+  /// on the bus and not suspended, whatever the classes need; CH32 OTG FS/HS enable it
+  /// from WantsBusTime() when the control endpoint becomes ready
   /// @param in_isr 是否在 ISR / Whether in ISR context
   /// @param frame 帧号（11 位，0xffff 表示未知）/ Frame number (11 bits, 0xffff when
   /// unknown)
   /// @param microframe 微帧号 0-7；0xff 表示控制器只报告完整帧 / Microframe 0-7; 0xff
   /// when the controller only reports full frames
   void OnSof(bool in_isr, uint16_t frame, uint8_t microframe = 0xff);
-  /// 当前配置中是否有类需要总线时间；后端据此决定是否打开 SOF 中断 / Whether a class of
-  /// the current configuration wants the bus time; the backend uses it to decide whether
-  /// to enable the SOF interrupt
+  /// 当前配置中是否有类需要总线时间 / Whether a class of the current configuration wants
+  /// the bus time
   bool WantsBusTime() const
   {
     if constexpr (Capabilities::BUS_TIME) return composition_.WantsBusTime();
@@ -172,9 +176,6 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   /// and reconnects by itself or stays disconnected until the application calls Start()
   /// again is up to the backend and stated in its documentation.
   virtual void OnStopTimeout(bool in_isr) { UNUSED(in_isr); }
-  /// 所有端点停止都已确认（帧计数可以结束） / Every endpoint stop is confirmed (frame
-  /// counting may end)
-  virtual void OnStopsSettled() {}
   /// 总线复位后读取协商出的速度；默认返回当前速度 / Read the speed negotiated after a bus
   /// reset; returns the current speed by default
   virtual Speed ReadBusSpeed() const { return speed_; }
