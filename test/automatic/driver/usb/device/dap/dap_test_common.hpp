@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <thread>
 #include <vector>
 
@@ -30,6 +31,10 @@ class FakeSwd : public LibXR::Debug::Swd
   unsigned reads = 0;     ///< 读传输次数 / Read transfers.
   uint32_t clock_hz = 0;  ///< 最近一次 SetClockHz() 的值 / Last SetClockHz() value.
   std::vector<std::thread::id> callers;  ///< 每次调用的线程 / Thread of every call.
+  /// SeqWriteBits() 执行期间调用一次，随后清空；测试用它在命令执行中途插入动作
+  /// Called once inside SeqWriteBits() and then cleared; a test uses it to act while a
+  /// command is executing.
+  std::function<void()> on_sequence;
 
   ErrorCode SetClockHz(uint32_t hz) override
   {
@@ -76,6 +81,12 @@ class FakeSwd : public LibXR::Debug::Swd
   {
     Note();
     ++sequences;
+    if (on_sequence)
+    {
+      const std::function<void()> hook = std::move(on_sequence);
+      on_sequence = nullptr;
+      hook();
+    }
     if (cycles != 0U && data != nullptr)
     {
       ++writes;

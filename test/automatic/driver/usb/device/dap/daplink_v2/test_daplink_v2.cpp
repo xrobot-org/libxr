@@ -662,6 +662,53 @@ void TestHeldCommandDroppedAfterRebind()
   f.in.Complete();
 }
 
+/// 命令执行期间发生解绑再绑定，而它的响应走暂存槽：响应带着旧会话的 epoch 发布，USB 侧
+/// 发送时丢弃它，新会话的主机收不到。暂存槽和计数随之释放，新会话的响应照常发出。
+/// An unbind and bind while a command executes whose response goes through a staging
+/// slot: the response is published with the epoch of the old session and the USB side
+/// drops it when it sends, so the host of the new session does not receive it. The
+/// staging slot and the count are released with it and the new session answers normally.
+void TestStagedResponseOfOldSessionIsDropped()
+{
+  DapFixture f;
+  f.dap.BindEndpoints(f.pool, 0, false);
+
+  // 两条已应答的命令占满两个 IN 槽，主机没有读：下一条命令的响应走暂存槽。
+  // Two answered commands fill both IN slots and the host reads neither: the response
+  // of the next command goes through a staging slot.
+  Send(f, {INFO, PACKET_SIZE_ID});
+  Send(f, {INFO, PACKET_SIZE_ID});
+  f.swd.on_sequence = [&f]()
+  {
+    f.dap.UnbindEndpoints(f.pool, false);
+    f.dap.BindEndpoints(f.pool, 0, false);
+  };
+  const size_t answered = f.in.starts.size();
+  Send(f, {static_cast<uint8_t>(CommandId::SWJ_SEQUENCE), 8, 0xFF});
+  TEST_ASSERT(f.swd.sequences == 1 && !f.swd.on_sequence);
+  TEST_ASSERT(f.in.starts.size() == answered && !f.in.active);
+
+  // 新会话：四条命令的响应按顺序发出，没有旧会话的响应夹在中间；第三、第四条用到暂存槽。
+  // The new session: the responses of four commands go out in order with no response of
+  // the old session among them; the third and the fourth use staging slots.
+  for (unsigned i = 0; i < 4; ++i)
+  {
+    Send(f, {INFO, i % 2U == 0U ? PACKET_COUNT_ID : PACKET_SIZE_ID});
+  }
+  const size_t before = f.in.sent.size();
+  while (f.in.active)
+  {
+    f.in.Complete();
+    Run(f);
+  }
+  TEST_ASSERT(f.in.sent.size() == before + 4);
+  for (unsigned i = 0; i < 4; ++i)
+  {
+    const auto& response = f.in.sent[before + i];
+    TEST_ASSERT(response.size() == (i % 2U == 0U ? 3U : 4U) && response[0] == INFO);
+  }
+}
+
 /// SWD 归运行 Step 的线程所有：绑定和解绑（USB owner 上下文，这里是测试主线程）完全
 /// 不调用 SWD。会话的结束和开始由 Step 线程执行：它在新会话的第一条命令之前关闭 SWD
 /// 并设置默认时钟，所有 SWD 调用都来自该线程。
@@ -869,6 +916,7 @@ void test_usb_daplink_v2()
   TestBatchOverflowAnswersError();
   TestRebindDuringBatchThenDelay();
   TestHeldCommandDroppedAfterRebind();
+  TestStagedResponseOfOldSessionIsDropped();
   TestBindAndUnbindLeaveSwdToStep();
   TestPaddedRequestsAndAFifthCommandDrain();
   TestStandaloneDeviceUsesDeviceLevelWinUsbSet();

@@ -655,26 +655,34 @@ class DapLinkV2Class : public DeviceClass
         send_idx_ = SLOT_NONE;
         return;
       }
-      Endpoint::Slot slot;
-      if (ep_data_in_->AcquireSlot(slot, in_isr) != ErrorCode::OK)
-      {
-        return;  // 两个 IN 槽都忙：下一次 IN 完成再来 / both IN slots busy: next IN
-                 // completion
-      }
       const ResponseSlot& response = resp_pool_.At(send_idx_);
-      const size_t length = std::min<size_t>(response.len, slot.data.size_);
-      Memory::FastCopy(slot.data.addr_, response.payload, length);
-      const ErrorCode ec =
-          ep_data_in_->Submit(slot, length, NeedZlp(*ep_data_in_, length), in_isr);
-      if (ec != ErrorCode::OK && ec != ErrorCode::ABORTED)
+      // 命令收到之后发生过解绑/绑定的响应属于已结束的会话，丢弃。这里在 owner 里执行，与
+      // 解绑/绑定串行，所以比较结果在提交之前不会变。
+      // A response whose command was received before an unbind/bind belongs to a session
+      // that has ended and is dropped. This runs in the owner, serialized with unbind and
+      // bind, so the result of the comparison holds until the submit.
+      if (response.epoch == epoch_.load(std::memory_order_acquire))
       {
-        ep_data_in_->ReleaseSlot(slot, in_isr);
+        Endpoint::Slot slot;
+        if (ep_data_in_->AcquireSlot(slot, in_isr) != ErrorCode::OK)
+        {
+          return;  // 两个 IN 槽都忙：下一次 IN 完成再来 / both IN slots busy: next IN
+                   // completion
+        }
+        const size_t length = std::min<size_t>(response.len, slot.data.size_);
+        Memory::FastCopy(slot.data.addr_, response.payload, length);
+        const ErrorCode ec =
+            ep_data_in_->Submit(slot, length, NeedZlp(*ep_data_in_, length), in_isr);
+        if (ec != ErrorCode::OK && ec != ErrorCode::ABORTED)
+        {
+          ep_data_in_->ReleaseSlot(slot, in_isr);
+        }
       }
       resp_pool_.Release(send_idx_);
       send_idx_ = SLOT_NONE;
-      // 这条暂存响应已进端点队列：计数归零后 Step 可以直接提交而不越过它。
-      // This staged response is in the endpoint queue: once the count is zero Step may
-      // submit directly without overtaking it.
+      // 这条暂存响应已进端点队列或已丢弃：计数归零后 Step 可以直接提交而不越过它。
+      // This staged response is in the endpoint queue or dropped: once the count is zero
+      // Step may submit directly without overtaking it.
       uint32_t staged = staged_outstanding_.load(std::memory_order_acquire);
       while (staged != 0u && !staged_outstanding_.compare_exchange_weak(
                                  staged, staged - 1u, std::memory_order_acq_rel,
@@ -1098,20 +1106,31 @@ class DapLinkV2Class : public DeviceClass
   /// service then handles held packets and re-arms the receives.
   void CompleteResponse(uint16_t size)
   {
-    if (!StepStillBound())
-    {
-      // 命令执行期间发生了解绑/重新绑定：这条响应作废。
-      // Unbound or rebound while the command ran: the response is void.
-      AbandonCurrent();
-      return;
-    }
     if (cur_in_.Valid())
     {
+      if (!StepStillBound())
+      {
+        // 命令执行期间发生了解绑/重新绑定：这条响应作废。检查之后才解绑的话，借来的槽
+        // 已过期，Submit 返回 ABORTED。
+        // Unbound or rebound while the command ran: the response is void. An unbind
+        // after this check leaves the borrowed slot stale and Submit returns ABORTED.
+        AbandonCurrent();
+        return;
+      }
       SubmitInSlot(size);
     }
     else
     {
-      resp_pool_.At(cur_resp_).len = size;
+      // 暂存的响应带着命令的 epoch 发布，是否还属于当前会话由 USB 侧在发送时判断
+      // （见 SendStagedResponses）：本线程在这里检查的话，检查和发布之间仍可能发生
+      // 解绑/绑定。
+      // A staged response is published with the epoch of its command, and the USB side
+      // decides when it sends whether it still belongs to the current session (see
+      // SendStagedResponses): a check made here by this thread would leave room for an
+      // unbind/bind between the check and the publication.
+      ResponseSlot& response = resp_pool_.At(cur_resp_);
+      response.len = size;
+      response.epoch = cur_epoch_;
       staged_outstanding_.fetch_add(1u, std::memory_order_acq_rel);
       resp_pool_.Publish(cur_resp_);
       cur_resp_ = SLOT_NONE;
@@ -4497,6 +4516,7 @@ class DapLinkV2Class : public DeviceClass
   struct ResponseSlot
   {
     uint16_t len = 0u;
+    uint32_t epoch = 0u;  ///< 所属命令的 epoch / Epoch of the command it answers
     uint8_t payload[RESP_SLOT_SIZE] = {};
   };
 
