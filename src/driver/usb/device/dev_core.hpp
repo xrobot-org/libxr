@@ -116,13 +116,14 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   /// @param in_isr 是否在 ISR / Whether in ISR context
   void OnResume(bool in_isr) { RequestPower(in_isr, false); }
 
-  /// 后端在每个帧起始（SOF）调用，用于端点停止超时计数和总线时间。STM32 OTG、ESP32 和
-  /// FSDEV 后端的 SOF 中断在设备上总线且没有挂起时保持打开，不看设备类是否需要总线时间；
-  /// CH32 OTG FS/HS 只在控制端点就绪时按 WantsBusTime() 打开它 / Called by the backend
-  /// on every start of frame; drives endpoint-stop timeout counting and the bus time. The
-  /// STM32 OTG, ESP32 and FSDEV backends keep their SOF interrupt on while the device is
-  /// on the bus and not suspended, whatever the classes need; CH32 OTG FS/HS enable it
-  /// from WantsBusTime() when the control endpoint becomes ready
+  /// 后端在每个帧起始（SOF）调用，用于端点停止超时计数和总线时间。STM32 OTG、ESP32、
+  /// FSDEV 和 CH32 OTG HS 后端的 SOF 中断在设备上总线且没有挂起时保持打开，不看设备类
+  /// 是否需要总线时间；CH32 OTG FS 只在控制端点就绪时按 WantsBusTime() 打开它 / Called
+  /// by the backend on every start of frame; drives endpoint-stop timeout counting and
+  /// the bus time. The STM32 OTG, ESP32, FSDEV and CH32 OTG HS backends keep their SOF
+  /// interrupt on while the device is on the bus and not suspended, whatever the classes
+  /// need; CH32 OTG FS enables it from WantsBusTime() when the control endpoint becomes
+  /// ready
   /// @param in_isr 是否在 ISR / Whether in ISR context
   /// @param frame 帧号（11 位，0xffff 表示未知）/ Frame number (11 bits, 0xffff when
   /// unknown)

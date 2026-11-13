@@ -256,6 +256,11 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
     {
       USBHSD->DEV_AD = 0;
       usb->OnBusReset(true);
+      // 帧中断在设备上总线且没有挂起时保持打开：Start、总线复位和恢复时开，挂起和
+      // Stop 时关。
+      // The frame interrupt stays on while the device is on the bus and not suspended:
+      // on at Start, at a bus reset and at a resume, off at a suspend and in Stop.
+      USBHSD->INT_EN |= USBHS_UIE_SOF_ACT;
       ResetEp0State(map);
       setup_since_reset_pending = true;
       clear_mask |= USBHS_UIF_BUS_RST;
@@ -264,9 +269,15 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
     if (INTFLAG & USBHS_UIF_SUSPEND)
     {
       if (USBHSD->MIS_ST & USBHS_UMS_SUSPEND)
+      {
+        USBHSD->INT_EN &= static_cast<uint8_t>(~USBHS_UIE_SOF_ACT);
         usb->OnSuspend(true);
+      }
       else
+      {
+        USBHSD->INT_EN |= USBHS_UIE_SOF_ACT;
         usb->OnResume(true);
+      }
       clear_mask |= USBHS_UIF_SUSPEND;
     }
 
@@ -410,11 +421,7 @@ LibXR::ErrorCode CH32USBOtgHS::SetAddress(uint8_t address, USB::ControlContext c
   return LibXR::ErrorCode::OK;
 }
 
-void CH32USBOtgHS::OnControlReady()
-{
-  USBHSD->UEP0_RX_CTRL = USBHS_UEP_R_RES_ACK;
-  if (WantsBusTime()) USBHSD->INT_EN |= USBHS_UIE_SOF_ACT;
-}
+void CH32USBOtgHS::OnControlReady() { USBHSD->UEP0_RX_CTRL = USBHS_UEP_R_RES_ACK; }
 
 void CH32USBOtgHS::Start(bool)
 {
@@ -426,8 +433,8 @@ void CH32USBOtgHS::Start(bool)
   USBHSD->CONTROL &= ~USBHS_UC_RESET_SIE;
   USBHSD->HOST_CTRL = USBHS_UH_PHY_SUSPENDM;
   USBHSD->CONTROL = USBHS_UC_DMA_EN | USBHS_UC_INT_BUSY | USBHS_UC_SPEED_HIGH;
-  USBHSD->INT_EN =
-      USBHS_UIE_SETUP_ACT | USBHS_UIE_TRANSFER | USBHS_UIE_DETECT | USBHS_UIE_SUSPEND;
+  USBHSD->INT_EN = USBHS_UIE_SETUP_ACT | USBHS_UIE_TRANSFER | USBHS_UIE_DETECT |
+                   USBHS_UIE_SUSPEND | USBHS_UIE_SOF_ACT;
   USBHSD->CONTROL |= USBHS_UC_DEV_PU_EN;
   // 先登记对象再开中断：中断函数在没有对象时只清标志，会丢掉这期间的总线复位。
   // Register the object before the interrupt is enabled: without an object the handler
@@ -438,6 +445,7 @@ void CH32USBOtgHS::Start(bool)
 
 void CH32USBOtgHS::Stop(bool)
 {
+  USBHSD->INT_EN &= static_cast<uint8_t>(~USBHS_UIE_SOF_ACT);
   USBHSD->CONTROL = USBHS_UC_CLR_ALL | USBHS_UC_RESET_SIE;
   USBHSD->CONTROL = 0;
   NVIC_DisableIRQ(USBHS_IRQn);
