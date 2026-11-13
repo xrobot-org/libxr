@@ -39,13 +39,11 @@ inline constexpr uint32_t DMA_MEMORY_CAPS =
 inline constexpr uint16_t ESP32_SX_FS_DMA_MIN_RX_FIFO_WORDS = 88U;
 inline constexpr uint16_t ESP32_SX_FS_MIN_TX_FIFO_WORDS = 16U;
 
-#if defined(CONFIG_USB_ALIGN_SIZE)
-inline constexpr size_t USB_DMA_ALIGNMENT = CONFIG_USB_ALIGN_SIZE;
-#elif defined(CONFIG_CACHE_L1_CACHE_LINE_SIZE)
-inline constexpr size_t USB_DMA_ALIGNMENT = CONFIG_CACHE_L1_CACHE_LINE_SIZE;
-#else
+// 端点缓冲的起点和长度按 64 字节对齐：ESP32-S3 数据 cache 行可配置的最大值
+// （CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE 为 16、32 或 64）。
+// Endpoint buffers start and end on 64 bytes: the largest data cache line the ESP32-S3
+// can be configured with (CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE is 16, 32 or 64).
 inline constexpr size_t USB_DMA_ALIGNMENT = 64U;
-#endif
 
 constexpr uint32_t PackTxFifoSizeReg(uint16_t start, uint16_t words)
 {
