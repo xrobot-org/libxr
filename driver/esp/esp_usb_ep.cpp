@@ -237,6 +237,7 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
       if (dev->in_eps[ep_num - 1U].diepctl_reg.epena == 0U)
       {
         stopped_sent_all_ = true;
+        DropCompletionFlag();
         ESPUSBDetail::FlushTxFifo(dev, ep_num);
         stop_phase_ = StopPhase::NONE;
         transfer_active_ = false;
@@ -255,12 +256,11 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
     }
     if (!enabled)
     {
-      // 端点已不在使能状态：请求已经在硬件里发完。它的 XFRC 可能在这次停止返回之后、
-      // ReapProgress 之前被中断清掉，所以在这里记下“已全部发出”。
-      // The endpoint is no longer enabled: the request has been sent in the hardware. Its
-      // XFRC may be cleared by the interrupt after this stop returns and before
-      // ReapProgress, so "everything was sent" is recorded here.
+      // 端点已不在使能状态：请求已经在硬件里发完，在这里记下“已全部发出”。
+      // The endpoint is no longer enabled: the request has been sent in the hardware, and
+      // "everything was sent" is recorded here.
       stopped_sent_all_ = true;
+      DropCompletionFlag();
       ESPUSBDetail::FlushTxFifo(dev, ep_num);
       stop_phase_ = StopPhase::NONE;
       transfer_active_ = false;
@@ -301,7 +301,8 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
     // DOEPDMA0 at the driver's own scratch so a late packet lands in the scratch
     // and the lent slot can be reclaimed safely.
     dev->doepctl0_reg.snak = 1;
-    dev->doepdma0_reg.val = reinterpret_cast<uint32_t>(device_.ep0_out_scratch_);
+    dev->doepdma0_reg.val =
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(device_.ep0_out_scratch_));
     stop_phase_ = StopPhase::NONE;
     transfer_active_ = false;
     return StopResult::DONE;
@@ -309,6 +310,7 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
 
   if (dev->out_eps[ep_num - 1U].doepctl_reg.epena == 0U)
   {
+    DropCompletionFlag();
     stop_phase_ = StopPhase::NONE;
     transfer_active_ = false;
     return StopResult::DONE;
@@ -465,6 +467,34 @@ bool ESP32USBEndpoint::AdvanceStop(bool in_isr, uint32_t status)
   return true;
 }
 
+void ESP32USBEndpoint::DropCompletionFlag()
+{
+  // 停止在这里同步结束了一个已经在硬件里完成的请求，核心从停止这边拿结果。它的 XFRC 还
+  // 挂着，要等停止返回之后才进中断；那时核心可能已经启动了下一个请求，这次完成会报到
+  // 那个请求上。EP0 的完成在处理 SETUP 之前已经收掉（FinishPendingEp0InStatus），不在
+  // 这里处理。
+  // The stop has just ended, synchronously, a request that had already completed in the
+  // hardware, and the core takes the result from the stop. Its XFRC is still pending and
+  // would only be handled after the stop returns; by then the core may have started the
+  // next request, and the completion would be reported for that one. EP0 completions are
+  // consumed before a SETUP is handled (FinishPendingEp0InStatus) and are left alone.
+  const uint8_t ep_num = EPNumberToInt8(GetNumber());
+  if (ep_num == 0U) return;
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  if (GetDirection() == Direction::IN)
+  {
+    usb_dwc_diepint_reg_t flag = {};
+    flag.xfercompl = 1;
+    dev->in_eps[ep_num - 1U].diepint_reg.val = flag.val;
+  }
+  else
+  {
+    usb_dwc_doepint_reg_t flag = {};
+    flag.xfercompl = 1;
+    dev->out_eps[ep_num - 1U].doepint_reg.val = flag.val;
+  }
+}
+
 void ESP32USBEndpoint::ConfirmStopAfterReset(bool in_isr)
 {
   // 复位清掉了端点中断掩码，等待中的停止不会再有 EPDISD 中断来推进；复位已经确认
@@ -535,17 +565,18 @@ void ESP32USBEndpoint::ForceStop(bool in_isr)
 
 size_t ESP32USBEndpoint::ReapProgress(const HwRequest& request, bool& retired)
 {
-  // 只有硬件报过传输完成（XFRC 未处理）才能认为主机真的取走了数据；DMA 模式下
-  // xfersize 在数据进 FIFO 时就清零，不能拿它当成功凭据（与 STM32 OTG 同口径）。
-  // Only a transfer-complete interrupt (XFRC pending) proves the host really took
-  // the data: in DMA mode xfersize drops as soon as a packet enters the FIFO, so
-  // it is no evidence of success (same criterion as the STM32 OTG backend).
-  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  // 只有硬件报过传输完成才能认为主机真的取走了数据，停止时序把它记在
+  // stopped_sent_all_ 里；DMA 模式下 xfersize 在数据进 FIFO 时就清零，不能拿它当成功
+  // 凭据（与 STM32 OTG 同口径）。
+  // Only a transfer completion proves the host really took the data, and the stop
+  // sequence records it in stopped_sent_all_: in DMA mode xfersize drops as soon as a
+  // packet enters the FIFO, so it is no evidence of success (same criterion as the STM32
+  // OTG backend).
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
   retired = false;
   if (GetDirection() == Direction::IN && ep_num != 0U)
   {
-    if (stopped_sent_all_ || dev->in_eps[ep_num - 1U].diepint_reg.xfercompl != 0U)
+    if (stopped_sent_all_)
     {
       retired = true;
       return request.length;

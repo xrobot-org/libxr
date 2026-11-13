@@ -78,6 +78,9 @@ class ESP32USBEndpoint : public USB::Endpoint
   /// 总线复位里硬件已被禁用：确认还在等待的停止 / The hardware is disabled by a bus
   /// reset: confirm a stop that is still waiting
   void ConfirmStopAfterReset(bool in_isr);
+  /// 丢掉一个已由停止同步收尾的请求还挂着的传输完成标志 / Drop the pending
+  /// transfer-complete flag of a request that a stop has just ended synchronously
+  void DropCompletionFlag();
   void HandleInInterrupt(bool in_isr);
   /// 等时 IN 错过了它的帧：禁用端点，请求以 FAILED 结束；只处理为刚结束的那一帧（奇偶位
   /// 等于 ended_odd）安排的端点 / An isochronous IN transfer missed its frame: disable
