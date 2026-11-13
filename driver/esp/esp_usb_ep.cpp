@@ -304,7 +304,7 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
   return StopResult::PENDING;
 }
 
-void ESP32USBEndpoint::AdvanceStop(bool in_isr, bool nak_effective, bool disabled)
+bool ESP32USBEndpoint::AdvanceStop(bool in_isr, uint32_t status)
 {
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   const uint8_t ep_num = EPNumberToInt8(GetNumber());
@@ -312,7 +312,7 @@ void ESP32USBEndpoint::AdvanceStop(bool in_isr, bool nak_effective, bool disable
 
   if (stop_phase_ == StopPhase::NONE)
   {
-    return;
+    return false;
   }
 
   // 超时不在这里判断：本函数只在端点自己的中断里跑，没有中断就永远不会超时。
@@ -325,9 +325,29 @@ void ESP32USBEndpoint::AdvanceStop(bool in_isr, bool nak_effective, bool disable
   // STM32 OTG backend).
   if (is_in)
   {
+    usb_dwc_diepint_reg_t intr = {};
+    intr.val = status;
     if (stop_phase_ == StopPhase::SNAK_WAIT)
     {
-      if (!nak_effective) return;
+      // NAK 生效之前核心仍可能把最后一个包发出去：传输已经完成、端点已经禁用时不能再写
+      // EPDIS（只能对使能的端点写，也不会再有 EPDISD）。FIFO 已空，停止到此结束，请求
+      // 已全部发出。
+      // The core may still send the last packet before the NAK is in effect: once the
+      // transfer has completed and the endpoint is disabled, EPDIS must not be written
+      // (it is only for an enabled endpoint, and no EPDISD would follow). The FIFO is
+      // empty, the stop ends here and the request has been sent completely.
+      const bool enabled = (ep_num == 0U)
+                               ? (dev->diepctl0_reg.epena != 0U)
+                               : (dev->in_eps[ep_num - 1U].diepctl_reg.epena != 0U);
+      if (!enabled)
+      {
+        stopped_sent_all_ = true;
+        stop_phase_ = StopPhase::NONE;
+        transfer_active_ = false;
+        OnHardwareStopped(in_isr);
+        return true;
+      }
+      if (intr.inepnakeff == 0U) return false;
       if (ep_num == 0U)
       {
         dev->diepctl0_reg.epdis = 1;
@@ -337,25 +357,30 @@ void ESP32USBEndpoint::AdvanceStop(bool in_isr, bool nak_effective, bool disable
         dev->in_eps[ep_num - 1U].diepctl_reg.epdis = 1;
       }
       stop_phase_ = StopPhase::DIS_WAIT;
-      return;
+      return false;
     }
-    if (stop_phase_ == StopPhase::DIS_WAIT)
-    {
-      if (!disabled) return;
-      ESPUSBDetail::FlushTxFifo(dev, ep_num);
-      stop_phase_ = StopPhase::NONE;
-      transfer_active_ = false;
-      OnHardwareStopped(in_isr);
-    }
-    return;
+    if (intr.epdisbld == 0U) return false;
+    ESPUSBDetail::FlushTxFifo(dev, ep_num);
+    // 禁用生效的同时主机取走了最后一个包：请求已全部发出。
+    // The host took the last packet as the disable took effect: the request has been
+    // sent completely.
+    if (intr.xfercompl != 0U) stopped_sent_all_ = true;
+    stop_phase_ = StopPhase::NONE;
+    transfer_active_ = false;
+    OnHardwareStopped(in_isr);
+    return true;
   }
 
-  if (stop_phase_ == StopPhase::DIS_WAIT && disabled)
+  usb_dwc_doepint_reg_t intr = {};
+  intr.val = status;
+  if (stop_phase_ == StopPhase::DIS_WAIT && intr.epdisbld != 0U)
   {
     stop_phase_ = StopPhase::NONE;
     transfer_active_ = false;
     OnHardwareStopped(in_isr);
+    return true;
   }
+  return false;
 }
 
 void ESP32USBEndpoint::ConfirmStopAfterReset(bool in_isr)
@@ -488,10 +513,15 @@ void ESP32USBEndpoint::HandleInInterrupt(bool in_isr)
     dev->in_eps[ep_num - 1U].diepint_reg.val = intr.val;
   }
 
-  // 停止时序未完成时先推进它（PENDING 由中断确认后调 OnHardwareStopped）。
+  // 停止时序未完成时先推进它（PENDING 由中断确认后调 OnHardwareStopped）。请求在这里
+  // 结束时，这一份状态里的其余标志都属于它，不再处理：核心可能已经在 OnHardwareStopped
+  // 里启动了下一个请求，再报一次完成会挂到那个请求上。
   // Advance the stop sequence first while it is still pending (PENDING becomes a
-  // confirmed stop through OnHardwareStopped).
-  AdvanceStop(in_isr, intr.inepnakeff != 0U, intr.epdisbld != 0U);
+  // confirmed stop through OnHardwareStopped). When the request ends here, the other
+  // flags of this copy belong to it and are not handled: the core may have started the
+  // next request inside OnHardwareStopped, and a completion reported now would be
+  // attached to that request.
+  if (AdvanceStop(in_isr, intr.val)) return;
 
   // 在这里捕获标签：之后现读 transfer_tag_ 会被同一条路径上的 StartHardware 改写，
   // 报出去的完成可能挂到下一个请求上。
@@ -559,7 +589,7 @@ void ESP32USBEndpoint::HandleOutInterrupt(bool in_isr)
     dev->out_eps[ep_num - 1U].doepint_reg.val = intr.val;
   }
 
-  AdvanceStop(in_isr, false, intr.epdisbld != 0U);
+  if (AdvanceStop(in_isr, intr.val)) return;
   const uint32_t tag = transfer_tag_;
 
   const bool ep0_setup_related =

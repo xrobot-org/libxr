@@ -47,15 +47,16 @@ class ESP32USBEndpoint : public USB::Endpoint
     DIS_WAIT,
   };
 
-  /// 由 IN/OUT 中断调用，推进停止时序。两个标志取自中断入口处读出并清掉的那一份端点
-  /// 中断状态 / Called from the IN/OUT interrupts to advance the stop sequence. The two
-  /// flags come from the endpoint interrupt status that the handler read and cleared on
-  /// entry
+  /// 由 IN/OUT 中断调用，推进停止时序 / Called from the IN/OUT interrupts to advance the
+  /// stop sequence
   /// @param in_isr 是否在中断上下文 / Whether the call is in interrupt context
-  /// @param nak_effective INEPNE：IN 端点的 NAK 已生效 / INEPNE: the NAK of the IN
-  ///        endpoint is in effect
-  /// @param disabled EPDISD：端点已禁用 / EPDISD: the endpoint is disabled
-  void AdvanceStop(bool in_isr, bool nak_effective, bool disabled);
+  /// @param status 中断入口处读出并清掉的那一份端点中断状态（IN 为 DIEPINT，OUT 为
+  ///        DOEPINT）/ The endpoint interrupt status that the handler read and cleared on
+  ///        entry (DIEPINT for IN, DOEPINT for OUT)
+  /// @return 在途请求在这里结束时为 true，这一份状态里的其余标志都属于它 / True when
+  ///         the request in flight ended here; the other flags of that status belong to
+  ///         it
+  bool AdvanceStop(bool in_isr, uint32_t status);
 
   /// 控制器复位升级路径：收掉软件状态并确认停止（不再碰寄存器）/ Controller-reset
   /// escalation: drop the software state and confirm the stop (no register access)
