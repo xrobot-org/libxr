@@ -158,7 +158,8 @@ static void HandleTransferIn(CH32EndpointOtgHs* ep_in, uint8_t ep_num, uint8_t i
   ep_in->TransferComplete(0u);
 }
 
-static void HandleTransferToken(OtgHsEndpointMap& map, uint8_t int_st)
+static void HandleTransferToken(LibXR::CH32USBOtgHS* usb, OtgHsEndpointMap& map,
+                                uint8_t int_st)
 {
   const uint8_t token = int_st & USBHS_UIS_TOKEN_MASK;
   const uint8_t ep_num = int_st & USBHS_UIS_ENDP_MASK;
@@ -182,6 +183,19 @@ static void HandleTransferToken(OtgHsEndpointMap& map, uint8_t int_st)
     case USBHS_UIS_TOKEN_IN:
       HandleTransferIn(ep[IN_IDX], ep_num, int_st);
       break;
+
+    case USBHS_UIS_TOKEN_SOF:
+    {
+      // 设备模式下 SOF 以 UIF_TRANSFER 上报，INT_ST 令牌字段为 SOF（手册 V2.5
+      // p.339-340）；FRAME_NO 低 11 位是帧号，高 3 位是微帧号。
+      // In device mode a SOF is reported as UIF_TRANSFER with the INT_ST token field set
+      // to SOF (manual V2.5 p.339-340); FRAME_NO holds the frame number in its low 11
+      // bits and the microframe number in the top 3.
+      const uint16_t frame = USBHSD->FRAME_NO;
+      usb->OnSof(true, frame & USBHS_SOF_FRAME_NUM,
+                 static_cast<uint8_t>((frame & USBHS_MICRO_FRAME_NUM) >> 13U));
+      break;
+    }
 
     default:
       break;
@@ -255,14 +269,6 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
       clear_mask |= USBHS_UIF_BUS_RST;
     }
 
-    if (INTFLAG & USBHS_UIF_HST_SOF)
-    {
-      const uint16_t frame = USBHSD->FRAME_NO;
-      usb->OnSof(true, frame & USBHS_SOF_FRAME_NUM,
-                 static_cast<uint8_t>((frame & USBHS_MICRO_FRAME_NUM) >> 13U));
-      clear_mask |= USBHS_UIF_HST_SOF;
-    }
-
     if (INTFLAG & USBHS_UIF_SUSPEND)
     {
       if (USBHSD->MIS_ST & USBHS_UMS_SUSPEND)
@@ -313,7 +319,7 @@ extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandle
     // 3) Ordinary token completion: non-setup transfers are dispatched here.
     if ((INTFLAG & USBHS_UIF_TRANSFER) && ((clear_mask & USBHS_UIF_TRANSFER) == 0u))
     {
-      HandleTransferToken(map, INTST);
+      HandleTransferToken(usb, map, INTST);
       clear_mask |= USBHS_UIF_TRANSFER;
     }
     if (INTFLAG & USBHS_UIF_TRANSFER)
