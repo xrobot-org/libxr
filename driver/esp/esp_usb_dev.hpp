@@ -344,6 +344,11 @@ class ESP32USBDevice : public USB::EndpointPool,
       {};  ///< 运行时资源与全局状态 / Runtime resource ownership and global flags
   alignas(SETUP_DMA_BUFFER_BYTES) uint8_t setup_packet_[SETUP_DMA_BUFFER_BYTES] =
       {};  ///< DMA 可见的共享 setup 包缓冲区 / Shared DMA-visible setup-packet buffer
+  /// EP0 OUT 停止后的 DMA 落点（一个 EP0 最大包）：迟到的一包落在这里，不会写进已归还
+  /// 的槽；DMA 地址寄存器要求按字对齐 / DMA target of EP0 OUT after a stop (one EP0
+  /// maximum packet): a late packet lands here instead of in the returned slot; the DMA
+  /// address register needs word alignment
+  alignas(uint32_t) uint8_t ep0_out_scratch_[64] = {};
   ControlState control_ = {};  ///< 需跨 status completion 保留的 EP0 setup 状态 / EP0
                                ///< setup state that must survive until status completion
 };

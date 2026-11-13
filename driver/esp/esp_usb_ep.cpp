@@ -271,7 +271,7 @@ USB::Endpoint::StopResult ESP32USBEndpoint::StopHardware(bool in_isr)
     // DOEPDMA0 at the driver's own scratch so a late packet lands in the scratch
     // and the lent slot can be reclaimed safely.
     dev->doepctl0_reg.snak = 1;
-    dev->doepdma0_reg.val = reinterpret_cast<uint32_t>(ep0_scratch_);
+    dev->doepdma0_reg.val = reinterpret_cast<uint32_t>(device_.ep0_out_scratch_);
     stop_phase_ = StopPhase::NONE;
     transfer_active_ = false;
     return StopResult::DONE;

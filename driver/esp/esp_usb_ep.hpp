@@ -95,10 +95,6 @@ class ESP32USBEndpoint : public USB::Endpoint
   uint32_t transfer_tag_ = 0U;
   bool transfer_active_ = false;
   StopPhase stop_phase_ = StopPhase::NONE;
-  /// EP0 OUT 停止后的 DMA 落点，避免仍指向被借出的槽 / DMA target after an EP0
-  /// OUT stop so it no longer points at the lent slot
-  uint8_t ep0_scratch_[64] =
-      {};  ///< 在途请求由后端自持 / In-flight tracked by the backend
   size_t transfer_actual_size_ = 0U;
   size_t transfer_queued_size_ = 0U;
   size_t dma_rx_status_bytes_ = 0U;
