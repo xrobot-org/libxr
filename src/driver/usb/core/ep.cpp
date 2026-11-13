@@ -206,7 +206,9 @@ ErrorCode Endpoint::ClearStall(bool in_isr)
   ErrorCode result = ErrorCode::OK;
   if (stall_after_stop_)
   {
-    stall_after_stop_ = false;  // The halt never reached the hardware.
+    // 停止的 halt 从未到达硬件。
+    // The halt never reached the hardware.
+    stall_after_stop_ = false;
   }
   else
   {
@@ -259,7 +261,9 @@ void Endpoint::EndRequests(bool in_isr, bool disable)
     DeliverAborts(in_isr);
     return;
   }
-  if (stopping_) return;  // An earlier stop is still pending; it ends everything.
+  // 较早的停止仍待处理；它会结束一切。
+  // An earlier stop is still pending; it ends everything.
+  if (stopping_) return;
 
   StopResult stop;
   {
@@ -307,7 +311,9 @@ void Endpoint::FinishStop(bool in_isr)
       result = ErrorCode::OK;
       actual = 0U;
     }
-    stopping_ = true;  // The request ends with the stop; no continuation.
+    // 该请求随停止一起结束；没有后续。
+    // The request ends with the stop; no continuation.
+    stopping_ = true;
     FinishInflight(in_isr, result, actual);
   }
   stopping_ = false;
@@ -428,7 +434,9 @@ void Endpoint::StartRequest(bool in_isr, uint8_t index, size_t length, bool defe
   {
     inflight_tag_.store(0U, std::memory_order_release);
     if (defer_failure)
-      start_failed_ = true;  // Completed after the completion being delivered now.
+      // 在正在交付的完成之后完成。
+      // Completed after the completion being delivered now.
+      start_failed_ = true;
     else
       FinishInflight(in_isr, ErrorCode::FAILED, 0U);
   }
@@ -490,7 +498,9 @@ void Endpoint::FinishInflight(bool in_isr, ErrorCode result, size_t actual)
   const uint8_t index = inflight_;
   inflight_ = NO_REQUEST;
   inflight_tail_ = false;
-  start_failed_ = false;  // A failed early start is ended by whoever retires it first.
+  // 失败的提前启动由最先收尾它的一方结束。
+  // A failed early start is ended by whoever retires it first.
+  start_failed_ = false;
   inflight_tag_.store(0U, std::memory_order_release);
   const bool in = config_.direction == Direction::IN;
   // 端点停止期间到达的 OUT 数据不属于任何一方。
@@ -529,7 +539,9 @@ void Endpoint::FinishInflight(bool in_isr, ErrorCode result, size_t actual)
 bool Endpoint::StartEarly(bool in_isr)
 {
   if (!start_before_deliver_) return false;
-  start_before_deliver_ = false;  // Only the first retirement of a pass starts early.
+  // 一轮中只有第一次收尾会提前启动。
+  // Only the first retirement of a pass starts early.
+  start_before_deliver_ = false;
   StartOne(in_isr, true);
   return true;
 }
@@ -562,7 +574,9 @@ void Endpoint::OnHardwareComplete(bool in_isr, uint32_t tag, size_t actual,
   if (tag == 0U || inflight_tag_.load(std::memory_order_acquire) != tag) return;
   uint32_t expected = 0U;
   if (!completion_ready_.compare_exchange_strong(expected, 1U, std::memory_order_acquire))
-    return;  // A duplicate must not overwrite an unconsumed completion.
+    // 重复的完成不得覆盖尚未消费的完成。
+    // A duplicate must not overwrite an unconsumed completion.
+    return;
   completion_tag_ = tag;
   completion_actual_ = actual;
   completion_result_ = result;

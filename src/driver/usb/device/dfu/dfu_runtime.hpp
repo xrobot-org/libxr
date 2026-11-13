@@ -244,8 +244,8 @@ class DfuRuntimeClass : public DfuInterfaceClassBase
     switch (static_cast<DFURequest>(bRequest))
     {
       case DFURequest::DETACH:
-        // Runtime DFU 只在 APP_IDLE 接受 DETACH；真正跳转由 Process() 在
-        // 广播给主机的超时到期后再执行。
+        // Runtime DFU 只在 APP_IDLE 接受 DETACH；
+        // 真正跳转由 Process() 在广播给主机的超时到期后再执行。
         // Runtime DFU only accepts DETACH from APP_IDLE; the actual jump is
         // deferred to Process() after the advertised timeout expires.
         if (jump_to_bootloader_ == nullptr)
@@ -257,7 +257,9 @@ class DfuRuntimeClass : public DfuInterfaceClassBase
           return ErrorCode::ARG_ERR;
         }
         detach_timeout_ms_ = (wValue == 0u) ? default_detach_timeout_ms_ : wValue;
-        detach_pending_ = true;  // Readiness starts at actual control completion.
+        // 就绪从实际的控制传输完成时开始。
+        // Readiness starts at actual control completion.
+        detach_pending_ = true;
         state_ = DFUState::APP_DETACH;
         desc_block_.func_desc.wDetachTimeOut = detach_timeout_ms_;
         // 无数据阶段的控制传输由核心自行完成状态阶段（STATUS ZLP）。

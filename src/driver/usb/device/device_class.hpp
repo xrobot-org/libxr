@@ -319,7 +319,9 @@ class DeviceClass : public ConfigDescriptorItem
   // registration and are not part of the public class contract.
   void SetInterfaceStringBaseIndex(uint8_t string_index);
 
-  EndpointPool* service_pool_ = nullptr;  // Immutable after composition construction.
+  /// composition 构造完成后不可变。
+  /// Immutable after composition construction.
+  EndpointPool* service_pool_ = nullptr;
   std::atomic<uint32_t> service_pending_{0};
   friend class DeviceComposition;
   template <typename Capabilities>

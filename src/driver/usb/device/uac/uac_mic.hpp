@@ -512,11 +512,11 @@ class UAC1MicrophoneQ : public DeviceClass
     auto ans = endpoint_pool.Get(ep_iso_in_, Endpoint::Direction::IN, iso_in_ep_num_);
     ASSERT(ans == ErrorCode::OK);
 
-    // 包长显式：w_max_packet_size_ 由采样率与分帧推出（RecomputeTiming）。Configure
-    // 校验它在当前速度下合法、槽与后端 FIFO 装得下；失败时端点停在 ERROR，composition
-    // 以 ConfigurationValid() 拒绝本次配置。等时端点不被后端支持时（后端的
-    // ConfigureHardware 返回 NOT_SUPPORT）也走这一条路：使用者从绑定结果得到明确的
-    // 运行期错误，而不是悄悄不工作。
+    // 包长显式：w_max_packet_size_ 由采样率与分帧推出（RecomputeTiming）。
+    // Configure 校验它在当前速度下合法、槽与后端 FIFO 装得下；失败时端点停在 ERROR，
+    // composition 以 ConfigurationValid() 拒绝本次配置。
+    // 等时端点不被后端支持时（后端的 ConfigureHardware 返回 NOT_SUPPORT）也走这一条路：
+    // 使用者从绑定结果得到明确的运行期错误，而不是悄悄不工作。
     // Explicit packet size: w_max_packet_size_ is derived from the sample rate and the
     // framing (RecomputeTiming). Configure validates it against the speed, the slots
     // and the backend FIFO; on failure the endpoint stays in ERROR and the composition
@@ -646,7 +646,9 @@ class UAC1MicrophoneQ : public DeviceClass
       return;
     }
 
-    ep_iso_in_->Close(in_isr);  // Alternate zero does not activate a data endpoint.
+    // 备用设置 0 不激活数据端点。
+    // Alternate zero does not activate a data endpoint.
+    ep_iso_in_->Close(in_isr);
     inited_ = true;
   }
 
@@ -895,8 +897,8 @@ class UAC1MicrophoneQ : public DeviceClass
     switch (alt)
     {
       case 0:
-        // Alt 0：本接口没有数据端点；Close 结束待决请求并解绑端点，停止未确认时由
-        // 核心推迟状态阶段。
+        // Alt 0：本接口没有数据端点；Close 结束待决请求并解绑端点，
+        // 停止未确认时由核心推迟状态阶段。
         // Alt 0: no data endpoint for this interface; Close ends the pending requests
         // and unbinds the endpoint. The core defers the status stage while the stop is
         // unconfirmed.
@@ -909,9 +911,9 @@ class UAC1MicrophoneQ : public DeviceClass
 
       case 1:
       {
-        // Alt 1：结束当前请求并重新 Configure（只涉及这个接口的端点）。端点停止
-        // 未确认时保持挂起，等停止确认或下一拍继续（TryActivate）；Configure 失败
-        // （如后端不支持等时）返回错误让核心 STALL 该请求。
+        // Alt 1：结束当前请求并重新 Configure（只涉及这个接口的端点）。
+        // 端点停止未确认时保持挂起，等停止确认或下一拍继续（TryActivate）；
+        // Configure 失败（如后端不支持等时）返回错误让核心 STALL 该请求。
         // Alt 1: end the current requests and re-Configure (only this interface's
         // endpoint is involved). While the stop is unconfirmed the activation stays
         // pending for the confirmation or the next tick (TryActivate); a Configure
@@ -1058,8 +1060,9 @@ class UAC1MicrophoneQ : public DeviceClass
     }
     if (completion.result == ErrorCode::ABORTED)
     {
-      // 有意的停止（解绑、SET_INTERFACE alt=0、恢复流程的 Close）：谁发起谁负责
-      // 置 activate_pending_，这里不能置——否则 GET_INTERFACE 会把 alt=0 报成 1。
+      // 有意的停止（解绑、SET_INTERFACE alt=0、恢复流程的 Close）：
+      // 谁发起谁负责置 activate_pending_，这里不能置——否则 GET_INTERFACE 会把
+      // alt=0 报成 1。
       // An intentional stop (unbind, SET_INTERFACE alt=0, a recovery Close): the
       // initiator owns activate_pending_, and setting it here would make
       // GET_INTERFACE report alt=0 as 1.
@@ -1067,8 +1070,8 @@ class UAC1MicrophoneQ : public DeviceClass
     }
 
     // 等时请求未完成（FAILED / OUT_OF_RANGE）：只置待决标志。完成回调里不做端点
-    // 生命周期操作（Close/Configure），恢复由下一拍非中断 SOF 经 ActivateStreaming
-    // 执行。
+    // 生命周期操作（Close/Configure），恢复由下一拍非中断 SOF 经
+    // ActivateStreaming 执行。
     // The isochronous request did not finish (FAILED / OUT_OF_RANGE): only raise the
     // pending flag. Endpoint lifecycle operations (Close/Configure) are not done from a
     // completion callback, so the recovery runs from the next non-ISR SOF via
@@ -1106,8 +1109,8 @@ class UAC1MicrophoneQ : public DeviceClass
     {
       return ErrorCode::FAILED;
     }
-    // 恢复所需的生命周期操作（Close）在这里做：本函数只从 owner 上下文（非中
-    // 断 SOF 或 SET_INTERFACE）进入，不在完成回调里。
+    // 恢复所需的生命周期操作（Close）在这里做：本函数只从 owner 上下文
+    // （非中断 SOF 或 SET_INTERFACE）进入，不在完成回调里。
     // The lifecycle op the recovery needs (Close) happens here: this function is
     // only entered from the owner context (a non-ISR SOF or SET_INTERFACE), never from
     // a completion callback.
@@ -1146,8 +1149,8 @@ class UAC1MicrophoneQ : public DeviceClass
       return;
     }
 
-    // 本服务区间应发的音频帧数（Bresenham 余数进位）。先推进累计器：丢弃的帧也占用
-    // 实时区间，长期速率以真实时间为准。
+    // 本服务区间应发的音频帧数（Bresenham 余数进位）。先推进累计器：
+    // 丢弃的帧也占用实时区间，长期速率以真实时间为准。
     // Audio frames due in this service interval (Bresenham remainder carry). The
     // accumulator advances first: a dropped frame still consumes real time, so the
     // long-term rate follows the wall clock.
@@ -1257,7 +1260,8 @@ class UAC1MicrophoneQ : public DeviceClass
   static constexpr size_t FRAME_BYTES = CHANNELS * K_SUBFRAME_SIZE;
   uint32_t base_frames_per_service_ = 0;
   uint32_t rem_frames_per_service_ = 0;
-  uint32_t acc_rem_ = 0;     // 0..999 / fixed-point remainder accumulator
+  /// 余数累加器，取值 0..999 / Remainder accumulator, 0..999.
+  uint32_t acc_rem_ = 0;
   uint32_t micro_debt_ = 0;  ///< HS：未凑满一个服务区间的微帧 / HS: microframes short
                              ///< of one service interval
   uint16_t w_max_packet_size_ = 0;

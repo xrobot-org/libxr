@@ -219,7 +219,9 @@ class CDCUart : public CDCBase, public LibXR::UART
     }
     else if (completion.result != ErrorCode::ABORTED)
     {
-      ArmRx(in_isr);  // A failed receive frees its slot; arm it again.
+      // 失败的接收会释放其槽；再次装填。
+      // A failed receive frees its slot; arm it again.
+      ArmRx(in_isr);
     }
   }
 
@@ -328,14 +330,18 @@ class CDCUart : public CDCBase, public LibXR::UART
           rx_offset_ += amount;
         }
         queue.Publish();
-        if (rx_offset_ < lease.data.size_) return;  // Keep the lease: backpressure.
+        // 保留租借：反压。
+        // Keep the lease: backpressure.
+        if (rx_offset_ < lease.data.size_) return;
         rx_waiting_.store(0U, std::memory_order_relaxed);
       }
       const Endpoint::Slot done = lease;
       rx_head_ ^= 1U;
       --rx_count_;
       rx_offset_ = 0;
-      (void)ep->ReturnSlot(done, in_isr);  // ABORTED only after an unbind.
+      // 仅在解绑后才会是 ABORTED。
+      // ABORTED only after an unbind.
+      (void)ep->ReturnSlot(done, in_isr);
     }
   }
 

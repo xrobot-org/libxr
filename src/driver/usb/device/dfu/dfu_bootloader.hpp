@@ -99,7 +99,9 @@ class DfuBootloaderBackend
     image_.ready = false;
     image_.stored_size = 0u;
     size_t stored = 0;
-    image_.ready = ProbeStoredImage(&stored);  // Initialization, never a SETUP IRQ.
+    // 在初始化时进行，绝不在 SETUP IRQ 中。
+    // Initialization, never a SETUP IRQ.
+    image_.ready = ProbeStoredImage(&stored);
     image_.stored_size = image_.ready ? stored : 0;
     published_image_size_.store(image_.stored_size, std::memory_order_release);
   }
@@ -884,7 +886,9 @@ class DfuBootloaderBackend
   bool BeginFlashStep()
   {
     uint32_t state = job_state_.load(std::memory_order_acquire);
-    if (state == EMPTY) return true;  // Constructor-only stored-image validation.
+    // 仅构造期的已存镜像校验。
+    // Constructor-only stored-image validation.
+    if (state == EMPTY) return true;
     if (state != RUNNING) return false;
     // 一次成功的认领授权这一次不可取消的 Flash 调用。认领之后的取消只让它走到安全边界，
     // 不会影响随后的调用。

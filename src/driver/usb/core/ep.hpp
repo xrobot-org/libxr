@@ -469,7 +469,9 @@ class Endpoint
   Direction avail_direction_;
   RawData memory_;
   uint8_t slot_count_ = 1;  // Fixed at construction.
-  size_t slot_size_ = 0;  // Bytes of each slot; slot 1 starts here. Cache-line multiple.
+  /// 每个槽的字节数；槽 1 从此处开始。为缓存行的整数倍。
+  /// Bytes of each slot; slot 1 starts here. Cache-line multiple.
+  size_t slot_size_ = 0;
   Config config_;
   Granted granted_;
   std::atomic<State> state_{State::DISABLED};
@@ -486,16 +488,21 @@ class Endpoint
 
   // Owner 专用的请求状态 / Owner-only request state.
   uint8_t inflight_ = NO_REQUEST;
-  bool inflight_tail_ =
-      false;  // The ZLP tail of the in-flight slot request is on the wire.
+  /// 在途槽请求的 ZLP 尾部已在总线上。
+  /// The ZLP tail of the in-flight slot request is on the wire.
+  bool inflight_tail_ = false;
   HwRequest inflight_request_;
   uint32_t sequence_ = 0;
-  uint8_t pending_aborts_ = 0;  // Queued requests ended behind the in-flight one.
+  /// 排在在途请求之后被结束的排队请求数。
+  /// Queued requests ended behind the in-flight one.
+  uint8_t pending_aborts_ = 0;
   bool stopping_ = false;
   bool close_after_stop_ = false;
   bool stall_after_stop_ = false;
   bool start_before_deliver_ = false;
-  bool start_failed_ = false;  // An early start failed; its FAILED completion is pending.
+  /// 提前启动失败；其 FAILED 完成待处理。
+  /// An early start failed; its FAILED completion is pending.
+  bool start_failed_ = false;
 
   // IRQ 为生产者，owner 为消费者。取字长大小，以适配只支持字长原子操作的目标。
   // IRQ producer, owner consumer. Word-sized for targets with word-size atomics only.
@@ -505,7 +512,9 @@ class Endpoint
   size_t completion_actual_ = 0;
   ErrorCode completion_result_ = ErrorCode::OK;
   std::atomic<uint32_t> stop_confirmed_{0};
-  uint32_t pending_bit_ = 0;  // This endpoint's bit in the pool's pending mask.
+  /// 本端点在池的待处理掩码中的位。
+  /// This endpoint's bit in the pool's pending mask.
+  uint32_t pending_bit_ = 0;
   // 由 owner 在收尾该端点的完成（含回调）期间置位；
   // 其间入队的请求由随后的 StartNext 启动。
   // Set by the owner while it retires this endpoint's completion (callback included);

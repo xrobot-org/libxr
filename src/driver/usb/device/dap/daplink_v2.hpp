@@ -420,8 +420,8 @@ class DapLinkV2Class : public DeviceClass
     transfer_abort_.store(true, std::memory_order_release);
 
     // 会话结束：epoch 加一。SWD/JTAG 由 Step 线程关闭（见 SyncSession），这里不碰。
-    // 借出的槽由解绑作废；Close 里送达的 ABORTED 完成因 inited_ 已为 false 被回调入口
-    // 忽略。
+    // 借出的槽由解绑作废；Close 里送达的 ABORTED 完成因 inited_ 已为 false，
+    // 被回调入口忽略。
     // The session ends: the epoch is bumped. SWD/JTAG are closed by the Step thread (see
     // SyncSession), not here. Lent slots are voided by the unbind; the ABORTED
     // completions delivered inside Close are ignored by the callback entry because
@@ -2875,7 +2875,9 @@ class DapLinkV2Class : public DeviceClass
     struct PendingApRead
     {
       bool valid = false;
-      bool need_ts = false;  // Whether this AP read transfer needs timestamp.
+      // 此 AP 读传输是否需要时间戳。
+      // Whether this AP read transfer needs timestamp.
+      bool need_ts = false;
     } pending;
 
     auto emit_read_with_ts = [&](bool need_ts, uint32_t data) -> bool
@@ -3030,7 +3032,9 @@ class DapLinkV2Class : public DeviceClass
         {
           match_mask_ = wdata;
           response_value = LibXR::USB::DapLinkV2Def::DAP_TRANSFER_OK;
-          response_count++;  // MATCH_MASK counts as a successful transfer.
+          // MATCH_MASK 算作一次成功的传输。
+          // MATCH_MASK counts as a successful transfer.
+          response_count++;
           continue;
         }
         if (AP)
@@ -3593,7 +3597,9 @@ class DapLinkV2Class : public DeviceClass
             {
               StoreU32Le(&resp[resp_off], rdbuff_data);
               resp_off = static_cast<uint16_t>(resp_off + 4u);
-              done = static_cast<uint16_t>(i);  // done includes transfer [0..i-1]
+              // done 包含传输 [0..i-1]。
+              // done includes transfer [0..i-1]
+              done = static_cast<uint16_t>(i);
             }
             else
             {

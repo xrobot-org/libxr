@@ -516,7 +516,7 @@ class CDCBase : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
-        return ErrorCode::OK;  // The core receives the data stage.
+        return ErrorCode::OK;  // 核心接收数据阶段 / The core receives the data stage.
 
       case ClassRequest::GET_LINE_CODING:
         // 返回当前线路编码设置。

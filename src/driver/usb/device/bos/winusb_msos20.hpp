@@ -619,7 +619,9 @@ class MsOs20BosCapability final : public LibXR::USB::BosCapability
       }
 
       result.handled = true;
-      result.in_data = descriptor_set_;  // USB stack truncates by wLength
+      // USB 栈按 wLength 截断。
+      // USB stack truncates by wLength
+      result.in_data = descriptor_set_;
       result.write_zlp = false;
       result.early_read_zlp = true;
       return ErrorCode::OK;
@@ -645,7 +647,7 @@ class MsOs20BosCapability final : public LibXR::USB::BosCapability
 
       result.handled = true;
       result.in_data = {nullptr, 0};
-      result.write_zlp = true;  // complete status stage
+      result.write_zlp = true;  // 完成状态阶段 / complete status stage
       result.early_read_zlp = true;
       return ErrorCode::OK;
     }

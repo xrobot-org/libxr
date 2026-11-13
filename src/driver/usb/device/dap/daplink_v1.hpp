@@ -297,7 +297,9 @@ class DapLinkV1Class
   uint32_t swj_clock_hz_ = 1000000u;
   uint32_t match_mask_ = 0xFFFFFFFFu;
 
-  Endpoint* ep_out_ = nullptr;  // Cached HID OUT endpoint (owner only)
+  /// 缓存的 HID OUT 端点（仅 owner 使用）。
+  /// Cached HID OUT endpoint (owner only)
+  Endpoint* ep_out_ = nullptr;
 
   // 收到的报告从 owner 交给 Step 线程：最多两个（OUT 端点只有两个槽），按到达顺序。
   // 租约在写进环之后才发布（release），响应提交之前一直保留作背压。
@@ -313,8 +315,9 @@ class DapLinkV1Class
   LibXR::Semaphore cmd_sem_{0};
   /// 每次 IN 完成和解绑发一次 / Posted per IN completion and per unbind
   LibXR::Semaphore in_sem_{0};
-  /// 绑定/解绑时加一：Step 线程用它丢弃旧会话的命令，并在自己的线程里落实会话的
-  /// 开始/结束 / Bumped on bind/unbind: the Step thread drops commands of an old session
+  /// 绑定/解绑时加一：Step 线程用它丢弃旧会话的命令，
+  /// 并在自己的线程里落实会话的开始/结束 / Bumped on bind/unbind: the Step thread drops
+  /// commands of an old session
   /// with it and applies the session start/end in its own thread
   std::atomic<uint32_t> epoch_{0u};
   uint32_t session_epoch_ = 0u;  ///< Step 线程已落实的 epoch_ / Applied epoch_

@@ -113,7 +113,9 @@ void DeviceCore<C>::ProcessEvents(bool in_isr, uint32_t events)
     Deinitialize(in_isr);
     if (pool_.AnyStopping())
     {
-      deferred_events_ = events;  // Deinitialize is idempotent; it runs again then.
+      // Deinitialize 是幂等的；届时会再次运行。
+      // Deinitialize is idempotent; it runs again then.
+      deferred_events_ = events;
       return;
     }
     if (desired_enabled_.load(std::memory_order_acquire))
@@ -527,8 +529,9 @@ ErrorCode DeviceCore<C>::ClassRequest(bool in_isr)
   {
     if (result.write_data.size_ && result.write_data.addr_ == nullptr)
       return ErrorCode::ARG_ERR;
-    WriteControl(in_isr,
-                 result.write_data);  // An empty IN response is a valid data stage.
+    // 空的 IN 响应是有效的数据阶段。
+    // An empty IN response is a valid data stage.
+    WriteControl(in_isr, result.write_data);
     return ErrorCode::OK;
   }
   // 核心接收完整的 OUT 数据阶段，并通过 OnControlData 交出。
