@@ -122,9 +122,11 @@ class ESP32USBDevice : public USB::EndpointPool,
   void Stop(bool in_isr) override;
 
   /**
-   * @brief 停止超时（核心按 1 ms 帧计数后调用）：升级为控制器复位
-   *        Stop timeout (the core calls this after counting 1 ms frames): escalate to a
-   *        controller reset
+   * @brief 停止超时（核心按 1 ms 帧计数后调用）：设备离开总线，在毫秒节拍上复位控制器并
+   *        重新连接，主机重新枚举
+   *        Stop timeout (the core calls this after counting 1 ms frames): the device
+   *        leaves the bus, the controller is reset on the millisecond tick and the device
+   *        reconnects, so the host enumerates again
    */
   void OnStopTimeout(bool in_isr) override;
 

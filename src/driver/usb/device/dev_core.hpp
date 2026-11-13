@@ -163,10 +163,14 @@ class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
   /// Make EP0 ready for the next SETUP; called inside the hardware guard after
   /// initialization and after every finished control transfer
   virtual void OnControlReady() {}
-  /// 端点停止已连续 STOP_FRAME_LIMIT 帧未被确认。后端复位控制器并确认所有待处理的停止；
-  /// 主机会重新枚举。
-  /// An endpoint stop has not been confirmed for STOP_FRAME_LIMIT frames. The backend
-  /// resets the controller and confirms every pending stop; the host enumerates again.
+  /// 端点停止已连续 STOP_FRAME_LIMIT 帧未被确认，控制器状态未知。后端让设备离开总线并
+  /// 确认所有待处理的停止，当前会话结束。之后是自行复位控制器并重新连接，还是保持断开
+  /// 直到应用再次 Start()，由后端决定并写在后端的说明里。
+  /// An endpoint stop has not been confirmed for STOP_FRAME_LIMIT frames, so the state of
+  /// the controller is unknown. The backend takes the device off the bus and confirms
+  /// every pending stop, which ends the session. Whether it then resets the controller
+  /// and reconnects by itself or stays disconnected until the application calls Start()
+  /// again is up to the backend and stated in its documentation.
   virtual void OnStopTimeout(bool in_isr) { UNUSED(in_isr); }
   /// 所有端点停止都已确认（帧计数可以结束） / Every endpoint stop is confirmed (frame
   /// counting may end)
