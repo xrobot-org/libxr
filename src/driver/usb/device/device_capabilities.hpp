@@ -1,4 +1,6 @@
 #pragma once
+#include <concepts>
+
 #include "core.hpp"
 
 namespace LibXR::USB
@@ -25,6 +27,25 @@ struct HighSpeedCapabilities : FullSpeedCapabilities
 {
   /// 支持的总线速度位图：全速和高速 / Supported bus speeds: full and high
   static constexpr uint32_t SPEEDS = SpeedBit(Speed::FULL) | SpeedBit(Speed::HIGH);
+};
+
+/**
+ * @brief 设备能力策略类型的约定 / Contract of a device capability policy type
+ *
+ * `DeviceCore` 的模板参数必须满足它：一个只有静态常量的类型，例如上面的
+ * `FullSpeedCapabilities` 与 `HighSpeedCapabilities`。`SPEEDS` 是按 SpeedBit 编码的
+ * 总线速度位图，`BOS` 与 `BUS_TIME` 决定是否编译 BOS 描述符和总线时间的支持。
+ *
+ * The template parameter of `DeviceCore` has to satisfy it: a type with static
+ * constants only, such as `FullSpeedCapabilities` and `HighSpeedCapabilities` above.
+ * `SPEEDS` is the bitmap of bus speeds encoded with SpeedBit; `BOS` and `BUS_TIME`
+ * decide whether BOS descriptor support and bus-time support are compiled in.
+ */
+template <typename Capabilities>
+concept DeviceCapabilities = requires {
+  { Capabilities::SPEEDS } -> std::same_as<const uint32_t&>;
+  { Capabilities::BOS } -> std::same_as<const bool&>;
+  { Capabilities::BUS_TIME } -> std::same_as<const bool&>;
 };
 
 // 不同控制器的地址写入方式不同；协议上的提交始终是完成的状态阶段，

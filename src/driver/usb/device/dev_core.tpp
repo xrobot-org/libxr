@@ -2,8 +2,8 @@
 
 namespace LibXR::USB
 {
-template <typename C>
-DeviceCore<C>::DeviceCore(
+template <DeviceCapabilities Capabilities>
+DeviceCore<Capabilities>::DeviceCore(
     EndpointPool& pool, USBSpec spec, Speed speed,
     DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid, uint16_t bcd,
     const std::initializer_list<const DescriptorStrings::LanguagePack*>& languages,
@@ -22,23 +22,23 @@ DeviceCore<C>::DeviceCore(
                    composition_.ControlReceiveCapacity())
 {
   static_assert(
-      (C::SPEEDS &
+      (Capabilities::SPEEDS &
        ~(SpeedBit(Speed::LOW) | SpeedBit(Speed::FULL) | SpeedBit(Speed::HIGH))) == 0U,
       "A SuperSpeed policy requires its descriptor/link backend implementation");
-  REQUIRE((C::SPEEDS & SpeedBit(speed)) != 0U);
+  REQUIRE((Capabilities::SPEEDS & SpeedBit(speed)) != 0U);
   REQUIRE(ep0_packet_size_ == 8U || ep0_packet_size_ == 16U || ep0_packet_size_ == 32U ||
           ep0_packet_size_ == 64U);
   REQUIRE(speed != Speed::HIGH || ep0_packet_size_ == 64U);
   REQUIRE(speed != Speed::LOW || ep0_packet_size_ == 8U);
-  if constexpr (C::BOS) this->InitializeBos(composition_);
+  if constexpr (Capabilities::BOS) this->InitializeBos(composition_);
   pool_.SetSpeed(speed);
   pool_.SetControlHandler(
       Callback<uint32_t>::Create([](bool context, DeviceCore* self, uint32_t events)
                                  { self->ProcessEvents(context, events); }, this));
 }
 
-template <typename C>
-void DeviceCore<C>::Initialize(bool in_isr)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::Initialize(bool in_isr)
 {
   in0_ = pool_.GetEndpoint0In();
   out0_ = pool_.GetEndpoint0Out();
@@ -73,8 +73,8 @@ void DeviceCore<C>::Initialize(bool in_isr)
   pool_.KickEndpoints(in_isr);
 }
 
-template <typename C>
-void DeviceCore<C>::Deinitialize(bool in_isr)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::Deinitialize(bool in_isr)
 {
   Abort(in_isr);
   inited_.store(0U, std::memory_order_release);
@@ -83,8 +83,8 @@ void DeviceCore<C>::Deinitialize(bool in_isr)
   if (out0_) out0_->Close(in_isr);
 }
 
-template <typename C>
-void DeviceCore<C>::ProcessEvents(bool in_isr, uint32_t events)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::ProcessEvents(bool in_isr, uint32_t events)
 {
   // 端点停止未确认期间，其他事情都不继续；确认会投递 STOP_DONE_EVENT，
   // 届时被暂缓的事件才运行。
@@ -135,7 +135,7 @@ void DeviceCore<C>::ProcessEvents(bool in_isr, uint32_t events)
       if (speed_ok)
       {
         pool_.SetSuspended(false, in_isr);
-        if constexpr (C::BUS_TIME) this->previous = 0xffffffffU;
+        if constexpr (Capabilities::BUS_TIME) this->previous = 0xffffffffU;
         Initialize(in_isr);
         if ((events & RESET_EVENT) && IsInited())
           composition_.Notify(in_isr, DeviceEvent::RESET);
@@ -172,12 +172,12 @@ void DeviceCore<C>::ProcessEvents(bool in_isr, uint32_t events)
     SetupPacket setup;
     if (TakeCapturedSetup(setup)) HandleSetup(in_isr, setup);
   }
-  if constexpr (C::BUS_TIME)
+  if constexpr (Capabilities::BUS_TIME)
     if (events & TIME_EVENT) DeliverBusTime(in_isr);
 }
 
-template <typename C>
-void DeviceCore<C>::Continue(bool in_isr)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::Continue(bool in_isr)
 {
   const Continuation step = continuation_;
   continuation_ = Continuation::NONE;
@@ -203,8 +203,8 @@ void DeviceCore<C>::Continue(bool in_isr)
   }
 }
 
-template <typename C>
-void DeviceCore<C>::OnSetupPacket(bool in_isr, const SetupPacket* setup)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::OnSetupPacket(bool in_isr, const SetupPacket* setup)
 {
   if (setup == nullptr) return;
   {
@@ -216,8 +216,8 @@ void DeviceCore<C>::OnSetupPacket(bool in_isr, const SetupPacket* setup)
   pool_.RequestService(in_isr);
 }
 
-template <typename C>
-bool DeviceCore<C>::TakeCapturedSetup(SetupPacket& setup)
+template <DeviceCapabilities Capabilities>
+bool DeviceCore<Capabilities>::TakeCapturedSetup(SetupPacket& setup)
 {
   EndpointPool::HardwareScope hardware(pool_);
   // 较新的生命周期请求必须先于边界之后的 SETUP 生效。
@@ -230,8 +230,8 @@ bool DeviceCore<C>::TakeCapturedSetup(SetupPacket& setup)
   return true;
 }
 
-template <typename C>
-void DeviceCore<C>::HandleSetup(bool in_isr, const SetupPacket& setup)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::HandleSetup(bool in_isr, const SetupPacket& setup)
 {
   // 先消费真正捕获到的旧完成（STATUS IN 可能仍需应用其地址）；
   // 非最终的旧数据不得继续。
@@ -255,10 +255,10 @@ void DeviceCore<C>::HandleSetup(bool in_isr, const SetupPacket& setup)
   DispatchSetup(in_isr);
 }
 
-template <typename C>
-void DeviceCore<C>::DispatchSetup(bool in_isr)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::DispatchSetup(bool in_isr)
 {
-  if constexpr ((C::SPEEDS & SpeedBit(Speed::HIGH)) != 0U)
+  if constexpr ((Capabilities::SPEEDS & SpeedBit(Speed::HIGH)) != 0U)
     this->other_speed_descriptor = false;
   transferred_ = 0;
   status_out_armed_ = false;
@@ -269,8 +269,8 @@ void DeviceCore<C>::DispatchSetup(bool in_isr)
   if (result != ErrorCode::OK) Stall(in_isr);
 }
 
-template <typename C>
-void DeviceCore<C>::Abort(bool in_isr)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::Abort(bool in_isr)
 {
   DeviceClass* previous = control_class_;
   const SetupPacket old = setup_;
@@ -286,8 +286,8 @@ void DeviceCore<C>::Abort(bool in_isr)
   if (previous) previous->OnControlAbort(in_isr, old);
 }
 
-template <typename C>
-void DeviceCore<C>::Finish(bool in_isr)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::Finish(bool in_isr)
 {
   DeviceClass* previous = control_class_;
   const SetupPacket completed = setup_;
@@ -302,8 +302,8 @@ void DeviceCore<C>::Finish(bool in_isr)
   if (previous) previous->OnControlComplete(in_isr, completed);
 }
 
-template <typename C>
-void DeviceCore<C>::Stall(bool in_isr)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::Stall(bool in_isr)
 {
   Abort(in_isr);
   phase_ = Phase::STALLED;
@@ -311,23 +311,23 @@ void DeviceCore<C>::Stall(bool in_isr)
   if (out0_) (void)out0_->Stall(in_isr);
 }
 
-template <typename C>
-void DeviceCore<C>::StatusIn(bool in_isr)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::StatusIn(bool in_isr)
 {
   phase_ = Phase::STATUS_IN;
   if (in0_->SubmitZeroLength(in_isr) != ErrorCode::OK) Stall(in_isr);
 }
 
-template <typename C>
-void DeviceCore<C>::ArmStatusOut(bool in_isr)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::ArmStatusOut(bool in_isr)
 {
   if (status_out_armed_) return;
   status_out_armed_ = true;
   if (out0_->Receive(0U, in_isr) != ErrorCode::OK) Stall(in_isr);
 }
 
-template <typename C>
-void DeviceCore<C>::WriteControl(bool in_isr, ConstRawData data)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::WriteControl(bool in_isr, ConstRawData data)
 {
   control_in_ = {data.addr_, LibXR::min(data.size_, static_cast<size_t>(setup_.wLength))};
   if (control_class_ && control_in_.size_ > ep0_packet_size_ &&
@@ -343,8 +343,8 @@ void DeviceCore<C>::WriteControl(bool in_isr, ConstRawData data)
   SendNextIn(in_isr);
 }
 
-template <typename C>
-void DeviceCore<C>::SendNextIn(bool in_isr)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::SendNextIn(bool in_isr)
 {
   const size_t remaining = control_in_.size_ - transferred_;
   const size_t amount = LibXR::min(remaining, static_cast<size_t>(ep0_packet_size_));
@@ -371,7 +371,7 @@ void DeviceCore<C>::SendNextIn(bool in_isr)
     Memory::FastCopy(slot.data.addr_,
                      static_cast<const uint8_t*>(control_in_.addr_) + transferred_,
                      amount);
-  if constexpr ((C::SPEEDS & SpeedBit(Speed::HIGH)) != 0U)
+  if constexpr ((Capabilities::SPEEDS & SpeedBit(Speed::HIGH)) != 0U)
     if (this->other_speed_descriptor && transferred_ <= 1U && transferred_ + amount > 1U)
       static_cast<uint8_t*>(slot.data.addr_)[1U - transferred_] = 7U;
   in_segment_size_ = amount;
@@ -386,14 +386,15 @@ void DeviceCore<C>::SendNextIn(bool in_isr)
   }
 }
 
-template <typename C>
-void DeviceCore<C>::ReceiveNextOut(bool in_isr)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::ReceiveNextOut(bool in_isr)
 {
   if (out0_->Receive(ep0_packet_size_, in_isr) != ErrorCode::OK) Stall(in_isr);
 }
 
-template <typename C>
-void DeviceCore<C>::InComplete(bool in_isr, const Endpoint::Completion& completion)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::InComplete(bool in_isr,
+                                          const Endpoint::Completion& completion)
 {
   if (!IsInited() || completion.result == ErrorCode::ABORTED) return;
   if (completion.result != ErrorCode::OK)
@@ -435,8 +436,9 @@ void DeviceCore<C>::InComplete(bool in_isr, const Endpoint::Completion& completi
   if (status_out_seen_) Finish(in_isr);
 }
 
-template <typename C>
-void DeviceCore<C>::OutComplete(bool in_isr, const Endpoint::Completion& completion)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::OutComplete(bool in_isr,
+                                           const Endpoint::Completion& completion)
 {
   const Endpoint::Slot lease = completion.slot;
   const bool data_stage = IsInited() && phase_ == Phase::DATA_OUT && !replacing_setup_ &&
@@ -486,13 +488,13 @@ void DeviceCore<C>::OutComplete(bool in_isr, const Endpoint::Completion& complet
   StatusIn(in_isr);
 }
 
-template <typename C>
-ErrorCode DeviceCore<C>::ClassRequest(bool in_isr)
+template <DeviceCapabilities Capabilities>
+ErrorCode DeviceCore<Capabilities>::ClassRequest(bool in_isr)
 {
   const auto type = static_cast<RequestType>(setup_.bmRequestType & REQ_TYPE_MASK);
   if (type != RequestType::CLASS && type != RequestType::VENDOR)
     return ErrorCode::NOT_SUPPORT;
-  if constexpr (C::BOS)
+  if constexpr (Capabilities::BOS)
   {
     if (type == RequestType::VENDOR)
     {
@@ -549,8 +551,8 @@ ErrorCode DeviceCore<C>::ClassRequest(bool in_isr)
   return ErrorCode::OK;
 }
 
-template <typename C>
-ErrorCode DeviceCore<C>::SendDescriptor(bool in_isr)
+template <DeviceCapabilities Capabilities>
+ErrorCode DeviceCore<Capabilities>::SendDescriptor(bool in_isr)
 {
   const uint8_t type = static_cast<uint8_t>(setup_.wValue >> 8U);
   const uint8_t index = static_cast<uint8_t>(setup_.wValue);
@@ -567,7 +569,7 @@ ErrorCode DeviceCore<C>::SendDescriptor(bool in_isr)
       if (data.size_ == 0U) return ErrorCode::NOT_FOUND;
       break;
     case 6:
-      if constexpr ((C::SPEEDS & SpeedBit(Speed::HIGH)) != 0U)
+      if constexpr ((Capabilities::SPEEDS & SpeedBit(Speed::HIGH)) != 0U)
       {
         if ((profile_speeds_ & SpeedBit(Speed::HIGH)) == 0U || index != 0U)
           return ErrorCode::NOT_SUPPORT;
@@ -589,7 +591,7 @@ ErrorCode DeviceCore<C>::SendDescriptor(bool in_isr)
         return ErrorCode::NOT_SUPPORT;
       break;
     case 7:
-      if constexpr ((C::SPEEDS & SpeedBit(Speed::HIGH)) != 0U)
+      if constexpr ((Capabilities::SPEEDS & SpeedBit(Speed::HIGH)) != 0U)
       {
         if ((profile_speeds_ & SpeedBit(Speed::HIGH)) == 0U)
           return ErrorCode::NOT_SUPPORT;
@@ -608,7 +610,7 @@ ErrorCode DeviceCore<C>::SendDescriptor(bool in_isr)
         return result;
       break;
     case 15:
-      if constexpr (C::BOS)
+      if constexpr (Capabilities::BOS)
       {
         if (index != 0U || device_desc_.GetUSBSpec() < USBSpec::USB_2_1)
           return ErrorCode::NOT_SUPPORT;
@@ -634,8 +636,8 @@ ErrorCode DeviceCore<C>::SendDescriptor(bool in_isr)
   return ErrorCode::OK;
 }
 
-template <typename C>
-ErrorCode DeviceCore<C>::HandleStandardRequest(bool in_isr)
+template <DeviceCapabilities Capabilities>
+ErrorCode DeviceCore<Capabilities>::HandleStandardRequest(bool in_isr)
 {
   const bool input = (setup_.bmRequestType & REQ_DIRECTION_MASK) != 0U;
   const auto recipient =
@@ -785,7 +787,7 @@ ErrorCode DeviceCore<C>::HandleStandardRequest(bool in_isr)
       return ErrorCode::OK;
     }
     case StandardRequest::SYNCH_FRAME:
-      if constexpr (C::BUS_TIME)
+      if constexpr (Capabilities::BUS_TIME)
       {
         if (!input || recipient != Recipient::ENDPOINT || setup_.wValue ||
             setup_.wLength != 2U || (setup_.wIndex & 0xff70U))
@@ -808,11 +810,11 @@ ErrorCode DeviceCore<C>::HandleStandardRequest(bool in_isr)
   }
 }
 
-template <typename C>
-void DeviceCore<C>::OnSof(bool in_isr, uint16_t frame, uint8_t microframe)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::OnSof(bool in_isr, uint16_t frame, uint8_t microframe)
 {
   if (pool_.CountStopFrame(frame)) pool_.PostControl(STOP_TIMEOUT_EVENT, in_isr);
-  if constexpr (C::BUS_TIME)
+  if constexpr (Capabilities::BUS_TIME)
   {
     this->observed_ms.store(static_cast<uint32_t>(Timebase::GetMilliseconds()),
                             std::memory_order_relaxed);
@@ -829,10 +831,10 @@ void DeviceCore<C>::OnSof(bool in_isr, uint16_t frame, uint8_t microframe)
   }
 }
 
-template <typename C>
-void DeviceCore<C>::DeliverBusTime(bool in_isr)
+template <DeviceCapabilities Capabilities>
+void DeviceCore<Capabilities>::DeliverBusTime(bool in_isr)
 {
-  if constexpr (C::BUS_TIME)
+  if constexpr (Capabilities::BUS_TIME)
   {
     const uint32_t now = this->observed.load(std::memory_order_acquire);
     const uint32_t ms = this->observed_ms.load(std::memory_order_relaxed);

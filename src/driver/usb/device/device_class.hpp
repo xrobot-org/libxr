@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "device_capabilities.hpp"
 #include "device_events.hpp"
 #include "libxr_type.hpp"
 #include "usb/core/desc_cfg.hpp"
@@ -12,7 +13,7 @@
 namespace LibXR::USB
 {
 class DeviceComposition;
-template <typename Capabilities>
+template <DeviceCapabilities Capabilities>
 class DeviceCore;
 
 /**
@@ -327,7 +328,7 @@ class DeviceClass : public ConfigDescriptorItem
   EndpointPool* service_pool_ = nullptr;
   std::atomic<uint32_t> service_pending_{0};
   friend class DeviceComposition;
-  template <typename Capabilities>
+  template <DeviceCapabilities Capabilities>
   friend class DeviceCore;
 
   uint8_t interface_string_base_index_ =

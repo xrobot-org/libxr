@@ -19,7 +19,7 @@ namespace LibXR::USB
  * time policy; unsupported feature state and dispatch are not instantiated.
  * Class composition remains ordinary runtime composition, not a template tree.
  */
-template <typename Capabilities = FullSpeedCapabilities>
+template <DeviceCapabilities Capabilities = FullSpeedCapabilities>
 class DeviceCore : private Detail::BosFeature<Capabilities::BOS>,
                    private Detail::BusTimeFeature<Capabilities::BUS_TIME>,
                    private Detail::HighSpeedFeature<(Capabilities::SPEEDS &
