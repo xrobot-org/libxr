@@ -319,6 +319,21 @@ class ESP32USBDevice : public USB::EndpointPool,
   /// 重建寄存器基线（复位之后；FIFO 冲刷超界返回 false）/ Rebuild the register baseline
   /// (after a reset; false when the FIFO flush exceeds its bound)
   bool RebuildCoreRegisters();
+  /// 复位的各个步骤，Start() 的同步路径和停止超时后的复位链共用；步骤之间各等一个自清位。
+  /// The steps of a reset, shared by the synchronous path of Start() and by the reset
+  /// chain after a stop timeout; one self-clearing bit is awaited between two steps.
+  /// 选择设备模式并发起 core 软复位 / Select device mode and request the core soft reset
+  void BeginCoreReset();
+  /// 软复位之后：时钟门控、VBUS 覆盖和 TX FIFO 尺寸寄存器 / After the soft reset: clock
+  /// gating, VBUS override and the TX FIFO size registers
+  void BeginBaseline();
+  /// 发起全部 TX FIFO 的冲刷 / Request the flush of every TX FIFO
+  void StartTxFlushAll();
+  /// 发起 RX FIFO 的冲刷 / Request the RX FIFO flush
+  void StartRxFlush();
+  /// FIFO 冲刷之后：设备状态、中断标志和中断掩码 / After the FIFO flushes: device state,
+  /// interrupt flags and interrupt masks
+  void FinishBaseline();
   /// 重新计算 SOF 中断是否需要打开：类要总线时间，或有停止在等（核心靠 SOF 帧数判停止
   /// 超时）/ Recompute whether the SOF interrupt must be on: a class wants bus time, or a
   /// stop is waiting (the core counts SOF frames to detect a stop timeout)
@@ -326,10 +341,30 @@ class ESP32USBDevice : public USB::EndpointPool,
   /// 确认所有等待中的停止（控制器复位路径）/ Confirm every waiting stop (the
   /// controller-reset path)
   void ForceStopAll(bool in_isr);
-  /// 复位链的条件：单段，节拍上直接执行 / Reset-chain condition: one stage, runs on the
-  /// tick directly
+  /// 停止超时后控制器复位链的阶段。每个阶段等一个寄存器条件，由毫秒节拍检查；条件成立后
+  /// 做下一步并等下一个条件 / Stage of the controller-reset chain after a stop timeout.
+  /// Every stage waits for one register condition, checked on the millisecond tick; when
+  /// it holds the next step is taken and the next condition awaited
+  enum class ResetStage : uint8_t
+  {
+    IDLE,        ///< 没有复位在进行 / No reset in progress
+    AHB_IDLE,    ///< 等 AHB 空闲，然后发起软复位 / AHB idle, then the soft reset
+    CORE_RESET,  ///< 等软复位位自清 / The soft-reset bit clears itself
+    RESET_IDLE,  ///< 软复位后等 AHB 空闲，然后冲刷 TX FIFO / AHB idle after the reset,
+                 ///< then the TX FIFO flush
+    TX_FLUSH,    ///< 等 TX FIFO 冲刷完成，然后冲刷 RX FIFO / TX flush done, then the RX
+                 ///< FIFO flush
+    RX_FLUSH     ///< 等 RX FIFO 冲刷完成，然后重建基线并重连 / RX flush done, then the
+                 ///< baseline and the reconnect
+  };
+  /// 进入一个阶段并开始等它的条件；排不上时留在总线外 / Enter a stage and start waiting
+  /// for its condition; stay off the bus when the wait cannot be armed
+  void ArmResetStage(ResetStage stage);
+  /// 复位链的条件：当前阶段等待的寄存器位 / Reset-chain condition: the register bit the
+  /// current stage waits for
   static bool ResetCheck(void* arg);
-  /// 复位链的完成：复位并重连 / Reset-chain completion: reset and reconnect
+  /// 复位链的完成：做当前阶段之后的一步，最后一个阶段重连 / Reset-chain completion: take
+  /// the step after the current stage; the last stage reconnects
   static void ResetDone(void* arg, ErrorCode result);
 
   /// 复位确认的最长等待 / Longest wait for the reset to confirm
@@ -337,6 +372,9 @@ class ESP32USBDevice : public USB::EndpointPool,
   /// 停止超时后的控制器复位链（毫秒节拍驱动）/ Controller-reset chain after a stop
   /// timeout (driven by the millisecond tick)
   DriverAsyncCondition reset_wait_;
+  /// 复位链当前的阶段，在硬件保护内读写 / Current stage of the reset chain, read and
+  /// written inside the hardware guard
+  ResetStage reset_stage_ = ResetStage::IDLE;
 
   portMUX_TYPE hardware_mux_ = portMUX_INITIALIZER_UNLOCKED;
   EndpointMap endpoint_map_ = {};  ///< Endpoint 所有权映射表 / Endpoint ownership map

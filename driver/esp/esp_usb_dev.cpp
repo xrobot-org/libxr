@@ -68,7 +68,7 @@ ESP32USBDevice::ESP32USBDevice(
         portEXIT_CRITICAL_SAFE(&self->hardware_mux_);
       });
   ResetFifoState();
-  ASSERT(ep_cfgs.size() > 0U && ep_cfgs.size() <= ENDPOINT_COUNT);
+  REQUIRE(ep_cfgs.size() > 0U && ep_cfgs.size() <= ENDPOINT_COUNT);
 
   auto cfg_it = ep_cfgs.begin();
 
@@ -91,8 +91,6 @@ ESP32USBDevice::ESP32USBDevice(
   for (++cfg_it; cfg_it != ep_cfgs.end();
        ++cfg_it, ep_num = USB::Endpoint::NextEPNumber(ep_num))
   {
-    DEV_ASSERT(USB::Endpoint::EPNumberToInt8(ep_num) < ENDPOINT_COUNT);
-
     // 本控制器只有 EP0 + 4 个 IN 端点（IN 端点号 1..4），能发 IN 的配置项端点号超过它，
     // 会在主机 SET_CONFIGURATION 时才配置失败（主机侧表现为反复枚举）；构造期就拒绝。
     // The controller has EP0 plus four IN endpoints (IN endpoint numbers 1..4). An
@@ -153,6 +151,7 @@ ErrorCode ESP32USBDevice::SetAddress(uint8_t address, USB::ControlContext contex
 {
   if (context == USB::ControlContext::SETUP_BEFORE_STATUS)
   {
+    EndpointPool::HardwareScope hardware(this);
     auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
     dev->dcfg_reg.devaddr = address;
   }
@@ -197,8 +196,15 @@ void ESP32USBDevice::Stop(bool)
   // Stop 只关中断和软断开，不回收一次性 runtime 资源 / Stop only masks interrupts and
   // soft-disconnects; it does not release one-time runtime resources.
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
-  dev->gahbcfg_reg.glbllntrmsk = 0;
-  dev->gintmsk_reg.val = 0;
+  {
+    // 复位链正在进行时到此为止：它的下一步看到 IDLE 就不再继续，也不会重连。
+    // A running reset chain ends here: its next step sees IDLE, goes no further and does
+    // not reconnect.
+    EndpointPool::HardwareScope hardware(this);
+    reset_stage_ = ResetStage::IDLE;
+    dev->gahbcfg_reg.glbllntrmsk = 0;
+    dev->gintmsk_reg.val = 0;
+  }
   if (runtime_.intr_handle != nullptr)
   {
     esp_intr_disable(runtime_.intr_handle);
@@ -305,6 +311,14 @@ bool ESP32USBDevice::ResetCoreRegisters()
     return false;
   }
 
+  BeginCoreReset();
+  return ESPUSBDetail::SpinUntil([dev]() { return dev->grstctl_reg.csftrst == 0U; }) &&
+         ESPUSBDetail::SpinUntil([dev]() { return dev->grstctl_reg.ahbidle != 0U; });
+}
+
+void ESP32USBDevice::BeginCoreReset()
+{
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
   dev->gusbcfg_reg.forcehstmode = 0;
   dev->gusbcfg_reg.forcedevmode = 1;
   dev->gusbcfg_reg.physel = 1;
@@ -314,11 +328,17 @@ bool ESP32USBDevice::ResetCoreRegisters()
   dev->gusbcfg_reg.hnpcap = 0;
 
   dev->grstctl_reg.csftrst = 1;
-  return ESPUSBDetail::SpinUntil([dev]() { return dev->grstctl_reg.csftrst == 0U; }) &&
-         ESPUSBDetail::SpinUntil([dev]() { return dev->grstctl_reg.ahbidle != 0U; });
 }
 
 bool ESP32USBDevice::RebuildCoreRegisters()
+{
+  BeginBaseline();
+  const bool flushed = FlushFifos();
+  FinishBaseline();
+  return flushed;
+}
+
+void ESP32USBDevice::BeginBaseline()
 {
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
 
@@ -331,8 +351,12 @@ bool ESP32USBDevice::RebuildCoreRegisters()
   dev->gotgctl_reg.bvalidovval = 1;
 
   ClearTxFifoRegisters();
+}
 
-  const bool flushed = FlushFifos();
+void ESP32USBDevice::FinishBaseline()
+{
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+
   ResetDeviceState();
 
   dev->gintsts_reg.val = 0xFFFFFFFFU;
@@ -353,7 +377,6 @@ bool ESP32USBDevice::RebuildCoreRegisters()
   dev->gintmsk_reg.iepintmsk = 1;
   dev->gintmsk_reg.otgintmsk = 1;
   UpdateTick();
-  return flushed;
 }
 
 void ESP32USBDevice::OnStopsSettled()
@@ -385,82 +408,117 @@ void ESP32USBDevice::UpdateTick()
 
 void ESP32USBDevice::OnStopTimeout(bool in_isr)
 {
-  // 停止没有等到硬件确认：控制器状态未知（DMA 仍可能写槽）。离开总线、确认所有
-  // 等待中的停止，然后在毫秒节拍上复位控制器并重连，让主机重新枚举；复位步骤是有界自清
-  // 等待，一段就够。
-  // The stop never confirmed and the controller is in an unknown state (the DMA may
-  // still be writing a slot). Leave the bus, confirm every waiting stop, then reset
-  // the controller on the millisecond tick and reconnect so the host enumerates
-  // again; the reset steps are bounded self-clearing waits, so one stage suffices.
+  // 停止没有等到硬件确认：控制器状态未知（DMA 仍可能写槽）。离开总线、确认所有等待中的
+  // 停止，然后在毫秒节拍上分阶段复位控制器并重连，让主机重新枚举。复位链已经在进行时
+  // 不再重新发起，它结束时会重连。
+  // The stop never confirmed and the controller is in an unknown state (the DMA may still
+  // be writing a slot). Leave the bus, confirm every waiting stop, then reset the
+  // controller in stages on the millisecond tick and reconnect so that the host
+  // enumerates again. A reset chain that is already running is not started again; it
+  // reconnects when it ends.
   {
+    EndpointPool::HardwareScope hardware(this);
     auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
     dev->gahbcfg_reg.glbllntrmsk = 0;
     dev->gintmsk_reg.val = 0U;
     dev->dctl_reg.sftdiscon = 1;
   }
   ForceStopAll(in_isr);
-
-  if (reset_wait_.Start(0U, RESET_STEP_TIMEOUT_MS) != ErrorCode::OK)
   {
-    // 复位链没排上（上一次还在跑）：保持断开，主机看到设备消失。
-    // The reset chain could not be armed (a previous one is still running): stay
-    // disconnected and the host sees the device disappear.
-    runtime_.started = false;
+    EndpointPool::HardwareScope hardware(this);
+    if (reset_stage_ == ResetStage::IDLE) ArmResetStage(ResetStage::AHB_IDLE);
   }
   OnDisconnect(in_isr);
 }
 
-bool ESP32USBDevice::ResetCheck(void* /*arg*/)
+void ESP32USBDevice::ArmResetStage(ResetStage stage)
 {
-  // 单段复位：条件立即成立，复位动作在 ResetDone 里一次做完（都是有界的寄存器
-  // 自清等待，不依赖总线事件）。
-  // One-stage reset: the condition holds at once and ResetDone performs the whole
-  // reset (bounded self-clearing register waits, no bus-dependent event).
+  reset_stage_ = stage;
+  if (reset_wait_.Start(0U, RESET_STEP_TIMEOUT_MS) != ErrorCode::OK)
+  {
+    // 等待排不上：保持断开，主机看到设备消失，等应用重新 Start()。
+    // The wait could not be armed: stay disconnected, the host sees the device disappear,
+    // until the application calls Start() again.
+    reset_stage_ = ResetStage::IDLE;
+    runtime_.started = false;
+  }
+}
+
+bool ESP32USBDevice::ResetCheck(void* arg)
+{
+  auto* self = static_cast<ESP32USBDevice*>(arg);
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  switch (self->reset_stage_)
+  {
+    case ResetStage::AHB_IDLE:
+    case ResetStage::RESET_IDLE:
+      return dev->grstctl_reg.ahbidle != 0U;
+    case ResetStage::CORE_RESET:
+      return dev->grstctl_reg.csftrst == 0U;
+    case ResetStage::TX_FLUSH:
+      return dev->grstctl_reg.txfflsh == 0U;
+    case ResetStage::RX_FLUSH:
+      return dev->grstctl_reg.rxfflsh == 0U;
+    case ResetStage::IDLE:
+      break;
+  }
   return true;
 }
 
 void ESP32USBDevice::ResetDone(void* arg, ErrorCode result)
 {
   auto* self = static_cast<ESP32USBDevice*>(arg);
-  if (self == nullptr)
+  EndpointPool::HardwareScope hardware(self);
+  const ResetStage stage = self->reset_stage_;
+  self->reset_stage_ = ResetStage::IDLE;
+  if (stage == ResetStage::IDLE)
   {
+    // Stop() 已经结束了这条链。
+    // Stop() has ended this chain.
     return;
   }
   if (result != ErrorCode::OK)
   {
-    // 节拍上没能复位：留在总线下，等用户重新 Init/Start。
-    // The reset did not happen on the tick: stay off the bus until Init/Start runs
-    // again.
+    // 一个自清位在限定时间内没有清：控制器不可信，留在总线外，等应用重新 Start()。
+    // A self-clearing bit did not clear within its time: the controller cannot be
+    // trusted, stay off the bus until the application calls Start() again.
     self->runtime_.started = false;
     return;
   }
 
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
-  dev->gahbcfg_reg.glbllntrmsk = 0;
-  dev->gintmsk_reg.val = 0U;
-  dev->dctl_reg.sftdiscon = 1;
-
-  // 复位 core 并重建基线，然后重连：主机重新枚举，端点在下一次 Configure 里重新
-  // 分配 FIFO（ForceStop 已清掉记账）。
-  // Reset the core, rebuild the baseline, then reconnect: the host enumerates again
-  // and the endpoints re-allocate their FIFOs on the next Configure (ForceStop
-  // cleared the bookkeeping).
-  if (!self->ResetCoreRegisters() || !self->RebuildCoreRegisters())
+  switch (stage)
   {
-    // 自清位超界没清：控制器不可信，留在总线外，等用户重新 Init/Start。
-    // A self-clearing bit stayed set past its bound: the controller cannot be trusted,
-    // stay off the bus until Init/Start runs again.
-    self->runtime_.started = false;
-    return;
+    case ResetStage::AHB_IDLE:
+      self->BeginCoreReset();
+      self->ArmResetStage(ResetStage::CORE_RESET);
+      break;
+    case ResetStage::CORE_RESET:
+      self->ArmResetStage(ResetStage::RESET_IDLE);
+      break;
+    case ResetStage::RESET_IDLE:
+      self->BeginBaseline();
+      self->StartTxFlushAll();
+      self->ArmResetStage(ResetStage::TX_FLUSH);
+      break;
+    case ResetStage::TX_FLUSH:
+      self->StartRxFlush();
+      self->ArmResetStage(ResetStage::RX_FLUSH);
+      break;
+    case ResetStage::RX_FLUSH:
+      // 基线重建完成后重连并重新打开全局中断：主机重新枚举，端点在下一次 Configure 里
+      // 重新分配 FIFO（ForceStop 已清掉记账）。
+      // With the baseline rebuilt, reconnect and turn the global interrupt on again: the
+      // host enumerates again and the endpoints allocate their FIFOs at the next
+      // Configure (ForceStop cleared the bookkeeping).
+      self->FinishBaseline();
+      dev->dctl_reg.sftdiscon = 0;
+      dev->gahbcfg_reg.glbllntrmsk = 1;
+      self->runtime_.started = true;
+      break;
+    case ResetStage::IDLE:
+      break;
   }
-  // 全局中断要重新打开：上面为了安全关掉了它，重建基线不会替我们打开，不开的话控制器
-  // 收不到任何中断，也就不会应答主机的 SETUP（拔插后不再枚举）。
-  // Re-enable the global interrupt: it was turned off above for safety and the baseline
-  // rebuild does not turn it on again; without it the controller takes no interrupt and
-  // never answers the host's SETUP (no enumeration after a cable replug).
-  dev->dctl_reg.sftdiscon = 0;
-  dev->gahbcfg_reg.glbllntrmsk = 1;
-  self->runtime_.started = true;
 }
 
 void ESP32USBDevice::ForceStopAll(bool in_isr)
@@ -497,14 +555,26 @@ bool ESP32USBDevice::FlushFifos()
   // 复位后先冲刷所有 FIFO，避免旧 payload / setup 残留 / Flush all FIFOs after reset so
   // no stale payload or setup bytes survive.
   auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
-  dev->grstctl_reg.txfnum = ESPUSBDetail::FLUSH_ALL_TX_FIFO;
-  dev->grstctl_reg.txfflsh = 1;
+  StartTxFlushAll();
   const bool tx_done =
       ESPUSBDetail::SpinUntil([dev]() { return dev->grstctl_reg.txfflsh == 0U; });
-  dev->grstctl_reg.rxfflsh = 1;
+  StartRxFlush();
   const bool rx_done =
       ESPUSBDetail::SpinUntil([dev]() { return dev->grstctl_reg.rxfflsh == 0U; });
   return tx_done && rx_done;
+}
+
+void ESP32USBDevice::StartTxFlushAll()
+{
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  dev->grstctl_reg.txfnum = ESPUSBDetail::FLUSH_ALL_TX_FIFO;
+  dev->grstctl_reg.txfflsh = 1;
+}
+
+void ESP32USBDevice::StartRxFlush()
+{
+  auto* dev = reinterpret_cast<usb_dwc_dev_t*>(ESPUSBDetail::DWC2_FS_REG_BASE);
+  dev->grstctl_reg.rxfflsh = 1;
 }
 
 void ESP32USBDevice::ResetFifoState()
