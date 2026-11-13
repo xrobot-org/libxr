@@ -7,49 +7,24 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <vector>
 
 #include "ch32_usb_endpoint.hpp"
+#include "driver/usb/core/ep/ch32/ch32_test_common.hpp"
+#include "driver/usb/usb_test_common.hpp"
 #include "test_assert.hpp"
 #include "usb/core/ep_pool.hpp"
 
 using namespace LibXR;
 using namespace LibXR::USB;
 
-extern "C" void libxr_fatal_error(const char* file, uint32_t line, bool)
-{
-  std::fprintf(stderr, "%s:%u: CH32 USBFS assertion failed\n", file, line);
-  std::abort();
-}
-
 namespace
 {
+using LibXR::USB::Test::Address;
+using LibXR::USB::Test::Block;
+using LibXR::USB::Test::Recorder;
 using Direction = Endpoint::Direction;
 using Completion = Endpoint::Completion;
-
-template <size_t N>
-struct alignas(64) Block
-{
-  uint8_t bytes[N] = {};
-  RawData Raw() { return {bytes, N}; }
-};
-
-struct Recorder
-{
-  std::vector<Completion> list;
-  Callback<const Completion&> Bind()
-  {
-    return Callback<const Completion&>::Create(
-        [](bool, Recorder* self, const Completion& completion)
-        { self->list.push_back(completion); }, this);
-  }
-};
-
-uint32_t Address(const void* pointer)
-{
-  return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pointer));
-}
 
 /// Endpoints register themselves in a static map that outlives each case's endpoints;
 /// every case starts from an empty map.
@@ -92,7 +67,7 @@ struct SharedFixture
 void TestSharedDmaBase()
 {
   SharedFixture f(64);
-  TEST_ASSERT(fake_usbfsd.UEP1_DMA == Address(f.block.bytes));
+  TEST_ASSERT(fake_usbfsd.UEP1_DMA == Address(f.block.bytes.data()));
   TEST_ASSERT(f.in.MaxPacketSize() == 64);
 }
 
@@ -105,7 +80,7 @@ void TestSharedInSmallPackets()
   Endpoint::Slot slot;
   TEST_ASSERT(f.in.AcquireSlot(slot, false) == ErrorCode::OK);
   auto* data = static_cast<uint8_t*>(slot.data.addr_);
-  TEST_ASSERT(data == f.block.bytes + 64);
+  TEST_ASSERT(data == f.block.bytes.data() + 64);
   for (size_t i = 0; i < 64; ++i) data[i] = static_cast<uint8_t>(0x10 + i);
   TEST_ASSERT(f.in.Submit(slot, 64, false, false) == ErrorCode::OK);
   TEST_ASSERT(fake_usbfsd.UEP1_TX_LEN == 32);
@@ -188,14 +163,11 @@ void TestEp0OutNakBetweenPackets()
 }
 }  // namespace
 
-int main(int argc, char** argv)
+int main()
 {
-  // An optional case name runs only that case.
-  const auto wanted = [&](const char* name)
-  { return argc < 2 || std::strcmp(argv[1], name) == 0; };
-  if (wanted("shared_dma_base")) TestSharedDmaBase();
-  if (wanted("shared_in_small_packets")) TestSharedInSmallPackets();
-  if (wanted("resend_keeps_packets")) TestResendKeepsAcceptedPackets();
-  if (wanted("ep0_out_nak")) TestEp0OutNakBetweenPackets();
+  TestSharedDmaBase();
+  TestSharedInSmallPackets();
+  TestResendKeepsAcceptedPackets();
+  TestEp0OutNakBetweenPackets();
   std::puts("CH32 USBFS shared block, small IN packets, OUT resend and EP0 OUT passed");
 }

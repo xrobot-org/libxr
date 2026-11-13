@@ -24,45 +24,21 @@
 #include <vector>
 
 #include "ch32_usb_endpoint.hpp"
+#include "driver/usb/core/ep/ch32/ch32_test_common.hpp"
+#include "driver/usb/usb_test_common.hpp"
 #include "test_assert.hpp"
 #include "usb/core/ep_pool.hpp"
 
 using namespace LibXR;
 using namespace LibXR::USB;
 
-extern "C" void libxr_fatal_error(const char* file, uint32_t line, bool)
-{
-  std::fprintf(stderr, "%s:%u: CH32 USBHS assertion failed\n", file, line);
-  std::abort();
-}
-
 namespace
 {
+using LibXR::USB::Test::Address;
+using LibXR::USB::Test::Block;
+using LibXR::USB::Test::Recorder;
 using Direction = Endpoint::Direction;
 using Completion = Endpoint::Completion;
-
-template <size_t N>
-struct alignas(64) Block
-{
-  uint8_t bytes[N] = {};
-  RawData Raw() { return {bytes, N}; }
-};
-
-struct Recorder
-{
-  std::vector<Completion> list;
-  Callback<const Completion&> Bind()
-  {
-    return Callback<const Completion&>::Create(
-        [](bool, Recorder* self, const Completion& completion)
-        { self->list.push_back(completion); }, this);
-  }
-};
-
-uint32_t Address(const void* pointer)
-{
-  return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pointer));
-}
 
 /// 主机 ACK 已挂包的 EP1 IN 包：TOG_AUTO 使 toggle 翻转
 /// The host ACKs the armed EP1 IN packet: TOG_AUTO advances the toggle.

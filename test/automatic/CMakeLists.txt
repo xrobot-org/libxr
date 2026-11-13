@@ -255,6 +255,7 @@ add_executable(
 target_link_libraries(test_ch32_usbhs_in PRIVATE xr)
 target_include_directories(
   test_ch32_usbhs_in PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.."
+                             "${CMAKE_CURRENT_SOURCE_DIR}"
                              "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/core/ep/ch32"
                              "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/ch"
 )
@@ -273,6 +274,7 @@ add_executable(
 target_link_libraries(test_ch32_usbfs PRIVATE xr)
 target_include_directories(
   test_ch32_usbfs PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.."
+                          "${CMAKE_CURRENT_SOURCE_DIR}"
                           "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/core/ep/ch32"
                           "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/ch"
 )
