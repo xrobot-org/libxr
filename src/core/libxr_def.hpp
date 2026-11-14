@@ -362,10 +362,11 @@ extern "C" void libxr_fatal_error(const char* file, uint32_t line, bool in_isr);
  *        callback
  *
  * 其余与 libxr_fatal_error() 相同。ASSERT 和 DEV_ASSERT 失败时调用它；这两个检查都不在
- * 发布固件里生效，所以发布固件不会带上打印的代码。
+ * 发布固件里生效，所以发布固件不引用它，链接器回收未引用的段时不会带上打印的代码。
  *
  * Otherwise as libxr_fatal_error(). A failed ASSERT or DEV_ASSERT calls it; neither check
- * is active in release firmware, so release firmware does not carry the printing code.
+ * is active in release firmware, so release firmware does not refer to it and a linker
+ * that collects unreferenced sections leaves the printing code out.
  *
  * @param file 出错的源文件 / Source file where the error occurred
  * @param line 出错的行号 / Line number where the error occurred
