@@ -633,9 +633,13 @@ uint16_t FSDevDevice::GetRxCount(uint8_t num)
 
 void FSDevDevice::PmaWrite(uint16_t addr, const uint8_t* src, size_t len)
 {
+  // 间隔取到局部变量里：循环里每次写 PMA 之后编译器都得重新读成员。
+  // The stride is taken into a local: inside the loop the compiler would have to read the
+  // member again after every write to the PMA.
+  const size_t stride = memory_map_.word_stride;
   // NOLINTNEXTLINE(performance-no-int-to-ptr)
   volatile uint16_t* p = reinterpret_cast<volatile uint16_t*>(
-      memory_map_.packet_memory + static_cast<uintptr_t>(addr) * memory_map_.word_stride);
+      memory_map_.packet_memory + static_cast<uintptr_t>(addr) * stride);
   for (size_t i = 0; i < len; i += 2)
   {
     uint16_t word = src[i];
@@ -644,19 +648,22 @@ void FSDevDevice::PmaWrite(uint16_t addr, const uint8_t* src, size_t len)
       word |= static_cast<uint16_t>(src[i + 1]) << 8U;
     }
     *p = word;
-    p += memory_map_.word_stride;
+    p += stride;
   }
 }
 
 void FSDevDevice::PmaRead(uint8_t* dst, uint16_t addr, size_t len)
 {
+  // 间隔取到局部变量里，原因同 PmaWrite / The stride is taken into a local, as in
+  // PmaWrite
+  const size_t stride = memory_map_.word_stride;
   // NOLINTNEXTLINE(performance-no-int-to-ptr)
   const volatile uint16_t* p = reinterpret_cast<const volatile uint16_t*>(
-      memory_map_.packet_memory + static_cast<uintptr_t>(addr) * memory_map_.word_stride);
+      memory_map_.packet_memory + static_cast<uintptr_t>(addr) * stride);
   for (size_t i = 0; i < len; i += 2)
   {
     const uint16_t word = *p;
-    p += memory_map_.word_stride;
+    p += stride;
     dst[i] = static_cast<uint8_t>(word & 0xFFU);
     if (i + 1 < len)
     {
