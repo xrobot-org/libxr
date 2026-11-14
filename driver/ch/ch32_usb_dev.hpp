@@ -2,10 +2,10 @@
 
 #include "ch32_usb.hpp"
 #include "ch32_usb_endpoint.hpp"
-#include "ch32_usb_fsdev_regs.hpp"
 #include "ch32_usbcan_shared.hpp"
 #include "libxr_def.hpp"
 #include "libxr_type.hpp"
+#include "usb/backend/fsdev.hpp"
 #include "usb/core/ep_pool.hpp"
 #include "usb/device/dev_core.hpp"
 
@@ -17,24 +17,29 @@ namespace LibXR
 /**
  * @brief CH32 FSDEV 设备驱动 / CH32 FSDEV device driver
  *
+ * 寄存器模型在基类 `USB::FSDevDevice` 里（usb/backend/fsdev.hpp），与 STM32 经典型
+ * FSDEV 共用：16 位寄存器，PMA 里每个 16 位数据字占两个 16 位地址。本类给出控制器的
+ * 地址、打开时钟、用 EXTEN_USBD_PU_EN 接上拉，中断经 `ch32_usbcan_shared` 注册到
+ * USB/CAN 共享向量。
+ *
  * PMA 布局构造期固定，之后不能再增加 CAN 的占用；PMA 可用量取构造时刻的
- * `usb_pma_limit_bytes()`。寄存器运行期与 STM32 FSDEV 共用（usb/backend/fsdev.hpp），
- * 中断经 `ch32_usbcan_shared` 注册到 USB/CAN 共享向量。
+ * `usb_pma_limit_bytes()`。
+ *
+ * The register model is in the base class `USB::FSDevDevice` (usb/backend/fsdev.hpp)
+ * and is shared with the STM32 classic FSDEV: 16-bit registers, and every 16-bit data
+ * word of the PMA takes two 16-bit addresses. This class gives the addresses of the
+ * controller, enables its clock and connects the pull-up through EXTEN_USBD_PU_EN; the
+ * interrupt is registered through `ch32_usbcan_shared` on the shared USB/CAN vectors.
  *
  * The PMA layout is fixed at construction and CAN usage cannot grow afterwards; the
- * usable PMA is `usb_pma_limit_bytes()` at construction time. The register runtime is
- * shared with STM32 FSDEV (usb/backend/fsdev.hpp); the interrupt is registered through
- * `ch32_usbcan_shared` on the shared USB/CAN vectors.
+ * usable PMA is `usb_pma_limit_bytes()` at construction time.
  */
-class CH32USBDeviceFS : public USB::FSDevDevice<Ch32DevFsHw>
+class CH32USBDeviceFS : public USB::FSDevDevice
 {
  public:
-  /// 端点配置，同 FSDevDevice::EPConfig / Endpoint configuration, same as
-  /// FSDevDevice::EPConfig
-  using EPConfig = typename USB::FSDevDevice<Ch32DevFsHw>::EPConfig;
-
   /**
-   * @brief 构造 FSDEV 设备对象 / Construct FSDEV device object
+   * @brief 构造 FSDEV 设备对象并初始化控制器 / Construct the FSDEV device object and
+   * initialize the controller
    */
   CH32USBDeviceFS(
       const std::initializer_list<EPConfig>& rx_ep_cfgs,
@@ -44,13 +49,7 @@ class CH32USBDeviceFS : public USB::FSDevDevice<Ch32DevFsHw>
       const std::initializer_list<const USB::DescriptorStrings::LanguagePack*> LANG_LIST,
       const std::initializer_list<const std::initializer_list<USB::ConfigDescriptorItem*>>
           CONFIGS,
-      ConstRawData uid = {nullptr, 0})
-      : USB::FSDevDevice<Ch32DevFsHw>(rx_ep_cfgs, tx_ep_cfgs, packet_size, vid, pid, bcd,
-                                      LANG_LIST, CONFIGS, uid,
-                                      CH32UsbCanShared::usb_pma_limit_bytes())
-  {
-    CH32UsbCanShared::usb_pma_configured.store(true, std::memory_order_release);
-  }
+      ConstRawData uid = {nullptr, 0});
 
   /// 注册共享 USB/CAN 中断并使能向量，再启动 FSDEV 运行期 / Register the shared USB/CAN
   /// interrupt and enable the vectors, then start the FSDEV runtime
@@ -60,6 +59,11 @@ class CH32USBDeviceFS : public USB::FSDevDevice<Ch32DevFsHw>
   /// runtime, then unregister the shared interrupt; the CAN1 vectors stay enabled while
   /// CAN1 is active
   void Stop(bool in_isr) override;
+
+ protected:
+  /// 用 EXTEN_USBD_PU_EN 接通或断开 D+ 上拉 / Connect or disconnect the D+ pull-up
+  /// through EXTEN_USBD_PU_EN
+  void Connect(bool on) override;
 };
 
 #endif  // defined(RCC_APB1Periph_USB) || defined(__DOXYGEN__)

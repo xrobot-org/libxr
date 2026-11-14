@@ -121,526 +121,92 @@ namespace LibXR
     "Unknown STM32 USB FS/DRD with PMA. Please define LIBXR_STM32_USB_PMA_SIZE manually."
 #endif
 
-/// 把 stm32_usb_fsdev.cpp（分发函数所在的文件）拉进链接，并确认 HAL_PCD_IRQHandler 的
-/// --wrap 已生效（STM32USBRequireWrap）。
-/// Pulls stm32_usb_fsdev.cpp, the file with the dispatch function, into the link and
-/// checks that the wrap of HAL_PCD_IRQHandler is in effect (STM32USBRequireWrap).
-void STM32FsDevRequireWrap();
-
-/**
- * @brief 经典型 FSDEV 的硬件访问（F1/F3/F0/L0/L1/G4/WB/L4/L5）
- *        Hardware access of the classic FSDEV (F1/F3/F0/L0/L1/G4/WB/L4/L5)
- *
- * 寄存器 16 位；PMA 以半字访问，每 16 位数据字占 `PMA_WORD_STRIDE` 个半字地址
- * （F1、L1 和 F3 的一部分 = 2，其余 = 1）。ADDR/COUNT 单位是存储字节。
- *
- * 16-bit registers; the PMA is accessed as half words with every 16-bit data word
- * occupying `PMA_WORD_STRIDE` half-word addresses (F1, L1 and part of F3 = 2, the rest =
- * 1). ADDR and COUNT are in stored bytes.
- */
-// H5（USB_DRD_FS）的 CMSIS 不再提供经典型宏名，经典 traits 只在非 DRD 芯片编译。
-// The CMSIS of H5 (USB_DRD_FS) no longer provides the classic macro names; the classic
-// traits are compiled only for non-DRD parts.
-#if !defined(USB_DRD_FS)
-struct Stm32FsDevClassicHw
-{
-  static constexpr uint32_t EP_CTR_RX = USB_EP_CTR_RX;
-  static constexpr uint32_t EP_DTOG_RX = USB_EP_DTOG_RX;
-  static constexpr uint32_t EP_STAT_RX = USB_EPRX_STAT;
-  static constexpr uint32_t EP_SETUP = USB_EP_SETUP;
-  static constexpr uint32_t EP_TYPE = USB_EP_T_FIELD;
-  static constexpr uint32_t EP_KIND = USB_EP_KIND;
-  static constexpr uint32_t EP_CTR_TX = USB_EP_CTR_TX;
-  static constexpr uint32_t EP_DTOG_TX = USB_EP_DTOG_TX;
-  static constexpr uint32_t EP_STAT_TX = USB_EPTX_STAT;
-  static constexpr uint32_t EP_ADDR = USB_EPADDR_FIELD;
-  static constexpr uint32_t EP_ERR_RX = 0U;
-  static constexpr uint32_t EP_ERR_TX = 0U;
-  // 经典型没有 ERR 位：CTR/SETUP/类型/KIND/地址写 1 保持。
-  // The classic layout has no ERR bit: CTR/SETUP/type/KIND/address are written as 1 to
-  // keep them.
-  static constexpr uint32_t EP_KEEP_MASK =
-      EP_CTR_RX | EP_SETUP | EP_TYPE | EP_KIND | EP_CTR_TX | EP_ADDR;
-
-  static constexpr uint16_t ISTR_CTR = USB_ISTR_CTR;
-  static constexpr uint16_t ISTR_RESET = USB_ISTR_RESET;
-  static constexpr uint16_t ISTR_SOF = USB_ISTR_SOF;
-  static constexpr uint16_t ISTR_SUSP = USB_ISTR_SUSP;
-  static constexpr uint16_t ISTR_WKUP = USB_ISTR_WKUP;
-  static constexpr uint16_t ISTR_NOISE = USB_ISTR_ESOF | USB_ISTR_ERR | USB_ISTR_PMAOVR;
-  static constexpr uint16_t CNTR_RUN_MASK =
-      USB_CNTR_CTRM | USB_CNTR_RESETM | USB_CNTR_SUSPM | USB_CNTR_WKUPM;
-  static constexpr uint16_t CNTR_SOFM = USB_CNTR_SOFM;
-
-  static constexpr uint8_t ENDPOINT_COUNT = 8U;
-  static constexpr size_t PMA_SIZE = LIBXR_STM32_USB_PMA_SIZE;
-  // 经典型 ADDR 字段按偶数截断（& 0xFFFE），布局必须保证缓冲地址偶数对齐。
-  // The classic ADDR field is truncated to even values (& 0xFFFE), so the layout must
-  // keep buffer addresses even aligned.
-  static constexpr size_t PMA_ALIGN = 2U;
-
-  static USB_TypeDef* Regs() { return reinterpret_cast<USB_TypeDef*>(USB_BASE); }
-
-  static volatile uint16_t* EpReg(uint8_t num)
-  {
-    return reinterpret_cast<volatile uint16_t*>(USB_BASE +
-                                                static_cast<uintptr_t>(num) * 4U);
-  }
-
-  static uint32_t ReadEp(uint8_t num) { return *EpReg(num); }
-  static void WriteEp(uint8_t num, uint32_t value)
-  {
-    *EpReg(num) = static_cast<uint16_t>(value);
-  }
-  static uint16_t ReadCntr() { return Regs()->CNTR; }
-  static void WriteCntr(uint16_t value) { Regs()->CNTR = value; }
-  static uint16_t ReadIstr() { return Regs()->ISTR; }
-  static void ClearIstr(uint16_t flags) { Regs()->ISTR = static_cast<uint16_t>(~flags); }
-  static uint16_t ReadFnr() { return Regs()->FNR; }
-  static void WriteDaddr(uint16_t value) { Regs()->DADDR = value; }
-
-  static uintptr_t PmaBase() { return reinterpret_cast<uintptr_t>(Regs()) + 0x400U; }
-
-  static volatile uint16_t* BtField(uint8_t num, unsigned field)
-  {
-    // BTABLE = 0：字段 m 的半字偏移是 8n+2m，APB 字节偏移再乘 PMA_WORD_STRIDE（HAL
-    // 同式）。
-    // BTABLE = 0: the half-word offset of field m is 8n+2m, and the APB byte offset is
-    // further multiplied by PMA_WORD_STRIDE (same formula as HAL).
-    return reinterpret_cast<volatile uint16_t*>(
-        PmaBase() + (static_cast<uintptr_t>(num) * 8U + 2U * field) * PMA_WORD_STRIDE);
-  }
-
-  static void SetTxBuf(uint8_t num, uint16_t addr)
-  {
-    *BtField(num, 0U) = static_cast<uint16_t>(addr & 0xFFFEU);
-  }
-  static void SetTxCount(uint8_t num, uint16_t bytes) { *BtField(num, 1U) = bytes; }
-  static void SetRxBuf(uint8_t num, uint16_t addr)
-  {
-    *BtField(num, 2U) = static_cast<uint16_t>(addr & 0xFFFEU);
-  }
-  static void SetRxCountEncoded(uint8_t num, uint16_t mps)
-  {
-    *BtField(num, 3U) = EncodeRxCount(mps);
-  }
-  static uint16_t GetRxCount(uint8_t num)
-  {
-    return static_cast<uint16_t>(*BtField(num, 3U) & 0x03FFU);
-  }
-
-  /// COUNT_RX 块编码：≤62 B 按 2 B 块，>62 B 按 32 B 块 / COUNT_RX block encoding:
-  /// blocks of 2 B up to 62 B, then blocks of 32 B
-  static uint16_t EncodeRxCount(uint16_t mps)
-  {
-    if (mps == 0U)
-    {
-      return 0x8000U;  // BL_SIZE | 0 块 / BL_SIZE with no block
-    }
-    if (mps <= 62U)
-    {
-      return static_cast<uint16_t>(((mps + 1U) / 2U) << 10U);
-    }
-    return static_cast<uint16_t>(0x8000U | ((((mps + 31U) / 32U) - 1U) << 10U));
-  }
-
-  static void PmaWrite(uint16_t addr, const uint8_t* src, size_t len)
-  {
-    volatile uint16_t* p = reinterpret_cast<volatile uint16_t*>(
-        PmaBase() + static_cast<uintptr_t>(addr) * PMA_WORD_STRIDE);
-    for (size_t i = 0; i < len; i += 2)
-    {
-      uint16_t word = src[i];
-      if (i + 1 < len)
-      {
-        word |= static_cast<uint16_t>(src[i + 1]) << 8U;
-      }
-      *p = word;
-      p += PMA_WORD_STRIDE;
-    }
-  }
-
-  static void PmaRead(uint8_t* dst, uint16_t addr, size_t len)
-  {
-    const volatile uint16_t* p = reinterpret_cast<const volatile uint16_t*>(
-        PmaBase() + static_cast<uintptr_t>(addr) * PMA_WORD_STRIDE);
-    for (size_t i = 0; i < len; i += 2)
-    {
-      const uint16_t word = *p;
-      p += PMA_WORD_STRIDE;
-      dst[i] = static_cast<uint8_t>(word & 0xFFU);
-      if (i + 1 < len)
-      {
-        dst[i + 1] = static_cast<uint8_t>(word >> 8U);
-      }
-    }
-  }
-
-  static void InitRegs()
-  {
-    Regs()->CNTR = USB_CNTR_FRES;  // 强复位并顺带清 PDWN / Force reset, clears PDWN too
-    Regs()->CNTR = 0U;
-    Regs()->ISTR = 0U;
-    Regs()->BTABLE = 0U;
-  }
-
-  static void SuspendRegs() { Regs()->CNTR |= USB_CNTR_FSUSP; }
-  static void SuspendClocked() {}
-  static void ResumeRegs()
-  {
-    Regs()->CNTR &= static_cast<uint16_t>(~(CNTR_LP_MODE | USB_CNTR_FSUSP));
-  }
-
-  static void Connect(bool on)
-  {
-#if defined(USB_BCDR_DPPU)
-    if (on)
-    {
-      Regs()->BCDR |= USB_BCDR_DPPU;
-    }
-    else
-    {
-      Regs()->BCDR &= static_cast<uint16_t>(~USB_BCDR_DPPU);
-    }
-#elif defined(SYSCFG_PMC_USB_PU)
-    // L1：没有 BCDR，内部上拉是 SYSCFG_PMC 的 USB_PU 位（HAL 的
-    // __HAL_SYSCFG_USBPULLUP_ENABLE 写的也是它）。
-    // L1: there is no BCDR, the internal pull-up is the USB_PU bit of SYSCFG_PMC (the
-    // bit HAL's __HAL_SYSCFG_USBPULLUP_ENABLE writes).
-    __HAL_RCC_SYSCFG_CLK_ENABLE();
-    if (on)
-    {
-      SET_BIT(SYSCFG->PMC, SYSCFG_PMC_USB_PU);
-    }
-    else
-    {
-      CLEAR_BIT(SYSCFG->PMC, SYSCFG_PMC_USB_PU);
-    }
-#else
-    // F1/F3 没有内部上拉：上电时序由用户实现的 HAL_PCDEx_SetConnectionState 控制。
-    // F1/F3 have no internal pull-up: the power-on sequence is controlled by the
-    // user-implemented HAL_PCDEx_SetConnectionState.
-    PCD_HandleTypeDef hpcd = {};
-    hpcd.Instance = Regs();
-    HAL_PCDEx_SetConnectionState(&hpcd, on ? 1U : 0U);
-#endif
-  }
-
-  static void MspInit()
-  {
-    // 时钟、引脚与 NVIC 由 CubeMX 的 HAL_PCD_MspInit 提供；句柄只读 Instance。
-    // Clocks, pins and NVIC are provided by the CubeMX HAL_PCD_MspInit; the handle is
-    // only read for Instance.
-    PCD_HandleTypeDef hpcd = {};
-    hpcd.Instance = Regs();
-    HAL_PCD_MspInit(&hpcd);
-    STM32FsDevRequireWrap();
-  }
-
-  static uintptr_t EnterGuard()
-  {
-    const uint32_t saved = __get_PRIMASK();
-    __disable_irq();
-    __DMB();
-    return saved;
-  }
-
-  static void ExitGuard(uintptr_t saved)
-  {
-    __DMB();
-    __set_PRIMASK(static_cast<uint32_t>(saved));
-  }
-
- private:
-  // CNTR 的低功耗位：F1 的设备头文件叫 USB_CNTR_LP_MODE，其余经典型叫 USB_CNTR_LPMODE
-  // （F3 两个名字都有）。
-  // The low-power bit of CNTR: the F1 device header calls it USB_CNTR_LP_MODE, the other
-  // classic parts USB_CNTR_LPMODE (F3 has both names).
-  static constexpr uint16_t CNTR_LP_MODE =
-#if defined(USB_CNTR_LPMODE)
-      USB_CNTR_LPMODE
-#else
-      USB_CNTR_LP_MODE
-#endif
-      ;
-  // 取 HAL 的 PMA_ACCESS。HAL 没有给出这个宏时按手册回退：每个 32 位字只用 16 位的
-  // （间隔 2）是 F1、L1 以及 F3 的 xB/xC 和 F373xC（RM0365 表 172、RM0316 表 178 的
-  // “1 x 16 bits / word”），其余经典型两个半字都用（间隔 1）。
-  // Taken from HAL's PMA_ACCESS. Without the macro the value falls back as the manuals
-  // say: only 16 bits of every 32-bit word are used (stride 2) on F1, L1 and the F3
-  // xB/xC and F373xC parts ("1 x 16 bits / word" in RM0365 table 172 and RM0316 table
-  // 178); the other classic parts use both half words (stride 1).
-  static constexpr unsigned PMA_WORD_STRIDE =
-#if defined(PMA_ACCESS)
-      PMA_ACCESS
-#elif defined(STM32F1) || defined(STM32L1) || defined(STM32F302xB) ||       \
-    defined(STM32F302xC) || defined(STM32F303xB) || defined(STM32F303xC) || \
-    defined(STM32F373xC)
-      2U
-#else
-      1U
-#endif
-      ;
-};
-#endif  // !defined(USB_DRD_FS)
-
-#ifdef __DOXYGEN__
-/**
- * @brief DRD（USB_DRD_FS）的硬件访问变体 / Hardware access of the DRD variant
- * (USB_DRD_FS)
- *
- * CHEP 寄存器 32 位，低 16 位与经典型一致，高位是 ERR/NAK/DEVADDR/LSEP（写 1
- * 保持）；CNTR/ISTR 32 位（挂起位为 SUSPEN/SUSPRDY）；BTABLE 为固定在 PMA 0 的
- * 32 位 TXBD/RXBD；PMA 以 32 位字访问、字节偏移 1:1。
- *
- * The CHEP registers are 32-bit, the low half identical to the classic layout with
- * ERR/NAK/DEVADDR/LSEP in the high half (write 1 to keep); CNTR/ISTR are 32-bit with
- * SUSPEN/SUSPRDY; the BTABLE is the 32-bit TXBD/RXBD table fixed at PMA 0; the PMA is
- * accessed as 32-bit words with a 1:1 byte offset.
- */
-using Stm32FsDevDrdHw = Stm32FsDevClassicHw;
-#endif
-
-#if defined(USB_DRD_FS)
-
-struct Stm32FsDevDrdHw
-{
-  // H5 的 CMSIS 把 RXBD BLSIZE 移进了 LL USB 头；这里按 RM 直接取 RXBD count bit31。
-  // The H5 CMSIS moved RXBD BLSIZE into the LL USB header; per the RM, RXBD count bit31
-  // is taken directly here.
-  static constexpr uint32_t RX_BD_BLSIZE = 0x80000000UL;
-  static constexpr uint32_t EP_CTR_RX = USB_CHEP_VTRX;
-  static constexpr uint32_t EP_DTOG_RX = USB_CHEP_DTOG_RX;
-  static constexpr uint32_t EP_STAT_RX = USB_CHEP_RX_STRX;
-  static constexpr uint32_t EP_SETUP = USB_CHEP_SETUP;
-  static constexpr uint32_t EP_TYPE = USB_CHEP_UTYPE;
-  static constexpr uint32_t EP_KIND = USB_CHEP_KIND;
-  static constexpr uint32_t EP_CTR_TX = USB_CHEP_VTTX;
-  static constexpr uint32_t EP_DTOG_TX = USB_CHEP_DTOG_TX;
-  static constexpr uint32_t EP_STAT_TX = USB_CHEP_TX_STTX;
-  static constexpr uint32_t EP_ADDR = USB_CHEP_ADDR;
-  static constexpr uint32_t EP_ERR_RX = USB_CHEP_ERRRX;
-  static constexpr uint32_t EP_ERR_TX = USB_CHEP_ERRTX;
-  // HAL USB_CHEP_REG_MASK：VTRX/VTTX/ERR/NAK/LSEP/DEVADDR 写 1 保持。
-  // HAL USB_CHEP_REG_MASK: VTRX/VTTX/ERR/NAK/LSEP/DEVADDR are written as 1 to keep.
-  static constexpr uint32_t EP_KEEP_MASK = USB_CHEP_REG_MASK;
-
-  static constexpr uint16_t ISTR_CTR = USB_ISTR_CTR;
-  static constexpr uint16_t ISTR_RESET = USB_ISTR_RESET;
-  static constexpr uint16_t ISTR_SOF = USB_ISTR_SOF;
-  static constexpr uint16_t ISTR_SUSP = USB_ISTR_SUSP;
-  static constexpr uint16_t ISTR_WKUP = USB_ISTR_WKUP;
-  static constexpr uint16_t ISTR_NOISE = USB_ISTR_ESOF | USB_ISTR_ERR | USB_ISTR_PMAOVR;
-  static constexpr uint16_t CNTR_RUN_MASK =
-      USB_CNTR_CTRM | USB_CNTR_RESETM | USB_CNTR_SUSPM | USB_CNTR_WKUPM;
-  static constexpr uint16_t CNTR_SOFM = USB_CNTR_SOFM;
-
-  static constexpr uint8_t ENDPOINT_COUNT = 8U;
-  static constexpr size_t PMA_SIZE = LIBXR_STM32_USB_PMA_SIZE;
-  // DRD 的 TXBD/RXBD 地址字段按 4 字节截断（& 0xFFFC），布局必须 4 字节对齐。
-  // The DRD TXBD/RXBD address field is truncated to 4 bytes (& 0xFFFC), so the layout
-  // must be 4-byte aligned.
-  static constexpr size_t PMA_ALIGN = 4U;
-
-  /// 控制器的寄存器块；各系列的设备头文件都定义了 USB_DRD_FS，基地址宏的名字则不统一
-  /// Register block of the controller. Every family's device header defines USB_DRD_FS,
-  /// while the name of the base-address macro differs between families.
-  static USB_DRD_TypeDef* Regs() { return USB_DRD_FS; }
-
-  static volatile uint32_t* Chep(uint8_t num) { return &Regs()->CHEP0R + num; }
-
-  static uint32_t ReadEp(uint8_t num) { return *Chep(num); }
-  static void WriteEp(uint8_t num, uint32_t value) { *Chep(num) = value; }
-  static uint16_t ReadCntr() { return static_cast<uint16_t>(Regs()->CNTR); }
-  static void WriteCntr(uint16_t value) { Regs()->CNTR = value; }
-  static uint16_t ReadIstr() { return static_cast<uint16_t>(Regs()->ISTR); }
-  static void ClearIstr(uint16_t flags)
-  {
-    // 高位写 1 保持
-    // Write 1 to keep the high bits.
-    Regs()->ISTR = static_cast<uint32_t>(~flags);
-  }
-  static uint16_t ReadFnr() { return static_cast<uint16_t>(Regs()->FNR); }
-  static void WriteDaddr(uint16_t value) { Regs()->DADDR = value; }
-
-  // 包内存的地址由设备头文件给出：它与寄存器块的间距随系列不同，不能从寄存器基址推算。
-  // The address of the packet memory comes from the device header: its distance from the
-  // register block differs between families and cannot be derived from the register base.
-#if !defined(USB_DRD_PMAADDR)
-#error "USB_DRD_PMAADDR is not defined by the device header of this USB_DRD_FS part."
-#endif
-  static uintptr_t PmaBase() { return USB_DRD_PMAADDR; }
-
-  static volatile uint32_t* Bd(uint8_t num, bool rx)
-  {
-    return reinterpret_cast<volatile uint32_t*>(PmaBase()) + num * 2U + (rx ? 1U : 0U);
-  }
-
-  static void SetTxBuf(uint8_t num, uint16_t addr)
-  {
-    volatile uint32_t* bd = Bd(num, false);
-    *bd = (*bd & 0xFFFF0000U) | (addr & 0xFFFCU);
-  }
-  static void SetTxCount(uint8_t num, uint16_t bytes)
-  {
-    volatile uint32_t* bd = Bd(num, false);
-    *bd = (*bd & 0x0000FFFFU) | (static_cast<uint32_t>(bytes) << 16U);
-  }
-  static void SetRxBuf(uint8_t num, uint16_t addr)
-  {
-    volatile uint32_t* bd = Bd(num, true);
-    *bd = (*bd & 0xFFFF0000U) | (addr & 0xFFFCU);
-  }
-  static void SetRxCountEncoded(uint8_t num, uint16_t mps)
-  {
-    volatile uint32_t* bd = Bd(num, true);
-    *bd = (*bd & 0x0000FFFFU) | EncodeRxCount(mps);
-  }
-  static uint16_t GetRxCount(uint8_t num)
-  {
-    // 接收完成后，RX 缓冲描述符里的计数要过几个周期才更新；HAL 的 PCD_GET_EP_RX_CNT
-    // 同样先空转 PCD_RX_PMA_CNT 次再读。
-    // After a reception the count in the RX buffer descriptor takes a few cycles to
-    // update; HAL's PCD_GET_EP_RX_CNT spins PCD_RX_PMA_CNT times before it reads, too.
-    volatile uint32_t settle = PCD_RX_PMA_CNT;
-    while (settle > 0U)
-    {
-      settle = settle - 1U;
-    }
-    return static_cast<uint16_t>((*Bd(num, true) >> 16U) & 0x03FFU);
-  }
-
-  static uint32_t EncodeRxCount(uint16_t mps)
-  {
-    if (mps == 0U)
-    {
-      return RX_BD_BLSIZE;
-    }
-    if (mps <= 62U)
-    {
-      return (static_cast<uint32_t>(mps) + 1U) / 2U << 26U;
-    }
-    return ((static_cast<uint32_t>(mps) + 31U) / 32U - 1U) << 26U | RX_BD_BLSIZE;
-  }
-
-  // PMA 只支持 32 位访问；尾部的 1–3 字节单独处理（HAL 同式）。
-  // The PMA supports 32-bit access only; the trailing 1-3 bytes are handled separately
-  // (same as HAL).
-  static void PmaWrite(uint16_t addr, const uint8_t* src, size_t len)
-  {
-    volatile uint32_t* p = reinterpret_cast<volatile uint32_t*>(PmaBase() + addr);
-    const size_t words = len / 4U;
-    for (size_t i = 0; i < words; ++i)
-    {
-      uint32_t value;
-      std::memcpy(&value, src + i * 4U, 4U);
-      *p++ = value;
-    }
-    const size_t rest = len % 4U;
-    if (rest != 0U)
-    {
-      uint32_t value = 0U;
-      std::memcpy(&value, src + words * 4U, rest);
-      *p = value;
-    }
-  }
-
-  static void PmaRead(uint8_t* dst, uint16_t addr, size_t len)
-  {
-    const volatile uint32_t* p =
-        reinterpret_cast<const volatile uint32_t*>(PmaBase() + addr);
-    const size_t words = len / 4U;
-    for (size_t i = 0; i < words; ++i)
-    {
-      const uint32_t value = *p++;
-      std::memcpy(dst + i * 4U, &value, 4U);
-    }
-    const size_t rest = len % 4U;
-    if (rest != 0U)
-    {
-      const uint32_t value = *p;
-      std::memcpy(dst + words * 4U, &value, rest);
-    }
-  }
-
-  static void InitRegs()
-  {
-    Regs()->CNTR = USB_CNTR_USBRST;
-    Regs()->CNTR &= ~USB_CNTR_USBRST;
-    Regs()->CNTR &= ~USB_CNTR_HOST;  // 设备模式 / Device mode.
-    Regs()->ISTR = 0U;
-  }
-
-  static void SuspendRegs() { Regs()->CNTR |= USB_CNTR_SUSPEN; }
-  static void SuspendClocked() { Regs()->CNTR |= USB_CNTR_SUSPRDY; }
-  static void ResumeRegs()
-  {
-    Regs()->CNTR &= ~USB_CNTR_SUSPRDY;
-    Regs()->CNTR &= ~USB_CNTR_SUSPEN;
-  }
-
-  static void Connect(bool on)
-  {
-    if (on)
-    {
-      Regs()->BCDR |= USB_BCDR_DPPU;
-    }
-    else
-    {
-      Regs()->BCDR &= ~USB_BCDR_DPPU;
-    }
-  }
-
-  static void MspInit()
-  {
-    PCD_HandleTypeDef hpcd = {};
-    hpcd.Instance = Regs();
-    HAL_PCD_MspInit(&hpcd);
-    STM32FsDevRequireWrap();
-  }
-
-  static uintptr_t EnterGuard()
-  {
-    const uint32_t saved = __get_PRIMASK();
-    __disable_irq();
-    __DMB();
-    return saved;
-  }
-
-  static void ExitGuard(uintptr_t saved)
-  {
-    __DMB();
-    __set_PRIMASK(static_cast<uint32_t>(saved));
-  }
-};
-
-using Stm32FsDevHw = Stm32FsDevDrdHw;
-
-#else
-
-using Stm32FsDevHw = Stm32FsDevClassicHw;
-
-#endif
-
 /**
  * @brief STM32 FSDEV / DRD USB 设备 / STM32 FSDEV or DRD USB device
  *
+ * 寄存器模型在基类 `USB::FSDevDevice` 里（usb/backend/fsdev.hpp）。本类给出控制器的
+ * 地址和 PMA 的形状，接上拉，并在带 `USB_DRD_FS` 的芯片上覆盖 32 位寄存器布局的那几个
+ * 函数。
+ *
  * 不使用 PCD 句柄：构造时借临时句柄调用 CubeMX 的 HAL_PCD_MspInit()（时钟、引脚、
- * NVIC），之后寄存器全部由共用运行期（usb/backend/fsdev.hpp）直接读写。CubeMX 保持
- * 默认设置：链接时包装 HAL_PCD_Init() 与 HAL_PCD_IRQHandler()，main() 里的
- * MX_USB_PCD_Init() 不再初始化控制器，生成的中断函数进入 Dispatch()。
+ * NVIC），之后寄存器全部由基类直接读写。CubeMX 保持默认设置：链接时包装
+ * HAL_PCD_Init() 与 HAL_PCD_IRQHandler()，main() 里的 MX_USB_PCD_Init() 不再初始化
+ * 控制器，生成的中断函数进入 Dispatch()。
+ *
+ * The register model is in the base class `USB::FSDevDevice` (usb/backend/fsdev.hpp).
+ * This class gives the addresses of the controller and the shape of the PMA, connects
+ * the pull-up and, on parts with `USB_DRD_FS`, overrides the functions of the 32-bit
+ * register layout.
  *
  * No PCD handle is used: the constructor calls the CubeMX HAL_PCD_MspInit() (clocks,
- * pins, NVIC) through a temporary handle, and from then on the shared runtime
- * (usb/backend/fsdev.hpp) programs the registers directly. CubeMX keeps its default
- * settings: the link wraps HAL_PCD_Init() and HAL_PCD_IRQHandler(), so
- * MX_USB_PCD_Init() no longer initializes the controller and the generated interrupt
- * handler enters Dispatch().
+ * pins, NVIC) through a temporary handle, and from then on the base class programs the
+ * registers directly. CubeMX keeps its default settings: the link wraps HAL_PCD_Init()
+ * and HAL_PCD_IRQHandler(), so MX_USB_PCD_Init() no longer initializes the controller
+ * and the generated interrupt handler enters Dispatch().
  */
-class STM32USBDeviceDevFs : public USB::FSDevDevice<Stm32FsDevHw>
+class STM32USBDeviceDevFs : public USB::FSDevDevice
 {
  public:
-  using USB::FSDevDevice<Stm32FsDevHw>::FSDevDevice;
+  /**
+   * @brief 构造设备并初始化控制器；参数同 USB::FSDevDevice 的构造函数（不含地址）/
+   * Construct the device and initialize the controller; the parameters are those of the
+   * USB::FSDevDevice constructor without the addresses
+   * @param rx_ep_cfgs OUT 端点配置，第 i 项对应 EP i / OUT endpoint configs, entry i is
+   * EP i
+   * @param tx_ep_cfgs IN 端点配置，第 i 项对应 EP i / IN endpoint configs, entry i is
+   * EP i
+   * @param packet_size 端点 0 最大包长 / EP0 max packet size
+   * @param vid 厂商 ID / Vendor ID
+   * @param pid 产品 ID / Product ID
+   * @param bcd 设备版本号（bcdDevice）/ Device release number (bcdDevice)
+   * @param lang_list 字符串描述符语言包列表 / String descriptor language packs
+   * @param configs 每个 configuration 的 class/描述符项列表 / Class and descriptor items
+   * of each configuration
+   * @param uid 可选的唯一标识字节，作为序列号字符串的后缀 / Optional unique ID bytes
+   * used as the suffix of the serial-number string
+   * @param pma_limit PMA 可用字节（构造期断言）；0 = 全部 / Usable PMA bytes (asserted
+   * at construction); 0 = all of it
+   * @param slot_count 每个端点的槽数量，0 为基类默认值 / Number of slots per endpoint, 0
+   * selects the base-class default
+   */
+  STM32USBDeviceDevFs(
+      const std::initializer_list<EPConfig>& rx_ep_cfgs,
+      const std::initializer_list<EPConfig>& tx_ep_cfgs,
+      USB::DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid,
+      uint16_t bcd,
+      const std::initializer_list<const USB::DescriptorStrings::LanguagePack*>& lang_list,
+      const std::initializer_list<
+          const std::initializer_list<USB::ConfigDescriptorItem*>>& configs,
+      ConstRawData uid = {nullptr, 0}, size_t pma_limit = 0, uint8_t slot_count = 0);
+
+ protected:
+  /// 接通或断开 D+ 上拉：BCDR 的 DPPU、L1 的 SYSCFG_PMC，F1/F3 交给
+  /// HAL_PCDEx_SetConnectionState / Connect or disconnect the D+ pull-up: DPPU of BCDR,
+  /// SYSCFG_PMC on L1, HAL_PCDEx_SetConnectionState on F1/F3
+  void Connect(bool on) override;
+
+#if defined(USB_DRD_FS) || defined(__DOXYGEN__)
+  // DRD（USB_DRD_FS）的寄存器布局：寄存器 32 位，低 16 位与经典型一致；BTABLE 是固定在
+  // PMA 起点的 32 位 TXBD/RXBD；PMA 按 32 位字访问，字节偏移 1:1；挂起位是
+  // SUSPEN/SUSPRDY。
+  // Register layout of the DRD variant (USB_DRD_FS): 32-bit registers whose low half is
+  // the classic layout; the BTABLE is the 32-bit TXBD/RXBD table fixed at the start of
+  // the PMA; the PMA is accessed as 32-bit words with a 1:1 byte offset; the suspend
+  // bits are SUSPEN/SUSPRDY.
+  uint32_t ReadRegister(uint32_t offset) override;
+  void WriteRegister(uint32_t offset, uint32_t value) override;
+  void SetTxBuf(uint8_t num, uint16_t addr) override;
+  void SetTxCount(uint8_t num, uint16_t bytes) override;
+  void SetRxBuf(uint8_t num, uint16_t addr) override;
+  void SetRxCountEncoded(uint8_t num, uint16_t mps) override;
+  uint16_t GetRxCount(uint8_t num) override;
+  void PmaWrite(uint16_t addr, const uint8_t* src, size_t len) override;
+  void PmaRead(uint8_t* dst, uint16_t addr, size_t len) override;
+  void InitRegs() override;
+  void SuspendRegs() override;
+  void SuspendClocked() override;
+  void ResumeRegs() override;
+#endif
 };
 
 }  // namespace LibXR

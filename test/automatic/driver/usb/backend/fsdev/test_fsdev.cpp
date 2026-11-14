@@ -3,15 +3,19 @@
  * @brief FSDEV 共用运行时主机测试 / Host tests for the shared FSDEV runtime.
  *
  * 在假控制器上运行共用的 FSDEV 运行时（src/driver/usb/backend/fsdev.hpp）：假控制器
- * 实现经典型 FSDEV 的寄存器语义（STAT/DTOG 写 1 翻转、CTR/SETUP 保持、ISTR 写 0 清除）
- * 和 PMA 布局（半字步长 2），主机侧通过它发送 SETUP/OUT/IN 包。测试经由 FSDevDevice
- * 真实的分发/owner 机制，运行枚举、控制读写、多包批量传输、停止和总线复位。
+ * 实现经典型 FSDEV 的寄存器语义（STAT/DTOG 写 1 翻转、CTR/SETUP 保持、ISTR 写 0 清除），
+ * 并提供一块按半字步长 2 访问的 PMA；被测设备类从 FSDevDevice 派生，只把寄存器读写接到
+ * 假控制器上，BTABLE 和 PMA 的访问用的是基类自己的实现。主机侧通过假控制器发送
+ * SETUP/OUT/IN 包。测试经由 FSDevDevice 真实的分发/owner 机制，运行枚举、控制读写、
+ * 多包批量传输、停止和总线复位。
  * Runs the shared FSDEV runtime (src/driver/usb/backend/fsdev.hpp) against a fake
  * controller: the fake implements the register semantics (STAT/DTOG toggle on write-1,
- * CTR/SETUP keep, ISTR write-0-to-clear) and the PMA layout (half-word stride 2) of a
- * classic FSDEV part, and a host side drives SETUP/OUT/IN packets through it. The tests
- * run enumeration, control read/write, multi-packet bulk, stops and bus resets through
- * the real dispatch/owner machinery of FSDevDevice.
+ * CTR/SETUP keep, ISTR write-0-to-clear) of a classic FSDEV part and provides a PMA
+ * accessed with half-word stride 2. The device class under test derives from
+ * FSDevDevice and only routes the register reads and writes to the fake; BTABLE and PMA
+ * are accessed by the base class's own code. A host side drives SETUP/OUT/IN packets
+ * through the fake. The tests run enumeration, control read/write, multi-packet bulk,
+ * stops and bus resets through the real dispatch/owner machinery of FSDevDevice.
  */
 
 #include <sys/wait.h>
@@ -42,6 +46,7 @@ struct FakeHw
   static inline uint16_t istr = 0;
   static inline uint16_t fnr = 0;
   static inline uint16_t daddr = 0;
+  static inline uint16_t btable = 0;
   static inline uint32_t ep[8] = {};
   static inline std::array<uint8_t, 2048> pma{};  // APB 视图 / APB view
   static inline bool pull_up = false;
@@ -49,7 +54,7 @@ struct FakeHw
 
   static constexpr uint8_t ENDPOINT_COUNT = 8U;
   static constexpr size_t PMA_SIZE = 512U;
-  static constexpr size_t PMA_ALIGN = 2U;
+  static constexpr uint8_t PMA_ALIGN = 2U;
 
   static constexpr uint32_t EP_CTR_RX = 0x8000U;
   static constexpr uint32_t EP_DTOG_RX = 0x4000U;
@@ -148,15 +153,76 @@ struct FakeHw
     }
   }
   static uint16_t ReadCntr() { return cntr; }
-  static void WriteCntr(uint16_t value) { cntr = value; }
-  static uint16_t ReadIstr() { return istr; }
-  static void ClearIstr(uint16_t flags)
+
+  /// 按偏移读寄存器：EPnR 在 4n，其余见 FSDEV_REG_* / Read a register by offset: EPnR is
+  /// at 4n, the others as FSDEV_REG_*
+  static uint32_t ReadRegister(uint32_t offset)
   {
-    istr &= static_cast<uint16_t>(~flags);
-    UpdateIstr();
+    if (offset < 4U * ENDPOINT_COUNT)
+    {
+      return ReadEp(static_cast<uint8_t>(offset / 4U));
+    }
+    switch (offset)
+    {
+      case FSDEV_REG_CNTR:
+        return cntr;
+      case FSDEV_REG_ISTR:
+        return istr;
+      case FSDEV_REG_FNR:
+        return fnr;
+      case FSDEV_REG_DADDR:
+        return daddr;
+      case FSDEV_REG_BTABLE:
+        return btable;
+      default:
+        TEST_ASSERT(false);
+        return 0U;
+    }
   }
-  static uint16_t ReadFnr() { return fnr; }
-  static void WriteDaddr(uint16_t value) { daddr = value; }
+
+  /// 按偏移写寄存器，寄存器是 16 位的。CNTR 的 FRES 复位 USB 逻辑：EPnR、ISTR、地址全部
+  /// 清零（与真硬件一致）；ISTR 写 0 清除、写 1 保持。
+  /// Write a register by offset; the registers are 16 bits wide. FRES of CNTR resets the
+  /// USB logic: EPnR, ISTR and the address all clear, as on real hardware. ISTR is
+  /// cleared by writing 0 and kept by writing 1.
+  static void WriteRegister(uint32_t offset, uint32_t value)
+  {
+    if (offset < 4U * ENDPOINT_COUNT)
+    {
+      WriteEp(static_cast<uint8_t>(offset / 4U), value & 0xFFFFU);
+      return;
+    }
+    const uint16_t word = static_cast<uint16_t>(value);
+    switch (offset)
+    {
+      case FSDEV_REG_CNTR:
+        if ((word & FSDEV_CNTR_FRES) != 0U)
+        {
+          istr = 0;
+          daddr = 0;
+          for (auto& reg : ep)
+          {
+            reg = 0;
+          }
+        }
+        cntr = word;
+        UpdateIstr();
+        break;
+      case FSDEV_REG_ISTR:
+        istr &= word;
+        UpdateIstr();
+        break;
+      case FSDEV_REG_DADDR:
+        daddr = word;
+        break;
+      case FSDEV_REG_BTABLE:
+        btable = word;
+        break;
+      default:
+        TEST_ASSERT(false);
+        break;
+    }
+  }
 
   static volatile uint16_t* BtField(uint8_t num, unsigned field)
   {
@@ -166,36 +232,6 @@ struct FakeHw
         reinterpret_cast<uintptr_t>(pma.data()) +
         (static_cast<uintptr_t>(num) * 8U + 2U * field) * 2U);
   }
-  static void SetTxBuf(uint8_t num, uint16_t addr)
-  {
-    *BtField(num, 0U) = static_cast<uint16_t>(addr & 0xFFFEU);
-  }
-  static void SetTxCount(uint8_t num, uint16_t bytes) { *BtField(num, 1U) = bytes; }
-  static void SetRxBuf(uint8_t num, uint16_t addr)
-  {
-    *BtField(num, 2U) = static_cast<uint16_t>(addr & 0xFFFEU);
-  }
-  static void SetRxCountEncoded(uint8_t num, uint16_t mps)
-  {
-    *BtField(num, 3U) = EncodeRxCount(mps);
-  }
-  static uint16_t GetRxCount(uint8_t num)
-  {
-    return static_cast<uint16_t>(*BtField(num, 3U) & 0x03FFU);
-  }
-  static uint16_t EncodeRxCount(uint16_t mps)
-  {
-    if (mps == 0U)
-    {
-      return 0x8000U;
-    }
-    if (mps <= 62U)
-    {
-      return static_cast<uint16_t>(((mps + 1U) / 2U) << 10U);
-    }
-    return static_cast<uint16_t>(0x8000U | ((((mps + 31U) / 32U) - 1U) << 10U));
-  }
-
   static void PmaWrite(uint16_t addr, const uint8_t* src, size_t len)
   {
     volatile uint16_t* p = reinterpret_cast<volatile uint16_t*>(
@@ -226,29 +262,6 @@ struct FakeHw
       }
     }
   }
-
-  static void InitRegs()
-  {
-    // FRES 脉冲复位 USB 逻辑：EPnR、ISTR、地址全部清零（与真硬件一致）。
-    // The FRES pulse resets the USB logic: EPnR, ISTR and the address all clear, as on
-    // real hardware.
-    WriteCntr(0x0001U);
-    WriteCntr(0U);
-    istr = 0;
-    daddr = 0;
-    for (auto& value : ep)
-    {
-      value = 0;
-    }
-    UpdateIstr();
-  }
-  static void SuspendRegs() { cntr |= 0x0008U; }
-  static void SuspendClocked() {}
-  static void ResumeRegs() { cntr &= static_cast<uint16_t>(~(0x0004U | 0x0008U)); }
-  static void Connect(bool on) { pull_up = on; }
-  static void MspInit() { clocks = true; }
-  static uintptr_t EnterGuard() { return 0U; }
-  static void ExitGuard(uintptr_t) {}
 
   static void SuspendLine() { istr |= ISTR_SUSP; }
   static void ResumeLine() { istr |= ISTR_WKUP; }
@@ -322,7 +335,37 @@ struct FakeHw
   }
 };
 
-using Device = FSDevDevice<FakeHw>;
+/// 被测设备类：寄存器读写接到假控制器，PMA 是假控制器的那块内存，其余都是基类的代码。
+/// The device class under test: the register reads and writes go to the fake controller,
+/// the PMA is the fake's memory, and everything else is the code of the base class.
+class Device : public FSDevDevice
+{
+ public:
+  Device(const std::initializer_list<EPConfig>& rx_ep_cfgs,
+         const std::initializer_list<EPConfig>& tx_ep_cfgs,
+         DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid,
+         uint16_t bcd,
+         const std::initializer_list<const DescriptorStrings::LanguagePack*>& lang_list,
+         const std::initializer_list<const std::initializer_list<ConfigDescriptorItem*>>&
+             configs,
+         ConstRawData uid = {nullptr, 0}, size_t pma_limit = 0, uint8_t slot_count = 0)
+      : FSDevDevice({0U, reinterpret_cast<uintptr_t>(FakeHw::pma.data()),
+                     FakeHw::PMA_SIZE, 2U, FakeHw::PMA_ALIGN},
+                    rx_ep_cfgs, tx_ep_cfgs, packet_size, vid, pid, bcd, lang_list,
+                    configs, uid, pma_limit, slot_count)
+  {
+    FakeHw::clocks = true;
+    InitController();
+  }
+
+ protected:
+  void Connect(bool on) override { FakeHw::pull_up = on; }
+  uint32_t ReadRegister(uint32_t offset) override { return FakeHw::ReadRegister(offset); }
+  void WriteRegister(uint32_t offset, uint32_t value) override
+  {
+    FakeHw::WriteRegister(offset, value);
+  }
+};
 
 /// 主机 NAK 重试直到设备挂接收：两轮 Dispatch 让 ISR 批与 owner 的续办都跑完。
 /// The host retries through NAKs until the device arms the transfer: two rounds of
