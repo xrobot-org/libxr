@@ -16,6 +16,12 @@
 // 总是交给 LibXR。
 // 包装按工程生效，不区分 PCD 句柄：链接了寄存器运行期之后，工程里所有 USB 设备控制器的
 // 初始化和中断都交给 LibXR。同一个工程里不允许一个控制器用 LibXR、另一个用 ST 中间件。
+// 链接时优化（LTO）：包装是链接器解析符号时做的替换。开了 LTO 之后，调用方和定义被编译器
+// 分到同一个分区时，调用在到达链接器之前就已绑定到 ST 的函数（直接调用或内联），包装对它
+// 不起作用；哪些调用受影响取决于分区，随工程和优化等级变化。所以定义这两个函数的
+// stm32*_hal_pcd.c 必须不参与 LTO，这样所有对它们的引用都由链接器解析；
+// driver/st/CMakeLists.txt 会在工程的所有目标里找到它并加上 -fno-lto。不用 CMake 的工程开
+// LTO 时要自己做到这一点。
 // CubeMX keeps its default code: MX_USB_*_PCD_Init() calls HAL_PCD_Init() and the
 // generated interrupt handlers call HAL_PCD_IRQHandler(). The link wraps both (see
 // driver/st/CMakeLists.txt). This file holds only the wrappers, so it is linked
@@ -30,6 +36,15 @@
 // register runtime is linked, initialization and interrupts of every USB device
 // controller in the project go to LibXR. Using LibXR on one controller and ST's
 // middleware on another in the same project is not allowed.
+// Link-time optimization (LTO): a wrap is a replacement the linker makes when it resolves
+// a symbol. With LTO, a call whose caller and definition the compiler puts into the same
+// partition is bound to ST's function (called directly or inlined) before it reaches the
+// linker, and the wrap does not apply to it; which calls are affected depends on the
+// partitioning and changes with the project and the optimization level. So
+// stm32*_hal_pcd.c, which defines both functions, has to stay out of LTO, which leaves
+// every reference to them to the linker; driver/st/CMakeLists.txt finds it in every
+// target of the project and adds -fno-lto. A project that does not use CMake has to do
+// the same when it enables LTO.
 
 extern "C" void libxr_stm32_otg_dispatch(PCD_HandleTypeDef* hpcd) __attribute__((weak));
 extern "C" void libxr_stm32_fsdev_dispatch(PCD_HandleTypeDef* hpcd) __attribute__((weak));

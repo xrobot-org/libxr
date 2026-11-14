@@ -26,10 +26,12 @@ target_link_options(
 )
 
 # --wrap replaces a symbol when the linker resolves it. With link-time optimization the
-# compiler resolves a call to a function whose definition it can see before the linker
-# does: ST's function is inlined into the CubeMX code and the wrapper is never called.
-# The HAL source that defines both wrapped functions is therefore compiled without LTO
-# in every target of the project; its callers and LibXR itself can stay in LTO.
+# compiler can bind a call to ST's function before the linker sees it (a direct call or
+# inlined code), and the wrapper is skipped for that call; which calls are affected
+# changes with the project and the optimization level. The HAL source that defines both
+# wrapped functions is therefore compiled without LTO in every target of the project,
+# which leaves every reference to them to the linker; its callers and LibXR itself can
+# stay in LTO.
 function(_xr_stm32_keep_hal_pcd_out_of_lto)
   if(NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     return()
