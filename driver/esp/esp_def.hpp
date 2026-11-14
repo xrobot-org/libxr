@@ -1,14 +1,8 @@
 #pragma once
 
-// Shared ESP driver definitions/header hygiene entry point.
-// Keep ESP-IDF/FreeRTOS integration quirks localized here so the
-// rest of the ESP driver headers can include one clean common header.
+// ESP 驱动共用的头文件入口：FreeRTOS 与工程配置（sdkconfig）。
+// Common header entry of the ESP drivers: FreeRTOS and the project configuration
+// (sdkconfig).
 #include <FreeRTOS.h>
 
 #include "sdkconfig.h"
-
-// Xtensa/FreeRTOS headers may expose INTERRUPT macro and collide with
-// Endpoint::Type::INTERRUPT in generic USB core headers.
-#if defined(INTERRUPT)
-#undef INTERRUPT
-#endif

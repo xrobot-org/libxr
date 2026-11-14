@@ -17,7 +17,7 @@ LibXR 的 USB 设备协议栈 / The USB device stack of LibXR
 XRUSB 是 [LibXR](https://github.com/xrobot-org/libxr) 的 USB 设备协议栈，用 C++20 编写，位于
 `src/driver/usb`。`core/` 生成设备、配置、字符串和 BOS 描述符并管理端点池，`device/` 是设备核心、
 组合设备和各设备类。一个组合设备可以包含多个设备类，初始化时各设备类从端点池申请所需的端点。这个目录
-只有平台无关的代码，USB 设备控制器的驱动位于各平台的 `driver/<平台>/`，例如 `driver/st/stm32_usb_dev.cpp`、
+只有平台无关的代码，USB 设备控制器的驱动位于各平台的 `driver/<平台>/`，例如 `driver/st/stm32_usb_otg.cpp`、
 `driver/ch/ch32_usb_otghs.cpp` 和 `driver/esp/esp_usb_dev.cpp`。
 
 XRUSB is the USB device stack of [LibXR](https://github.com/xrobot-org/libxr), written in C++20,
@@ -26,7 +26,7 @@ manages the endpoint pool; `device/` holds the device core, the composite device
 classes. A composite device can contain several device classes, and each class takes the
 endpoints it needs from the endpoint pool at initialization. This directory holds only
 platform-independent code; the USB device controller drivers are in `driver/<platform>/` of each
-platform, such as `driver/st/stm32_usb_dev.cpp`, `driver/ch/ch32_usb_otghs.cpp` and
+platform, such as `driver/st/stm32_usb_otg.cpp`, `driver/ch/ch32_usb_otghs.cpp` and
 `driver/esp/esp_usb_dev.cpp`.
 
 [平台外设支持列表](../../../doc/support.md)中的 `USB-DEVICE` 指 XRUSB 使用的 USB 设备控制器。ESP32-C3 和
@@ -58,9 +58,9 @@ device controller used by XRUSB. `CDC-JTAG` on ESP32-C3 and ESP32-C6 is implemen
 
 | 平台 / Platform | 控制器 / Controller | 驱动 / Driver | 测试设备 / Tested on |
 | --- | --- | --- | --- |
-| STM32 | FSDEV（`USB_BASE`、`USB_DRD_FS`） | `driver/st/stm32_usb_dev.cpp` | STM32F103、STM32G431 |
-| STM32 | OTG FS（`USB_OTG_FS`） | `driver/st/stm32_usb_dev.cpp` | STM32F407 |
-| STM32 | OTG HS（`USB_OTG_HS`） | `driver/st/stm32_usb_dev.cpp` | STM32F407、STM32H750 |
+| STM32 | FSDEV（`USB_BASE`、`USB_DRD_FS`） | `driver/st/stm32_usb_fsdev.cpp` | STM32F103、STM32G431 |
+| STM32 | OTG FS（`USB_OTG_FS`） | `driver/st/stm32_usb_otg.cpp` | STM32F407 |
+| STM32 | OTG HS（`USB_OTG_HS`） | `driver/st/stm32_usb_otg.cpp` | STM32F407、STM32H750 |
 | ESP32-S3 | OTG FS | `driver/esp/esp_usb_dev.cpp` | ESP32-S3 |
 | CH32 | FSDEV | `driver/ch/ch32_usb_devfs.cpp` | CH32V203 |
 | CH32 | USBFS（OTG FS） | `driver/ch/ch32_usb_otgfs.cpp` | CH32V307、CH32V203、CH32V208 |

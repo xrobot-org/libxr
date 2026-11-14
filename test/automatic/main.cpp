@@ -52,6 +52,16 @@ void test_ramfs();
 void test_power();
 void test_semaphore();
 void test_mutex();
+void test_usb_endpoint();
+void test_usb_cdc_test();
+void test_usb_cdc_uart();
+void test_usb_hid();
+void test_usb_dfu();
+void test_usb_gsusb();
+void test_usb_uac_mic();
+void test_usb_fsdev();
+void test_usb_daplink_v2();
+void test_usb_daplink_v1();
 void test_stack();
 void test_swd_general_gpio();
 void test_swd_protocol();
@@ -90,7 +100,6 @@ void test_linux_uart_reconnect();
 void test_linux_uart_partial_disconnect();
 void test_linux_uart_initial_open_recovery();
 void test_slot_pool();
-void test_usb_cdc_tx();
 
 namespace LinuxSharedTopicBench
 {
@@ -208,9 +217,18 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"linux_uart_tests",
      {"uart_initial_recovery", &RunVoidEntry<test_linux_uart_initial_open_recovery>,
       true}},
-    {"usb_tests", {"cdc_tx", &RunVoidEntry<test_usb_cdc_tx>, false}},
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},
+    {"usb_tests", {"usb_endpoint", &RunVoidEntry<test_usb_endpoint>, false}},
+    {"usb_tests", {"usb_cdc_test", &RunVoidEntry<test_usb_cdc_test>, false}},
+    {"usb_tests", {"usb_cdc_uart", &RunVoidEntry<test_usb_cdc_uart>, false}},
+    {"usb_tests", {"usb_hid", &RunVoidEntry<test_usb_hid>, false}},
+    {"usb_tests", {"usb_dfu", &RunVoidEntry<test_usb_dfu>, false}},
+    {"usb_tests", {"usb_gsusb", &RunVoidEntry<test_usb_gsusb>, false}},
+    {"usb_tests", {"usb_uac_mic", &RunVoidEntry<test_usb_uac_mic>, false}},
+    {"usb_tests", {"usb_fsdev", &RunVoidEntry<test_usb_fsdev>, true, false}},
+    {"usb_tests", {"usb_daplink_v2", &RunVoidEntry<test_usb_daplink_v2>, false}},
+    {"usb_tests", {"usb_daplink_v1", &RunVoidEntry<test_usb_daplink_v1>, false}},
     {"core_tests", {"assert", &RunVoidEntry<test_assert>, true, false}},
     {"core_tests", {"def", &RunVoidEntry<test_def>, false}},
     {"core_tests", {"callback", &RunVoidEntry<test_cb>, false}},

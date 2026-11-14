@@ -99,7 +99,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
     POST_FAIL = 0x02,        ///< POST 失败 / POSTFail
     ERROR_UNDEFINED = 0x03,  ///< 未定义 / ErrorUndefined
 
-    // 字母
+    // 字母 / Letters
     A = 0x04,
     B = 0x05,
     C = 0x06,
@@ -127,7 +127,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
     Y = 0x1C,
     Z = 0x1D,
 
-    // 数字上排
+    // 数字上排 / Number row
     NUM_1 = 0x1E,
     NUM_2 = 0x1F,
     NUM_3 = 0x20,
@@ -186,7 +186,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
     DOWN_ARROW = 0x51,
     UP_ARROW = 0x52,
 
-    // 小键盘
+    // 小键盘 / Keypad
     NUM_LOCK = 0x53,
     KEYPAD_SLASH = 0x54,     ///< Keypad /
     KEYPAD_ASTERISK = 0x55,  ///< Keypad *
@@ -276,7 +276,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
     CRSEL_PROPS = 0xA3,
     EXSEL = 0xA4,
 
-    // 0xA5~0xDF RESERVED, skip explicit
+    // 0xA5~0xDF 为 RESERVED，不显式列出 / 0xA5~0xDF RESERVED, skip explicit
     RESERVED_A5 = 0xA5,
     RESERVED_A6 = 0xA6,
     RESERVED_A7 = 0xA7,
@@ -337,7 +337,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
     RESERVED_DE = 0xDE,
     RESERVED_DF = 0xDF,
 
-    // 修饰键
+    // 修饰键 / Modifier keys
     LEFT_CONTROL = 0xE0,
     LEFT_SHIFT = 0xE1,
     LEFT_ALT = 0xE2,
@@ -346,7 +346,7 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
     RIGHT_SHIFT = 0xE5,
     RIGHT_ALT = 0xE6,
     RIGHT_GUI = 0xE7
-    // 0xE8~0xFF 保留
+    // 0xE8~0xFF 保留 / 0xE8~0xFF reserved
   };
 
   /**
@@ -363,27 +363,34 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
    * @brief 按下指定按键 / Press the specified key(s)
    * @param keys 按键列表（最多 6 个）/ List of keys (max 6)
    * @param mods 修饰键 / Modifiers
-   * @note 标准 HID Boot 协议只支持最多 6 键 / Boot protocol supports up to 6 keys
+   * @param in_isr 是否在中断中 / Whether in ISR
+   * @note 标准 HID Boot 协议只支持最多 6 键。超过 6 个键时按 HID 规范报告幻影状态：六个
+   *       键位全部填 ErrorRollOver（0x01），修饰键照常上报。
+   *       Boot protocol supports up to 6 keys. With more than 6 keys the phantom state of
+   *       the HID specification is reported: all six key slots hold ErrorRollOver
+   *       (0x01), the modifiers are reported as usual.
    */
-  void PressKey(std::initializer_list<KeyCode> keys, uint8_t mods = Modifier::NONE)
+  void PressKey(std::initializer_list<KeyCode> keys, uint8_t mods = Modifier::NONE,
+                bool in_isr = false)
   {
-    ASSERT(keys.size() <= 6);
     report_ = {static_cast<uint8_t>(mods), 0, {0}};
+    const bool phantom = keys.size() > sizeof(report_.keys);
     size_t i = 0;
     for (auto k : keys)
     {
-      report_.keys[i++] = static_cast<uint8_t>(k);
+      if (i >= sizeof(report_.keys)) break;
+      report_.keys[i++] = static_cast<uint8_t>(phantom ? KeyCode::ERROR_ROLLOVER : k);
     }
-    SendInputReport(ConstRawData{&report_, sizeof(report_)});
+    SendInputReport(ConstRawData{&report_, sizeof(report_)}, in_isr);
   }
 
   /**
    * @brief 释放所有按键 / Release all keys
    */
-  void ReleaseAll()
+  void ReleaseAll(bool in_isr = false)
   {
     Report report = {0, 0, {0}};
-    SendInputReport(ConstRawData{&report, sizeof(report)});
+    SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr);
   }
 
  protected:
@@ -410,15 +417,17 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
   }
 
   /**
-   * @brief OUT 端点回调，处理 LED 状态 / OUT endpoint callback, handle LED status
+   * @brief OUT 端点收到 LED 报告（租约由基类归还，这里先取走数据）
+   * OUT endpoint received an LED report (the base returns the lease; consume the data
+   * first)
    * @param in_isr 是否在中断中 / In ISR
-   * @param data OUT 报告数据 / OUT report data
+   * @param completion 完成事件（含租约）/ Completion (with the lease)
    */
-  void OnDataOutComplete(bool in_isr, ConstRawData& data) override
+  void OnOutReport(bool in_isr, const Endpoint::Completion& completion) override
   {
-    if (data.size_ >= 1)
+    if (completion.slot.Valid() && completion.slot.data.size_ >= 1)
     {
-      led_state_ = *(static_cast<const uint8_t*>(data.addr_));
+      led_state_ = *(static_cast<const uint8_t*>(completion.slot.data.addr_));
       on_led_change_cb_.Run(in_isr, GetNumLock(), GetCapsLock(), GetScrollLock());
     }
   }
@@ -435,7 +444,8 @@ class HIDKeyboard : public HID<sizeof(HID_KEYBOARD_REPORT_DESC), 8, 1>
     UNUSED(report_id);
     UNUSED(result);
 
-    result.read_data = {&led_state_, 1};
+    // SET_REPORT 的 OUT 数据阶段由核心接收，完整后经 OnSetReportData 更新 LED。
+    // The core receives the SET_REPORT OUT data stage; OnSetReportData applies the LED.
     return ErrorCode::OK;
   }
 

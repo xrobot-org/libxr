@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -10,6 +11,7 @@
 #include "usb/core/desc_cfg.hpp"
 #include "usb/core/desc_str.hpp"
 #include "usb/core/ep_pool.hpp"
+#include "winusb_msos20.hpp"
 
 namespace LibXR::USB
 {
@@ -30,6 +32,13 @@ class DeviceComposition
   };
 
  public:
+  /**
+   * @brief 主机是否已选中非 0 配置，可在任意上下文读取
+   *        Whether the host has selected a non-zero configuration; readable from any
+   *        context
+   */
+  bool IsConfigured() const { return configured_.load(std::memory_order_acquire); }
+
   /**
    * @brief 构造 USB 组合管理器
    *        Construct the USB composition manager.
@@ -65,8 +74,25 @@ class DeviceComposition
   /**
    * @brief 切换到指定 configuration value
    *        Switch to the given configuration value.
+   *
+   * 第一步校验并解绑当前配置；端点停止确认之后第二步绑定新配置。
+   * The first step validates and unbinds the current configuration; after the endpoint
+   * stops are confirmed, the second step binds the new one.
    */
-  ErrorCode SwitchConfig(size_t index, bool in_isr);
+  ErrorCode BeginSwitchConfig(size_t index, bool in_isr);
+
+  /**
+   * @brief 切换配置的第二步：绑定新配置并使能数据端点
+   *        Second step of a configuration switch: bind the new configuration and enable
+   *        the data endpoints.
+   *
+   * @param index configuration value，0 表示未配置 / Configuration value, 0 means
+   * unconfigured
+   * @param in_isr 是否在 ISR / Whether in ISR context
+   * @return OK；端点规划无效时为 INIT_ERR（此时已回到未配置状态）/ OK; INIT_ERR when the
+   * endpoint plan is invalid (the state falls back to unconfigured)
+   */
+  ErrorCode FinishSwitchConfig(size_t index, bool in_isr);
 
   /**
    * @brief 生成当前 configuration 描述符缓存
@@ -74,22 +100,75 @@ class DeviceComposition
    */
   ErrorCode BuildConfigDescriptor();
 
+  /// 为 speeds 中的每个速度和每个 configuration 预先生成并缓存配置描述符，仅在初始化时
+  /// 分配内存；已准备好时直接返回 OK / Build and cache the configuration descriptor of
+  /// every configuration for each speed in speeds; memory is allocated only at
+  /// initialization time; returns OK at once when already prepared
+  /// @param speeds SpeedBit 编码的速度位图 / Speed bitmap encoded with SpeedBit
+  /// @param in_isr 是否在 ISR / Whether in ISR context
+  /// @return OK；某个配置的端点规划无效时为 INIT_ERR / OK; INIT_ERR when the endpoint
+  /// plan of some configuration is invalid
+  ErrorCode PrepareDescriptors(uint32_t speeds, bool in_isr);
+
+  /// 取 PrepareDescriptors 缓存的配置描述符 / Get a configuration descriptor cached by
+  /// PrepareDescriptors
+  /// @param index 从 0 开始的 configuration 序号（configuration value 减 1）/ Zero-based
+  /// configuration index (configuration value minus 1)
+  /// @param speed 总线速度 / Bus speed
+  /// @return 描述符数据；未缓存或参数越界时为空 / The descriptor data; empty when not
+  /// cached or out of range
+  ConstRawData GetConfigDescriptor(size_t index, Speed speed) const;
+
+  /// 所有类要求的控制 OUT 数据阶段缓冲区大小的最大值，至少 64 字节 / Largest control OUT
+  /// data-stage buffer size required by any class, at least 64 bytes
+  size_t ControlReceiveCapacity() const;
+
+  /// 取某个配置中的第 item 个描述符项，不做越界检查 / Get the item-th descriptor item of
+  /// a configuration; not range checked
+  /// @param config 从 0 开始的 configuration 序号 / Zero-based configuration index
+  /// @param item 配置内的项序号，小于 ConfigItemCount / Item index inside the
+  /// configuration, below ConfigItemCount
+  ConfigDescriptorItem* ConfigItem(size_t config, size_t item) const
+  {
+    return items_[config].items[item];
+  }
+  /// 某个配置的描述符项数量 / Number of descriptor items in a configuration
+  /// @param config 从 0 开始的 configuration 序号 / Zero-based configuration index
+  size_t ConfigItemCount(size_t config) const { return items_[config].item_num; }
+
+  /// 组合中的设备类数量 / Number of device classes in the composition
+  size_t ClassCount() const { return class_count_; }
+  /// 对应的 BOS 平台能力；没有类需要 WinUSB 时为 nullptr / The matching BOS platform
+  /// capability; nullptr when no class wants WinUSB
+  BosCapability* WinUsbBosCapability() const { return winusb_cap_; }
+
+  /// 按序号取设备类，不做越界检查 / Get a device class by index; not range checked
+  /// @param index 小于 ClassCount 的序号 / Index below ClassCount
+  DeviceClass* ClassAt(size_t index) const { return classes_[index]; }
+
+  /// 向设备类转发设备事件：RESET 发给所有类，其他事件只发给当前配置中的类；endpoint 非 0
+  /// 时只发给拥有该端点的类 / Forward a device event to the classes: RESET reaches every
+  /// class, other events only the classes of the current configuration; a non-zero
+  /// endpoint restricts delivery to the class that owns it
+  /// @param in_isr 是否在 ISR / Whether in ISR context
+  /// @param event 事件类型 / Event type
+  /// @param endpoint 端点地址，0 表示不限定 / Endpoint address, 0 for no restriction
+  void Notify(bool in_isr, DeviceEvent event, uint8_t endpoint = 0);
+
+  /// 向当前配置中需要总线时间的类发送 OnBusTime / Send OnBusTime to the classes of the
+  /// current configuration that want it
+  /// @param in_isr 是否在 ISR / Whether in ISR context
+  /// @param time 总线时间信息 / Bus time information
+  void NotifyBusTime(bool in_isr, const BusTime& time);
+
+  /// 任一类是否需要总线时间 / Whether any class wants the bus time
+  bool WantsBusTime() const;
+
   /**
    * @brief 获取当前 configuration 描述符缓存
    *        Get the current configuration descriptor cache.
    */
   [[nodiscard]] RawData GetConfigDescriptor() const;
-
-  /**
-   * @brief 获取当前 BOS 描述符缓存 / Get the current BOS descriptor cache
-   */
-  [[nodiscard]] ConstRawData GetBosDescriptor();
-
-  /**
-   * @brief 分发 BOS vendor request / Dispatch BOS vendor requests
-   */
-  ErrorCode ProcessBosVendorRequest(bool in_isr, const SetupPacket* setup,
-                                    BosVendorResult& result);
 
   /**
    * @brief 获取字符串描述符（含 interface string）
@@ -152,11 +231,7 @@ class DeviceComposition
    */
   void UnbindEndpoints(bool in_isr);
 
-  /**
-   * @brief 按当前配置重建 BOS capability 缓存
-   *        Rebuild the BOS capability cache from the active configuration.
-   */
-  void RebuildBosCache();
+  bool ContainsActiveClass(const DeviceClass* item) const;
 
   /**
    * @brief 为所有 class 分配并登记 interface string 索引
@@ -170,8 +245,8 @@ class DeviceComposition
    */
   ErrorCode GenerateInterfaceString(uint8_t string_index, ConstRawData& data);
 
-  bool configured_ =
-      false;  ///< 是否已进入非 0 配置态 / Whether a non-zero config is active
+  std::atomic<bool> configured_{
+      false};  ///< 是否已进入非 0 配置态 / Whether a non-zero config is active
   bool ep_assigned_ = false;  ///< 端点是否已绑定 / Whether endpoints are assigned
 
   EndpointPool& endpoint_pool_;  ///< 端点池引用 / Endpoint pool reference
@@ -179,7 +254,11 @@ class DeviceComposition
   uint8_t i_configuration_ = 0;  ///< 配置字符串索引 / Configuration string index
   uint8_t bm_attributes_ = CFG_BUS_POWERED;  ///< 配置属性 / bmAttributes
 
-  const bool composite_ = false;     ///< 是否为复合设备 / Whether composite device
+  const bool composite_ = false;  ///< 是否为复合设备 / Whether composite device
+  WinUsbMsOs20::WinUsbDescriptorSet winusb_set_;  ///< MS OS 2.0 描述符集 / descriptor set
+  WinUsbMsOs20::MsOs20BosCapability* winusb_cap_ = nullptr;  ///< 对应的 BOS 能力 / its
+                                                             ///< BOS capability
+  void BuildWinUsbDescriptorSet();
   const size_t config_num_ = 0;      ///< 配置数量 / Configuration count
   ConfigItems* items_ = nullptr;     ///< 配置项集合 / Configuration item set
   DeviceClass** classes_ = nullptr;  ///< 唯一 class 表 / Unique class table
@@ -192,7 +271,12 @@ class DeviceComposition
       0;  ///< 接口字符串总数量 / Total interface string count
   RawData interface_string_buffer_{
       nullptr, 0};  ///< 临时字符串描述符缓冲区 / Temp interface string descriptor buffer
-  BosManager bos_;  ///< BOS 聚合管理 / BOS aggregation manager
+  struct DescriptorCache
+  {
+    RawData data{nullptr, 0};
+  };
+  DescriptorCache* descriptors_ = nullptr;
+  bool descriptors_prepared_ = false;
   ConfigDescriptor config_desc_;  ///< 配置描述符构造器 / Configuration descriptor builder
 };
 

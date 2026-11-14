@@ -90,6 +90,28 @@ __attribute__((weak)) unsigned int __atomic_fetch_or_4(volatile void* ptr,
 }
 
 /**
+ * @brief 原子清位并返回原值 / Atomically clear bits and return the previous value.
+ * @param ptr 目标字地址 / Target word address.
+ * @param val 保留位的掩码 / Mask of the bits to keep.
+ * @param memorder 内存顺序，本实现使用现有单核临界区 / Ordering; uses the single-core
+ * guard.
+ * @return 更新前的值 / Value before the update.
+ * @note LibXR 代码使用 4 字节 fetch_and；Cortex-M0+ 没有对应指令。
+ *       LibXR code uses the 4-byte fetch_and; Cortex-M0+ has no instruction for it.
+ */
+__attribute__((weak)) unsigned int __atomic_fetch_and_4(volatile void* ptr,
+                                                        unsigned int val, int memorder)
+{
+  UNUSED(memorder);
+  volatile unsigned int* addr = (volatile unsigned int*)ptr;
+  const uint32_t primask = atomic_enter();
+  const unsigned int previous = *addr;
+  *addr = previous & val;
+  atomic_exit(primask);
+  return previous;
+}
+
+/**
  * @brief  模拟实现 __atomic_store_4 函数 / Simulate the __atomic_store_4 function
  * @param  ptr 指向原子变量的指针 / Pointer to the atomic variable
  * @param  val 需要存储的新值 / The new value to be stored
