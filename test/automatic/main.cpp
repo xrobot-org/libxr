@@ -307,8 +307,10 @@ int main(int argc, char** argv)
       {
         UNUSED(in_isr);
         UNUSED(arg);
-        std::fprintf(stderr, "%s:%u: product assertion failed in [%s].\n", file,
-                     static_cast<unsigned>(line), test_name ? test_name : "startup");
+        // 失败的 REQUIRE 不带位置 / A failed REQUIRE carries no location.
+        std::fprintf(stderr, "%s:%u: product assertion failed in [%s].\n",
+                     file ? file : "(no location)", static_cast<unsigned>(line),
+                     test_name ? test_name : "startup");
         std::fflush(stderr);
         std::abort();
       },

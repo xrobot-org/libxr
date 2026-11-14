@@ -240,10 +240,10 @@ constexpr int TOPIC_FATAL_EXIT = 42;
 template <typename Func>
 void ExpectTopicFatal(bool expect_fatal, Func&& func)
 {
-  // 在子进程里执行一次初始化操作。致命错误回调确认断言位于 topic.cpp，
-  // 再以固定退出码结束。
-  // Run one init operation in a child. The fatal callback confirms that the assertion is
-  // in topic.cpp, then exits with a fixed code.
+  // 在子进程里执行一次初始化操作。致命错误回调以固定退出码结束；这里的检查是
+  // REQUIRE，失败时不带位置。
+  // Run one init operation in a child. The fatal callback exits with a fixed code; the
+  // checks here are REQUIREs, which carry no location when they fail.
   std::fflush(nullptr);
   pid_t child = fork();
   TEST_ASSERT(child >= 0);
@@ -251,16 +251,7 @@ void ExpectTopicFatal(bool expect_fatal, Func&& func)
   if (child == 0)
   {
     auto cb = LibXR::Assert::FatalCallback::Create(
-        [](bool, int code, const char* file, uint32_t)
-        {
-          constexpr const char* SOURCE = "/topic.cpp";
-          const size_t length = std::strlen(file);
-          const size_t suffix = std::strlen(SOURCE);
-          const bool in_topic =
-              length >= suffix && std::strcmp(file + length - suffix, SOURCE) == 0;
-          _exit(in_topic ? code : 1);
-        },
-        TOPIC_FATAL_EXIT);
+        [](bool, int code, const char*, uint32_t) { _exit(code); }, TOPIC_FATAL_EXIT);
     LibXR::Assert::RegisterFatalErrorCallback(cb);
     func();
     _exit(0);

@@ -17,6 +17,21 @@ namespace Detail
 {
 // 进程级 fatal 回调存根 / Process-global fatal callback storage.
 inline FatalCallback fatal_error_callback_;  // NOLINT
+
+/// 致命错误循环里每一圈先执行的动作，参数是文件名和行号 / Action run first in every round
+/// of the fatal error loop, given the file name and the line number
+using FatalReportFun = void (*)(const char* file, uint32_t line);
+
+/**
+ * @brief libxr_fatal_error() 与 libxr_fatal_error_and_print() 共用的循环 / The loop
+ * shared by libxr_fatal_error() and libxr_fatal_error_and_print()
+ * @param file 出错的源文件，可以为空 / Source file where the error occurred, may be null
+ * @param line 出错的行号 / Line number where the error occurred
+ * @param in_isr 是否发生在中断服务例程（ISR） / Whether it occurred in an ISR
+ * @param report 每一圈在调用回调之前执行的动作，可以为空 / Action run in every round
+ * before the callback is called, may be null
+ */
+void FatalErrorLoop(const char* file, uint32_t line, bool in_isr, FatalReportFun report);
 }  // namespace Detail
 
 /**

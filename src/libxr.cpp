@@ -2,7 +2,8 @@
 
 #include "thread.hpp"
 
-extern "C" void libxr_fatal_error(const char* file, uint32_t line, bool in_isr)
+void LibXR::Assert::Detail::FatalErrorLoop(const char* file, uint32_t line, bool in_isr,
+                                           FatalReportFun report)
 {
   volatile bool stop = false;
   while (!stop)
@@ -13,9 +14,9 @@ extern "C" void libxr_fatal_error(const char* file, uint32_t line, bool in_isr)
     }
     else
     {
-      if (LibXR::STDIO::write_ && LibXR::STDIO::write_->Writable())
+      if (report != nullptr)
       {
-        LibXR::STDIO::Print<"Fatal error at {}:{}\r\n">(file, static_cast<int>(line));
+        report(file, line);
       }
 
       // The fatal callback is executed only on the non-ISR fatal path here.
@@ -26,4 +27,9 @@ extern "C" void libxr_fatal_error(const char* file, uint32_t line, bool in_isr)
       LibXR::Thread::Sleep(500);
     }
   }
+}
+
+extern "C" void libxr_fatal_error(const char* file, uint32_t line, bool in_isr)
+{
+  LibXR::Assert::Detail::FatalErrorLoop(file, line, in_isr, nullptr);
 }
