@@ -226,13 +226,15 @@ class FSDevEndpoint : public Endpoint
  *
  * 派生类要做的事：构造函数里把控制器的地址交给本类的构造函数，打开控制器的时钟，
  * 安装硬件守卫（`SetHardwareGuard`），然后调用 `InitController()`；实现 `Connect()`；
- * 在控制器的中断里调用 `Dispatch()`。一个程序里只能有一个 FSDEV 设备对象。
+ * 在控制器的中断里调用 `Dispatch()`。一个程序里只能有一个 FSDEV 设备对象。本类不能
+ * 直接使用：构造函数是 protected 的，应用用的是平台的设备类。
  *
  * What a derived class does: its constructor passes the addresses of the controller to
  * the constructor of this class, enables the clock of the controller, installs the
  * hardware guard (`SetHardwareGuard`) and then calls `InitController()`; it implements
  * `Connect()`; it calls `Dispatch()` from the interrupt of the controller. A program
- * can have one FSDEV device object only.
+ * can have one FSDEV device object only. This class is not used directly: its
+ * constructor is protected, and applications use the device class of the platform.
  */
 class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities>
 {
@@ -264,38 +266,6 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
     /// addresses and sizes in the PMA: 2 on the classic controllers
     uint8_t alignment;
   };
-
-  /**
-   * @brief 构造设备、分配 PMA 并创建全部端点；不访问硬件 / Construct the device, lay out
-   * the PMA and create every endpoint; the hardware is not touched
-   * @param memory_map 控制器的地址与 PMA 的形状 / Addresses of the controller and shape
-   * of the PMA
-   * @param rx_ep_cfgs OUT 端点配置，第 i 项对应 EP i，EP0 必须提供，不超过 MAX_EPS /
-   * OUT endpoint configs, entry i is EP i, EP0 is mandatory, at most MAX_EPS
-   * @param tx_ep_cfgs IN 端点配置，第 i 项对应 EP i，EP0 必须提供，不超过 MAX_EPS /
-   * IN endpoint configs, entry i is EP i, EP0 is mandatory, at most MAX_EPS
-   * @param packet_size 端点 0 最大包长 / EP0 max packet size
-   * @param vid 厂商 ID / Vendor ID
-   * @param pid 产品 ID / Product ID
-   * @param bcd 设备版本号（bcdDevice）/ Device release number (bcdDevice)
-   * @param lang_list 字符串描述符语言包列表 / String descriptor language packs
-   * @param configs 每个 configuration 的 class/描述符项列表 / Class and descriptor items
-   * of each configuration
-   * @param uid 可选的唯一标识字节，作为序列号字符串的后缀 / Optional unique ID bytes
-   * used as the suffix of the serial-number string
-   * @param pma_limit PMA 可用字节（构造期断言）；0 = 全部 / Usable PMA bytes
-   *                  (asserted at construction); 0 = all of it
-   * @param slot_count 每个端点的槽数量，0 为基类默认值 / Number of slots per endpoint, 0
-   * selects the base-class default
-   */
-  FSDevDevice(
-      const MemoryMap& memory_map, const std::initializer_list<EPConfig>& rx_ep_cfgs,
-      const std::initializer_list<EPConfig>& tx_ep_cfgs,
-      DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid, uint16_t bcd,
-      const std::initializer_list<const DescriptorStrings::LanguagePack*>& lang_list,
-      const std::initializer_list<const std::initializer_list<ConfigDescriptorItem*>>&
-          configs,
-      ConstRawData uid = {nullptr, 0}, size_t pma_limit = 0, uint8_t slot_count = 0);
 
   /// 请求初始化设备（转给设备核心）/ Request the initialization of the device (forwarded
   /// to the device core)
@@ -335,6 +305,38 @@ class FSDevDevice : public EndpointPool, public DeviceCore<FullSpeedCapabilities
  protected:
   /// 硬件的端点号数量 / Number of endpoint numbers of the hardware
   static constexpr uint8_t MAX_EPS = 8;
+
+  /**
+   * @brief 构造设备、分配 PMA 并创建全部端点；不访问硬件 / Construct the device, lay out
+   * the PMA and create every endpoint; the hardware is not touched
+   * @param memory_map 控制器的地址与 PMA 的形状 / Addresses of the controller and shape
+   * of the PMA
+   * @param rx_ep_cfgs OUT 端点配置，第 i 项对应 EP i，EP0 必须提供，不超过 MAX_EPS /
+   * OUT endpoint configs, entry i is EP i, EP0 is mandatory, at most MAX_EPS
+   * @param tx_ep_cfgs IN 端点配置，第 i 项对应 EP i，EP0 必须提供，不超过 MAX_EPS /
+   * IN endpoint configs, entry i is EP i, EP0 is mandatory, at most MAX_EPS
+   * @param packet_size 端点 0 最大包长 / EP0 max packet size
+   * @param vid 厂商 ID / Vendor ID
+   * @param pid 产品 ID / Product ID
+   * @param bcd 设备版本号（bcdDevice）/ Device release number (bcdDevice)
+   * @param lang_list 字符串描述符语言包列表 / String descriptor language packs
+   * @param configs 每个 configuration 的 class/描述符项列表 / Class and descriptor items
+   * of each configuration
+   * @param uid 可选的唯一标识字节，作为序列号字符串的后缀 / Optional unique ID bytes
+   * used as the suffix of the serial-number string
+   * @param pma_limit PMA 可用字节（构造期断言）；0 = 全部 / Usable PMA bytes
+   *                  (asserted at construction); 0 = all of it
+   * @param slot_count 每个端点的槽数量，0 为基类默认值 / Number of slots per endpoint, 0
+   * selects the base-class default
+   */
+  FSDevDevice(
+      const MemoryMap& memory_map, const std::initializer_list<EPConfig>& rx_ep_cfgs,
+      const std::initializer_list<EPConfig>& tx_ep_cfgs,
+      DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid, uint16_t bcd,
+      const std::initializer_list<const DescriptorStrings::LanguagePack*>& lang_list,
+      const std::initializer_list<const std::initializer_list<ConfigDescriptorItem*>>&
+          configs,
+      ConstRawData uid = {nullptr, 0}, size_t pma_limit = 0, uint8_t slot_count = 0);
 
   /**
    * @brief 把控制器初始化到“已复位、中断关闭、未接上拉”的状态 / Bring the controller to
