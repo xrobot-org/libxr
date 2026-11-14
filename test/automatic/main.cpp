@@ -211,7 +211,7 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests", {"cdc_tx", &RunVoidEntry<test_usb_cdc_tx>, false}},
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},
-    {"core_tests", {"assert", &RunVoidEntry<test_assert>, false}},
+    {"core_tests", {"assert", &RunVoidEntry<test_assert>, true, false}},
     {"core_tests", {"def", &RunVoidEntry<test_def>, false}},
     {"core_tests", {"callback", &RunVoidEntry<test_cb>, false}},
     {"core_tests", {"pipe", &RunVoidEntry<test_pipe>, false}},
