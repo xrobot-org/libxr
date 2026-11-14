@@ -15,11 +15,21 @@
 #include <cstdio>
 #include <cstdlib>
 
-/// 断言失败：打印位置并终止 / Assertion failure: print the place and abort.
+/// 断言失败：打印位置并终止；失败的 REQUIRE 不带位置。
+/// Assertion failure: print the place and abort; a failed REQUIRE carries no location.
 extern "C" inline void libxr_fatal_error(const char* file, uint32_t line, bool)
 {
-  std::fprintf(stderr, "%s:%u: CH32 USB assertion failed\n", file, line);
+  std::fprintf(stderr, "%s:%u: CH32 USB assertion failed\n",
+               file != nullptr ? file : "(no location)", line);
   std::abort();
+}
+
+/// ASSERT 与 DEV_ASSERT 的入口，这里与 libxr_fatal_error 相同。
+/// Entry of ASSERT and DEV_ASSERT, the same as libxr_fatal_error here.
+extern "C" inline void libxr_fatal_error_and_print(const char* file, uint32_t line,
+                                                   bool in_isr)
+{
+  libxr_fatal_error(file, line, in_isr);
 }
 
 namespace LibXR::USB::Test

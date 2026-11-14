@@ -49,6 +49,10 @@ extern "C" void libxr_fatal_error(const char*, uint32_t, bool)
   {
   }
 }
+extern "C" void libxr_fatal_error_and_print(const char* file, uint32_t line, bool in_isr)
+{
+  libxr_fatal_error(file, line, in_isr);
+}
 
 // A separate out-of-line byte copy exposes the writing/reading boundary of
 // Put/Get. Same byte-copy contract as Memory::FastCopy without any OS. noinline

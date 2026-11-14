@@ -233,16 +233,18 @@ enum class SizeLimitMode : uint8_t
  * @note LIBXR_DEBUG_BUILD 启用失败检查；关闭时仍求值。必要操作应在宏外执行。
  *       LIBXR_DEBUG_BUILD enables failure checking; otherwise the expression is still
  *       evaluated. Required operations belong outside the macro.
+ *       失败时调用 libxr_fatal_error_and_print()，带文件名和行号。
+ *       A failure calls libxr_fatal_error_and_print() with the file name and line.
  * @param arg 要检查的条件 / Condition to check
  */
 #ifdef LIBXR_DEBUG_BUILD
-#define ASSERT(arg)                                 \
-  do                                                \
-  {                                                 \
-    if (!(arg))                                     \
-    {                                               \
-      libxr_fatal_error(__FILE__, __LINE__, false); \
-    }                                               \
+#define ASSERT(arg)                                           \
+  do                                                          \
+  {                                                           \
+    if (!(arg))                                               \
+    {                                                         \
+      libxr_fatal_error_and_print(__FILE__, __LINE__, false); \
+    }                                                         \
   } while (0)
 
 /**
@@ -252,13 +254,13 @@ enum class SizeLimitMode : uint8_t
  * @param arg    要检查的条件 / Condition to check
  * @param in_isr 当前是否在中断上下文 / Whether currently in ISR context
  */
-#define ASSERT_FROM_CALLBACK(arg, in_isr)              \
-  do                                                   \
-  {                                                    \
-    if (!(arg))                                        \
-    {                                                  \
-      libxr_fatal_error(__FILE__, __LINE__, (in_isr)); \
-    }                                                  \
+#define ASSERT_FROM_CALLBACK(arg, in_isr)                        \
+  do                                                             \
+  {                                                              \
+    if (!(arg))                                                  \
+    {                                                            \
+      libxr_fatal_error_and_print(__FILE__, __LINE__, (in_isr)); \
+    }                                                            \
   } while (0)
 #else
 #define ASSERT(arg) (void(arg), (void)0)
@@ -275,16 +277,18 @@ enum class SizeLimitMode : uint8_t
  * @note 默认禁用且不求值；仅在定义 LIBXR_DEV_ASSERT_BUILD 时启用。
  *       Disabled without evaluation unless LIBXR_DEV_ASSERT_BUILD is defined.
  *       条件不得包含必须执行的操作 / Conditions must not contain required operations.
+ *       失败时调用 libxr_fatal_error_and_print()，带文件名和行号。
+ *       A failure calls libxr_fatal_error_and_print() with the file name and line.
  * @param arg 要检查的条件 / Condition to check
  */
 #ifdef LIBXR_DEV_ASSERT_BUILD
-#define DEV_ASSERT(arg)                             \
-  do                                                \
-  {                                                 \
-    if (!(arg))                                     \
-    {                                               \
-      libxr_fatal_error(__FILE__, __LINE__, false); \
-    }                                               \
+#define DEV_ASSERT(arg)                                       \
+  do                                                          \
+  {                                                           \
+    if (!(arg))                                               \
+    {                                                         \
+      libxr_fatal_error_and_print(__FILE__, __LINE__, false); \
+    }                                                         \
   } while (0)
 
 /**
@@ -294,13 +298,13 @@ enum class SizeLimitMode : uint8_t
  * @param arg    要检查的条件 / Condition to check
  * @param in_isr 当前是否在中断上下文 / Whether currently in ISR context
  */
-#define DEV_ASSERT_FROM_CALLBACK(arg, in_isr)          \
-  do                                                   \
-  {                                                    \
-    if (!(arg))                                        \
-    {                                                  \
-      libxr_fatal_error(__FILE__, __LINE__, (in_isr)); \
-    }                                                  \
+#define DEV_ASSERT_FROM_CALLBACK(arg, in_isr)                    \
+  do                                                             \
+  {                                                              \
+    if (!(arg))                                                  \
+    {                                                            \
+      libxr_fatal_error_and_print(__FILE__, __LINE__, (in_isr)); \
+    }                                                            \
   } while (0)
 #else
 #define DEV_ASSERT(arg) ((void)0)
@@ -311,15 +315,18 @@ enum class SizeLimitMode : uint8_t
  * @brief 始终生效的致命运行错误检查 / Always-enabled fatal runtime error check
  * @note 可恢复错误应通过接口返回，不应在此终止。
  *       Recoverable errors belong to the interface's error-return path.
+ *       失败时调用 libxr_fatal_error()，不带文件名和行号；位置用调试器看调用栈。
+ *       A failure calls libxr_fatal_error() without a file name and line; find the place
+ *       in the call stack with a debugger.
  * @param arg 要检查的条件 / Condition to check
  */
-#define REQUIRE(arg)                                \
-  do                                                \
-  {                                                 \
-    if (!(arg))                                     \
-    {                                               \
-      libxr_fatal_error(__FILE__, __LINE__, false); \
-    }                                               \
+#define REQUIRE(arg)                         \
+  do                                         \
+  {                                          \
+    if (!(arg))                              \
+    {                                        \
+      libxr_fatal_error(nullptr, 0U, false); \
+    }                                        \
   } while (0)
 
 /**
@@ -329,22 +336,38 @@ enum class SizeLimitMode : uint8_t
  * @param arg    要检查的条件 / Condition to check
  * @param in_isr 当前是否在中断上下文 / Whether currently in ISR context
  */
-#define REQUIRE_FROM_CALLBACK(arg, in_isr)             \
-  do                                                   \
-  {                                                    \
-    if (!(arg))                                        \
-    {                                                  \
-      libxr_fatal_error(__FILE__, __LINE__, (in_isr)); \
-    }                                                  \
+#define REQUIRE_FROM_CALLBACK(arg, in_isr)      \
+  do                                            \
+  {                                             \
+    if (!(arg))                                 \
+    {                                           \
+      libxr_fatal_error(nullptr, 0U, (in_isr)); \
+    }                                           \
   } while (0)
 
 /**
- * @brief 处理致命错误 / Handles fatal errors
- * @param file 出错的源文件 / Source file where the error occurred
+ * @brief 处理致命错误，不打印 / Handles a fatal error without printing
+ * @note 线程上下文里循环调用致命回调，每次间隔 500 ms，不返回；其他线程和中断照常运行。
+ *       In thread context it calls the fatal callback in a loop, 500 ms apart, and never
+ *       returns; other threads and interrupts keep running.
+ * @param file 出错的源文件，REQUIRE 失败时为空 / Source file, null for a failed REQUIRE
  * @param line 出错的行号 / Line number where the error occurred
  * @param in_isr 是否发生在中断服务例程（ISR） / Whether it occurred in an ISR
  */
 extern "C" void libxr_fatal_error(const char* file, uint32_t line, bool in_isr);
+
+/**
+ * @brief 处理致命错误并打印位置 / Handles a fatal error and prints its location
+ * @note 每次调用回调之前打印 `Fatal error at 文件:行`，其余与 libxr_fatal_error() 相同。
+ *       ASSERT 和 DEV_ASSERT 失败时调用它；发布固件里没有这两个检查，不引用它。
+ *       Prints `Fatal error at file:line` before every call of the callback; otherwise as
+ *       libxr_fatal_error(). A failed ASSERT or DEV_ASSERT calls it; release firmware has
+ *       neither check and does not refer to it.
+ * @param file 出错的源文件 / Source file where the error occurred
+ * @param line 出错的行号 / Line number where the error occurred
+ * @param in_isr 是否发生在中断服务例程（ISR） / Whether it occurred in an ISR
+ */
+extern "C" void libxr_fatal_error_and_print(const char* file, uint32_t line, bool in_isr);
 
 namespace LibXR
 {

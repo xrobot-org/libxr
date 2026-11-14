@@ -75,5 +75,7 @@ void RunCrossProcessScenarios()
 
     ExpectChildExit(child);
   }
+
+  UNUSED(SharedTopic::Remove(topic_name));
 }
 }  // namespace LinuxShmTopicTest

@@ -31,8 +31,13 @@ LibXR::MicrosecondTimestamp LibXR::Timebase::GetMicroseconds()
 }
 extern "C" void libxr_fatal_error(const char* file, uint32_t line, bool)
 {
-  std::fprintf(stderr, "%s:%u: product assertion failed\n", file, line);
+  std::fprintf(stderr, "%s:%u: product assertion failed\n", file ? file : "(no location)",
+               line);
   std::abort();
+}
+extern "C" void libxr_fatal_error_and_print(const char* file, uint32_t line, bool in_isr)
+{
+  libxr_fatal_error(file, line, in_isr);
 }
 
 int main()

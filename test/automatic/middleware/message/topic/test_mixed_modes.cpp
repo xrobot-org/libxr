@@ -145,5 +145,7 @@ void RunMixedModeScenarios()
     TEST_ASSERT(subscriber_rr.Wait(rr0, SHORT_WAIT_MS) == LibXR::ErrorCode::OK);
     TEST_ASSERT(rr0.GetData()->seq == 391);
   }
+
+  UNUSED(SharedTopic::Remove(topic_name));
 }
 }  // namespace LinuxShmTopicTest
