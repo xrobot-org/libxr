@@ -24,7 +24,7 @@ namespace
 {
 int fatal_count = 0;
 bool fatal_in_isr = false;
-bool fatal_print = false;  ///< 进入的是会打印的入口 / The printing entry was entered.
+bool fatal_print = false;  // 进入的是带打印的入口 / The printing entry was entered.
 const char* fatal_file = nullptr;
 uint32_t fatal_line = 0;
 }  // namespace

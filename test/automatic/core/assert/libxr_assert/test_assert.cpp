@@ -30,10 +30,10 @@ struct FatalProbe
   uint32_t line = 0;
 };
 
-constexpr int LOCATION_EXIT =
-    42;  ///< 回调收到了给出的位置 / The callback got the location
-constexpr int NO_LOCATION_EXIT =
-    43;  ///< 回调收到的位置为空 / The callback got no location
+// 子进程用退出码报告回调收到的位置。
+// The child reports the location the callback got through its exit code.
+constexpr int LOCATION_EXIT = 42;     // 调用者给出的位置 / The location the caller gave.
+constexpr int NO_LOCATION_EXIT = 43;  // 位置为空 / No location.
 constexpr int UNEXPECTED_EXIT = 44;
 constexpr const char* DEMO_FILE = "demo.cpp";
 constexpr uint32_t DEMO_LINE = 7;
@@ -45,9 +45,9 @@ void FailingFatalErrorAndPrint()
   libxr_fatal_error_and_print(DEMO_FILE, DEMO_LINE, false);
 }
 
-/// 在子进程里调用 fail，经由库真正的致命入口；回调用退出码报告它收到的位置。
-/// Call fail in a child, through the real fatal entries of the library; the callback
-/// reports the location it got through the exit code.
+// 在子进程里调用 fail，经由库真正的致命入口；回调用退出码报告它收到的位置。
+// Call fail in a child, through the real fatal entries of the library; the callback
+// reports the location it got through the exit code.
 int FatalLocationSeenByCallback(void (*fail)())
 {
   std::fflush(nullptr);

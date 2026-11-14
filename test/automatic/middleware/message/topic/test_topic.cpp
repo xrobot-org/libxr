@@ -14,7 +14,6 @@
 
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 
 #include "libxr.hpp"
 #include "libxr_def.hpp"

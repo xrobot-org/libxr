@@ -3,8 +3,7 @@
 
 namespace
 {
-/// 循环里每一圈先执行的动作，参数是文件名和行号 / Action run first in every round of the
-/// loop, given the file name and the line number
+// 循环里每一圈先执行的动作 / Action run first in every round of the loop.
 using ReportFun = void (*)(const char* file, uint32_t line);
 
 void PrintFatalError(const char* file, uint32_t line)
@@ -33,9 +32,8 @@ void FatalErrorLoop(const char* file, uint32_t line, bool in_isr, ReportFun repo
         report(file, line);
       }
 
-      // The fatal callback is executed only on the non-ISR fatal path here.
-      // Normalize the user callback to thread context instead of forwarding the
-      // original fault source flag.
+      // 致命回调只在非中断的路径上执行，传给它的 in_isr 恒为 false。
+      // The fatal callback runs on the non-ISR path only and always gets in_isr = false.
       LibXR::Assert::RunFatalErrorCallback(false, file, line);
 
       LibXR::Thread::Sleep(500);
@@ -49,12 +47,9 @@ extern "C" void libxr_fatal_error(const char* file, uint32_t line, bool in_isr)
   FatalErrorLoop(file, line, in_isr, nullptr);
 }
 
-// 只有这个函数引用打印的代码。发布固件里没有 ASSERT 和 DEV_ASSERT，不引用它；按函数分段
-// 并回收未引用段的链接会把它和打印的代码一起丢掉。
-// This function is the only reference to the printing code. Release firmware has no
-// ASSERT and no DEV_ASSERT and does not refer to it; a link that puts every function in
-// its own section and collects unreferenced sections drops it together with the printing
-// code.
+// 只有这个函数引用打印的代码：没有调用者时，回收未引用段的链接会把两者一起丢掉。
+// Only this function refers to the printing code: with no caller, a link that collects
+// unreferenced sections drops both.
 extern "C" void libxr_fatal_error_and_print(const char* file, uint32_t line, bool in_isr)
 {
   FatalErrorLoop(file, line, in_isr, &PrintFatalError);
