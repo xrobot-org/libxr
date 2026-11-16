@@ -115,6 +115,14 @@ typename std::enable_if<HasFlashBank<T>::value>::type SetBanks(T& init, uint32_t
 
 #endif
 
+// H7：读到双位 ECC 错误的 Flash 字时产生总线错误，并置位 FLASH_SR 的 DBECCERR。
+// H7: reading a flash word with a double ECC error raises a bus error and sets DBECCERR
+// in FLASH_SR.
+#if defined(FLASH_SR_DBECCERR) && defined(FLASH_CCR_CLR_DBECCERR) && \
+    defined(FLASH_CCR_CLR_SNECCERR) && defined(SCB_CCR_BFHFNMIGN_Msk)
+#define LIBXR_STM32_FLASH_ECC_BUS_ERROR 1
+#endif
+
 /**
  * @brief STM32 闪存驱动实现 / STM32 flash driver implementation
  * @pre 擦写调用及相关缓存控制由调用方串行化；等待期间 HAL tick 必须能推进。
@@ -133,6 +141,26 @@ typename std::enable_if<HasFlashBank<T>::value>::type SetBanks(T& init, uint32_t
  * from the address; H5, H7 and the families with a Page field erase by the number within
  * the bank, F2/F4/F7 by the sector number across both banks. Bank swap (SWAP_BANK, BFB2
  * and similar option bytes) is not supported.
+ * @note H7 上编程或擦除被掉电打断后，被打断的 Flash 字 ECC 校验不过。`Read` 按 Flash 字
+ * 读取，读每个字时屏蔽全部中断并忽略总线错误，读完检查 DBECCERR；出错的字在缓冲区里填 0，
+ * `Read` 仍返回 `ErrorCode::OK`。读到的 0 既不是擦除态也不是完整数据，调用方按写了一半的
+ * 内容处理；真实损坏造成的双位错误读起来相同，不作区分。`Write` 编程前的比较同样读取，
+ * 目标字读不出来时不编程，返回 `ErrorCode::CHECK_ERR`，擦除后才能再写。其他系列的 `Read`
+ * 是基类的直接拷贝。
+ * On H7 a flash word whose program or erase was cut by a power loss fails its ECC check.
+ * `Read` reads flash word by flash word, masks all interrupts and ignores the bus error
+ * for each word, and tests DBECCERR afterwards; a failing word is filled with 0 in the
+ * buffer and `Read` still returns `ErrorCode::OK`. The zeros are neither erased flash nor
+ * complete data, so the caller handles them as half-written contents; a double error
+ * caused by real damage reads the same and is not told apart. The comparison before
+ * programming in `Write` reads the same way and returns `ErrorCode::CHECK_ERR` without
+ * programming when the target word cannot be read; the word can be written again after
+ * an erase. On other families `Read` is the plain copy of the base class.
+ * @note H7 的 ECC 标志（单位错误已纠正、双位错误）置位后一直保持，HAL 把它们当作编程或
+ * 擦除失败。驱动在每次读完一个 Flash 字之后、每次擦写开始之前清除这两个标志。
+ * The ECC flags of H7 (single error corrected, double error) stay set once raised, and
+ * the HAL takes them for a failed program or erase. The driver clears both after each
+ * flash word it reads and before each erase or program.
  */
 class STM32Flash : public Flash
 {
@@ -166,6 +194,10 @@ class STM32Flash : public Flash
   ErrorCode Erase(size_t offset, size_t size) override;
 
   ErrorCode Write(size_t offset, ConstRawData data) override;
+
+#if defined(LIBXR_STM32_FLASH_ECC_BUS_ERROR)
+  ErrorCode Read(size_t offset, RawData data) override;
+#endif
 
  private:
   const FlashRegion* regions_;
