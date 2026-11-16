@@ -161,6 +161,13 @@ typename std::enable_if<HasFlashBank<T>::value>::type SetBanks(T& init, uint32_t
  * The ECC flags of H7 (single error corrected, double error) stay set once raised, and
  * the HAL takes them for a failed program or erase. The driver clears both after each
  * flash word it reads and before each erase or program.
+ * @note G0、G4、L4、L5、WB、WL、U0、U5、WBA、H5、U3 读到这样的单元时产生 NMI，读到的是
+ * 写了一半的内容；`NMI_Handler` 需要调用 `libxr_stm32_flash_ecc_nmi()`
+ * （stm32_flash_nmi.h），否则停在 CubeMX 生成的死循环里。
+ * On G0, G4, L4, L5, WB, WL, U0, U5, WBA, H5 and U3 reading such a unit raises an NMI and
+ * delivers the half-written contents; `NMI_Handler` has to call
+ * `libxr_stm32_flash_ecc_nmi()` (stm32_flash_nmi.h), otherwise it stays in the endless
+ * loop CubeMX generates.
  */
 class STM32Flash : public Flash
 {
