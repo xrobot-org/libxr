@@ -384,6 +384,12 @@ struct PowerCutShared
   size_t budget = std::numeric_limits<size_t>::max();
   /// 掉电落在下一次操作中间 / The cut lands inside the next operation
   bool torn = false;
+  /// 掉电落在下一次操作中间，被打断的单元（擦除时是整页）之后读不出来
+  /// The cut lands inside the next operation and the cut unit (the whole page for an
+  /// erase) cannot be read afterwards
+  bool unreadable = false;
+  /// 读不出来的字节 / Bytes that cannot be read
+  std::array<uint8_t, XR_DB_FLASH_SIZE> unreadable_bytes{};
   /// 擦除被打断时每一位回到 1 的概率为 1/2^n；0 表示擦除不会被打断在中间
   /// Each bit returns to 1 with probability 1/2^n when an erase is cut; 0 means an
   /// erase is never cut part-way
@@ -418,6 +424,14 @@ struct PowerCutShared
  * some of its bits back to 1.
  * Programming a unit that is neither erased nor equal to the new content counts in
  * `violations`: ECC Flash cannot do it.
+ *
+ * `unreadable` 模拟带 ECC 的 Flash（如 H7）：被打断的单元、被打断的擦除所在的整页之后
+ * 读不出来，`Read` 像 STM32Flash 一样把这些字节填 0 并返回 `ErrorCode::OK`，对它们编程
+ * 返回 `ErrorCode::CHECK_ERR`；擦除完成后恢复可读。
+ * `unreadable` models ECC Flash such as H7: the cut unit, or the whole page of a cut
+ * erase, cannot be read afterwards; `Read` fills those bytes with 0 and returns
+ * `ErrorCode::OK` as STM32Flash does, programming them returns `ErrorCode::CHECK_ERR`,
+ * and a completed erase makes them readable again.
  */
 class PowerCutFlash : public Flash
 {
@@ -437,6 +451,10 @@ class PowerCutFlash : public Flash
     {
       if (shared_.operations == shared_.budget)
       {
+        if (shared_.unreadable)
+        {
+          std::memset(shared_.unreadable_bytes.data() + page, 1, MinEraseSize());
+        }
         if (shared_.torn && shared_.torn_erase_rounds > 0)
         {
           // 只有少量位回到 1，块头或校验往往还读作有效。
@@ -460,7 +478,19 @@ class PowerCutFlash : public Flash
         _exit(0);
       }
       std::memset(shared_.image.data() + page, 0xFF, MinEraseSize());
+      std::memset(shared_.unreadable_bytes.data() + page, 0, MinEraseSize());
       shared_.operations++;
+    }
+    return ErrorCode::OK;
+  }
+
+  ErrorCode Read(size_t offset, RawData data) override
+  {
+    TEST_ASSERT(offset + data.size_ <= shared_.image.size());
+    auto* dst = static_cast<uint8_t*>(data.addr_);
+    for (size_t i = 0; i < data.size_; ++i)
+    {
+      dst[i] = shared_.unreadable_bytes[offset + i] != 0 ? 0 : shared_.image[offset + i];
     }
     return ErrorCode::OK;
   }
@@ -474,13 +504,21 @@ class PowerCutFlash : public Flash
     for (size_t i = 0; i < data.size_; i += unit)
     {
       uint8_t* dst = shared_.image.data() + offset + i;
+      if (shared_.unreadable_bytes[offset + i] != 0)
+      {
+        return ErrorCode::CHECK_ERR;
+      }
       if (std::memcmp(dst, src + i, unit) == 0)
       {
         continue;
       }
       if (shared_.operations == shared_.budget)
       {
-        if (shared_.torn)
+        if (shared_.unreadable)
+        {
+          std::memset(shared_.unreadable_bytes.data() + offset + i, 1, unit);
+        }
+        if (shared_.torn || shared_.unreadable)
         {
           for (size_t j = 0; j < unit; ++j)
           {
@@ -646,12 +684,17 @@ void RunPowerCutCases(OpenDatabase open, size_t min_erase_size, size_t min_write
   bool finished = false;
   for (size_t budget = 0; !finished; ++budget)
   {
-    for (bool torn : {false, true})
+    // 0：操作之间掉电；1：操作被打断在中间；2：被打断的单元或页之后读不出来。
+    // 0: cut between operations; 1: cut part-way through an operation; 2: the cut unit
+    // or page cannot be read afterwards.
+    for (int mode : {0, 1, 2})
     {
       shared->image.fill(0xFF);
+      shared->unreadable_bytes.fill(0);
       shared->operations = 0;
       shared->budget = budget;
-      shared->torn = torn;
+      shared->torn = mode == 1;
+      shared->unreadable = mode == 2;
       shared->torn_erase_rounds = torn_erase_rounds;
       shared->violations = 0;
       shared->step = -1;

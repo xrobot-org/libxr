@@ -6,6 +6,88 @@ using namespace LibXR;
 
 namespace
 {
+#if defined(LIBXR_STM32_FLASH_ECC_BUS_ERROR)
+/**
+ * @brief 清除 ECC 错误标志 / Clear the ECC error flags
+ * @note 读到单位错误（已纠正）或双位错误的 Flash 字都会置位，直到软件清除。HAL 在编程和
+ *       擦除前后把仍然置位的 ECC 标志当作操作失败，所以读完和擦写前都要清掉。
+ *       Reading a flash word with a single error (corrected) or a double error sets a
+ *       flag that stays until software clears it. The HAL takes an ECC flag that is
+ *       still set before or after a program or erase for a failed operation, so the
+ *       flags are cleared after a read and before an erase or program.
+ */
+void ClearEccFlags()
+{
+#if defined(FLASH_ICR_DBECCERRF)
+  FLASH->ICR = FLASH_ICR_SNECCERRF | FLASH_ICR_DBECCERRF;
+#else
+  FLASH->CCR1 = FLASH_CCR_CLR_SNECCERR | FLASH_CCR_CLR_DBECCERR;
+#if defined(DUAL_BANK)
+  FLASH->CCR2 = FLASH_CCR_CLR_SNECCERR | FLASH_CCR_CLR_DBECCERR;
+#endif
+#endif
+}
+
+/** @brief 是否有双位 ECC 错误标志 / Whether a double ECC error flag is set */
+bool HasEccDoubleError()
+{
+#if defined(FLASH_ISR_DBECCERRF)
+  return (FLASH->ISR & FLASH_ISR_DBECCERRF) != 0U;
+#elif defined(DUAL_BANK)
+  return ((FLASH->SR1 | FLASH->SR2) & FLASH_SR_DBECCERR) != 0U;
+#else
+  return (FLASH->SR1 & FLASH_SR_DBECCERR) != 0U;
+#endif
+}
+
+/**
+ * @brief 读取落在同一个 Flash 字内的若干字节 / Read bytes that lie inside one flash word
+ * @param dst 目标缓冲区 / Destination buffer
+ * @param address Flash 地址 / Flash address
+ * @param size 字节数 / Byte count
+ * @return 该字读不出来（双位 ECC 错误）时返回 false，`dst` 的内容无意义
+ *         Returns false when the word cannot be read (double ECC error); `dst` then
+ *         holds no meaningful data
+ * @note 执行优先级为 -1（FAULTMASK）且 CCR.BFHFNMIGN 置位时，读操作的总线错误不产生
+ *       异常；这时读到的不是该字的内容，而是之前读操作留下的值，所以由 DBECCERR 判断。
+ *       At execution priority -1 (FAULTMASK) with CCR.BFHFNMIGN set, a bus error on a
+ *       load raises no exception; the load then delivers what earlier loads left behind,
+ *       not the contents of the word, so DBECCERR decides.
+ */
+bool ReadFlashWord(uint8_t* dst, uint32_t address, size_t size)
+{
+  const uint32_t faultmask = __get_FAULTMASK();
+  __set_FAULTMASK(1U);
+  const uint32_t ccr = SCB->CCR;
+  SCB->CCR = ccr | SCB_CCR_BFHFNMIGN_Msk;
+  __DSB();
+  __ISB();
+  ClearEccFlags();
+  Memory::FastCopy(dst, reinterpret_cast<const uint8_t*>(address), size);
+  __DSB();
+  __ISB();
+  const bool failed = HasEccDoubleError();
+  ClearEccFlags();
+  if (failed)
+  {
+    SCB->CFSR = SCB_CFSR_BUSFAULTSR_Msk;
+    SCB->SHCSR &= ~SCB_SHCSR_BUSFAULTPENDED_Msk;
+#if defined(__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
+    // 不让出错的这次读取留在数据缓存里。
+    // Keep the failed read out of the data cache.
+    SCB_InvalidateDCache_by_Addr(
+        reinterpret_cast<uint32_t*>(address & ~(STM32FlashMinWriteSize() - 1U)),
+        static_cast<int32_t>(STM32FlashMinWriteSize()));
+#endif
+  }
+  SCB->CCR = ccr;
+  __DSB();
+  __ISB();
+  __set_FAULTMASK(faultmask);
+  return !failed;
+}
+#endif
+
 /** @brief Flash 擦写期间的缓存状态与写锁管理 / Cache state and write lock for Flash
  * operations. */
 class FlashOperationGuard
@@ -45,6 +127,9 @@ class FlashOperationGuard
     if (d_cache_enabled_) SCB_DisableDCache();
 #endif
     HAL_FLASH_Unlock();
+#if defined(LIBXR_STM32_FLASH_ECC_BUS_ERROR)
+    ClearEccFlags();
+#endif
   }
 
   ~FlashOperationGuard()
@@ -252,12 +337,25 @@ ErrorCode STM32Flash::Write(size_t offset, ConstRawData data)
     Memory::FastSet(flash_word_buffer, 0xFF, sizeof(flash_word_buffer));
     Memory::FastCopy(flash_word_buffer, src + written, chunk_size);
 
+#if defined(LIBXR_STM32_FLASH_ECC_BUS_ERROR)
+    uint8_t current[MIN_WRITE_SIZE];
+    if (!ReadFlashWord(current, addr + written, chunk_size))
+    {
+      return ErrorCode::CHECK_ERR;
+    }
+    if (Memory::FastCmp(current, src + written, chunk_size) == 0)
+    {
+      written += chunk_size;
+      continue;
+    }
+#else
     if (Memory::FastCmp(reinterpret_cast<const uint8_t*>(addr + written), src + written,
                         chunk_size) == 0)
     {
       written += chunk_size;
       continue;
     }
+#endif
 
     if (HAL_FLASH_Program(program_type_, addr + written,
                           reinterpret_cast<uint32_t>(flash_word_buffer)) != HAL_OK)
@@ -294,6 +392,30 @@ ErrorCode STM32Flash::Write(size_t offset, ConstRawData data)
 
   return ErrorCode::OK;
 }
+
+#if defined(LIBXR_STM32_FLASH_ECC_BUS_ERROR)
+ErrorCode STM32Flash::Read(size_t offset, RawData data)
+{
+  ASSERT(offset + data.size_ <= Size());
+
+  auto* dst = static_cast<uint8_t*>(data.addr_);
+  const uint32_t begin = base_address_ + offset;
+
+  for (size_t done = 0; done < data.size_;)
+  {
+    const uint32_t address = begin + done;
+    const size_t chunk = LibXR::min<size_t>(MIN_WRITE_SIZE - (address % MIN_WRITE_SIZE),
+                                            data.size_ - done);
+    if (!ReadFlashWord(dst + done, address, chunk))
+    {
+      Memory::FastSet(dst + done, 0, chunk);
+    }
+    done += chunk;
+  }
+
+  return ErrorCode::OK;
+}
+#endif
 
 bool STM32Flash::IsInRange(uint32_t addr, size_t size) const
 {
