@@ -18,16 +18,22 @@ namespace
  */
 void ClearEccFlags()
 {
+#if defined(FLASH_ICR_DBECCERRF)
+  FLASH->ICR = FLASH_ICR_SNECCERRF | FLASH_ICR_DBECCERRF;
+#else
   FLASH->CCR1 = FLASH_CCR_CLR_SNECCERR | FLASH_CCR_CLR_DBECCERR;
 #if defined(DUAL_BANK)
   FLASH->CCR2 = FLASH_CCR_CLR_SNECCERR | FLASH_CCR_CLR_DBECCERR;
+#endif
 #endif
 }
 
 /** @brief 是否有双位 ECC 错误标志 / Whether a double ECC error flag is set */
 bool HasEccDoubleError()
 {
-#if defined(DUAL_BANK)
+#if defined(FLASH_ISR_DBECCERRF)
+  return (FLASH->ISR & FLASH_ISR_DBECCERRF) != 0U;
+#elif defined(DUAL_BANK)
   return ((FLASH->SR1 | FLASH->SR2) & FLASH_SR_DBECCERR) != 0U;
 #else
   return (FLASH->SR1 & FLASH_SR_DBECCERR) != 0U;

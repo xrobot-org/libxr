@@ -43,7 +43,14 @@ inline uint32_t STM32FlashBankOf(uint32_t) { return 1; }
 // NOLINTNEXTLINE
 constexpr size_t STM32FlashMinWriteSize()
 {
-#ifdef FLASH_TYPEPROGRAM_BYTE
+#if defined(FLASH_TYPEPROGRAM_BYTE) && defined(FLASH_TYPEPROGRAM_QUADWORD)
+  // H7R/S：小于四字的编程类型是对整个 128 位 Flash 字的强制写入，而一个 Flash 字连同
+  // ECC 只能写一次，所以按四字编程。
+  // H7R/S: the program types smaller than a quad-word are forced writes of the whole
+  // 128-bit flash word, and a flash word with its ECC can be written only once, so the
+  // driver programs quad-words.
+  return 16;
+#elif defined(FLASH_TYPEPROGRAM_BYTE)
   return 1;
 #elif defined(FLASH_TYPEPROGRAM_HALFWORD)
   return 2;
@@ -116,10 +123,15 @@ typename std::enable_if<HasFlashBank<T>::value>::type SetBanks(T& init, uint32_t
 #endif
 
 // H7：读到双位 ECC 错误的 Flash 字时产生总线错误，并置位 FLASH_SR 的 DBECCERR。
+// H7R/S 相同，标志是 FLASH_ISR 的 DBECCERRF，由 FLASH_ICR 清除。
 // H7: reading a flash word with a double ECC error raises a bus error and sets DBECCERR
-// in FLASH_SR.
-#if defined(FLASH_SR_DBECCERR) && defined(FLASH_CCR_CLR_DBECCERR) && \
-    defined(FLASH_CCR_CLR_SNECCERR) && defined(SCB_CCR_BFHFNMIGN_Msk)
+// in FLASH_SR. H7R/S does the same; its flag is DBECCERRF in FLASH_ISR, cleared through
+// FLASH_ICR.
+#if defined(SCB_CCR_BFHFNMIGN_Msk) &&                                  \
+    ((defined(FLASH_SR_DBECCERR) && defined(FLASH_CCR_CLR_DBECCERR) && \
+      defined(FLASH_CCR_CLR_SNECCERR)) ||                              \
+     (defined(FLASH_ISR_DBECCERRF) && defined(FLASH_ICR_DBECCERRF) &&  \
+      defined(FLASH_ICR_SNECCERRF)))
 #define LIBXR_STM32_FLASH_ECC_BUS_ERROR 1
 #endif
 
@@ -141,26 +153,29 @@ typename std::enable_if<HasFlashBank<T>::value>::type SetBanks(T& init, uint32_t
  * from the address; H5, H7 and the families with a Page field erase by the number within
  * the bank, F2/F4/F7 by the sector number across both banks. Bank swap (SWAP_BANK, BFB2
  * and similar option bytes) is not supported.
- * @note H7 上编程或擦除被掉电打断后，被打断的 Flash 字 ECC 校验不过。`Read` 按 Flash 字
- * 读取，读每个字时屏蔽全部中断并忽略总线错误，读完检查 DBECCERR；出错的字在缓冲区里填 0，
+ * @note H7 和 H7R/S 上编程或擦除被掉电打断后，被打断的 Flash 字 ECC 校验不过。`Read` 按
+ * Flash 字读取，读每个字时屏蔽全部中断并忽略总线错误，读完检查双位错误标志（H7 的
+ * DBECCERR，H7R/S 的 DBECCERRF）；出错的字在缓冲区里填 0，
  * `Read` 仍返回 `ErrorCode::OK`。读到的 0 既不是擦除态也不是完整数据，调用方按写了一半的
  * 内容处理；真实损坏造成的双位错误读起来相同，不作区分。`Write` 编程前的比较同样读取，
  * 目标字读不出来时不编程，返回 `ErrorCode::CHECK_ERR`，擦除后才能再写。其他系列的 `Read`
  * 是基类的直接拷贝。
- * On H7 a flash word whose program or erase was cut by a power loss fails its ECC check.
- * `Read` reads flash word by flash word, masks all interrupts and ignores the bus error
- * for each word, and tests DBECCERR afterwards; a failing word is filled with 0 in the
- * buffer and `Read` still returns `ErrorCode::OK`. The zeros are neither erased flash nor
+ * On H7 and H7R/S a flash word whose program or erase was cut by a power loss fails its
+ * ECC check. `Read` reads flash word by flash word, masks all interrupts and ignores the
+ * bus error for each word, and tests the double error flag afterwards (DBECCERR on H7,
+ * DBECCERRF on H7R/S); a failing word is filled with 0 in the buffer and `Read` still
+ * returns `ErrorCode::OK`. The zeros are neither erased flash nor
  * complete data, so the caller handles them as half-written contents; a double error
  * caused by real damage reads the same and is not told apart. The comparison before
  * programming in `Write` reads the same way and returns `ErrorCode::CHECK_ERR` without
  * programming when the target word cannot be read; the word can be written again after
  * an erase. On other families `Read` is the plain copy of the base class.
- * @note H7 的 ECC 标志（单位错误已纠正、双位错误）置位后一直保持，HAL 把它们当作编程或
- * 擦除失败。驱动在每次读完一个 Flash 字之后、每次擦写开始之前清除这两个标志。
- * The ECC flags of H7 (single error corrected, double error) stay set once raised, and
- * the HAL takes them for a failed program or erase. The driver clears both after each
- * flash word it reads and before each erase or program.
+ * @note 这两个系列的 ECC 标志（单位错误已纠正、双位错误）置位后一直保持，H7 的 HAL 把
+ * 它们当作编程或擦除失败。驱动在每次读完一个 Flash 字之后、每次擦写开始之前清除这两个
+ * 标志。
+ * The ECC flags of both families (single error corrected, double error) stay set once
+ * raised, and the H7 HAL takes them for a failed program or erase. The driver clears both
+ * after each flash word it reads and before each erase or program.
  * @note G0、G4、L4、L5、WB、WL、U0、U5、WBA、H5、U3 读到这样的单元时产生 NMI，读到的是
  * 写了一半的内容；`NMI_Handler` 需要调用 `libxr_stm32_flash_ecc_nmi()`
  * （stm32_flash_nmi.h），否则停在 CubeMX 生成的死循环里。
@@ -214,7 +229,9 @@ class STM32Flash : public Flash
 
   static constexpr uint32_t DetermineProgramType()
   {
-#ifdef FLASH_TYPEPROGRAM_BYTE
+#if defined(FLASH_TYPEPROGRAM_BYTE) && defined(FLASH_TYPEPROGRAM_QUADWORD)
+    return FLASH_TYPEPROGRAM_QUADWORD;
+#elif defined(FLASH_TYPEPROGRAM_BYTE)
     return FLASH_TYPEPROGRAM_BYTE;
 #elif defined(FLASH_TYPEPROGRAM_HALFWORD)
     return FLASH_TYPEPROGRAM_HALFWORD;
