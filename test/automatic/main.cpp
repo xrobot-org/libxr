@@ -171,6 +171,19 @@ void test_usb_gsusb_bind_fail();
 void test_usb_gsusb_unbind();
 void test_usb_gsusb_threads();
 void test_usb_gsusb_slots();
+void test_usb_dap_v1_enum();
+void test_usb_dap_v1_commands();
+void test_usb_dap_v1_bind_fail();
+void test_usb_dap_v1_unbind();
+void test_usb_dap_v1_threads();
+void test_usb_dap_v2_enum();
+void test_usb_dap_v2_commands();
+void test_usb_dap_v2_zlp();
+void test_usb_dap_v2_bind_fail();
+void test_usb_dap_v2_unbind();
+void test_usb_dap_v2_threads();
+void test_usb_dap_v1_slots();
+void test_usb_dap_v2_slots();
 
 namespace LinuxSharedTopicBench
 {
@@ -383,6 +396,19 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests", {"gsusb_unbind", &RunVoidEntry<test_usb_gsusb_unbind>, false}},
     {"usb_tests", {"gsusb_threads", &RunVoidEntry<test_usb_gsusb_threads>, false}},
     {"usb_tests", {"gsusb_slots", &RunVoidEntry<test_usb_gsusb_slots>, false}},
+    {"usb_tests", {"dap_v1_enum", &RunVoidEntry<test_usb_dap_v1_enum>, false}},
+    {"usb_tests", {"dap_v1_commands", &RunVoidEntry<test_usb_dap_v1_commands>, false}},
+    {"usb_tests", {"dap_v1_bind_fail", &RunVoidEntry<test_usb_dap_v1_bind_fail>, false}},
+    {"usb_tests", {"dap_v1_unbind", &RunVoidEntry<test_usb_dap_v1_unbind>, false}},
+    {"usb_tests", {"dap_v1_threads", &RunVoidEntry<test_usb_dap_v1_threads>, false}},
+    {"usb_tests", {"dap_v2_enum", &RunVoidEntry<test_usb_dap_v2_enum>, false}},
+    {"usb_tests", {"dap_v2_commands", &RunVoidEntry<test_usb_dap_v2_commands>, false}},
+    {"usb_tests", {"dap_v2_zlp", &RunVoidEntry<test_usb_dap_v2_zlp>, false}},
+    {"usb_tests", {"dap_v2_bind_fail", &RunVoidEntry<test_usb_dap_v2_bind_fail>, false}},
+    {"usb_tests", {"dap_v2_unbind", &RunVoidEntry<test_usb_dap_v2_unbind>, false}},
+    {"usb_tests", {"dap_v2_threads", &RunVoidEntry<test_usb_dap_v2_threads>, false}},
+    {"usb_tests", {"dap_v1_slots", &RunVoidEntry<test_usb_dap_v1_slots>, false}},
+    {"usb_tests", {"dap_v2_slots", &RunVoidEntry<test_usb_dap_v2_slots>, false}},
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},
     {"core_tests", {"assert", &RunVoidEntry<test_assert>, true, false}},
