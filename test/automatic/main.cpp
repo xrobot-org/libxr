@@ -125,6 +125,15 @@ void test_usb_dev_core_synch_frame();
 void test_usb_dev_core_no_allocation();
 void test_usb_dev_core_threads();
 void test_usb_dev_core_async();
+void test_usb_cdc_enum();
+void test_usb_cdc_requests();
+void test_usb_cdc_tx();
+void test_usb_cdc_rx();
+void test_usb_cdc_test_classes();
+void test_usb_cdc_bind_fail();
+void test_usb_cdc_unbind();
+void test_usb_cdc_threads();
+void test_usb_cdc_slots();
 
 namespace LinuxSharedTopicBench
 {
@@ -287,6 +296,15 @@ constexpr GroupedTestCase kMainTestCases[] = {
      {"dev_core_no_allocation", &RunVoidEntry<test_usb_dev_core_no_allocation>, false}},
     {"usb_tests", {"dev_core_threads", &RunVoidEntry<test_usb_dev_core_threads>, false}},
     {"usb_tests", {"dev_core_async", &RunVoidEntry<test_usb_dev_core_async>, false}},
+    {"usb_tests", {"cdc_enum", &RunVoidEntry<test_usb_cdc_enum>, false}},
+    {"usb_tests", {"cdc_requests", &RunVoidEntry<test_usb_cdc_requests>, false}},
+    {"usb_tests", {"cdc_tx", &RunVoidEntry<test_usb_cdc_tx>, false}},
+    {"usb_tests", {"cdc_rx", &RunVoidEntry<test_usb_cdc_rx>, false}},
+    {"usb_tests", {"cdc_test_classes", &RunVoidEntry<test_usb_cdc_test_classes>, false}},
+    {"usb_tests", {"cdc_bind_fail", &RunVoidEntry<test_usb_cdc_bind_fail>, false}},
+    {"usb_tests", {"cdc_unbind", &RunVoidEntry<test_usb_cdc_unbind>, false}},
+    {"usb_tests", {"cdc_threads", &RunVoidEntry<test_usb_cdc_threads>, false}},
+    {"usb_tests", {"cdc_slots", &RunVoidEntry<test_usb_cdc_slots>, false}},
     // 改动全局定时任务列表 / Replaces the global timer task list
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},

@@ -7,6 +7,7 @@
  * Instantiates pools and shared topics for strict warning checks.
  */
 
+#include "cdc_to_uart.hpp"
 #include "linux_shared_topic.hpp"
 #include "object_pool.hpp"
 
