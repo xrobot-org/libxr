@@ -184,6 +184,14 @@ void test_usb_dap_v2_unbind();
 void test_usb_dap_v2_threads();
 void test_usb_dap_v1_slots();
 void test_usb_dap_v2_slots();
+void test_usb_fsdev_control();
+void test_usb_fsdev_bulk();
+void test_usb_fsdev_stop();
+void test_usb_fsdev_setup();
+void test_usb_fsdev_clear_out();
+void test_usb_fsdev_clear_in();
+void test_usb_fsdev_clear_halted();
+void test_usb_fsdev_clear_race();
 
 namespace LinuxSharedTopicBench
 {
@@ -409,6 +417,15 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests", {"dap_v2_threads", &RunVoidEntry<test_usb_dap_v2_threads>, false}},
     {"usb_tests", {"dap_v1_slots", &RunVoidEntry<test_usb_dap_v1_slots>, false}},
     {"usb_tests", {"dap_v2_slots", &RunVoidEntry<test_usb_dap_v2_slots>, false}},
+    {"usb_tests", {"fsdev_control", &RunVoidEntry<test_usb_fsdev_control>, false}},
+    {"usb_tests", {"fsdev_bulk", &RunVoidEntry<test_usb_fsdev_bulk>, false}},
+    {"usb_tests", {"fsdev_stop", &RunVoidEntry<test_usb_fsdev_stop>, false}},
+    {"usb_tests", {"fsdev_setup", &RunVoidEntry<test_usb_fsdev_setup>, false}},
+    {"usb_tests", {"fsdev_clear_out", &RunVoidEntry<test_usb_fsdev_clear_out>, false}},
+    {"usb_tests", {"fsdev_clear_in", &RunVoidEntry<test_usb_fsdev_clear_in>, false}},
+    {"usb_tests",
+     {"fsdev_clear_halted", &RunVoidEntry<test_usb_fsdev_clear_halted>, false}},
+    {"usb_tests", {"fsdev_clear_race", &RunVoidEntry<test_usb_fsdev_clear_race>, false}},
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},
     {"core_tests", {"assert", &RunVoidEntry<test_assert>, true, false}},
