@@ -90,6 +90,27 @@ void test_linux_uart_reconnect();
 void test_linux_uart_partial_disconnect();
 void test_linux_uart_initial_open_recovery();
 void test_slot_pool();
+void test_usb_ep_slots();
+void test_usb_ep_slots_threads();
+void test_usb_ep_configure();
+void test_usb_ep_in();
+void test_usb_ep_out();
+void test_usb_ep_zlp();
+void test_usb_ep_stop();
+void test_usb_ep_stop_fail();
+void test_usb_ep_reentry();
+void test_usb_ep_errors();
+void test_usb_ep_service();
+void test_usb_ep_threads();
+void test_usb_ep_async_table();
+void test_usb_ep_async_chains();
+void test_usb_ep_async_late();
+void test_usb_ep_async_reset();
+void test_usb_ep_async_tick();
+void test_usb_ep_async_death();
+void test_usb_ep_async_threads();
+void test_usb_ep_pool();
+void test_usb_ep_pool_query();
 
 namespace LinuxSharedTopicBench
 {
@@ -207,6 +228,27 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"linux_uart_tests",
      {"uart_initial_recovery", &RunVoidEntry<test_linux_uart_initial_open_recovery>,
       true}},
+    {"usb_tests", {"ep_slots", &RunVoidEntry<test_usb_ep_slots>, false}},
+    {"usb_tests", {"ep_slots_threads", &RunVoidEntry<test_usb_ep_slots_threads>, false}},
+    {"usb_tests", {"ep_configure", &RunVoidEntry<test_usb_ep_configure>, false}},
+    {"usb_tests", {"ep_in", &RunVoidEntry<test_usb_ep_in>, false}},
+    {"usb_tests", {"ep_out", &RunVoidEntry<test_usb_ep_out>, false}},
+    {"usb_tests", {"ep_zlp", &RunVoidEntry<test_usb_ep_zlp>, false}},
+    {"usb_tests", {"ep_stop", &RunVoidEntry<test_usb_ep_stop>, false}},
+    {"usb_tests", {"ep_stop_fail", &RunVoidEntry<test_usb_ep_stop_fail>, false}},
+    {"usb_tests", {"ep_reentry", &RunVoidEntry<test_usb_ep_reentry>, false}},
+    {"usb_tests", {"ep_errors", &RunVoidEntry<test_usb_ep_errors>, false}},
+    {"usb_tests", {"ep_service", &RunVoidEntry<test_usb_ep_service>, false}},
+    {"usb_tests", {"ep_threads", &RunVoidEntry<test_usb_ep_threads>, false}},
+    {"usb_tests", {"ep_async_table", &RunVoidEntry<test_usb_ep_async_table>, false}},
+    {"usb_tests", {"ep_async_chains", &RunVoidEntry<test_usb_ep_async_chains>, false}},
+    {"usb_tests", {"ep_async_late", &RunVoidEntry<test_usb_ep_async_late>, false}},
+    {"usb_tests", {"ep_async_reset", &RunVoidEntry<test_usb_ep_async_reset>, false}},
+    {"usb_tests", {"ep_async_tick", &RunVoidEntry<test_usb_ep_async_tick>, false}},
+    {"usb_tests", {"ep_async_death", &RunVoidEntry<test_usb_ep_async_death>, false}},
+    {"usb_tests", {"ep_async_threads", &RunVoidEntry<test_usb_ep_async_threads>, false}},
+    {"usb_tests", {"ep_pool", &RunVoidEntry<test_usb_ep_pool>, false}},
+    {"usb_tests", {"ep_pool_query", &RunVoidEntry<test_usb_ep_pool_query>, false}},
     // 改动全局定时任务列表 / Replaces the global timer task list
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},
