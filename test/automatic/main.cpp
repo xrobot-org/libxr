@@ -134,6 +134,15 @@ void test_usb_cdc_bind_fail();
 void test_usb_cdc_unbind();
 void test_usb_cdc_threads();
 void test_usb_cdc_slots();
+void test_usb_uac_enum();
+void test_usb_uac_stream();
+void test_usb_uac_requests();
+void test_usb_uac_pacing();
+void test_usb_uac_bind_fail();
+void test_usb_uac_unbind();
+void test_usb_uac_set_interface();
+void test_usb_uac_threads();
+void test_usb_uac_slots();
 void test_usb_hid_enum();
 void test_usb_hid_requests();
 void test_usb_hid_in();
@@ -313,6 +322,16 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests", {"cdc_unbind", &RunVoidEntry<test_usb_cdc_unbind>, false}},
     {"usb_tests", {"cdc_threads", &RunVoidEntry<test_usb_cdc_threads>, false}},
     {"usb_tests", {"cdc_slots", &RunVoidEntry<test_usb_cdc_slots>, false}},
+    {"usb_tests", {"uac_enum", &RunVoidEntry<test_usb_uac_enum>, false}},
+    {"usb_tests", {"uac_stream", &RunVoidEntry<test_usb_uac_stream>, false}},
+    {"usb_tests", {"uac_requests", &RunVoidEntry<test_usb_uac_requests>, false}},
+    {"usb_tests", {"uac_pacing", &RunVoidEntry<test_usb_uac_pacing>, false}},
+    {"usb_tests", {"uac_bind_fail", &RunVoidEntry<test_usb_uac_bind_fail>, false}},
+    {"usb_tests", {"uac_unbind", &RunVoidEntry<test_usb_uac_unbind>, false}},
+    {"usb_tests",
+     {"uac_set_interface", &RunVoidEntry<test_usb_uac_set_interface>, false}},
+    {"usb_tests", {"uac_threads", &RunVoidEntry<test_usb_uac_threads>, false}},
+    {"usb_tests", {"uac_slots", &RunVoidEntry<test_usb_uac_slots>, false}},
     {"usb_tests", {"hid_enum", &RunVoidEntry<test_usb_hid_enum>, false}},
     {"usb_tests", {"hid_requests", &RunVoidEntry<test_usb_hid_requests>, false}},
     {"usb_tests", {"hid_in", &RunVoidEntry<test_usb_hid_in>, false}},
