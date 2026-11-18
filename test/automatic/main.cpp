@@ -134,6 +134,14 @@ void test_usb_cdc_bind_fail();
 void test_usb_cdc_unbind();
 void test_usb_cdc_threads();
 void test_usb_cdc_slots();
+void test_usb_hid_enum();
+void test_usb_hid_requests();
+void test_usb_hid_in();
+void test_usb_hid_out();
+void test_usb_hid_bind_fail();
+void test_usb_hid_unbind();
+void test_usb_hid_threads();
+void test_usb_hid_slots();
 
 namespace LinuxSharedTopicBench
 {
@@ -305,6 +313,14 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests", {"cdc_unbind", &RunVoidEntry<test_usb_cdc_unbind>, false}},
     {"usb_tests", {"cdc_threads", &RunVoidEntry<test_usb_cdc_threads>, false}},
     {"usb_tests", {"cdc_slots", &RunVoidEntry<test_usb_cdc_slots>, false}},
+    {"usb_tests", {"hid_enum", &RunVoidEntry<test_usb_hid_enum>, false}},
+    {"usb_tests", {"hid_requests", &RunVoidEntry<test_usb_hid_requests>, false}},
+    {"usb_tests", {"hid_in", &RunVoidEntry<test_usb_hid_in>, false}},
+    {"usb_tests", {"hid_out", &RunVoidEntry<test_usb_hid_out>, false}},
+    {"usb_tests", {"hid_bind_fail", &RunVoidEntry<test_usb_hid_bind_fail>, false}},
+    {"usb_tests", {"hid_unbind", &RunVoidEntry<test_usb_hid_unbind>, false}},
+    {"usb_tests", {"hid_threads", &RunVoidEntry<test_usb_hid_threads>, false}},
+    {"usb_tests", {"hid_slots", &RunVoidEntry<test_usb_hid_slots>, false}},
     // 改动全局定时任务列表 / Replaces the global timer task list
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},

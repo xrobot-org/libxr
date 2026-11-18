@@ -120,6 +120,7 @@ add_executable(
   driver/usb/test_usb_ep_pool.cpp
   driver/usb/test_usb_dev_core.cpp
   driver/usb/test_cdc.cpp
+  driver/usb/test_hid.cpp
   driver/timebase/test_timebase.cpp
   middleware/database/database/test_database.cpp
   middleware/database/raw/raw/test_linux_database_raw.cpp
