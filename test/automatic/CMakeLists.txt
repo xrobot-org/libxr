@@ -122,6 +122,7 @@ add_executable(
   driver/usb/test_cdc.cpp
   driver/usb/test_uac.cpp
   driver/usb/test_hid.cpp
+  driver/usb/test_dfu.cpp
   driver/timebase/test_timebase.cpp
   middleware/database/database/test_database.cpp
   middleware/database/raw/raw/test_linux_database_raw.cpp

@@ -151,6 +151,16 @@ void test_usb_hid_bind_fail();
 void test_usb_hid_unbind();
 void test_usb_hid_threads();
 void test_usb_hid_slots();
+void test_usb_dfu_enum();
+void test_usb_dfu_runtime();
+void test_usb_dfu_runtime_jump();
+void test_usb_dfu_download();
+void test_usb_dfu_poll();
+void test_usb_dfu_status_stage();
+void test_usb_dfu_bind_fail();
+void test_usb_dfu_unbind();
+void test_usb_dfu_winusb();
+void test_usb_dfu_threads();
 
 namespace LinuxSharedTopicBench
 {
@@ -340,6 +350,16 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests", {"hid_unbind", &RunVoidEntry<test_usb_hid_unbind>, false}},
     {"usb_tests", {"hid_threads", &RunVoidEntry<test_usb_hid_threads>, false}},
     {"usb_tests", {"hid_slots", &RunVoidEntry<test_usb_hid_slots>, false}},
+    {"usb_tests", {"dfu_enum", &RunVoidEntry<test_usb_dfu_enum>, false}},
+    {"usb_tests", {"dfu_runtime", &RunVoidEntry<test_usb_dfu_runtime>, false}},
+    {"usb_tests", {"dfu_runtime_jump", &RunVoidEntry<test_usb_dfu_runtime_jump>, false}},
+    {"usb_tests", {"dfu_download", &RunVoidEntry<test_usb_dfu_download>, false}},
+    {"usb_tests", {"dfu_poll", &RunVoidEntry<test_usb_dfu_poll>, false}},
+    {"usb_tests", {"dfu_status_stage", &RunVoidEntry<test_usb_dfu_status_stage>, false}},
+    {"usb_tests", {"dfu_bind_fail", &RunVoidEntry<test_usb_dfu_bind_fail>, false}},
+    {"usb_tests", {"dfu_unbind", &RunVoidEntry<test_usb_dfu_unbind>, false}},
+    {"usb_tests", {"dfu_winusb", &RunVoidEntry<test_usb_dfu_winusb>, false}},
+    {"usb_tests", {"dfu_threads", &RunVoidEntry<test_usb_dfu_threads>, false}},
     // 改动全局定时任务列表 / Replaces the global timer task list
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},
