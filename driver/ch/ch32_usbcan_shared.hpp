@@ -74,12 +74,17 @@ inline uint16_t usb_pma_limit_bytes()
 }
 
 inline std::atomic<IrqFn> usb_irq_cb{nullptr};
+// 只在低优先级向量里调用的 USB 入口：USBD 设备只从这一条线进入。
+// USB entry called from the low-priority vector only: the USBD device is entered
+// from this line alone.
+inline std::atomic<IrqFn> usb_lp_irq_cb{nullptr};
 inline std::atomic<IrqFn> can1_rx0_cb{nullptr};
 inline std::atomic<IrqFn> can1_tx_cb{nullptr};
 
 // 非内联注册使静态库链接必须带入共享 ISR 所在的目标文件。
 // Out-of-line registration retains the shared ISR object when linking libxr.a.
 void register_usb_irq(IrqFn fn);
+void register_usb_lp_irq(IrqFn fn);
 void register_can1_rx0(IrqFn fn);
 void register_can1_tx(IrqFn fn);
 

@@ -4,6 +4,8 @@ namespace LibXR::CH32UsbCanShared
 {
 void register_usb_irq(IrqFn fn) { usb_irq_cb.store(fn, std::memory_order_release); }
 
+void register_usb_lp_irq(IrqFn fn) { usb_lp_irq_cb.store(fn, std::memory_order_release); }
+
 void register_can1_rx0(IrqFn fn)
 {
   if constexpr (K_USB_CAN_IRQ_SHARE)
@@ -38,6 +40,10 @@ USB_LP_CAN1_RX0_IRQHandler(void)
   using namespace LibXR::CH32UsbCanShared;
 
   if (auto fn = usb_irq_cb.load(std::memory_order_acquire))
+  {
+    fn();
+  }
+  if (auto fn = usb_lp_irq_cb.load(std::memory_order_acquire))
   {
     fn();
   }

@@ -89,6 +89,24 @@ if(_xr_driver STREQUAL "linux")
   set_tests_properties(test_linux_can_error PROPERTIES TIMEOUT 10)
 endif()
 
+# CH32 USB 后端跑在假寄存器块上：驱动源文件要用假的芯片头文件编译，所以是单独的程序。
+# The CH32 USB backend on fake register blocks: the driver sources need the fake chip
+# header, hence a program of its own.
+add_executable(
+  test_ch32_usb
+  driver/usb/ch32/test_ch32_usb.cpp ../../driver/ch/ch32_usb_endpoint_otghs.cpp
+  ../../driver/ch/ch32_usb_otghs.cpp ../../driver/ch/ch32_usb_endpoint_otgfs.cpp
+  ../../driver/ch/ch32_usb_otgfs.cpp
+)
+target_link_libraries(test_ch32_usb PRIVATE xr)
+target_include_directories(
+  test_ch32_usb PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/ch"
+                           "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/ch32"
+)
+target_compile_definitions(test_ch32_usb PRIVATE LIBXR_CH32_CONFIG_FILE=fake_ch32_usb.h)
+add_test(NAME test_ch32_usb COMMAND test_ch32_usb)
+set_tests_properties(test_ch32_usb PROPERTIES TIMEOUT 30)
+
 add_executable(
   libxr_test
   main.cpp
