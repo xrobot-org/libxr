@@ -111,6 +111,20 @@ void test_usb_ep_async_death();
 void test_usb_ep_async_threads();
 void test_usb_ep_pool();
 void test_usb_ep_pool_query();
+void test_usb_dev_core_enum();
+void test_usb_dev_core_standard();
+void test_usb_dev_core_high_speed();
+void test_usb_dev_core_control();
+void test_usb_dev_core_replace();
+void test_usb_dev_core_lifecycle();
+void test_usb_dev_core_stop_fail();
+void test_usb_dev_core_bind_fail();
+void test_usb_dev_core_early_status();
+void test_usb_dev_core_late_completion();
+void test_usb_dev_core_synch_frame();
+void test_usb_dev_core_no_allocation();
+void test_usb_dev_core_threads();
+void test_usb_dev_core_async();
 
 namespace LinuxSharedTopicBench
 {
@@ -249,6 +263,30 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests", {"ep_async_threads", &RunVoidEntry<test_usb_ep_async_threads>, false}},
     {"usb_tests", {"ep_pool", &RunVoidEntry<test_usb_ep_pool>, false}},
     {"usb_tests", {"ep_pool_query", &RunVoidEntry<test_usb_ep_pool_query>, false}},
+    {"usb_tests", {"dev_core_enum", &RunVoidEntry<test_usb_dev_core_enum>, false}},
+    {"usb_tests",
+     {"dev_core_standard", &RunVoidEntry<test_usb_dev_core_standard>, false}},
+    {"usb_tests",
+     {"dev_core_high_speed", &RunVoidEntry<test_usb_dev_core_high_speed>, false}},
+    {"usb_tests", {"dev_core_control", &RunVoidEntry<test_usb_dev_core_control>, false}},
+    {"usb_tests", {"dev_core_replace", &RunVoidEntry<test_usb_dev_core_replace>, false}},
+    {"usb_tests",
+     {"dev_core_lifecycle", &RunVoidEntry<test_usb_dev_core_lifecycle>, false}},
+    {"usb_tests",
+     {"dev_core_stop_fail", &RunVoidEntry<test_usb_dev_core_stop_fail>, false}},
+    {"usb_tests",
+     {"dev_core_bind_fail", &RunVoidEntry<test_usb_dev_core_bind_fail>, false}},
+    {"usb_tests",
+     {"dev_core_early_status", &RunVoidEntry<test_usb_dev_core_early_status>, false}},
+    {"usb_tests",
+     {"dev_core_late_completion", &RunVoidEntry<test_usb_dev_core_late_completion>,
+      false}},
+    {"usb_tests",
+     {"dev_core_synch_frame", &RunVoidEntry<test_usb_dev_core_synch_frame>, false}},
+    {"usb_tests",
+     {"dev_core_no_allocation", &RunVoidEntry<test_usb_dev_core_no_allocation>, false}},
+    {"usb_tests", {"dev_core_threads", &RunVoidEntry<test_usb_dev_core_threads>, false}},
+    {"usb_tests", {"dev_core_async", &RunVoidEntry<test_usb_dev_core_async>, false}},
     // 改动全局定时任务列表 / Replaces the global timer task list
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},
