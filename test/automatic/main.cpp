@@ -192,6 +192,14 @@ void test_usb_fsdev_clear_out();
 void test_usb_fsdev_clear_in();
 void test_usb_fsdev_clear_halted();
 void test_usb_fsdev_clear_race();
+void test_usb_fsdev_iso_in();
+void test_usb_fsdev_iso_out();
+void test_usb_fsdev_iso_stop();
+void test_usb_fsdev_iso_other();
+void test_usb_fsdev_iso_stall();
+void test_usb_fsdev_iso_reset();
+void test_usb_fsdev_iso_window();
+void test_usb_fsdev_iso_drd();
 
 namespace LinuxSharedTopicBench
 {
@@ -426,6 +434,14 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests",
      {"fsdev_clear_halted", &RunVoidEntry<test_usb_fsdev_clear_halted>, false}},
     {"usb_tests", {"fsdev_clear_race", &RunVoidEntry<test_usb_fsdev_clear_race>, false}},
+    {"usb_tests", {"fsdev_iso_in", &RunVoidEntry<test_usb_fsdev_iso_in>, false}},
+    {"usb_tests", {"fsdev_iso_out", &RunVoidEntry<test_usb_fsdev_iso_out>, false}},
+    {"usb_tests", {"fsdev_iso_stop", &RunVoidEntry<test_usb_fsdev_iso_stop>, false}},
+    {"usb_tests", {"fsdev_iso_other", &RunVoidEntry<test_usb_fsdev_iso_other>, false}},
+    {"usb_tests", {"fsdev_iso_stall", &RunVoidEntry<test_usb_fsdev_iso_stall>, false}},
+    {"usb_tests", {"fsdev_iso_reset", &RunVoidEntry<test_usb_fsdev_iso_reset>, false}},
+    {"usb_tests", {"fsdev_iso_window", &RunVoidEntry<test_usb_fsdev_iso_window>, false}},
+    {"usb_tests", {"fsdev_iso_drd", &RunVoidEntry<test_usb_fsdev_iso_drd>, false}},
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},
     {"core_tests", {"assert", &RunVoidEntry<test_assert>, true, false}},

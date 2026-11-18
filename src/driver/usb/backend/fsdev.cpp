@@ -34,6 +34,28 @@ bool SetupPending(uint32_t epr)
   return (epr & (FSDEV_EP_CTR_RX | FSDEV_EP_SETUP)) == (FSDEV_EP_CTR_RX | FSDEV_EP_SETUP);
 }
 
+/**
+ * @brief COUNT_RX 的块编码 / Block encoding of COUNT_RX
+ * @note 不超过 62 字节按 2 字节块，否则按 32 字节块（BL_SIZE = 1）。
+ *       2-byte blocks up to 62 bytes, 32-byte blocks above (BL_SIZE = 1).
+ */
+uint16_t EncodeRxSize(uint16_t mps)
+{
+  if (mps == 0U)
+  {
+    return 0x8000U;
+  }
+  if (mps <= 62U)
+  {
+    return static_cast<uint16_t>(((mps + 1U) / 2U) << 10U);
+  }
+  return static_cast<uint16_t>(0x8000U | ((((mps + 31U) / 32U) - 1U) << 10U));
+}
+
+/// 等时：缓冲 b 在 BTABLE 里的计数字段（0 发送位置，1 接收位置）/ Isochronous: the count
+/// field of buffer b in the BTABLE (0 the transmit location, 1 the receive location)
+constexpr unsigned IsoCountField(uint8_t buffer) { return buffer == 0U ? 1U : 3U; }
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -320,10 +342,24 @@ Endpoint::HwLimits FSDevEndpoint::HardwareLimits(Direction direction, Type type)
     size = LibXR::min(size, size_t{64U});
   }
   HwLimits limits;
-  // 本后端不支持等时端点：包长上限报 0，Configure 和写描述符都当场拒绝。
-  // This backend has no isochronous support: a packet limit of 0 makes Configure and the
-  // descriptor writing refuse at once.
-  limits.max_packet_size = type == Type::ISOCHRONOUS ? 0U : size;
+  limits.max_packet_size = size;
+  if (type == Type::ISOCHRONOUS)
+  {
+    // 缓冲 1 借同号另一方向的 PMA，两块必须一样大；不一样（或没有）时包长上限报 0，
+    // Configure 和写描述符都当场拒绝。一个请求一包，一块缓冲一个请求。
+    // Buffer 1 borrows the PMA of the other direction of the number and both must be
+    // the same size; otherwise (or without one) a packet limit of 0 makes Configure and
+    // the descriptor writing refuse at once. One packet per request, one request per
+    // buffer.
+    const FSDevEndpoint* other = Partner();
+    if (other == nullptr || other->pma_size_ != pma_size_)
+    {
+      limits.max_packet_size = 0U;
+    }
+    limits.max_packets = 1U;
+    limits.max_bytes = limits.max_packet_size;
+    limits.max_requests = ISO_REQUESTS;
+  }
   // CPU 在槽和 PMA 之间拷贝，硬件不访问槽。
   // The CPU copies between the slot and the PMA; the hardware never accesses the slot.
   limits.direct_memory = false;
@@ -332,12 +368,19 @@ Endpoint::HwLimits FSDevEndpoint::HardwareLimits(Direction direction, Type type)
 
 ErrorCode FSDevEndpoint::CheckHardware(const Config& cfg) const
 {
-  // 同一端点号的 IN、OUT 共用 EP_TYPE；对方已启用时类型必须相同。
+  // 同一端点号的 IN、OUT 共用 EP_TYPE；对方已启用时类型必须相同。等时端点占用整个
+  // EPnR 和两个方向的 PMA：对方已启用时不能配置等时，对方是等时时不能配置本方向。
   // IN and OUT of one number share EP_TYPE; the type must match an enabled other half.
-  const uint8_t num = Num();
-  const FSDevEndpoint* other = IsIn() ? device_.out_[num] : device_.in_[num];
-  if (other != nullptr && other->GetState() != State::DISABLED &&
-      other->GetType() != cfg.type)
+  // An isochronous endpoint takes the whole EPnR and the PMA of both directions: no
+  // isochronous endpoint while the other half is enabled, and nothing while the other
+  // half is isochronous.
+  const FSDevEndpoint* other = Partner();
+  const bool other_enabled = other != nullptr && other->GetState() != State::DISABLED;
+  if ((cfg.type == Type::ISOCHRONOUS && other_enabled) || PartnerIsochronous())
+  {
+    return ErrorCode::STATE_ERR;
+  }
+  if (other_enabled && other->GetType() != cfg.type)
   {
     return ErrorCode::FAILED;
   }
@@ -348,6 +391,33 @@ void FSDevEndpoint::ConfigureHardware(const Config& cfg)
 {
   const uint8_t num = Num();
   WriteType(TypeBits(cfg.type));
+  if (cfg.type == Type::ISOCHRONOUS)
+  {
+    // 缓冲 0 在发送位置，用自己的 PMA；缓冲 1 在接收位置，用另一方向的 PMA（RM0008
+    // p.634 表 171）。两块清空，DTOG 指向缓冲 0，STAT 置 11 后一直有效。
+    // Buffer 0 at the transmit location with this endpoint's PMA, buffer 1 at the
+    // receive location with the other direction's (RM0008 p.634, table 171). Both are
+    // emptied, DTOG points at buffer 0, and STAT is set to 11 and stays so.
+    device_.SetTxBuf(num, pma_addr_);
+    device_.SetRxBuf(num, Partner()->pma_addr_);
+    for (uint8_t buffer = 0U; buffer < ISO_REQUESTS; ++buffer)
+    {
+      if (IsIn())
+      {
+        device_.SetIsoTxCount(num, buffer, 0U);
+      }
+      else
+      {
+        device_.SetIsoRxSize(num, buffer, cfg.max_packet_size);
+      }
+    }
+    iso_ = true;
+    iso_head_ = 0U;
+    iso_count_ = 0U;
+    ClearDataToggle();
+    IsoWriteStat(IsIn() ? FSDEV_STAT_TX_VALID : FSDEV_STAT_RX_VALID);
+    return;
+  }
   if (IsIn())
   {
     device_.SetTxBuf(num, pma_addr_);
@@ -387,12 +457,37 @@ void FSDevEndpoint::CloseHardware(bool in_isr)
   {
     return;
   }
+  if (iso_)
+  {
+    // 停止已在 Close 之前做完；同号另一方向从此可以配置。 / The stop was done before
+    // Close; the other direction of the number may be configured from now on.
+    IsoWriteStat(IsIn() ? FSDEV_STAT_TX_DIS : FSDEV_STAT_RX_DIS);
+    iso_ = false;
+    iso_count_ = 0U;
+    return;
+  }
   (void)SetStat(IsIn() ? FSDEV_STAT_TX_DIS : FSDEV_STAT_RX_DIS);
 }
 
 ErrorCode FSDevEndpoint::StartHardware(const HwRequest& request, bool in_isr)
 {
   UNUSED(in_isr);
+  if (iso_)
+  {
+    // 排在已有的请求之后；IN 有空出的缓冲就拷进去。 / Queued behind the requests already
+    // there; an IN is copied into a free buffer if there is one.
+    ASSERT(iso_count_ < ISO_REQUESTS);
+    IsoRequest& slot = iso_req_[(iso_head_ + iso_count_) % ISO_REQUESTS];
+    slot.data = request.data;
+    slot.length = request.length;
+    slot.buffer = -1;
+    ++iso_count_;
+    if (IsIn())
+    {
+      IsoLoad();
+    }
+    return ErrorCode::OK;
+  }
   data_ = request.data;
   length_ = request.length;
   progress_ = 0U;
@@ -435,6 +530,10 @@ ErrorCode FSDevEndpoint::StartHardware(const HwRequest& request, bool in_isr)
 Endpoint::StopOutcome FSDevEndpoint::StopHardware(bool in_isr)
 {
   UNUSED(in_isr);
+  if (iso_)
+  {
+    return IsoStop();
+  }
   const uint8_t num = Num();
   const bool in = IsIn();
   const uint32_t valid = in ? FSDEV_STAT_TX_VALID : FSDEV_STAT_RX_VALID;
@@ -577,6 +676,13 @@ void FSDevEndpoint::AdvanceStop(bool in_isr, uint16_t frame, bool force)
 ErrorCode FSDevEndpoint::StallHardware(bool in_isr)
 {
   UNUSED(in_isr);
+  if (iso_)
+  {
+    // 等时没有 STALL：禁用，主机的令牌得不到应答。 / Isochronous has no STALL: disabled,
+    // the host's tokens get no answer.
+    IsoWriteStat(IsIn() ? FSDEV_STAT_TX_DIS : FSDEV_STAT_RX_DIS);
+    return ErrorCode::OK;
+  }
   return SetStat(IsIn() ? FSDEV_STAT_TX_STALL : FSDEV_STAT_RX_STALL) ? ErrorCode::OK
                                                                      : ErrorCode::FAILED;
 }
@@ -593,6 +699,22 @@ ErrorCode FSDevEndpoint::ClearStallHardware(bool in_isr)
   const uint8_t num = Num();
   const bool in = IsIn();
   const uint32_t stat_mask = in ? FSDEV_EP_STAT_TX : FSDEV_EP_STAT_RX;
+  if (iso_)
+  {
+    // 只从 00（Stall 之后）恢复：两块清空、DTOG 回到缓冲 0、写 11。已是 11 时不动：
+    // 等时没有数据翻转，DTOG 只选缓冲，改它会打乱硬件上两个请求的顺序。
+    // Only from 00 (after a Stall): both buffers emptied, DTOG back to buffer 0, 11
+    // written. At 11 nothing changes: isochronous has no data toggle, DTOG only selects
+    // the buffer, and changing it would reorder the two requests on the hardware.
+    if ((device_.ReadEp(num) & stat_mask) == 0U)
+    {
+      IsoEmpty(0U);
+      IsoEmpty(1U);
+      ClearDataToggle();
+      IsoWriteStat(in ? FSDEV_STAT_TX_VALID : FSDEV_STAT_RX_VALID);
+    }
+    return ErrorCode::OK;
+  }
   const uint32_t valid = in ? FSDEV_STAT_TX_VALID : FSDEV_STAT_RX_VALID;
   const uint32_t dtog = in ? FSDEV_EP_DTOG_TX : FSDEV_EP_DTOG_RX;
   const uint32_t no_clear =
@@ -631,6 +753,238 @@ ErrorCode FSDevEndpoint::ClearStallHardware(bool in_isr)
   }
   device_.WriteEp(num, (cur & keep) | num | no_clear);
   return data0 ? ErrorCode::OK : ErrorCode::FAILED;
+}
+
+// ---------------------------------------------------------------------------
+// 等时端点 / Isochronous endpoints
+// ---------------------------------------------------------------------------
+
+FSDevEndpoint* FSDevEndpoint::Partner() const
+{
+  const uint8_t num = Num();
+  return IsIn() ? device_.out_[num] : device_.in_[num];
+}
+
+bool FSDevEndpoint::PartnerIsochronous() const
+{
+  const FSDevEndpoint* other = Partner();
+  return other != nullptr && other->iso_;
+}
+
+void FSDevEndpoint::IsoWriteStat(uint32_t target)
+{
+  const uint8_t num = Num();
+  const uint32_t stat_mask = IsIn() ? FSDEV_EP_STAT_TX : FSDEV_EP_STAT_RX;
+  const uint32_t no_clear =
+      FSDEV_EP_CTR_RX | FSDEV_EP_CTR_TX | device_.ep_err_rx_ | device_.ep_err_tx_;
+  const uint32_t cur = device_.ReadEp(num);
+  device_.WriteEp(
+      num, (cur & device_.ep_keep_mask_) | ((cur ^ target) & stat_mask) | no_clear);
+}
+
+void FSDevEndpoint::IsoEmpty(uint8_t buffer)
+{
+  if (IsIn())
+  {
+    device_.SetIsoTxCount(Num(), buffer, 0U);
+  }
+  else
+  {
+    device_.SetIsoRxSize(Num(), buffer, MaxPacketSize());
+  }
+}
+
+void FSDevEndpoint::IsoLoad()
+{
+  const uint8_t num = Num();
+  for (uint8_t round = 0U; round < ISO_REQUESTS; ++round)
+  {
+    // 第一个还没进缓冲的请求，以及最后一个已进缓冲的请求所在的那块。 / The first
+    // request not yet in a buffer, and the buffer of the last one already in one.
+    IsoRequest* waiting = nullptr;
+    int8_t last = -1;
+    bool occupied[ISO_REQUESTS] = {};
+    for (uint8_t k = 0U; k < iso_count_; ++k)
+    {
+      IsoRequest& request = iso_req_[(iso_head_ + k) % ISO_REQUESTS];
+      if (request.buffer >= 0)
+      {
+        last = request.buffer;
+        occupied[request.buffer] = true;
+      }
+      else if (waiting == nullptr)
+      {
+        waiting = &request;
+      }
+    }
+    if (waiting == nullptr)
+    {
+      return;
+    }
+    const uint32_t epr = device_.ReadEp(num);
+    const uint8_t hardware = (epr & FSDEV_EP_DTOG_TX) != 0U ? 1U : 0U;
+    uint8_t buffer = 0U;
+    if ((epr & FSDEV_EP_CTR_TX) != 0U)
+    {
+      // 这一帧的事务已经结束、CTR 还没处理：刚用过的那块（DTOG 的另一块）要先由
+      // IsoOnPacket 判定，不能装；下一次事务要到下一帧，它用的那块空着就装进去，否则等。
+      // This frame's transaction is over and its CTR not yet handled: the buffer just
+      // used (the one DTOG does not point at) has to be judged by IsoOnPacket first and
+      // is not loaded; the next transaction comes only in the next frame, so the buffer
+      // it uses is loaded if empty, otherwise the request waits.
+      if (occupied[hardware])
+      {
+        return;
+      }
+      buffer = hardware;
+    }
+    else
+    {
+      // 按顺序：紧跟最后一个已装请求的那块；都没装时是硬件下一次不用的那块。硬件下一次
+      // 要发的那块不装：它的令牌可能就在眼前。
+      // In order: the buffer after the last loaded request's; with none loaded, the one
+      // the next transaction does not use. The buffer the next transaction sends is not
+      // loaded: its token may be imminent.
+      buffer = last >= 0 ? static_cast<uint8_t>(last ^ 1)
+                         : static_cast<uint8_t>(hardware ^ 1U);
+      if (buffer == hardware || occupied[buffer])
+      {
+        return;
+      }
+    }
+    const uint16_t addr = buffer == 0U ? pma_addr_ : Partner()->pma_addr_;
+    if (waiting->length != 0U)
+    {
+      device_.PmaWrite(addr, waiting->data, waiting->length);
+    }
+    device_.SetIsoTxCount(num, buffer, static_cast<uint16_t>(waiting->length));
+    waiting->buffer = static_cast<int8_t>(buffer);
+  }
+}
+
+void FSDevEndpoint::IsoOnPacket(bool in_isr)
+{
+  const uint8_t num = Num();
+  const uint32_t epr = device_.ReadEp(num);
+  if (IsIn())
+  {
+    // 刚用过的那块 = DTOG_TX 的另一块。 / The buffer just used is the one DTOG_TX does
+    // not point at.
+    const uint8_t used = (epr & FSDEV_EP_DTOG_TX) != 0U ? 0U : 1U;
+    device_.ClearCtrTx(num);
+    if (iso_count_ != 0U && iso_req_[iso_head_].buffer == static_cast<int8_t>(used))
+    {
+      IsoRequest& head = iso_req_[iso_head_];
+      const size_t length = head.length;
+      head.buffer = -1;
+      iso_head_ = static_cast<uint8_t>((iso_head_ + 1U) % ISO_REQUESTS);
+      --iso_count_;
+      // 写回零长度，不再发旧数据。 / Back to zero length, never stale data.
+      device_.SetIsoTxCount(num, used, 0U);
+      IsoLoad();
+      OnHardwareComplete(in_isr, length, ErrorCode::OK);
+      return;
+    }
+    // 发出的是零长度包。 / A zero-length packet went out.
+    IsoLoad();
+    return;
+  }
+  const uint8_t used = (epr & FSDEV_EP_DTOG_RX) != 0U ? 0U : 1U;
+  if (iso_count_ == 0U)
+  {
+    // 没有请求时的包丢弃。 / A packet without a request is dropped.
+    device_.ClearCtrRx(num);
+    return;
+  }
+  // CRC 错的包手册算作正确事务（RM0008 p.635），照常交付。 / A packet with a CRC error
+  // is a correct transaction in the manual (RM0008 p.635) and is delivered as usual.
+  IsoRequest& head = iso_req_[iso_head_];
+  const size_t bytes = device_.GetIsoRxCount(num, used);
+  const size_t take = LibXR::min(bytes, head.length);
+  if (take != 0U)
+  {
+    device_.PmaRead(head.data, used == 0U ? pma_addr_ : Partner()->pma_addr_, take);
+  }
+  device_.ClearCtrRx(num);
+  iso_head_ = static_cast<uint8_t>((iso_head_ + 1U) % ISO_REQUESTS);
+  --iso_count_;
+  OnHardwareComplete(in_isr, take,
+                     bytes > take ? ErrorCode::OUT_OF_RANGE : ErrorCode::OK);
+}
+
+Endpoint::StopOutcome FSDevEndpoint::IsoStop()
+{
+  if (iso_count_ == 0U)
+  {
+    return {ErrorCode::ABORTED, 0U};
+  }
+  IsoRequest& head = iso_req_[iso_head_];
+  if (head.buffer == ISO_STOPPED)
+  {
+    // 核心随后的调用：同一次停止里的其余请求。 / The core's following calls: the other
+    // requests of the same stop.
+    head.buffer = -1;
+    iso_head_ = static_cast<uint8_t>((iso_head_ + 1U) % ISO_REQUESTS);
+    --iso_count_;
+    return {ErrorCode::ABORTED, 0U};
+  }
+  const uint8_t num = Num();
+  const bool in = IsIn();
+  const uint32_t ctr = in ? FSDEV_EP_CTR_TX : FSDEV_EP_CTR_RX;
+  const uint32_t dtog = in ? FSDEV_EP_DTOG_TX : FSDEV_EP_DTOG_RX;
+  const uint32_t no_clear =
+      FSDEV_EP_CTR_RX | FSDEV_EP_CTR_TX | device_.ep_err_rx_ | device_.ep_err_tx_;
+  const uint32_t keep = device_.ep_keep_mask_ & ~FSDEV_EP_ADDR;
+  // 停车：此后的令牌没有应答（主机少一帧）；只有停车时已在线上的事务还能结束。不等。
+  // Park: later tokens get no answer (the host misses one frame); only a transaction
+  // already on the wire at the park can still end. No wait.
+  uint32_t cur = device_.ReadEp(num);
+  device_.WriteEp(num, (cur & keep) | FSDEV_EP_PARK_ADDR | no_clear);
+  const uint32_t epr = device_.ReadEp(num);
+  StopOutcome outcome{ErrorCode::ABORTED, 0U};
+  if ((epr & ctr) != 0U)
+  {
+    // 有一个事务结束了：刚用过的那块 = DTOG 的另一块。IN 那块装着最早的请求就是它
+    // 发完了；OUT 的包交给最早的请求。
+    // A transaction has ended: the buffer just used is the one DTOG does not point at.
+    // An IN whose earliest request sits in it has gone out; an OUT packet goes to the
+    // earliest request.
+    const uint8_t used = (epr & dtog) != 0U ? 0U : 1U;
+    if (in)
+    {
+      if (head.buffer == static_cast<int8_t>(used))
+      {
+        outcome = {ErrorCode::OK, head.length};
+      }
+      device_.ClearCtrTx(num);
+    }
+    else
+    {
+      const size_t bytes = device_.GetIsoRxCount(num, used);
+      const size_t take = LibXR::min(bytes, head.length);
+      if (take != 0U)
+      {
+        device_.PmaRead(head.data, used == 0U ? pma_addr_ : Partner()->pma_addr_, take);
+      }
+      outcome = {bytes > take ? ErrorCode::OUT_OF_RANGE : ErrorCode::OK, take};
+      device_.ClearCtrRx(num);
+    }
+  }
+  if (in)
+  {
+    IsoEmpty(0U);
+    IsoEmpty(1U);
+  }
+  head.buffer = -1;
+  iso_head_ = static_cast<uint8_t>((iso_head_ + 1U) % ISO_REQUESTS);
+  --iso_count_;
+  for (uint8_t k = 0U; k < iso_count_; ++k)
+  {
+    iso_req_[(iso_head_ + k) % ISO_REQUESTS].buffer = ISO_STOPPED;
+  }
+  cur = device_.ReadEp(num);
+  device_.WriteEp(num, (cur & keep) | num | no_clear);
+  return outcome;
 }
 
 // ---------------------------------------------------------------------------
@@ -927,6 +1281,15 @@ bool FSDevDevice::HoldStatusWindow()
       status_window_ = false;
       return false;
     }
+    // 等时端点没有 NAK，双缓冲只容得下一帧的延迟：结束等待，owner 进来处理。
+    // An isochronous endpoint has no NAK and its double buffer tolerates one frame of
+    // delay only: the wait ends and the owner comes in.
+    if (num < MAX_EPS && ((in_[num] != nullptr && in_[num]->iso_) ||
+                          (out_[num] != nullptr && out_[num]->iso_)))
+    {
+      status_window_ = false;
+      return false;
+    }
     // 其他端点的完成：清 CTR、记下。硬件已把这个方向置 NAK，PMA 里的数据留着。
     // A completion of another endpoint: clear its CTR and latch it. The hardware has set
     // this direction to NAK and the data in the PMA stay.
@@ -1177,7 +1540,11 @@ void FSDevDevice::HandleCtr(bool in_isr)
 void FSDevDevice::HandleCtrTx(bool in_isr, uint8_t num)
 {
   FSDevEndpoint* in = num < MAX_EPS ? in_[num] : nullptr;
-  if (in != nullptr && in->stopping_ && !in->stop_failed_)
+  if (in != nullptr && in->iso_)
+  {
+    in->IsoOnPacket(in_isr);
+  }
+  else if (in != nullptr && in->stopping_ && !in->stop_failed_)
   {
     // 被停请求的事务完成了：停止结束。 / The stopped request's transaction completed:
     // the stop ends.
@@ -1232,7 +1599,11 @@ void FSDevDevice::HandleEp(bool in_isr, uint8_t num)
 void FSDevDevice::HandleCtrRx(bool in_isr, uint8_t num)
 {
   FSDevEndpoint* out = num < MAX_EPS ? out_[num] : nullptr;
-  if (out != nullptr && out->stopping_ && !out->stop_failed_)
+  if (out != nullptr && out->iso_)
+  {
+    out->IsoOnPacket(in_isr);
+  }
+  else if (out != nullptr && out->stopping_ && !out->stop_failed_)
   {
     out->AdvanceStop(in_isr, 0U, true);
   }
@@ -1300,28 +1671,29 @@ void FSDevDevice::SetRxBuf(uint8_t num, uint16_t addr)
 
 void FSDevDevice::SetRxCountEncoded(uint8_t num, uint16_t mps)
 {
-  // COUNT_RX 块编码：不超过 62 字节按 2 字节块，否则按 32 字节块（BL_SIZE = 1）。
-  // COUNT_RX block encoding: 2-byte blocks up to 62 bytes, 32-byte blocks above
-  // (BL_SIZE = 1).
-  uint16_t encoded = 0U;
-  if (mps == 0U)
-  {
-    encoded = 0x8000U;
-  }
-  else if (mps <= 62U)
-  {
-    encoded = static_cast<uint16_t>(((mps + 1U) / 2U) << 10U);
-  }
-  else
-  {
-    encoded = static_cast<uint16_t>(0x8000U | ((((mps + 31U) / 32U) - 1U) << 10U));
-  }
-  *BtField(num, 3U) = encoded;
+  *BtField(num, 3U) = EncodeRxSize(mps);
 }
 
 uint16_t FSDevDevice::GetRxCount(uint8_t num)
 {
   return static_cast<uint16_t>(*BtField(num, 3U) & 0x03FFU);
+}
+
+void FSDevDevice::SetIsoTxCount(uint8_t num, uint8_t buffer, uint16_t bytes)
+{
+  // COUNTn_TX_1 的位 15..10 不用，写 0（RM0008 p.649）。 / Bits 15..10 of COUNTn_TX_1
+  // are unused and written 0 (RM0008 p.649).
+  *BtField(num, IsoCountField(buffer)) = static_cast<uint16_t>(bytes & 0x03FFU);
+}
+
+void FSDevDevice::SetIsoRxSize(uint8_t num, uint8_t buffer, uint16_t mps)
+{
+  *BtField(num, IsoCountField(buffer)) = EncodeRxSize(mps);
+}
+
+uint16_t FSDevDevice::GetIsoRxCount(uint8_t num, uint8_t buffer)
+{
+  return static_cast<uint16_t>(*BtField(num, IsoCountField(buffer)) & 0x03FFU);
 }
 
 void FSDevDevice::PmaWrite(uint16_t addr, const uint8_t* src, size_t len)

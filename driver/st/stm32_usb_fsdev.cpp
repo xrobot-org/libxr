@@ -280,6 +280,34 @@ uint16_t STM32USBDeviceDevFs::GetRxCount(uint8_t num)
                                0x03FFU);
 }
 
+// 等时双缓冲：缓冲 0 是 TXBD，缓冲 1 是 RXBD（与经典型的发送、接收位置对应）。
+// Isochronous double buffer: buffer 0 is the TXBD, buffer 1 the RXBD (the transmit and
+// receive locations of the classic layout).
+void STM32USBDeviceDevFs::SetIsoTxCount(uint8_t num, uint8_t buffer, uint16_t bytes)
+{
+  volatile uint32_t* bd = Bd(memory_map_.packet_memory, num, buffer == 1U);
+  *bd = (*bd & 0x0000FFFFU) | (static_cast<uint32_t>(bytes & 0x03FFU) << 16U);
+}
+
+void STM32USBDeviceDevFs::SetIsoRxSize(uint8_t num, uint8_t buffer, uint16_t mps)
+{
+  volatile uint32_t* bd = Bd(memory_map_.packet_memory, num, buffer == 1U);
+  *bd = (*bd & 0x0000FFFFU) | EncodeRxCount(mps);
+}
+
+uint16_t STM32USBDeviceDevFs::GetIsoRxCount(uint8_t num, uint8_t buffer)
+{
+  // 与 GetRxCount 一样先空转，等计数更新。 / Spin first as GetRxCount does, until the
+  // count settles.
+  volatile uint32_t settle = PCD_RX_PMA_CNT;
+  while (settle > 0U)
+  {
+    settle = settle - 1U;
+  }
+  return static_cast<uint16_t>(
+      (*Bd(memory_map_.packet_memory, num, buffer == 1U) >> 16U) & 0x03FFU);
+}
+
 void STM32USBDeviceDevFs::PmaWrite(uint16_t addr, const uint8_t* src, size_t len)
 {
   // NOLINTNEXTLINE(performance-no-int-to-ptr)

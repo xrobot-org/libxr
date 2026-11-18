@@ -67,6 +67,7 @@ constexpr uint32_t RX_NAK = 0x2000U;
 constexpr uint32_t RX_VALID = 0x3000U;
 constexpr uint32_t TX_NAK = 0x0020U;
 constexpr uint32_t TX_VALID = 0x0030U;
+constexpr uint32_t ISO_TYPE = 0x0400U;  ///< EP_TYPE 10 / EP_TYPE 10
 
 /// 经典型 FSDEV 的寄存器与 PMA 模型 / Register and PMA model of a classic FSDEV
 struct Ctl
@@ -102,6 +103,12 @@ struct Ctl
   /// 因超过接收区大小而没被收下的包 / Packets not taken because they exceed the receive
   /// size
   static inline unsigned rx_overflows = 0;
+  /// DRD 布局：32 位缓冲描述符（TXBD 在前、RXBD 在后），PMA 线性按字节寻址 / DRD
+  /// layout: 32-bit buffer descriptors (TXBD, then RXBD), a linear byte-addressed PMA
+  static inline bool drd = false;
+  /// 等时端点的 STAT 被写成 00、11 以外的值的次数 / Writes that left the STAT of an
+  /// isochronous endpoint other than 00 or 11
+  static inline unsigned iso_bad_stat = 0;
   /// 每次读 EPnR 之前调用 / Called before every EPnR read
   static inline std::function<void(uint8_t)> before_read;
   /// 每次写 EPnR 之前调用（参数：号、写入值）/ Called before every EPnR write
@@ -125,6 +132,8 @@ struct Ctl
     setup_violations = 0;
     setups_refused = 0;
     rx_overflows = 0;
+    drd = false;
+    iso_bad_stat = 0;
     before_read = nullptr;
     before_write = nullptr;
     before_rx_size = nullptr;
@@ -178,6 +187,13 @@ struct Ctl
         (next & STAT_TX) == TX_VALID && (old & STAT_TX) != TX_VALID)
     {
       ++setup_violations;
+    }
+    // 等时端点只有 00 和 11（RM0008 p.634）/ An isochronous endpoint has 00 and 11 only
+    if ((next & 0x0600U) == ISO_TYPE &&
+        (((next & STAT_TX) != 0U && (next & STAT_TX) != TX_VALID) ||
+         ((next & STAT_RX) != 0U && (next & STAT_RX) != RX_VALID)))
+    {
+      ++iso_bad_stat;
     }
     ep[num] = next;
     UpdateIstr();
@@ -245,8 +261,57 @@ struct Ctl
     return *reinterpret_cast<uint16_t*>(pma + (num * 8U + 2U * field) * 2U);
   }
 
+  /// DRD 的缓冲描述符：TXBD 在 8n，RXBD 在 8n+4 / DRD buffer descriptor: TXBD at 8n,
+  /// RXBD at 8n+4
+  static uint32_t& Bd32(uint8_t num, bool rx)
+  {
+    return *reinterpret_cast<uint32_t*>(pma + num * 8U + (rx ? 4U : 0U));
+  }
+
+  /// 缓冲描述符位置 b（0 发送、1 接收）的地址 / Address of descriptor location b (0
+  /// transmit, 1 receive)
+  static uint16_t BufAddr(uint8_t num, unsigned b)
+  {
+    return drd ? static_cast<uint16_t>(Bd32(num, b == 1U) & 0xFFFFU)
+               : Field(num, b == 1U ? 2U : 0U);
+  }
+
+  /// 位置 b 的 COUNT：位 9..0 计数，15..10 BL_SIZE/NUM_BLOCK（两种布局对齐成同一形式）/
+  /// COUNT of location b: bits 9..0 the count, 15..10 BL_SIZE/NUM_BLOCK
+  static uint16_t BufCount(uint8_t num, unsigned b)
+  {
+    return drd ? static_cast<uint16_t>(Bd32(num, b == 1U) >> 16U)
+               : Field(num, b == 1U ? 3U : 1U);
+  }
+
+  /// 硬件写位置 b 收到的字节数 / The hardware writes the bytes location b received
+  static void SetReceived(uint8_t num, unsigned b, size_t len)
+  {
+    if (drd)
+    {
+      uint32_t& w = Bd32(num, b == 1U);
+      w = (w & 0xFC00FFFFU) | (static_cast<uint32_t>(len & 0x3FFU) << 16U);
+      return;
+    }
+    uint16_t& f = Field(num, b == 1U ? 3U : 1U);
+    f = static_cast<uint16_t>((f & 0xFC00U) | (len & 0x3FFU));
+  }
+
+  /// BL_SIZE、NUM_BLOCK 给出的接收区字节数 / Receive size in bytes from BL_SIZE and
+  /// NUM_BLOCK
+  static size_t RoomOf(uint16_t count)
+  {
+    const size_t blocks = (count >> 10U) & 0x1FU;
+    return (count & 0x8000U) != 0U ? (blocks + 1U) * 32U : blocks * 2U;
+  }
+
   static void Write(uint16_t addr, const uint8_t* src, size_t len)
   {
+    if (drd)
+    {
+      std::memcpy(pma + addr, src, len);
+      return;
+    }
     // 数据字 k 在 APB 字节 (addr+2k)*2 / Data word k sits at APB byte (addr+2k)*2
     for (size_t i = 0; i < len; ++i)
     {
@@ -257,6 +322,11 @@ struct Ctl
 
   static void Read(uint8_t* dst, uint16_t addr, size_t len)
   {
+    if (drd)
+    {
+      std::memcpy(dst, pma + addr, len);
+      return;
+    }
     for (size_t i = 0; i < len; ++i)
     {
       const uint8_t* word = pma + (static_cast<size_t>(addr) + (i & ~size_t{1})) * 2U;
@@ -266,12 +336,7 @@ struct Ctl
 
   /// COUNT_RX 的 BL_SIZE、NUM_BLOCK 给出的接收区字节数 / Receive size in bytes from
   /// BL_SIZE and NUM_BLOCK of COUNT_RX
-  static size_t RxRoom(uint8_t num)
-  {
-    const uint16_t field = Field(num, 3U);
-    const size_t blocks = (field >> 10U) & 0x1FU;
-    return (field & 0x8000U) != 0U ? (blocks + 1U) * 32U : blocks * 2U;
-  }
+  static size_t RxRoom(uint8_t num) { return RoomOf(BufCount(num, 1U)); }
 
   // ---- 主机一侧 / Host side ----
 
@@ -305,9 +370,9 @@ struct Ctl
     }
     if (len != 0U)
     {
-      Write(Field(num, 2U), data, len);
+      Write(BufAddr(num, 1U), data, len);
     }
-    Field(num, 3U) = static_cast<uint16_t>((Field(num, 3U) & 0xFC00U) | (len & 0x3FFU));
+    SetReceived(num, 1U, len);
     ep[num] = (ep[num] & ~(STAT_RX | SETUP)) | CTR_RX | RX_NAK;
     if (setup)
     {
@@ -332,9 +397,65 @@ struct Ctl
   /// 端点 num 当前装填的 IN 包 / The IN packet endpoint num has armed
   static Bytes ArmedIn(uint8_t num)
   {
-    Bytes data(Field(num, 1U) & 0x3FFU);
-    Read(data.data(), Field(num, 0U), data.size());
+    Bytes data(BufCount(num, 0U) & 0x3FFU);
+    Read(data.data(), BufAddr(num, 0U), data.size());
     return data;
+  }
+
+  /**
+   * @brief 等时 IN 令牌：硬件发出 DTOG_TX 选中的那块缓冲 / An isochronous IN token: the
+   *        hardware sends the buffer DTOG_TX selects
+   * @param force 不看地址：停车时已在线上的事务 / Ignore the address: a transaction
+   *        already on the wire at the park
+   * @return 有没有应答；应答时 data 是发出的包（可能为空）/ Whether it was answered;
+   *         data is the packet sent (possibly empty)
+   * @note 每个事务结束硬件翻转 DTOG_TX、置 CTR_TX，STAT 不变（RM0008 p.635）。
+   *       At the end of every transaction the hardware toggles DTOG_TX and sets CTR_TX,
+   *       leaving STAT alone (RM0008 p.635).
+   */
+  static bool IsoIn(uint8_t num, Bytes& data, bool force = false)
+  {
+    if ((ep[num] & 0x0600U) != ISO_TYPE || (ep[num] & STAT_TX) != TX_VALID ||
+        (!force && !Answers(num)))
+    {
+      return false;
+    }
+    const unsigned b = (ep[num] & DTOG_TX) != 0U ? 1U : 0U;
+    data.assign(BufCount(num, b) & 0x3FFU, 0U);
+    Read(data.data(), BufAddr(num, b), data.size());
+    ep[num] = (ep[num] ^ DTOG_TX) | CTR_TX;
+    UpdateIstr();
+    return true;
+  }
+
+  /**
+   * @brief 等时 OUT 包：硬件收进 DTOG_RX 选中的那块缓冲 / An isochronous OUT packet: the
+   *        hardware takes it into the buffer DTOG_RX selects
+   * @param crc_error 包的 CRC 错：照常完成，只在 ISTR.ERR 留标记（RM0008 p.635）/ The
+   *        packet's CRC is wrong: completes all the same, marking only ISTR.ERR
+   */
+  static bool IsoOut(uint8_t num, const Bytes& data, bool crc_error = false,
+                     bool force = false)
+  {
+    if ((ep[num] & 0x0600U) != ISO_TYPE || (ep[num] & STAT_RX) != RX_VALID ||
+        (!force && !Answers(num)))
+    {
+      return false;
+    }
+    const unsigned b = (ep[num] & DTOG_RX) != 0U ? 1U : 0U;
+    TEST_ASSERT(data.size() <= RoomOf(BufCount(num, b)));
+    if (!data.empty())
+    {
+      Write(BufAddr(num, b), data.data(), data.size());
+    }
+    SetReceived(num, b, data.size());
+    ep[num] = (ep[num] ^ DTOG_RX) | CTR_RX;
+    if (crc_error)
+    {
+      istr |= 0x2000U;
+    }
+    UpdateIstr();
+    return true;
   }
 
   static void BusReset()
@@ -355,9 +476,11 @@ class TestDevice final : public FSDevDevice
              const std::initializer_list<EPConfig>& tx,
              const std::initializer_list<const std::initializer_list<DeviceClass*>>& cfgs,
              size_t pma_limit = 0)
-      : FSDevDevice({0U, reinterpret_cast<uintptr_t>(Ctl::pma), 512U, 2U, 2U}, rx, tx,
-                    DeviceDescriptor::PacketSize0::SIZE_64, 0x1209U, 0x0001U, 0x0100U,
-                    {&LANGUAGE}, cfgs, {nullptr, 0}, pma_limit)
+      : FSDevDevice({0U, reinterpret_cast<uintptr_t>(Ctl::pma), 512U,
+                     static_cast<uint8_t>(Ctl::drd ? 1U : 2U),
+                     static_cast<uint8_t>(Ctl::drd ? 4U : 2U)},
+                    rx, tx, DeviceDescriptor::PacketSize0::SIZE_64, 0x1209U, 0x0001U,
+                    0x0100U, {&LANGUAGE}, cfgs, {nullptr, 0}, pma_limit)
   {
     if (Ctl::fast_ack)
     {
@@ -393,24 +516,119 @@ class TestDevice final : public FSDevDevice
   {
     Ctl::WriteRegister(offset, value);
   }
+  // DRD 布局：与 driver/st/stm32_usb_fsdev.cpp 的 DRD 实现相同的位运算（平台文件依赖
+  // HAL，主机上编不了）。 / DRD layout: the same bit operations as the DRD code of
+  // driver/st/stm32_usb_fsdev.cpp (the platform file needs the HAL and does not build on
+  // the host).
+  static uint32_t EncodeRx32(uint16_t mps)
+  {
+    if (mps == 0U)
+    {
+      return 0x80000000UL;
+    }
+    if (mps <= 62U)
+    {
+      return (static_cast<uint32_t>(mps) + 1U) / 2U << 26U;
+    }
+    return ((static_cast<uint32_t>(mps) + 31U) / 32U - 1U) << 26U | 0x80000000UL;
+  }
+  void SetTxBuf(uint8_t num, uint16_t addr) override
+  {
+    if (!Ctl::drd)
+    {
+      FSDevDevice::SetTxBuf(num, addr);
+      return;
+    }
+    uint32_t& bd = Ctl::Bd32(num, false);
+    bd = (bd & 0xFFFF0000U) | (addr & 0xFFFCU);
+  }
+  void SetTxCount(uint8_t num, uint16_t bytes) override
+  {
+    if (!Ctl::drd)
+    {
+      FSDevDevice::SetTxCount(num, bytes);
+      return;
+    }
+    uint32_t& bd = Ctl::Bd32(num, false);
+    bd = (bd & 0x0000FFFFU) | (static_cast<uint32_t>(bytes) << 16U);
+  }
+  void SetRxBuf(uint8_t num, uint16_t addr) override
+  {
+    if (!Ctl::drd)
+    {
+      FSDevDevice::SetRxBuf(num, addr);
+      return;
+    }
+    uint32_t& bd = Ctl::Bd32(num, true);
+    bd = (bd & 0xFFFF0000U) | (addr & 0xFFFCU);
+  }
   void SetRxCountEncoded(uint8_t num, uint16_t mps) override
   {
     if (Ctl::before_rx_size)
     {
       Ctl::before_rx_size(num);
     }
-    FSDevDevice::SetRxCountEncoded(num, mps);
+    if (!Ctl::drd)
+    {
+      FSDevDevice::SetRxCountEncoded(num, mps);
+      return;
+    }
+    uint32_t& bd = Ctl::Bd32(num, true);
+    bd = (bd & 0x0000FFFFU) | EncodeRx32(mps);
+  }
+  uint16_t GetRxCount(uint8_t num) override
+  {
+    return Ctl::drd ? static_cast<uint16_t>((Ctl::Bd32(num, true) >> 16U) & 0x03FFU)
+                    : FSDevDevice::GetRxCount(num);
+  }
+  void SetIsoTxCount(uint8_t num, uint8_t buffer, uint16_t bytes) override
+  {
+    if (!Ctl::drd)
+    {
+      FSDevDevice::SetIsoTxCount(num, buffer, bytes);
+      return;
+    }
+    uint32_t& bd = Ctl::Bd32(num, buffer == 1U);
+    bd = (bd & 0x0000FFFFU) | (static_cast<uint32_t>(bytes & 0x03FFU) << 16U);
+  }
+  void SetIsoRxSize(uint8_t num, uint8_t buffer, uint16_t mps) override
+  {
+    if (!Ctl::drd)
+    {
+      FSDevDevice::SetIsoRxSize(num, buffer, mps);
+      return;
+    }
+    uint32_t& bd = Ctl::Bd32(num, buffer == 1U);
+    bd = (bd & 0x0000FFFFU) | EncodeRx32(mps);
+  }
+  uint16_t GetIsoRxCount(uint8_t num, uint8_t buffer) override
+  {
+    return Ctl::drd
+               ? static_cast<uint16_t>((Ctl::Bd32(num, buffer == 1U) >> 16U) & 0x03FFU)
+               : FSDevDevice::GetIsoRxCount(num, buffer);
   }
   void PmaWrite(uint16_t addr, const uint8_t* src, size_t len) override
   {
     log.push_back("in" + std::to_string(len));
+    if (Ctl::drd)
+    {
+      // 32 位访问，结尾补零 / 32-bit access, the tail padded with zeros
+      std::memcpy(Ctl::pma + addr, src, len);
+      std::memset(Ctl::pma + addr + len, 0, (4U - len % 4U) % 4U);
+      return;
+    }
     FSDevDevice::PmaWrite(addr, src, len);
   }
   void PmaRead(uint8_t* dst, uint16_t addr, size_t len) override
   {
-    if (len == 8U && addr == Ctl::Field(0, 2U))
+    if (len == 8U && addr == Ctl::BufAddr(0, 1U))
     {
       log.push_back("setup");
+    }
+    if (Ctl::drd)
+    {
+      std::memcpy(dst, Ctl::pma + addr, len);
+      return;
     }
     FSDevDevice::PmaRead(dst, addr, len);
   }
@@ -2339,6 +2557,513 @@ void TestBusEvents()
   TEST_ASSERT(!Ctl::pull_up && (Ctl::cntr & 0x8000U) == 0U);
 }
 
+// ---------------------------------------------------------------------------
+// 等时端点 / Isochronous endpoints
+// ---------------------------------------------------------------------------
+
+/// 一个接口、一个等时端点 / One interface with one isochronous endpoint
+class IsoClass final : public DeviceClass
+{
+ public:
+  IsoClass(Direction dir, EPNumber num, uint16_t mps, bool bind)
+      : dir_(dir), num_(num), mps_(mps), bind_(bind)
+  {
+    cb_ = Callback<const Completion&>::Create(
+        [](bool, IsoClass* self, const Completion& c)
+        {
+          self->done.push_back(c);
+          if (self->dir_ == Direction::OUT && c.slot.Valid())
+          {
+            const auto* p = static_cast<const uint8_t*>(c.slot.data.addr_);
+            self->packets.emplace_back(p, p + c.slot.data.size_);
+            (void)self->ep->ReleaseSlot(c.slot);
+          }
+        },
+        this);
+  }
+
+  ErrorCode Send(const Bytes& bytes)
+  {
+    Endpoint::Slot slot;
+    ErrorCode result = ep->AcquireSlot(slot);
+    if (result != ErrorCode::OK)
+    {
+      return result;
+    }
+    if (!bytes.empty())
+    {
+      std::memcpy(slot.data.addr_, bytes.data(), bytes.size());
+    }
+    return ep->Submit(slot, bytes.size(), false, false);
+  }
+
+  Endpoint* ep = nullptr;
+  std::vector<Completion> done;
+  std::vector<Bytes> packets;
+
+ protected:
+  size_t GetInterfaceCount() const override { return 1U; }
+  bool HasIAD() const override { return false; }
+  size_t GetMaxConfigSize() const override { return sizeof(desc_); }
+
+  ErrorCode WriteDescriptors(const EndpointPool& pool, Speed speed,
+                             uint8_t first_interface, ConstRawData& block) override
+  {
+    const uint16_t size =
+        pool.PacketSizeFor(num_, {dir_, Type::ISOCHRONOUS, mps_}, speed);
+    const auto n = static_cast<uint8_t>(num_);
+    const uint8_t init[sizeof(desc_)] = {
+        9U,
+        4U,
+        first_interface,
+        0U,
+        static_cast<uint8_t>(bind_ ? 1U : 0U),
+        0xffU,
+        0U,
+        0U,
+        0U,
+        7U,
+        5U,
+        static_cast<uint8_t>(dir_ == Direction::IN ? 0x80U | n : n),
+        1U,
+        static_cast<uint8_t>(size & 0xFFU),
+        static_cast<uint8_t>(size >> 8U),
+        1U};
+    std::memcpy(desc_, init, sizeof(desc_));
+    block = {desc_, bind_ ? sizeof(desc_) : size_t{9U}};
+    return ErrorCode::OK;
+  }
+
+  ErrorCode BindEndpoints(EndpointPool& pool, uint8_t, bool in_isr) override
+  {
+    if (!bind_)
+    {
+      return ErrorCode::OK;
+    }
+    if (pool.Get(ep, dir_, num_) != ErrorCode::OK)
+    {
+      return ErrorCode::NOT_FOUND;
+    }
+    ep->SetOnComplete(cb_);
+    return ep->Configure({dir_, Type::ISOCHRONOUS, mps_}, in_isr);
+  }
+
+  void UnbindEndpoints(EndpointPool& pool, bool in_isr) override
+  {
+    if (ep != nullptr)
+    {
+      ep->Close(in_isr);
+      (void)pool.Release(ep);
+      ep = nullptr;
+    }
+  }
+
+  bool OwnsEndpoint(uint8_t ep_addr) const override
+  {
+    return bind_ && (ep_addr & 0x7FU) == static_cast<uint8_t>(num_);
+  }
+
+ private:
+  Direction dir_;
+  EPNumber num_;
+  uint16_t mps_;
+  bool bind_;
+  uint8_t desc_[16] = {};
+  Callback<const Completion&> cb_;
+};
+
+/// 地址与配置 / Address and configuration
+void Enumerate()
+{
+  ControlNone(Make(0x00U, 5U, 9U, 0U, 0U));  // SET_ADDRESS 9
+  TEST_ASSERT(Ctl::daddr == 0x0089U);
+  ControlNone(Make(0x00U, 9U, 1U, 0U, 0U));  // SET_CONFIGURATION 1
+}
+
+/// EP1 等时（两个方向各 64 字节 PMA，另一方向的大小可改），EP2 批量 / EP1 isochronous
+/// (64 bytes of PMA per direction, the other direction's size adjustable), EP2 bulk
+struct IsoFixture
+{
+  explicit IsoFixture(Direction dir, bool drd = false, bool bind = true,
+                      size_t other_pma = 64U)
+      : clean(drd),
+        iso(dir, EPNumber::EP1, 64U, bind),
+        device({{ep0_out.Raw(64), 64},
+                {ep1_out.Raw(), dir == Direction::OUT ? 64U : other_pma},
+                {ep2_out.Raw(), 64}},
+               {{ep0_in.Raw(64), 64},
+                {ep1_in.Raw(), dir == Direction::IN ? 64U : other_pma},
+                {ep2_in.Raw(), 64}},
+               {{&bulk, &iso}})
+  {
+    device.Init(false);
+    device.Start(false);
+    Ctl::BusReset();
+    Irq();
+    Enumerate();
+  }
+
+  struct Clean
+  {
+    explicit Clean(bool drd)
+    {
+      Ctl::Reset();
+      Ctl::drd = drd;
+    }
+  } clean;
+  Block ep0_out, ep0_in, ep1_out, ep1_in, ep2_out, ep2_in;
+  BulkClass bulk{EPNumber::EP2};
+  IsoClass iso;
+  TestDevice device;
+};
+
+/// 主机取 EP1 的一帧 / The host takes one frame of EP1 IN
+Bytes IsoFrame()
+{
+  Bytes data;
+  TEST_ASSERT(Ctl::IsoIn(1, data));
+  Irq();
+  return data;
+}
+
+/// 主机给 EP1 送一帧 / The host sends one frame to EP1 OUT
+void IsoFrameOut(const Bytes& data, bool crc_error = false)
+{
+  TEST_ASSERT(Ctl::IsoOut(1, data, crc_error));
+  Irq();
+}
+
+/// 等时 IN：没有请求时每帧零长度包；两个请求同时在硬件上，N 帧按提交顺序发出，每个
+/// 以 OK 完成；发完之后又是零长度包，不重发旧数据 / Isochronous IN: a zero-length packet
+/// every frame without a request; two requests on the hardware at once, N frames sent
+/// in submission order, each completing OK; zero-length packets again afterwards, no
+/// stale data
+void TestIsoIn(bool drd)
+{
+  IsoFixture f(Direction::IN, drd);
+  IsoClass& k = f.iso;
+  TEST_ASSERT(k.ep != nullptr && k.ep->MaxTransferSize() == 64U);
+  TEST_ASSERT((Ctl::ep[1] & 0x0600U) == ISO_TYPE && (Ctl::ep[1] & STAT_TX) == TX_VALID &&
+              (Ctl::ep[1] & STAT_RX) == 0U && (Ctl::ep[1] & DTOG_TX) == 0U);
+  for (int i = 0; i < 3; ++i)
+  {
+    TEST_ASSERT(IsoFrame().empty());
+  }
+  TEST_ASSERT(k.done.empty());
+
+  std::vector<Bytes> sent;
+  uint8_t seed = 1U;
+  auto submit = [&]()
+  {
+    const Bytes p = Pattern(1U + (seed * 7U) % 64U, seed);
+    ++seed;
+    TEST_ASSERT(k.Send(p) == ErrorCode::OK);
+    sent.push_back(p);
+  };
+  submit();
+  submit();
+  // 启动后的第一帧是零长度包 / The first frame after a start is a zero-length packet
+  TEST_ASSERT(IsoFrame().empty());
+  std::vector<Bytes> got;
+  while (got.size() < sent.size())
+  {
+    const Bytes d = IsoFrame();
+    TEST_ASSERT(!d.empty());
+    got.push_back(d);
+    TEST_ASSERT(k.done.size() == got.size());
+    if (sent.size() < 16U)
+    {
+      submit();
+    }
+  }
+  TEST_ASSERT(got == sent);
+  for (size_t i = 0; i < k.done.size(); ++i)
+  {
+    TEST_ASSERT(k.done[i].result == ErrorCode::OK && k.done[i].actual == sent[i].size());
+  }
+  for (int i = 0; i < 3; ++i)
+  {
+    TEST_ASSERT(IsoFrame().empty());
+  }
+  TEST_ASSERT(k.done.size() == sent.size());
+  // 一帧的 CTR 还没处理时来了请求：刚用过的那块判定之前不装（请求不会被那个零长度包
+  // 当作已发），它进下一次事务用的那块，下一帧就发出 / A request arriving while a frame's
+  // CTR is unhandled: the buffer just used is not loaded before the judgement (the
+  // zero-length packet is not taken for it); it goes into the buffer of the next
+  // transaction and leaves in the next frame
+  Bytes d;
+  TEST_ASSERT(Ctl::IsoIn(1, d) && d.empty());
+  TEST_ASSERT(k.Send(Pattern(40, 0x70)) == ErrorCode::OK);
+  Irq();
+  TEST_ASSERT(k.done.size() == sent.size());
+  TEST_ASSERT(IsoFrame() == Pattern(40, 0x70) && k.done.size() == sent.size() + 1U);
+  TEST_ASSERT(k.done.back().result == ErrorCode::OK && Ctl::iso_bad_stat == 0U);
+}
+
+/// 等时 OUT：没有请求的包丢弃；两个请求按顺序领取之后的包；零长度包和 CRC 错的包照常
+/// 以 OK 完成 / Isochronous OUT: a packet without a request is dropped; two requests take
+/// the following packets in order; a zero-length packet and one with a CRC error
+/// complete OK as usual
+void TestIsoOut(bool drd)
+{
+  IsoFixture f(Direction::OUT, drd);
+  IsoClass& k = f.iso;
+  TEST_ASSERT(k.ep != nullptr && k.ep->MaxTransferSize() == 64U);
+  TEST_ASSERT((Ctl::ep[1] & 0x0600U) == ISO_TYPE && (Ctl::ep[1] & STAT_RX) == RX_VALID &&
+              (Ctl::ep[1] & STAT_TX) == 0U && (Ctl::ep[1] & DTOG_RX) == 0U);
+  IsoFrameOut(Pattern(20, 0x01));
+  TEST_ASSERT(k.done.empty());
+
+  std::vector<Bytes> sent;
+  TEST_ASSERT(k.ep->Receive(64U, false) == ErrorCode::OK);
+  TEST_ASSERT(k.ep->Receive(64U, false) == ErrorCode::OK);
+  for (uint8_t i = 0U; i < 16U; ++i)
+  {
+    const Bytes p = Pattern(i == 5U ? 0U : 1U + (i * 13U) % 64U, static_cast<uint8_t>(i));
+    IsoFrameOut(p, i == 7U);
+    sent.push_back(p);
+    TEST_ASSERT(k.done.size() == sent.size());
+    TEST_ASSERT((Ctl::istr & 0x2000U) == 0U);
+    if (i < 14U)
+    {
+      TEST_ASSERT(k.ep->Receive(64U, false) == ErrorCode::OK);
+    }
+  }
+  TEST_ASSERT(k.packets == sent);
+  for (const Completion& c : k.done)
+  {
+    TEST_ASSERT(c.result == ErrorCode::OK);
+  }
+  // 请求用完：之后的包丢弃 / Requests used up: later packets are dropped
+  IsoFrameOut(Pattern(9, 0x40));
+  TEST_ASSERT(k.done.size() == sent.size() && Ctl::iso_bad_stat == 0U);
+}
+
+/// 停止：没有、一个、两个请求；停止前已完成；停车时线上的事务结束 / Stops with none, one
+/// or two requests, one completed before the stop, a transaction on the wire ending at
+/// the park
+void TestIsoStop(bool drd)
+{
+  {
+    IsoFixture f(Direction::IN, drd);
+    IsoClass& k = f.iso;
+    k.ep->Flush(false);
+    TEST_ASSERT(k.done.empty() && Ctl::Answers(1));
+    // 一个请求还在缓冲里 / One request still in its buffer
+    TEST_ASSERT(k.Send(Pattern(30, 0x10)) == ErrorCode::OK);
+    k.ep->Flush(false);
+    TEST_ASSERT(k.done.size() == 1U && k.done[0].result == ErrorCode::ABORTED);
+    TEST_ASSERT(IsoFrame().empty() && IsoFrame().empty());
+    // 两个请求 / Two requests
+    TEST_ASSERT(k.Send(Pattern(30, 0x11)) == ErrorCode::OK);
+    TEST_ASSERT(k.Send(Pattern(31, 0x12)) == ErrorCode::OK);
+    k.ep->Flush(false);
+    TEST_ASSERT(k.done.size() == 3U && k.done[1].result == ErrorCode::ABORTED &&
+                k.done[2].result == ErrorCode::ABORTED);
+    TEST_ASSERT(IsoFrame().empty() && IsoFrame().empty());
+    TEST_ASSERT((Ctl::ep[1] & STAT_TX) == TX_VALID && Ctl::Answers(1));
+    // 停止前那一包已发完、CTR 还没处理 / The packet went out before the stop, its CTR
+    // not yet handled
+    TEST_ASSERT(k.Send(Pattern(32, 0x13)) == ErrorCode::OK);
+    TEST_ASSERT(k.Send(Pattern(33, 0x14)) == ErrorCode::OK);
+    TEST_ASSERT(IsoFrame().empty());
+    Bytes d;
+    TEST_ASSERT(Ctl::IsoIn(1, d) && d == Pattern(32, 0x13));
+    k.ep->Flush(false);
+    TEST_ASSERT(k.done.size() == 5U && k.done[3].result == ErrorCode::OK &&
+                k.done[3].actual == 32U && k.done[4].result == ErrorCode::ABORTED);
+    Irq();
+    TEST_ASSERT(IsoFrame().empty() && k.done.size() == 5U);
+    // 停车时线上的事务才结束 / The transaction on the wire ends at the park
+    TEST_ASSERT(k.Send(Pattern(34, 0x15)) == ErrorCode::OK);
+    TEST_ASSERT(k.Send(Pattern(35, 0x16)) == ErrorCode::OK);
+    TEST_ASSERT(IsoFrame().empty());
+    bool fired = false;
+    Ctl::before_write = [&](uint8_t num, uint32_t value)
+    {
+      if (num == 1U && !fired && (value & 0x000FU) == 0x000FU)
+      {
+        fired = true;
+        TEST_ASSERT(Ctl::IsoIn(1, d, true) && d == Pattern(34, 0x15));
+      }
+    };
+    k.ep->Flush(false);
+    Ctl::before_write = nullptr;
+    TEST_ASSERT(fired && k.done.size() == 7U && k.done[5].result == ErrorCode::OK &&
+                k.done[6].result == ErrorCode::ABORTED);
+    Irq();
+    TEST_ASSERT(IsoFrame().empty() && Ctl::Answers(1) && k.done.size() == 7U);
+    TEST_ASSERT(Ctl::iso_bad_stat == 0U);
+  }
+  {
+    IsoFixture f(Direction::OUT, drd);
+    IsoClass& k = f.iso;
+    TEST_ASSERT(k.ep->Receive(64U, false) == ErrorCode::OK);
+    TEST_ASSERT(k.ep->Receive(64U, false) == ErrorCode::OK);
+    k.ep->Flush(false);
+    TEST_ASSERT(k.done.size() == 2U && k.done[0].result == ErrorCode::ABORTED &&
+                k.done[1].result == ErrorCode::ABORTED);
+    // 包已收下、CTR 还没处理：停止把它算给最早的请求（actual 40），核心对被停的 OUT
+    // 一律报 ABORTED、不交槽 / A packet taken with its CTR not yet handled: the stop
+    // counts it for the earliest request (actual 40); the core reports a stopped OUT as
+    // ABORTED and hands no slot
+    TEST_ASSERT(k.ep->Receive(64U, false) == ErrorCode::OK);
+    TEST_ASSERT(k.ep->Receive(64U, false) == ErrorCode::OK);
+    TEST_ASSERT(Ctl::IsoOut(1, Pattern(40, 0x20)));
+    k.ep->Flush(false);
+    TEST_ASSERT(k.done.size() == 4U && k.done[2].result == ErrorCode::ABORTED &&
+                k.done[2].actual == 40U && k.done[3].result == ErrorCode::ABORTED &&
+                k.done[3].actual == 0U);
+    TEST_ASSERT(k.packets.empty() && (Ctl::ep[1] & CTR_RX) == 0U);
+    // 停止已把那个包的 CTR 清掉：之后的请求不会再拿到它 / The stop cleared that packet's
+    // CTR: a later request does not get it again
+    TEST_ASSERT(k.ep->Receive(64U, false) == ErrorCode::OK);
+    Irq();
+    TEST_ASSERT(k.done.size() == 4U);
+    IsoFrameOut(Pattern(12, 0x21));
+    TEST_ASSERT(k.done.size() == 5U && k.packets.back() == Pattern(12, 0x21));
+    TEST_ASSERT(Ctl::Answers(1) && Ctl::iso_bad_stat == 0U);
+  }
+}
+
+/// 同号另一方向两头都被拒绝；两份 PMA 大小不同时等时不可配置 / The other direction of
+/// the number is refused both ways; with PMA sizes that differ no isochronous endpoint
+void TestIsoOtherDirection()
+{
+  {
+    IsoFixture f(Direction::IN, false, false);
+    Endpoint* in1 = nullptr;
+    Endpoint* out1 = nullptr;
+    TEST_ASSERT(f.device.Get(in1, Direction::IN, EPNumber::EP1) == ErrorCode::OK);
+    TEST_ASSERT(f.device.Get(out1, Direction::OUT, EPNumber::EP1) == ErrorCode::OK);
+    TEST_ASSERT(in1->Configure({Direction::IN, Type::ISOCHRONOUS, 64U}, false) ==
+                ErrorCode::OK);
+    TEST_ASSERT(out1->Configure({Direction::OUT, Type::BULK, 64U}, false) ==
+                ErrorCode::STATE_ERR);
+    TEST_ASSERT(out1->Configure({Direction::OUT, Type::ISOCHRONOUS, 64U}, false) ==
+                ErrorCode::STATE_ERR);
+    in1->Close(false);
+    TEST_ASSERT(out1->Configure({Direction::OUT, Type::BULK, 64U}, false) ==
+                ErrorCode::OK);
+    TEST_ASSERT(in1->Configure({Direction::IN, Type::ISOCHRONOUS, 64U}, false) ==
+                ErrorCode::STATE_ERR);
+    // 放开之后两种都行 / Free again, either works
+    out1->Close(false);
+    TEST_ASSERT(in1->Configure({Direction::IN, Type::ISOCHRONOUS, 64U}, false) ==
+                ErrorCode::OK);
+    in1->Close(false);
+    TEST_ASSERT(in1->Configure({Direction::IN, Type::BULK, 64U}, false) == ErrorCode::OK);
+    TEST_ASSERT(out1->Configure({Direction::OUT, Type::BULK, 64U}, false) ==
+                ErrorCode::OK);
+    TEST_ASSERT(Ctl::iso_bad_stat == 0U);
+  }
+  {
+    IsoFixture f(Direction::IN, false, false, 32U);
+    Endpoint* in1 = nullptr;
+    TEST_ASSERT(f.device.Get(in1, Direction::IN, EPNumber::EP1) == ErrorCode::OK);
+    TEST_ASSERT(f.device.PacketSizeFor(EPNumber::EP1,
+                                       {Direction::IN, Type::ISOCHRONOUS, 64U},
+                                       Speed::FULL) == 0U);
+    TEST_ASSERT(in1->Configure({Direction::IN, Type::ISOCHRONOUS, 64U}, false) ==
+                ErrorCode::NO_BUFF);
+  }
+}
+
+/// Stall 写 STAT 00、主机得不到应答；ClearStall 从 00 回到 11 和缓冲 0；已是 11 时两个
+/// 已装的请求按提交顺序发出 / Stall writes STAT 00 and the host gets no answer;
+/// ClearStall from 00 returns to 11 and buffer 0; at 11 two armed requests go out in
+/// submission order
+void TestIsoStall()
+{
+  IsoFixture f(Direction::IN);
+  IsoClass& k = f.iso;
+  TEST_ASSERT(IsoFrame().empty());  // DTOG_TX 到 1 / DTOG_TX to 1
+  TEST_ASSERT(k.ep->Stall(false) == ErrorCode::OK);
+  TEST_ASSERT((Ctl::ep[1] & STAT_TX) == 0U && (Ctl::ep[1] & 0x0600U) == ISO_TYPE);
+  Bytes d;
+  TEST_ASSERT(!Ctl::IsoIn(1, d));
+  TEST_ASSERT(k.ep->ClearStall(false) == ErrorCode::OK);
+  TEST_ASSERT((Ctl::ep[1] & STAT_TX) == TX_VALID && (Ctl::ep[1] & DTOG_TX) == 0U);
+  TEST_ASSERT(IsoFrame().empty());
+  TEST_ASSERT(k.Send(Pattern(20, 0x30)) == ErrorCode::OK);
+  TEST_ASSERT(IsoFrame().empty() && IsoFrame() == Pattern(20, 0x30));
+  // 端点在 11、DTOG 为 1、第一个请求在缓冲 1、第二个在缓冲 0：ClearStall 什么也不改，
+  // 把 DTOG 改回 0 会先发第二个 / At 11 with DTOG 1, the first request in buffer 1 and
+  // the second in buffer 0: ClearStall changes nothing; DTOG back to 0 would send the
+  // second one first
+  if ((Ctl::ep[1] & DTOG_TX) != 0U)
+  {
+    TEST_ASSERT(IsoFrame().empty());
+  }
+  TEST_ASSERT((Ctl::ep[1] & DTOG_TX) == 0U);
+  TEST_ASSERT(k.Send(Pattern(21, 0x31)) == ErrorCode::OK);
+  TEST_ASSERT(IsoFrame().empty());
+  TEST_ASSERT((Ctl::ep[1] & DTOG_TX) != 0U);
+  TEST_ASSERT(k.Send(Pattern(22, 0x32)) == ErrorCode::OK);
+  const uint32_t before = Ctl::ep[1];
+  TEST_ASSERT(k.ep->ClearStall(false) == ErrorCode::OK);
+  TEST_ASSERT(Ctl::ep[1] == before);
+  TEST_ASSERT(IsoFrame() == Pattern(21, 0x31));
+  TEST_ASSERT(IsoFrame() == Pattern(22, 0x32));
+  TEST_ASSERT(IsoFrame().empty());
+  TEST_ASSERT(k.done.size() == 3U && Ctl::iso_bad_stat == 0U);
+}
+
+/// 总线复位：硬件上的请求 ABORTED，重新配置后照常 / Bus reset: the requests on the
+/// hardware are ABORTED; normal after the new configuration
+void TestIsoBusReset()
+{
+  IsoFixture f(Direction::IN);
+  IsoClass& k = f.iso;
+  TEST_ASSERT(k.Send(Pattern(20, 0x40)) == ErrorCode::OK);
+  TEST_ASSERT(k.Send(Pattern(21, 0x41)) == ErrorCode::OK);
+  Ctl::BusReset();
+  Irq();
+  TEST_ASSERT(k.done.size() == 2U && k.done[0].result == ErrorCode::ABORTED &&
+              k.done[1].result == ErrorCode::ABORTED);
+  Enumerate();
+  TEST_ASSERT(k.ep != nullptr && (Ctl::ep[1] & STAT_TX) == TX_VALID);
+  TEST_ASSERT(k.Send(Pattern(22, 0x42)) == ErrorCode::OK);
+  TEST_ASSERT(IsoFrame().empty() && IsoFrame() == Pattern(22, 0x42));
+  TEST_ASSERT(k.done.size() == 3U && k.done[2].result == ErrorCode::OK);
+  // 关闭后重新配置：DTOG 回到缓冲 0 / Configured again after a close: DTOG back at
+  // buffer 0
+  if ((Ctl::ep[1] & DTOG_TX) == 0U)
+  {
+    TEST_ASSERT(IsoFrame().empty());
+  }
+  TEST_ASSERT((Ctl::ep[1] & DTOG_TX) != 0U);
+  k.ep->Close(false);
+  TEST_ASSERT(k.ep->Configure({Direction::IN, Type::ISOCHRONOUS, 64U}, false) ==
+              ErrorCode::OK);
+  TEST_ASSERT((Ctl::ep[1] & (DTOG_TX | STAT_TX)) == TX_VALID);
+  TEST_ASSERT(Ctl::iso_bad_stat == 0U);
+}
+
+/// 等状态包期间等时端点的 CTR 结束等待，在同一次中断里处理 / While the status packet is
+/// awaited, the CTR of an isochronous endpoint ends the wait and is handled in the same
+/// interrupt
+void TestIsoStatusWindow()
+{
+  IsoFixture f(Direction::IN);
+  IsoClass& k = f.iso;
+  TEST_ASSERT(k.Send(Pattern(20, 0x50)) == ErrorCode::OK);
+  TEST_ASSERT(IsoFrame().empty());
+  f.bulk.response = Pattern(10, 0x51);
+  SendSetup(Make(0xC1U, REQ_IN, 0U, 0U, 10U));
+  Irq();
+  TEST_ASSERT(TakeIn(0) == Pattern(10, 0x51));
+  TEST_ASSERT((Ctl::ep[0] & STAT_RX) == RX_VALID);
+  const unsigned masks = f.device.masks;
+  Bytes d;
+  TEST_ASSERT(Ctl::IsoIn(1, d) && d == Pattern(20, 0x50));
+  Irq();
+  TEST_ASSERT(f.device.masks > masks);
+  TEST_ASSERT(k.done.size() == 1U && k.done[0].result == ErrorCode::OK);
+  SendOut(0, {});
+  TEST_ASSERT(f.bulk.completes == 1U);
+}
+
 }  // namespace
 
 void test_usb_fsdev_control()
@@ -2376,6 +3101,20 @@ void test_usb_fsdev_clear_out() { TestClearStallKeepsOut(); }
 void test_usb_fsdev_clear_in() { TestClearStallKeepsIn(); }
 void test_usb_fsdev_clear_halted() { TestClearStallHalted(); }
 void test_usb_fsdev_clear_race() { TestClearStallRace(); }
+void test_usb_fsdev_iso_in() { TestIsoIn(false); }
+void test_usb_fsdev_iso_out() { TestIsoOut(false); }
+void test_usb_fsdev_iso_stop() { TestIsoStop(false); }
+void test_usb_fsdev_iso_other() { TestIsoOtherDirection(); }
+void test_usb_fsdev_iso_stall() { TestIsoStall(); }
+void test_usb_fsdev_iso_reset() { TestIsoBusReset(); }
+void test_usb_fsdev_iso_window() { TestIsoStatusWindow(); }
+
+void test_usb_fsdev_iso_drd()
+{
+  TestIsoIn(true);
+  TestIsoOut(true);
+  TestIsoStop(true);
+}
 
 void test_usb_fsdev_setup()
 {

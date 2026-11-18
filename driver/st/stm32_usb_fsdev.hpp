@@ -172,6 +172,9 @@ class STM32USBDeviceDevFs : public USB::FSDevDevice
   void SetRxBuf(uint8_t num, uint16_t addr) override;
   void SetRxCountEncoded(uint8_t num, uint16_t mps) override;
   uint16_t GetRxCount(uint8_t num) override;
+  void SetIsoTxCount(uint8_t num, uint8_t buffer, uint16_t bytes) override;
+  void SetIsoRxSize(uint8_t num, uint8_t buffer, uint16_t mps) override;
+  uint16_t GetIsoRxCount(uint8_t num, uint8_t buffer) override;
   void PmaWrite(uint16_t addr, const uint8_t* src, size_t len) override;
   void PmaRead(uint8_t* dst, uint16_t addr, size_t len) override;
   void InitRegs() override;

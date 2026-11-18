@@ -18,7 +18,8 @@
  * 槽内存。寄存器只在设备服务的 owner 中访问（ServiceHardware 和端点的后端函数），例外
  * 只有 Dispatch 里、owner 之外的几步：EP0 的快速确认，状态 OUT 的晚放行，以及等状态包
  * 期间把其他端点的完成先记下（见 FSDevDevice::EnableEp0FastAck、EnableEp0LateStatus）。
- * 本后端不进临界区，也不关全部中断。等时端点不支持。
+ * 本后端不进临界区，也不关全部中断。等时端点用同号两个方向的 PMA 做双缓冲，见
+ * FSDevEndpoint 的类说明。
  * The hardware has one PMA packet buffer per endpoint and direction, and the CPU copies
  * packet by packet between the slot and the PMA; the hardware never touches slot
  * memory. Registers are accessed only in the device service's owner (ServiceHardware
@@ -26,8 +27,9 @@
  * outside the owner: the fast acknowledgement of EP0, the late release of the status
  * OUT, and latching the other endpoints' completions while the status packet is awaited
  * (see FSDevDevice::EnableEp0FastAck and EnableEp0LateStatus). This backend takes no
- * critical section and never disables all interrupts. Isochronous endpoints are not
- * supported.
+ * critical section and never disables all interrupts. An isochronous endpoint uses the
+ * PMA of both directions of its number as a double buffer, see the class notes of
+ * FSDevEndpoint.
  *
  * 平台的设备类派生 FSDevDevice：构造时给出寄存器块和 PMA 的地址，打开时钟后调用
  * InitController；实现 Connect、MaskInterrupt、UnmaskInterrupt，可选
@@ -170,6 +172,76 @@ class FSDevDevice;
  *       sent twice or one packet more taken", and about 0.26 with the immediate second
  *       write alone; with the address change 0 in 18 rounds and no transfer error at
  *       the host. The address is changed for 3.2 to 4.2 us.
+ *
+ * @note 等时端点（RM0008 p.634–635，CH32 RM p.325）。EP_TYPE 为 10，硬件固定双缓冲：
+ *       缓冲 0 在 BTABLE 的发送位置（ADDRn_TX/COUNTn_TX），缓冲 1 在接收位置
+ *       （ADDRn_RX/COUNTn_RX）；OUT 的两个 COUNT 都用接收的块编码（p.650 写在
+ *       COUNTn_RX 下的“等时 IN 端点有两个 USB_COUNTn_TX”按笔误读作 OUT）。本方向的
+ *       DTOG 指出硬件下一次事务用哪一块，每个事务结束硬件翻转 DTOG 并置本方向 CTR，
+ *       STAT 不变。缓冲 0 用本端点自己的 PMA，缓冲 1 借用同号另一方向的 PMA，两份
+ *       大小必须相同；所以等时端点占用整个 EPnR，同号另一方向不能配置。
+ *       STAT 只用 00（禁用）和 11（有效）。配置时两块都清空、DTOG 指向缓冲 0、STAT
+ *       置 11，此后一直有效：IN 在没有请求的那块上发零长度包，从不重发旧数据；OUT
+ *       收到包而没有请求时丢弃。每个请求一个包，硬件上最多两个请求（一块缓冲一个），
+ *       按提交顺序进缓冲：IN 请求拷进硬件下一次不用的那块，那块还在排队时等到释放它
+ *       的 CTR 再拷；这一帧的事务已结束而 CTR 还没处理时，拷进下一次事务用的那块（它
+ *       空着的话，下一次事务要到下一帧）。所以启动之后第一帧通常是零长度包（一帧延
+ *       迟）。OUT 请求按顺序领取之后收到的包。CRC 错的 OUT 包手册算作正确事务，照常
+ *       以 OK 完成（ISTR.ERR 不分端点）。
+ *       每个 CTR 必须在下一帧的事务结束之前处理：这时 DTOG 只翻了一次，刚用过的那块
+ *       是 DTOG 的另一块；晚两帧以上，IN 会把完成记到错的请求上，OUT 的包会被下一个
+ *       包覆盖。等状态包期间（FSDevDevice::EnableEp0LateStatus）等时端点的 CTR 不被
+ *       记下，而是结束等待、让 owner 进来。
+ *       停止、Close 和复位不等总线：先把地址换成停车号，读 DTOG 和 CTR，CTR 置位就按
+ *       刚用过的那块判定哪个请求已完成，其余请求 ABORTED，两块的 COUNT 清回空，再换
+ *       回地址，STAT 仍为 11。停车期间到达的令牌没有应答（主机少一帧）；停车时已在
+ *       线上、此后才结束的事务留下的 CTR 在没有请求时清掉。Stall 写 STAT 00，主机的
+ *       令牌得不到应答；ClearStall 从 00 恢复时两块清空、DTOG 指向缓冲 0、写回 11；
+ *       端点本来就是 11 时什么也不改，硬件上的请求原样留着（等时没有数据翻转，DTOG
+ *       只选缓冲，改它会打乱已装好的两个请求的顺序）。
+ *       Isochronous endpoints (RM0008 p.634-635, CH32 RM p.325). EP_TYPE is 10 and the
+ *       hardware always double-buffers: buffer 0 sits at the transmit location of the
+ *       BTABLE (ADDRn_TX/COUNTn_TX), buffer 1 at the receive location (ADDRn_RX/
+ *       COUNTn_RX); both COUNTs of an OUT use the receive block encoding (the note
+ *       under COUNTn_RX on p.650, "isochronous IN endpoints have two USB_COUNTn_TX",
+ *       is read as a copy error for OUT). This direction's DTOG tells which buffer
+ *       the next transaction uses, and at the end of every transaction the hardware
+ *       toggles DTOG and sets this direction's CTR, leaving STAT alone. Buffer 0 is
+ *       this endpoint's own PMA, buffer 1 borrows the PMA of the other direction of
+ *       the number, and both must have the same size; an isochronous endpoint
+ *       therefore takes the whole EPnR and the other direction of the number cannot
+ *       be configured.
+ *       STAT is only 00 (disabled) or 11 (valid). Configure empties both buffers,
+ *       points DTOG at buffer 0 and sets STAT 11, which it keeps from then on: an IN
+ *       sends a zero-length packet from a buffer without a request and never sends
+ *       stale data again; an OUT packet arriving with no request is dropped. One
+ *       packet per request, at most two requests on the hardware (one per buffer),
+ *       entering the buffers in the order they were submitted: an IN request is
+ *       copied into the buffer the next transaction does not use, and if that one is
+ *       still queued it waits for the CTR that frees it; when this frame's
+ *       transaction is over with its CTR not yet handled, it goes into the buffer the
+ *       next transaction uses (if that one is empty: the next transaction comes only
+ *       in the next frame). The first frame after a start is therefore usually a
+ *       zero-length packet (one frame of latency). OUT requests take the packets
+ *       received afterwards in order. An OUT packet with a CRC error
+ *       counts as a correct transaction in the manual and completes OK (ISTR.ERR is
+ *       not per endpoint).
+ *       Every CTR must be handled before the transaction of the next frame ends: DTOG
+ *       has then toggled once and the buffer just used is the one DTOG does not point
+ *       at; two or more frames late, an IN completion is credited to the wrong request
+ *       and an OUT packet is overwritten by the next one. While the status packet is
+ *       awaited (FSDevDevice::EnableEp0LateStatus) the CTR of an isochronous endpoint
+ *       is not latched; it ends the wait and lets the owner in.
+ *       Stop, Close and reset do not wait for the bus: the address is parked, DTOG and
+ *       CTR are read, a set CTR decides from the buffer just used which request has
+ *       completed, the other requests are ABORTED, both COUNTs are emptied, the address
+ *       is set back and STAT stays 11. A token arriving while parked gets no answer
+ *       (the host misses one frame); the CTR of a transaction already on the wire at
+ *       the park and ending afterwards is cleared while there is no request. Stall
+ *       writes STAT 00, so the host's tokens get no answer; ClearStall from 00 empties
+ *       both buffers, points DTOG at buffer 0 and writes 11 back; an endpoint already at
+ *       11 is left unchanged with its requests armed (isochronous has no data toggle,
+ *       DTOG only selects the buffer, and changing it would reorder two armed requests).
  */
 class FSDevEndpoint : public Endpoint
 {
@@ -190,13 +262,29 @@ class FSDevEndpoint : public Endpoint
                 uint16_t pma_addr, size_t pma_size, uint8_t slot_count = 0);
 
  protected:
-  /// 同号另一方向已启用时类型必须相同：两个方向共用 EP_TYPE / The other direction
-  /// of the number, if enabled, must have the same type: both share EP_TYPE
+  /**
+   * @brief 同号另一方向已启用时类型必须相同：两个方向共用 EP_TYPE / The other direction
+   *        of the number, if enabled, must have the same type: both share EP_TYPE
+   * @return 等时：同号另一方向已启用时 STATE_ERR；本端点不是等时、另一方向被等时端点
+   *         占用时也是 STATE_ERR；其余类型不同时 FAILED。
+   *         Isochronous: STATE_ERR while the other direction of the number is enabled;
+   *         STATE_ERR as well for a non-isochronous endpoint while the other direction
+   *         is an isochronous endpoint; FAILED for any other type mismatch.
+   */
   ErrorCode CheckHardware(const Config& cfg) const override;
-  /// 写类型、缓冲地址和 OUT 的接收区大小，清本方向 DTOG，置 NAK / Write the type, the
-  /// buffer address and the receive size of OUT, clear this direction's DTOG, set NAK
+  /**
+   * @brief 写类型、缓冲地址和 OUT 的接收区大小，清本方向 DTOG，置 NAK / Write the type,
+   *        the buffer address and the receive size of OUT, clear this direction's DTOG,
+   *        set NAK
+   * @note 等时：两块缓冲的地址都写进 BTABLE，IN 的两个 COUNT 写 0，OUT 的两个 COUNT 写
+   *       接收区大小；本方向 DTOG 指向缓冲 0，STAT 置 11。
+   *       Isochronous: both buffer addresses go into the BTABLE, both COUNTs of an IN
+   *       are written 0 and both of an OUT get the receive size; this direction's DTOG
+   *       points at buffer 0 and STAT is set to 11.
+   */
   void ConfigureHardware(const Config& cfg) override;
-  /// 非 EP0 置 DISABLED；EP0 常驻不动 / DISABLED for non-EP0; EP0 stays as it is
+  /// 非 EP0 置 DISABLED（等时端点同时放开同号另一方向）；EP0 常驻不动 / DISABLED for
+  /// non-EP0 (an isochronous one also frees the other direction); EP0 stays
   void CloseHardware(bool in_isr) override;
   /**
    * @brief 记下请求并装填第一包 / Record the request and arm the first packet
@@ -205,6 +293,11 @@ class FSDevEndpoint : public Endpoint
    *       FAILED when the arm cannot be written. Registers that ignore writes during the
    *       SE0 of a bus reset are no failure: the request stays in flight and the bus
    *       reset that follows ends it.
+   * @note 等时：请求排在硬件上已有的请求之后。IN 的数据在下一块空闲缓冲可用时拷进去并写
+   *       COUNT，不改 STAT；OUT 只记下请求。见类说明。
+   *       Isochronous: the request queues behind those already on the hardware. An IN
+   *       is copied into the next free buffer, with its COUNT, as soon as that buffer is
+   *       available, STAT untouched; an OUT is only recorded. See the class notes.
    */
   ErrorCode StartHardware(const HwRequest& request, bool in_isr) override;
   /**
@@ -240,12 +333,25 @@ class FSDevEndpoint : public Endpoint
    *       into the slot (which was given back). If NAK cannot be written it is written
    *       once more in the next ServiceHardware, and TIMEOUT is reported if that fails
    *       too.
+   * @note 等时：从不返回 PENDING。停车、读 DTOG 和 CTR、判定、清 COUNT、换回地址都在本
+   *       函数里做完（见类说明）；第一次调用返回最早那个请求的结果，硬件上的其余请求在
+   *       核心随后的调用里依次得到 ABORTED。
+   *       Isochronous: never PENDING. Parking, reading DTOG and CTR, the decision,
+   *       emptying the COUNTs and setting the address back all happen in this call (see
+   *       the class notes); the first call returns the outcome of the earliest request,
+   *       and the core's following calls get ABORTED for the others on the hardware.
    */
   StopOutcome StopHardware(bool in_isr) override;
-  /// 置 STALL / Set STALL
+  /// 置 STALL；等时端点写 STAT 00 / Set STALL; STAT 00 on an isochronous endpoint
   ErrorCode StallHardware(bool in_isr) override;
-  /// 非 EP0 复位 DATA0 并置 NAK；EP0 无操作（下一个 SETUP 置两方向 NAK）/ Non-EP0: reset
-  /// DATA0 and set NAK; no-op on EP0 (the next SETUP sets both directions to NAK)
+  /**
+   * @brief 非 EP0 复位 DATA0 并置 NAK；EP0 无操作（下一个 SETUP 置两方向 NAK）/ Non-EP0:
+   *        reset DATA0 and set NAK; no-op on EP0 (the next SETUP sets both directions to
+   *        NAK)
+   * @note 等时：STAT 为 00 时两块清空、DTOG 指向缓冲 0、写 11；已是 11 时不改。
+   *       Isochronous: from STAT 00 both buffers are emptied, DTOG points at buffer 0
+   *       and 11 is written; at 11 nothing changes.
+   */
   ErrorCode ClearStallHardware(bool in_isr) override;
   /**
    * @brief 最大包长由 PMA 缓冲决定 / The largest packet follows from the PMA buffer
@@ -255,6 +361,13 @@ class FSDevEndpoint : public Endpoint
    *       IN: the buffer size; OUT: rounded down to 32-byte blocks above 62 bytes (block
    *       encoding of COUNT_RX); both bound by the 10-bit count (1023); CONTROL at most
    *       64. No packet limit per request: the backend advances packet by packet.
+   * @note 等时：同上的包长上限，但同号另一方向的 PMA 缓冲大小不同（或没有）时为 0，
+   *       Configure 当场拒绝；一个请求一个包，硬件上最多 2 个请求，direct_memory 为
+   *       false。
+   *       Isochronous: the same packet bound, but 0 when the PMA buffer of the other
+   *       direction of the number has another size (or none), so Configure refuses at
+   *       once; one packet per request, at most 2 requests on the hardware,
+   *       direct_memory false.
    */
   HwLimits HardwareLimits(Direction direction, Type type) const override;
 
@@ -334,6 +447,41 @@ class FSDevEndpoint : public Endpoint
    */
   void AdvanceStop(bool in_isr, uint16_t frame, bool force);
 
+  /// 同号另一方向的端点，没有时为空 / The endpoint of the other direction of the
+  /// number, null if there is none
+  FSDevEndpoint* Partner() const;
+  /// 同号另一方向是已配置的等时端点 / The other direction of the number is a
+  /// configured isochronous endpoint
+  bool PartnerIsochronous() const;
+  /// 等时：把缓冲 buffer 写回空（IN 的 COUNT 写 0，OUT 写接收区大小）/ Isochronous:
+  /// empty buffer `buffer` (an IN's COUNT written 0, an OUT's the receive size)
+  void IsoEmpty(uint8_t buffer);
+  /// 等时 IN：排队的请求按顺序拷进空出来的缓冲 / Isochronous IN: copy queued requests
+  /// into freed buffers in order
+  void IsoLoad();
+  /**
+   * @brief 等时：ServiceHardware 中本方向的 CTR / Isochronous: this direction's CTR in
+   *        ServiceHardware
+   * @note 刚用过的缓冲 = DTOG 的另一块。IN：那块装着请求就以 OK 完成它，那块写回空，再
+   *       IsoLoad；OUT：有请求就把那块的包拷进它的槽并完成，没有就丢弃。
+   *       The buffer just used is the one DTOG does not point at. IN: a request in it
+   *       completes OK, the buffer is emptied, then IsoLoad; OUT: the packet in it is
+   *       copied into the earliest request's slot and completes it, or dropped if
+   *       there is no request.
+   */
+  void IsoOnPacket(bool in_isr);
+  /// 等时的 StopHardware，见类说明 / StopHardware of an isochronous endpoint, see the
+  /// class notes
+  StopOutcome IsoStop();
+  /**
+   * @brief 等时：把本方向 STAT 写成 target（00 或 11）/ Isochronous: write this
+   *        direction's STAT to target (00 or 11)
+   * @note 等时端点的 STAT 硬件从不改动，写一次即可，不用停车和读回重算。
+   *       The hardware never changes the STAT of an isochronous endpoint, so one write
+   *       does, without parking or recomputing from a read-back.
+   */
+  void IsoWriteStat(uint32_t target);
+
   FSDevDevice& device_;      ///< 所属设备；构造时固定 / Owning device; fixed
   const uint16_t pma_addr_;  ///< PMA 字节偏移；构造时固定 / PMA byte offset; fixed
   const size_t pma_size_;    ///< PMA 字节数；构造时固定 / PMA bytes; fixed
@@ -368,6 +516,33 @@ class FSDevEndpoint : public Endpoint
   /// the host ACKed; OUT: bytes received. Zeroed by Start, raised per collected packet
   size_t progress_ = 0;
   /// @}
+
+  /// @name 等时：仅 owner / Isochronous: owner only
+  /// @{
+  /// 硬件上最多的等时请求数，一块缓冲一个 / Isochronous requests on the hardware at
+  /// most, one per buffer
+  static constexpr uint8_t ISO_REQUESTS = 2U;
+  /// 请求已被这次停止结束，等核心的下一次 StopHardware 报告 / The request was ended by
+  /// this stop and awaits the core's next StopHardware to report it
+  static constexpr int8_t ISO_STOPPED = -2;
+  /// 已配置为等时；ConfigureHardware 置位，CloseHardware 清除 / Configured as
+  /// isochronous; set by ConfigureHardware, cleared by CloseHardware
+  bool iso_ = false;
+  /// 一个等时请求 / One isochronous request
+  struct IsoRequest
+  {
+    uint8_t* data = nullptr;  ///< 槽内存 / Slot memory
+    size_t length = 0;        ///< 请求长度，至多一包 / Request length, one packet at most
+    /// IN：所在缓冲（0、1），还没进缓冲为 -1；停止中待报告为 ISO_STOPPED / IN: its
+    /// buffer (0, 1), -1 while not in one; ISO_STOPPED while a stop still reports it
+    int8_t buffer = -1;
+  };
+  /// 硬件上的等时请求，按提交顺序的环 / Isochronous requests on the hardware, a ring
+  /// in submission order
+  IsoRequest iso_req_[ISO_REQUESTS] = {};
+  uint8_t iso_head_ = 0;   ///< 最早那个请求的下标 / Index of the earliest request
+  uint8_t iso_count_ = 0;  ///< 硬件上的请求数 / Requests on the hardware
+  /// @}
 };
 
 /**
@@ -387,7 +562,16 @@ class FSDevPool : public EndpointPool
   static constexpr uint8_t MAX_EPS = 8;
   static_assert(MAX_EPS <= FSDEV_EP_PARK_ADDR, "the park address is an endpoint number");
 
-  /// 端点配置：槽内存与 PMA 缓冲字节 / Endpoint configuration: slot memory and PMA bytes
+  /**
+   * @brief 端点配置：槽内存与 PMA 缓冲字节 / Endpoint configuration: slot memory and PMA
+   *        bytes
+   * @note 等时端点用同号两个方向的 PMA 做双缓冲：本方向的是缓冲 0，另一方向的是缓冲 1，
+   *       两项的 pma_size 必须相同；那个方向只出 PMA，不能再配置成端点。
+   *       An isochronous endpoint double-buffers in the PMA of both directions of its
+   *       number: its own is buffer 0, the other direction's is buffer 1, and both
+   *       entries must have the same pma_size; that direction lends its PMA only and
+   *       cannot be configured as an endpoint as well.
+   */
   struct EPConfig
   {
     RawData buffer;   ///< 槽内存 / Slot memory
@@ -636,6 +820,27 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
   virtual void SetRxCountEncoded(uint8_t num, uint16_t mps);
   /// 端点 num 收到的字节数 / Bytes endpoint num received
   virtual uint16_t GetRxCount(uint8_t num);
+  /**
+   * @brief 等时 IN：写缓冲 buffer 下一个包的字节数 / Isochronous IN: write the byte count
+   *        of the next packet of buffer `buffer`
+   * @note 缓冲 0 是发送位置的 COUNT（COUNTn_TX_0），缓冲 1 是接收位置的 COUNT
+   *       （COUNTn_TX_1，只写计数位）。
+   *       Buffer 0 is the COUNT of the transmit location (COUNTn_TX_0), buffer 1 the
+   *       COUNT of the receive location (COUNTn_TX_1, count bits only).
+   */
+  virtual void SetIsoTxCount(uint8_t num, uint8_t buffer, uint16_t bytes);
+  /**
+   * @brief 等时 OUT：按包长 mps 写缓冲 buffer 的接收区大小（块编码）/ Isochronous OUT:
+   *        write the receive size of buffer `buffer` for packet size mps (block encoding)
+   * @note 缓冲 0 写在发送位置的 COUNT（COUNTn_RX_0），缓冲 1 写在接收位置的 COUNT
+   *       （COUNTn_RX_1）。
+   *       Buffer 0 goes into the COUNT of the transmit location (COUNTn_RX_0), buffer 1
+   *       into that of the receive location (COUNTn_RX_1).
+   */
+  virtual void SetIsoRxSize(uint8_t num, uint8_t buffer, uint16_t mps);
+  /// 等时 OUT：缓冲 buffer 收到的字节数 / Isochronous OUT: bytes buffer `buffer`
+  /// received
+  virtual uint16_t GetIsoRxCount(uint8_t num, uint8_t buffer);
   /// 把 len 字节拷进 PMA 偏移 addr / Copy len bytes into the PMA at offset addr
   virtual void PmaWrite(uint16_t addr, const uint8_t* src, size_t len);
   /// 从 PMA 偏移 addr 拷出 len 字节 / Copy len bytes out of the PMA at offset addr
@@ -758,8 +963,11 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
    *         束，owner 照常进来 / true: only completions of other endpoints and starts of
    *         frame were pending and are latched, the owner stays out; false: the wait is
    *         over and the owner comes in as usual
-   * @note 调用者：Dispatch，在快速确认之后、owner 之前。
-   *       Caller: Dispatch, after the fast acknowledgement and before the owner.
+   * @note 调用者：Dispatch，在快速确认之后、owner 之前。等时端点的 CTR 不记下：它结束
+   *       等待，owner 照常进来（双缓冲只容得下一帧的延迟）。
+   *       Caller: Dispatch, after the fast acknowledgement and before the owner. The
+   *       CTR of an isochronous endpoint is not latched: it ends the wait and the owner
+   *       comes in as usual (the double buffer tolerates one frame of delay only).
    */
   bool HoldStatusWindow();
   /// owner 处理等状态包期间记下的完成 / The owner handles the completions latched
