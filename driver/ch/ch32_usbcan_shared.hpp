@@ -78,6 +78,13 @@ inline std::atomic<IrqFn> usb_irq_cb{nullptr};
 // USB entry called from the low-priority vector only: the USBD device is entered
 // from this line alone.
 inline std::atomic<IrqFn> usb_lp_irq_cb{nullptr};
+// 只在高优先级向量里调用的 USB 入口：USBD 的等时完成只报在这条线上（CH32V203 实测，见
+// CH32USBDeviceFS）。两条线优先级相同，USBD 设备仍是一次只从一条线进入。
+// USB entry called from the high-priority vector only: USBD reports isochronous
+// completions on this line only (measured on a CH32V203, see CH32USBDeviceFS). Both
+// lines have the same priority, so the USBD device is still entered from one line at a
+// time.
+inline std::atomic<IrqFn> usb_hp_irq_cb{nullptr};
 inline std::atomic<IrqFn> can1_rx0_cb{nullptr};
 inline std::atomic<IrqFn> can1_tx_cb{nullptr};
 
@@ -85,6 +92,7 @@ inline std::atomic<IrqFn> can1_tx_cb{nullptr};
 // Out-of-line registration retains the shared ISR object when linking libxr.a.
 void register_usb_irq(IrqFn fn);
 void register_usb_lp_irq(IrqFn fn);
+void register_usb_hp_irq(IrqFn fn);
 void register_can1_rx0(IrqFn fn);
 void register_can1_tx(IrqFn fn);
 

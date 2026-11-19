@@ -158,7 +158,99 @@ STM32USBDeviceDevFs::STM32USBDeviceDevFs(
   // may be used.
   EnableEp0FastAck();
   EnableEp0LateStatus();
-  InitController();
+  // 构造时断开一次（含 D+ 拉低，见类说明），Start 在 DETACH_US 之后接上。
+  // Detach once at construction (with D+ held low, see the class notes); Start attaches
+  // after DETACH_US.
+  DetachAtConstruction();
+}
+
+#if LIBXR_STM32_FSDEV_DP_DETACH
+namespace
+{
+/// USB 外设时钟：开 / 关；本系列没有 HAL 宏时什么也不做 / USB peripheral clock on / off;
+/// nothing where the family has no HAL macro
+bool UsbClock(bool on)
+{
+#if defined(__HAL_RCC_USB_CLK_ENABLE) && defined(__HAL_RCC_USB_CLK_DISABLE)
+  if (on)
+  {
+    __HAL_RCC_USB_CLK_ENABLE();
+  }
+  else
+  {
+    __HAL_RCC_USB_CLK_DISABLE();
+  }
+  return true;
+#elif defined(__HAL_RCC_USB_FS_CLK_ENABLE) && defined(__HAL_RCC_USB_FS_CLK_DISABLE)
+  if (on)
+  {
+    __HAL_RCC_USB_FS_CLK_ENABLE();
+  }
+  else
+  {
+    __HAL_RCC_USB_FS_CLK_DISABLE();
+  }
+  return true;
+#else
+  UNUSED(on);
+  return false;
+#endif
+}
+}  // namespace
+#endif
+
+bool STM32USBDeviceDevFs::HoldDetached()
+{
+#if LIBXR_STM32_FSDEV_DP_DETACH
+  // 收发器断电，再关时钟；寄存器和 PMA 保留。 / Transceiver powered down, then the clock
+  // off; registers and PMA are kept.
+  WriteCntr(static_cast<uint16_t>(USB::FSDEV_CNTR_FRES | USB::FSDEV_CNTR_PDWN));
+  const bool clock_off = UsbClock(false);
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  // 先把输出锁存写 0，再切成推挽输出，切换时不会先出一个高电平。 / The output latch is
+  // written 0 before the switch to push-pull output, so no high level appears first.
+#if defined(GPIO_CRH_MODE12)
+  // F1：PA12 是 CRH 的 [19:16]（MODE、CNF）。 / F1: PA12 is CRH[19:16] (MODE, CNF).
+  dp_saved_[0] = GPIOA->CRH & (0xFUL << 16U);
+  dp_saved_[1] = GPIOA->ODR & (1UL << 12U);
+  GPIOA->BSRR = 1UL << (12U + 16U);
+  GPIOA->CRH = (GPIOA->CRH & ~(0xFUL << 16U)) | (0x2UL << 16U);  // 推挽输出 2 MHz / push-pull out
+#else
+  dp_saved_[0] = GPIOA->MODER & (3UL << 24U);
+  dp_saved_[1] = GPIOA->ODR & (1UL << 12U);
+  dp_saved_[2] = GPIOA->OTYPER & (1UL << 12U);
+  dp_saved_[3] = GPIOA->PUPDR & (3UL << 24U);
+  dp_saved_[4] = GPIOA->AFR[1] & (0xFUL << 16U);
+  GPIOA->BSRR = 1UL << (12U + 16U);
+  GPIOA->OTYPER &= ~(1UL << 12U);
+  GPIOA->PUPDR &= ~(3UL << 24U);
+  GPIOA->MODER = (GPIOA->MODER & ~(3UL << 24U)) | (1UL << 24U);  // 通用输出 / output
+#endif
+  UNUSED(clock_off);
+  return true;
+#else
+  return false;
+#endif
+}
+
+void STM32USBDeviceDevFs::ReleaseDetached()
+{
+#if LIBXR_STM32_FSDEV_DP_DETACH
+  // 引脚先回到 USB 用的配置，再开时钟；InitController 随后清 PDWN。 / The pin returns to
+  // its USB configuration first, then the clock comes on; InitController clears PDWN
+  // afterwards.
+#if defined(GPIO_CRH_MODE12)
+  GPIOA->CRH = (GPIOA->CRH & ~(0xFUL << 16U)) | dp_saved_[0];
+  GPIOA->BSRR = dp_saved_[1] != 0U ? (1UL << 12U) : (1UL << (12U + 16U));
+#else
+  GPIOA->AFR[1] = (GPIOA->AFR[1] & ~(0xFUL << 16U)) | dp_saved_[4];
+  GPIOA->PUPDR = (GPIOA->PUPDR & ~(3UL << 24U)) | dp_saved_[3];
+  GPIOA->OTYPER = (GPIOA->OTYPER & ~(1UL << 12U)) | dp_saved_[2];
+  GPIOA->BSRR = dp_saved_[1] != 0U ? (1UL << 12U) : (1UL << (12U + 16U));
+  GPIOA->MODER = (GPIOA->MODER & ~(3UL << 24U)) | dp_saved_[0];
+#endif
+  (void)UsbClock(true);
+#endif
 }
 
 void STM32USBDeviceDevFs::MaskInterrupt()

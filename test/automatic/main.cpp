@@ -199,6 +199,7 @@ void test_usb_fsdev_iso_other();
 void test_usb_fsdev_iso_stall();
 void test_usb_fsdev_iso_reset();
 void test_usb_fsdev_iso_window();
+void test_usb_fsdev_ep0_gate();
 void test_usb_fsdev_iso_drd();
 
 namespace LinuxSharedTopicBench
@@ -441,6 +442,7 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests", {"fsdev_iso_stall", &RunVoidEntry<test_usb_fsdev_iso_stall>, false}},
     {"usb_tests", {"fsdev_iso_reset", &RunVoidEntry<test_usb_fsdev_iso_reset>, false}},
     {"usb_tests", {"fsdev_iso_window", &RunVoidEntry<test_usb_fsdev_iso_window>, false}},
+    {"usb_tests", {"fsdev_ep0_gate", &RunVoidEntry<test_usb_fsdev_ep0_gate>, false}},
     {"usb_tests", {"fsdev_iso_drd", &RunVoidEntry<test_usb_fsdev_iso_drd>, false}},
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},

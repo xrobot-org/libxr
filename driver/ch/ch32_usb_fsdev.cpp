@@ -54,6 +54,16 @@ size_t PmaLimit(size_t requested)
 
 void OnLowPriorityInterrupt() { FSDevDevice::Dispatch(); }
 
+void OnHighPriorityInterrupt() { FSDevDevice::Dispatch(); }
+
+/// 高优先级线取低优先级线的优先级 / The high-priority line takes the low-priority line's
+/// priority
+void MatchHighPriority()
+{
+  NVIC->IPRIOR[static_cast<uint32_t>(USB_HP_CAN1_TX_IRQn)] =
+      NVIC->IPRIOR[static_cast<uint32_t>(USB_LP_CAN1_RX0_IRQn)];
+}
+
 }  // namespace
 
 CH32USBDeviceFS::CH32USBDeviceFS(
@@ -99,31 +109,78 @@ CH32USBDeviceFS::CH32USBDeviceFS(
   // 全速：上拉接在 D+。 / Full speed: the pull-up is on D+.
   EXTEN->EXTEN_CTR &= ~EXTEN_USBD_LS;
 
-  // owner 总在控制器中断里（PendInterrupt 挂起这条线），Dispatch 只从这一条线进入，
-  // 所以可以用 EP0 的快速确认和状态 OUT 的晚放行。CTR_RX 没清时控制器丢弃新的 SETUP
-  // （手册 p.324），与 FSDevDevice 针对的行为相同。
-  // The owner always runs in the controller interrupt (PendInterrupt pends this line)
-  // and Dispatch is entered from this line only, so the fast acknowledgement of EP0 and
-  // the late release of the status OUT may be used. The controller drops a new SETUP
-  // while CTR_RX is set (manual p.324), the behaviour FSDevDevice addresses.
+  // owner 总在控制器中断里（PendInterrupt 挂起低优先级线），Dispatch 从低、高两条优先级
+  // 相同的线进入，两者不会互相打断，所以可以用 EP0 的快速确认和状态 OUT 的晚放行（见类
+  // 说明）。CTR_RX 没清时控制器丢弃新的 SETUP（手册 p.324），与 FSDevDevice 针对的行为
+  // 相同。
+  // The owner always runs in the controller interrupt (PendInterrupt pends the
+  // low-priority line); Dispatch is entered from the low- and high-priority lines, which
+  // have the same priority and never interrupt each other, so the fast acknowledgement
+  // of EP0 and the late release of the status OUT may be used (see the class notes). The
+  // controller drops a new SETUP while CTR_RX is set (manual p.324), the behaviour
+  // FSDevDevice addresses.
   EnableEp0FastAck();
   EnableEp0LateStatus();
-  // 手册 p.323 说 NAK 状态下 OUT 包得到 NAK；在 CH32V203 上有总线抓包显示控制端点在
-  // NAK 状态下仍 ACK 主机的 OUT 包（TinyUSB #3573、#3648）。按后者处理：早到的包算作
-  // 随后那个请求的第一包。控制器照手册回 NAK 时这个开关不起作用。
-  // The manual (p.323) says an OUT packet is answered NAK in the NAK state; bus captures
-  // on a CH32V203 show the control endpoint ACKing the host's OUT packets in that state
-  // (TinyUSB #3573, #3648). The latter is assumed: an early packet counts as the first
-  // packet of the request that follows. If the controller answers NAK as the manual
-  // says, the switch has no effect.
+  // 手册 p.323 说 NAK 状态下 OUT 包得到 NAK；CH32V203 上实测 EP0 为 CONTROL 类型时照收
+  // 并 ACK 主机的每个 OUT 数据包，未读的上一包被覆盖（类说明）。BULK 闸关掉这个窗口，
+  // 早到的包由 EnableEp0EarlyOut 接住。
+  // The manual (p.323) says an OUT packet is answered NAK in the NAK state; measured on a
+  // CH32V203, EP0 typed CONTROL takes and ACKs every OUT data packet of the host and an
+  // unread previous packet is overwritten (class notes). The BULK gate closes that
+  // window; an early packet is caught by EnableEp0EarlyOut.
   EnableEp0EarlyOut();
-  InitController();
+  EnableEp0BulkGate();
 
-  // 先登记入口再开线。中断源此时全关，到 Start 才打开。
-  // Register the entry before the line is enabled. Every interrupt source is still off
-  // and comes on at Start.
+  // 先登记入口再开线。中断源此时全关，到 Start 才打开。两条线同一优先级。
+  // Register the entries before the lines are enabled. Every interrupt source is still
+  // off and comes on at Start. Both lines get the same priority.
   CH32UsbCanShared::register_usb_lp_irq(&OnLowPriorityInterrupt);
+  CH32UsbCanShared::register_usb_hp_irq(&OnHighPriorityInterrupt);
+  MatchHighPriority();
+  // 构造时断开一次（含 D+ 拉低，见类说明），Start 在 DETACH_US 之后接上。Dispatch 在
+  // D+ 被拉住期间不进。
+  // Detach once at construction (with D+ held low, see the class notes); Start attaches
+  // after DETACH_US. Dispatch stays out while D+ is held.
+  DetachAtConstruction();
   NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
+  NVIC_EnableIRQ(USB_HP_CAN1_TX_IRQn);
+}
+
+bool CH32USBDeviceFS::HoldDetached()
+{
+#if LIBXR_CH32_USBD_DP_DETACH
+  // 收发器断电，再关 USBD 的接口时钟；寄存器和 PMA 保留。 / Transceiver powered down,
+  // then the interface clock of USBD off; registers and PMA are kept.
+  WriteCntr(static_cast<uint16_t>(USB::FSDEV_CNTR_FRES | USB::FSDEV_CNTR_PDWN));
+  RCC_APB1PeriphClockCmd(RCC_APB1Periph_USB, DISABLE);
+  // PA12 是 CFGHR 的 [19:16]（MODE、CNF）。先把输出锁存写 0，再切成推挽输出。
+  // PA12 is CFGHR[19:16] (MODE, CNF). The output latch is written 0 before the switch to
+  // push-pull output.
+  RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
+  dp_saved_[0] = GPIOA->CFGHR & (0xFUL << 16U);
+  dp_saved_[1] = GPIOA->OUTDR & (1UL << 12U);
+  GPIOA->BCR = 1UL << 12U;
+  GPIOA->CFGHR =
+      (GPIOA->CFGHR & ~(0xFUL << 16U)) | (0x2UL << 16U);  // 推挽 2 MHz / push-pull
+  return true;
+#else
+  return false;
+#endif
+}
+
+void CH32USBDeviceFS::ReleaseDetached()
+{
+#if LIBXR_CH32_USBD_DP_DETACH
+  // 引脚先回到原来的配置（构造时是浮空输入），再开时钟；InitController 随后清 PDWN。
+  // The pin returns to its previous configuration first (floating input since the
+  // construction), then the clock comes on; InitController clears PDWN afterwards.
+  GPIOA->CFGHR = (GPIOA->CFGHR & ~(0xFUL << 16U)) | dp_saved_[0];
+  if (dp_saved_[1] != 0U)
+  {
+    GPIOA->BSHR = 1UL << 12U;
+  }
+  RCC_APB1PeriphClockCmd(RCC_APB1Periph_USB, ENABLE);
+#endif
 }
 
 void CH32USBDeviceFS::Connect(bool on)
@@ -138,9 +195,20 @@ void CH32USBDeviceFS::Connect(bool on)
   }
 }
 
-void CH32USBDeviceFS::MaskInterrupt() { NVIC_DisableIRQ(USB_LP_CAN1_RX0_IRQn); }
+void CH32USBDeviceFS::MaskInterrupt()
+{
+  NVIC_DisableIRQ(USB_LP_CAN1_RX0_IRQn);
+  NVIC_DisableIRQ(USB_HP_CAN1_TX_IRQn);
+}
 
-void CH32USBDeviceFS::UnmaskInterrupt() { NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn); }
+void CH32USBDeviceFS::UnmaskInterrupt()
+{
+  // 应用改过低优先级线的优先级时，高优先级线在这里跟上。 / Where the application changed
+  // the low-priority line's priority, the high-priority line follows here.
+  MatchHighPriority();
+  NVIC_EnableIRQ(USB_HP_CAN1_TX_IRQn);
+  NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
+}
 
 bool CH32USBDeviceFS::PendInterrupt()
 {

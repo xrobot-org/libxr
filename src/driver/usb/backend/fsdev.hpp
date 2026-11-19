@@ -101,6 +101,7 @@ constexpr uint16_t FSDEV_CNTR_LPMODE = 0x0004U;  ///< 低功耗模式 / Low-powe
 /// FNR 的 RXDP：D+ 线的电平 / RXDP of FNR: level of the D+ line
 constexpr uint16_t FSDEV_FNR_RXDP = 0x8000U;
 constexpr uint16_t FSDEV_CNTR_FRES = 0x0001U;  ///< 强制复位 / Force reset
+constexpr uint16_t FSDEV_CNTR_PDWN = 0x0002U;  ///< 关模拟部分 / Power down
 
 /// STAT 的目标值（低 16 位，两种变体相同）/ STAT targets (low half, both variants)
 constexpr uint32_t FSDEV_STAT_TX_DIS = 0x0000U;
@@ -802,6 +803,51 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
    */
   void EnableEp0EarlyOut() { ep0_early_out_ = true; }
 
+  /**
+   * @brief 控制写期间把 EP0 的类型写成 BULK，并在中断入口先读走 SETUP / Type EP0 BULK
+   *        during a control write, and read the SETUP first thing at the interrupt entry
+   * @note 有的控制器（CH32V203 实测）在 EP0 为 CONTROL 类型时收下并 ACK 主机的每个 OUT
+   *       数据包：STAT_RX 是 NAK 也收，上一包的 CTR_RX 还没清也收（上一包被覆盖），还没
+   *       读走的 SETUP 也被覆盖。类型为 BULK 时它按 STAT_RX 回 NAK，但也不理会 SETUP
+   *       （TinyUSB #3648、#3712）。打开后：
+   *       - 中断入口第一件事（CaptureSetup）：未处理的 SETUP 读进影子，清 CTR_RX；是有
+   *         数据阶段的控制写时，同一次写把类型写成 BULK。读完再看 COUNT：不是 8 说明一个
+   *         数据包覆盖了 SETUP、或在读与清之间到达，这个 SETUP 不交付，传输以超时结束，
+   *         类型写回 CONTROL。
+   *       - 控制写的数据包按 BULK 装填（VALID 与 BULK 同一次写），每包的 CTR_RX 也在写
+   *         BULK 的同一次写里清：整个数据阶段控制器都按 STAT_RX 回 NAK。
+   *       - 其余装填（数据 IN、状态 IN、状态 OUT）和 STALL 在同一次写里把类型写回
+   *         CONTROL；控制写之外清 EP0 的 CTR_RX（例如控制读的状态包）也写回 CONTROL。
+   *         所以等 SETUP 的时候类型总是 CONTROL，只有控制写的数据阶段里主机的 SETUP 得不
+   *         到应答（主机中途放弃控制写才会这样，由随后的总线复位恢复）。
+   *       早到的状态包（控制读之后在类型仍为 CONTROL 时被收下）由快速确认或
+   *       EnableEp0EarlyOut 接住。平台构造时调用；要求同时打开 EnableEp0FastAck。
+   *       Some controllers (measured on a CH32V203) take and ACK every OUT data packet of
+   *       the host while EP0 is typed CONTROL: with STAT_RX at NAK, with the previous
+   *       packet's CTR_RX not yet cleared (that packet is overwritten), and over a SETUP
+   *       not yet read. Typed BULK they answer NAK by STAT_RX, but ignore a SETUP too
+   *       (TinyUSB #3648, #3712). When enabled:
+   *       - First thing at the interrupt entry (CaptureSetup): an unhandled SETUP is read
+   *         into a shadow and CTR_RX is cleared; for a control write with a data stage
+   *         the same write types EP0 BULK. COUNT is checked afterwards: other than 8
+   * means a data packet overwrote the SETUP or came between the read and the clear; that
+   *         SETUP is not handed over, the transfer ends with a timeout and EP0 is typed
+   *         CONTROL again.
+   *       - Data packets of a control write are armed typed BULK (VALID and BULK in one
+   *         write), and each one's CTR_RX is cleared in a write that types it BULK: the
+   *         controller answers NAK by STAT_RX for the whole data stage.
+   *       - Every other arm (data IN, status IN, status OUT) and a STALL type EP0
+   *         CONTROL again in the same write; clearing EP0's CTR_RX outside a control
+   * write (the status packet of a control read, say) does too. So the type is CONTROL
+   *         whenever a SETUP is awaited; only during the data stage of a control write
+   *         does a SETUP of the host go unanswered (which happens only when the host
+   *         abandons the control write, and the bus reset that follows recovers it).
+   *       An early status packet (taken after a control read while EP0 is still typed
+   *       CONTROL) is caught by the fast acknowledgement or EnableEp0EarlyOut. Called at
+   *       the platform's construction; requires EnableEp0FastAck as well.
+   */
+  void EnableEp0BulkGate() { ep0_bulk_gate_ = true; }
+
   /// 接通或断开 D+ 上拉；平台实现 / Connect or disconnect the D+ pull-up; platform
   virtual void Connect(bool on) = 0;
 
@@ -854,6 +900,36 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
   virtual void SuspendClocked();
   /// 离开挂起 / Leave suspend
   virtual void ResumeRegs();
+  /**
+   * @brief 断开期间平台把 D+ 拉低 / The platform holds D+ low while detached
+   * @note 调用者：HaltController，在 Connect(false) 和 InitController 之后，控制器中断源
+   *       已关。返回 true 表示平台动了控制器（例如关了它的时钟），ReleaseDetached 之后
+   *       要重新 InitController，其间控制器的寄存器不可访问。默认什么也不做。
+   *       Caller: HaltController, after Connect(false) and InitController, with the
+   *       controller's interrupt sources off. Returns true when the platform touched the
+   *       controller (for example switched its clock off): InitController runs again
+   *       after ReleaseDetached, and the controller's registers are not to be accessed in
+   *       between. Does nothing by default.
+   */
+  virtual bool HoldDetached() { return false; }
+  /**
+   * @brief 断开时间到，平台放开 D+ / The detach time is over, the platform releases D+
+   * @note 调用者：WaitDetached，等够 DETACH_US 之后、接上拉之前，仅在 HoldDetached 返回
+   *       true 之后。默认什么也不做。
+   *       Caller: WaitDetached, after DETACH_US and before the pull-up is connected, only
+   *       after HoldDetached returned true. Does nothing by default.
+   */
+  virtual void ReleaseDetached() {}
+  /**
+   * @brief 构造时断开一次，Start 时按 DETACH_US 接上 / Detach once at construction; Start
+   *        attaches after DETACH_US
+   * @note 调用者：平台的构造函数，代替 InitController。复位后主机可能还以为设备在线（外部
+   *       上拉的板子），这一次断开让主机重新枚举。
+   *       Caller: the platform's constructor, instead of InitController. After a reset
+   *       the host may still believe the device is present (boards with an external
+   *       pull-up); this detach makes it enumerate again.
+   */
+  void DetachAtConstruction() { HaltController(); }
 
   /// 处理硬件事件，见类说明 / Handle hardware events, see the class notes
   void ServiceHardware(bool in_isr) override;
@@ -930,6 +1006,11 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
   /// detached (us) and "not attached again since"
   uint64_t halted_at_us_ = 0U;
   bool halted_ = false;
+  /// HoldDetached 动了控制器，ReleaseDetached 之前不访问它；HaltController 写，
+  /// WaitDetached 和 Dispatch 读 / HoldDetached touched the controller, which is not
+  /// accessed until ReleaseDetached; written by HaltController, read by WaitDetached and
+  /// Dispatch
+  volatile bool detach_held_ = false;
   /// CTR 循环，最多 8 轮 / CTR loop, at most 8 passes
   void HandleCtr(bool in_isr);
   /// 处理端点 num 的 CTR_TX、CTR_RX / Handle CTR_TX and CTR_RX of endpoint num
@@ -945,6 +1026,12 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
    *       Called in Dispatch, before the owner.
    */
   void FastAckEp0();
+  /// BULK 闸：中断入口第一件事把未处理的 SETUP 读进影子，见 EnableEp0BulkGate / BULK
+  /// gate: an unhandled SETUP is read into the shadow first thing at the interrupt entry,
+  /// see EnableEp0BulkGate
+  void CaptureSetup();
+  /// owner 交付影子里的 SETUP / The owner hands over the SETUP in the shadow
+  void ServiceSetupShadow(bool in_isr);
   /// owner 处理影子里的包：先处理 EP0 已锁存的 CTR_TX，再交付这个包 / The owner
   /// handles the packet in the shadow: a latched CTR_TX of EP0 first, then the packet
   void ServiceEp0Shadow(bool in_isr);
@@ -986,6 +1073,11 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
   /// EP0 的 OUT 包可能早于请求被收下；平台构造时写 / An OUT packet of EP0 may be taken
   /// before its request; set at the platform's construction
   bool ep0_early_out_ = false;
+  /// EnableEp0BulkGate / EnableEp0BulkGate
+  bool ep0_bulk_gate_ = false;
+  /// 当前控制传输是有数据阶段的控制写（BULK 闸用）/ The current control transfer is a
+  /// control write with a data stage (for the BULK gate)
+  bool ep0_out_data_ = false;
   /**
    * @brief 状态 OUT 已放行、状态包还没到 / The status OUT is released and the status
    *        packet not yet taken
@@ -1013,6 +1105,14 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
   uint16_t ep0_shadow_count_ = 0;
   /// EP0 OUT 包的影子缓冲 / Shadow buffer of an EP0 OUT packet
   uint8_t ep0_shadow_[64] = {};
+  /// 影子里有一个 SETUP 等 owner 交付（BULK 闸）/ A SETUP in the shadow awaits the owner
+  /// (BULK gate)
+  bool setup_shadow_pending_ = false;
+  /// SETUP 的影子 / Shadow of the SETUP
+  uint8_t setup_shadow_[8] = {};
+  /// 读之前就被数据包覆盖、因而丢掉的 SETUP（BULK 闸）/ SETUPs overwritten by a data
+  /// packet before they were read and therefore lost (BULK gate)
+  uint32_t setups_overwritten_ = 0U;
   /// 当前帧号 / The current frame number
   uint16_t FrameNumber()
   {

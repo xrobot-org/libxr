@@ -100,6 +100,25 @@ struct Ctl
   /// 被测设备是否声明 EP0 的 OUT 包可能早到 / Whether the device under test declares
   /// that an OUT packet of EP0 may come early
   static inline bool early_out = false;
+  /// CH32 的 EP0：类型为 CONTROL 时收下并 ACK 主机的每个 OUT 数据包，不看 STAT_RX，
+  /// 也不看 CTR_RX——还没读走的上一个包被覆盖，未处理的 SETUP 也一样（SETUP 位留着，
+  /// COUNT 是数据包的长度）；类型为 BULK 时照常按 STAT_RX 回 NAK。CH32V203 实测：33
+  /// 字节的控制写，第二包（1 字节）在请求启动之前覆盖了第一包（32 字节）；还没读的
+  /// SETUP 被数据包覆盖，设备读到的 SETUP 是数据内容。TinyUSB #3648。
+  /// CH32's EP0: typed CONTROL, it takes and ACKs every OUT data packet of the host,
+  /// whatever STAT_RX and CTR_RX say - an unread previous packet is overwritten, and so
+  /// is an unhandled SETUP (the SETUP bit stays, COUNT is the data packet's length);
+  /// typed BULK it answers NAK by STAT_RX as usual. Measured on a CH32V203: in a 33-byte
+  /// control write the second packet (1 byte) overwrote the first (32 bytes) before the
+  /// request started; an unread SETUP was overwritten by a data packet and the device
+  /// read data as the SETUP. TinyUSB #3648.
+  static inline bool blind_out = false;
+  /// 被测设备是否打开 EP0 的 BULK 闸（FSDevDevice::EnableEp0BulkGate）/ Whether the
+  /// device under test enables the BULK gate of EP0
+  static inline bool ep0_gate = false;
+  /// EP0 类型为 BULK 时到达、没有应答的 SETUP / SETUPs that got no answer because EP0
+  /// was typed BULK
+  static inline unsigned setups_ignored = 0;
   /// 因超过接收区大小而没被收下的包 / Packets not taken because they exceed the receive
   /// size
   static inline unsigned rx_overflows = 0;
@@ -131,6 +150,7 @@ struct Ctl
     in_reset = false;
     setup_violations = 0;
     setups_refused = 0;
+    setups_ignored = 0;
     rx_overflows = 0;
     drd = false;
     iso_bad_stat = 0;
@@ -349,8 +369,20 @@ struct Ctl
   static bool RxPacket(uint8_t num, const uint8_t* data, size_t len, bool setup,
                        bool force = false)
   {
-    if (!setup && !force && ((ep[num] & STAT_RX) != RX_VALID || !Answers(num)))
+    const bool control = (ep[num] & 0x0600U) == 0x0200U;
+    const bool blind = blind_out && num == 0U && control;
+    const bool keep_setup =
+        blind && !setup && (ep[num] & (CTR_RX | SETUP)) == (CTR_RX | SETUP);
+    if (!setup && !force &&
+        (((ep[num] & STAT_RX) != RX_VALID && !blind) || !Answers(num)))
     {
+      return false;
+    }
+    // CH32：类型为 BULK 的 EP0 不理会 SETUP（TinyUSB #3712）/ CH32: EP0 typed BULK
+    // ignores a SETUP (TinyUSB #3712)
+    if (setup && blind_out && num == 0U && (ep[num] & 0x0600U) == 0U)
+    {
+      ++setups_ignored;
       return false;
     }
     // CTR_RX 没清之前硬件不收新的 SETUP（STM32F302 实测）/ The hardware takes no new
@@ -373,7 +405,8 @@ struct Ctl
       Write(BufAddr(num, 1U), data, len);
     }
     SetReceived(num, 1U, len);
-    ep[num] = (ep[num] & ~(STAT_RX | SETUP)) | CTR_RX | RX_NAK;
+    ep[num] =
+        (ep[num] & ~(STAT_RX | SETUP)) | CTR_RX | RX_NAK | (keep_setup ? SETUP : 0U);
     if (setup)
     {
       // RM0008 p.630：DTOG_TX=1、DTOG_RX=0，两方向 NAK / both directions NAK
@@ -493,6 +526,10 @@ class TestDevice final : public FSDevDevice
     if (Ctl::early_out)
     {
       EnableEp0EarlyOut();
+    }
+    if (Ctl::ep0_gate)
+    {
+      EnableEp0BulkGate();
     }
     InitController();
   }
@@ -2439,6 +2476,198 @@ void TestEp0EarlyOut()
   Ctl::early_out = false;
 }
 
+/// CH32 的 EP0 在 CONTROL 类型下照收 OUT 包：主机每有机会就发下一个数据包（每次读
+/// EPnR 之前和每次中断之前都试一次），控制写的数据一个字节都不能少；控制读之后主机马上
+/// 发状态包；被拒绝的控制写之后下一个 SETUP 照常收下
+/// CH32's EP0 takes OUT packets while typed CONTROL: the host sends its next data packet
+/// at every chance (tried before every EPnR read and before every interrupt), and a
+/// control write must lose no byte; after a control read the host sends the status
+/// packet at once; after a refused control write the next SETUP is taken as usual
+void TestEp0BlindOut()
+{
+  Ctl::blind_out = true;
+  Ctl::early_out = true;
+  Ctl::ep0_gate = true;
+  for (const size_t len :
+       {size_t{1}, size_t{63}, size_t{64}, size_t{65}, size_t{128}, size_t{150}})
+  {
+    Fixture f;
+    size_t completes = 0U;
+    // 主机：控制写，每有机会就发下一个数据包 / Host: a control write, sending its
+    // next data packet at every chance
+    auto write = [&](uint8_t seed)
+    {
+      const Bytes payload = Pattern(len, seed);
+      size_t sent = 0U;
+      auto pump = [&]()
+      {
+        // 数据在设备读走 SETUP 之后才来（SETUP 被覆盖的情形另测）/ The data comes after
+        // the device has read the SETUP (the overwritten SETUP is tested on its own)
+        const bool setup_unread = (Ctl::ep[0] & (CTR_RX | SETUP)) == (CTR_RX | SETUP);
+        if (sent < payload.size() && !setup_unread)
+        {
+          const size_t n = std::min<size_t>(64U, payload.size() - sent);
+          if (Ctl::RxPacket(0, payload.data() + sent, n, false))
+          {
+            sent += n;
+          }
+        }
+      };
+      Ctl::before_read = [&](uint8_t num)
+      {
+        if (num == 0U)
+        {
+          pump();
+        }
+      };
+      SendSetup(Make(0x41U, REQ_OUT, 0U, 0U, static_cast<uint16_t>(len)));
+      TEST_ASSERT(Ctl::setups_ignored == 0U);
+      for (unsigned i = 0U; i < 32U; ++i)
+      {
+        pump();
+        Irq();
+      }
+      Ctl::before_read = nullptr;
+      TEST_ASSERT(sent == payload.size());
+      TEST_ASSERT(f.klass.data_seen == payload);
+      TEST_ASSERT(TakeIn(0).empty());  // 状态 IN / status IN
+      TEST_ASSERT(f.klass.completes == ++completes && Ctl::rx_overflows == 0U);
+    };
+    // 主机：控制读，ACK 最后一包后立刻发状态包，不等设备处理那次完成 / Host: a control
+    // read, sending the status packet right after ACKing the last data packet, before
+    // the device has handled that completion
+    auto read = [&]()
+    {
+      f.klass.response = Pattern(100, 0x30);
+      SendSetup(Make(0xC1U, REQ_IN, 0U, 0U, 100U));
+      TEST_ASSERT(Ctl::setups_ignored == 0U);
+      Irq();
+      Bytes got;
+      bool status = false;
+      for (unsigned i = 0U; i < 16U && !status; ++i)
+      {
+        if (got.size() < 100U && (Ctl::ep[0] & STAT_TX) == TX_VALID)
+        {
+          const Bytes packet = Ctl::ArmedIn(0);
+          got.insert(got.end(), packet.begin(), packet.end());
+          Ctl::AckIn(0);
+        }
+        if (got.size() == 100U)
+        {
+          status = Ctl::RxPacket(0, nullptr, 0U, false);
+        }
+        Irq();
+      }
+      Irq();
+      TEST_ASSERT(got == Pattern(100, 0x30));
+      TEST_ASSERT(status && f.klass.completes == ++completes);
+    };
+    write(0x40U);
+    read();
+    write(0x50U);
+    read();
+    write(0x60U);
+
+    // 控制读的状态包在设备处理最后一个 IN 完成的那次中断里、第 k 次读 EP0 之前到达：
+    // 覆盖从中断入口到写 BULK 的每个位置 / The status packet of a control read arrives
+    // inside the interrupt that handles the last IN completion, before the k-th read of
+    // EP0: every position from the interrupt entry to the BULK write
+    for (unsigned k = 1U; k <= 6U; ++k)
+    {
+      f.klass.response = Pattern(10, 0x31);
+      SendSetup(Make(0xC1U, REQ_IN, 0U, 0U, 10U));
+      TEST_ASSERT(Ctl::setups_ignored == 0U);
+      Irq();
+      TEST_ASSERT(Ctl::ArmedIn(0) == Pattern(10, 0x31));
+      Ctl::AckIn(0);
+      unsigned reads = 0U;
+      bool status = false;
+      Ctl::before_read = [&](uint8_t num)
+      {
+        if (num == 0U && !status && ++reads == k)
+        {
+          status = Ctl::RxPacket(0, nullptr, 0U, false);
+        }
+      };
+      for (unsigned i = 0U; i < 6U; ++i)
+      {
+        Irq();
+        if (!status && (Ctl::ep[0] & STAT_RX) == RX_VALID)
+        {
+          status = Ctl::RxPacket(0, nullptr, 0U, false);
+        }
+      }
+      Ctl::before_read = nullptr;
+      TEST_ASSERT(status && f.klass.completes == ++completes);
+    }
+
+    // 控制写的第一个数据包在中断里第 k 次读 EP0 之前到达。数据包在设备读走 SETUP 之前
+    // 覆盖了它、或者在读 SETUP 与清 CTR_RX 之间到达时，这次传输丢掉（不交付请求、EP0
+    // 不 STALL，之后的控制传输照常）；其余位置数据一字节不少。丢掉的只能是入口处最前面
+    // 的两个位置。
+    // The first data packet of a control write arrives before the k-th read of EP0 in
+    // the interrupt. Where it overwrote the SETUP before the device read it, or came
+    // between reading the SETUP and clearing CTR_RX, the transfer is dropped (no request
+    // handed over, EP0 not stalled, the control transfers after it work as usual);
+    // anywhere else not a byte of the data is lost. Only the first two positions at the
+    // entry may drop it.
+    unsigned dropped = 0U;
+    for (unsigned k = 1U; k <= 6U; ++k)
+    {
+      const Bytes payload = Pattern(40, static_cast<uint8_t>(0x70U + k));
+      bool sent = false;
+      unsigned reads = 0U;
+      Ctl::before_read = [&](uint8_t num)
+      {
+        // 从第 k 次读起，每次都试，直到收下 / From the k-th read on, tried each time
+        // until taken
+        if (num == 0U && !sent && ++reads >= k)
+        {
+          sent = Ctl::RxPacket(0, payload.data(), payload.size(), false);
+        }
+      };
+      f.klass.data_seen.clear();
+      SendSetup(Make(0x41U, REQ_OUT, 0U, 0U, 40U));
+      for (unsigned i = 0U; i < 6U; ++i)
+      {
+        Irq();
+      }
+      Ctl::before_read = nullptr;
+      TEST_ASSERT(sent);
+      TEST_ASSERT((Ctl::ep[0] & STAT_TX) != 0x0010U && (Ctl::ep[0] & STAT_RX) != 0x1000U);
+      if (f.klass.data_seen.empty())
+      {
+        ++dropped;
+        TEST_ASSERT(k <= 2U && f.klass.completes == completes);
+        TEST_ASSERT((Ctl::ep[0] & STAT_TX) != TX_VALID);
+      }
+      else
+      {
+        TEST_ASSERT(f.klass.data_seen == payload);
+        TEST_ASSERT(TakeIn(0).empty());
+        TEST_ASSERT(f.klass.completes == ++completes);
+      }
+      read();
+    }
+    TEST_ASSERT(dropped >= 1U);
+
+    // 被拒绝的控制写：主机照样发数据，之后的 SETUP 必须有应答 / A refused control
+    // write: the host sends its data anyway, and the SETUP after it must be answered
+    const Bytes junk = Pattern(8, 0x66);
+    SendSetup(Make(0x41U, 0x77U, 0U, 0U, 8U));
+    for (unsigned i = 0U; i < 4U; ++i)
+    {
+      (void)Ctl::RxPacket(0, junk.data(), junk.size(), false);
+      Irq();
+    }
+    read();
+    TEST_ASSERT(Ctl::setups_ignored == 0U);
+  }
+  Ctl::blind_out = false;
+  Ctl::early_out = false;
+  Ctl::ep0_gate = false;
+}
+
 /// CDC 串口跑在 FSDEV 上：数据 IN、OUT 共用 EP1，通知 EP2 / CDC UART on FSDEV: data IN
 /// and OUT share EP1, notification on EP2
 void TestCdcEcho()
@@ -3108,6 +3337,7 @@ void test_usb_fsdev_iso_other() { TestIsoOtherDirection(); }
 void test_usb_fsdev_iso_stall() { TestIsoStall(); }
 void test_usb_fsdev_iso_reset() { TestIsoBusReset(); }
 void test_usb_fsdev_iso_window() { TestIsoStatusWindow(); }
+void test_usb_fsdev_ep0_gate() { TestEp0BlindOut(); }
 
 void test_usb_fsdev_iso_drd()
 {

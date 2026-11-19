@@ -27,6 +27,12 @@ constexpr uint32_t TypeBits(Endpoint::Type type)
   }
 }
 
+/// 换掉 EPnR 写入值里的类型字段 / Replace the type field of an EPnR value to be written
+constexpr uint32_t WithType(uint32_t value, Endpoint::Type type)
+{
+  return (value & ~FSDEV_EP_TYPE) | TypeBits(type);
+}
+
 /// EP0 上有未处理的 SETUP：CTR_RX 与 SETUP 同时置位 / EP0 has an unhandled SETUP:
 /// CTR_RX and SETUP both set
 bool SetupPending(uint32_t epr)
@@ -98,6 +104,7 @@ bool FSDevEndpoint::SetStat(uint32_t target)
   const uint32_t no_clear =
       FSDEV_EP_CTR_RX | FSDEV_EP_CTR_TX | device_.ep_err_rx_ | device_.ep_err_tx_;
   const uint32_t valid = in ? FSDEV_STAT_TX_VALID : FSDEV_STAT_RX_VALID;
+  const uint32_t stall = in ? FSDEV_STAT_TX_STALL : FSDEV_STAT_RX_STALL;
   for (unsigned attempt = 0U; attempt < 3U; ++attempt)
   {
     uint32_t cur = device_.ReadEp(num);
@@ -130,8 +137,19 @@ bool FSDevEndpoint::SetStat(uint32_t target)
                                FSDEV_EP_PARK_ADDR | no_clear);
       cur = device_.ReadEp(num);
     }
-    device_.WriteEp(
-        num, (cur & device_.ep_keep_mask_) | ((cur ^ target) & stat_mask) | no_clear);
+    // BULK 闸（见 EnableEp0BulkGate）：控制写的数据包按 BULK 装填；其余装填和 STALL 在
+    // 同一次写里把 EP0 的类型写回 CONTROL。
+    // BULK gate (see EnableEp0BulkGate): a data packet of a control write is armed typed
+    // BULK; any other arm and a STALL type EP0 CONTROL again in the same write.
+    const bool gate = num == 0U && device_.ep0_bulk_gate_ && (arming || target == stall);
+    const bool bulk = gate && arming && !in && device_.ep0_out_data_;
+    const bool control = gate && !bulk;
+    uint32_t keep = cur & device_.ep_keep_mask_;
+    if (gate)
+    {
+      keep = WithType(keep, bulk ? Type::BULK : Type::CONTROL);
+    }
+    device_.WriteEp(num, keep | ((cur ^ target) & stat_mask) | no_clear);
     uint32_t after = device_.ReadEp(num);
     if (!arming && (after & stat_mask) != target)
     {
@@ -143,8 +161,12 @@ bool FSDevEndpoint::SetStat(uint32_t target)
       // stop: the endpoint was released again). The value just read back is used for an
       // immediate second write with no read in between. EP0 has no address change and
       // relies on this second write being quick.
-      device_.WriteEp(num, (after & device_.ep_keep_mask_) |
-                               ((after ^ target) & stat_mask) | no_clear);
+      uint32_t again = after & device_.ep_keep_mask_;
+      if (control)
+      {
+        again = WithType(again, Type::CONTROL);
+      }
+      device_.WriteEp(num, again | ((after ^ target) & stat_mask) | no_clear);
       after = device_.ReadEp(num);
     }
     if (parked)
@@ -683,6 +705,13 @@ ErrorCode FSDevEndpoint::StallHardware(bool in_isr)
     IsoWriteStat(IsIn() ? FSDEV_STAT_TX_DIS : FSDEV_STAT_RX_DIS);
     return ErrorCode::OK;
   }
+  if (Num() == 0U)
+  {
+    // STALL 结束控制传输：之后清掉的 EP0 包不再按控制写的数据包写 BULK（BULK 闸）。
+    // A STALL ends the control transfer: an EP0 packet cleared afterwards no longer
+    // types EP0 BULK as a data packet of a control write (BULK gate).
+    device_.ep0_out_data_ = false;
+  }
   return SetStat(IsIn() ? FSDEV_STAT_TX_STALL : FSDEV_STAT_RX_STALL) ? ErrorCode::OK
                                                                      : ErrorCode::FAILED;
 }
@@ -1081,6 +1110,7 @@ void FSDevDevice::InitController()
   // 早到的包没有请求来取时靠快速确认清掉。 / An early packet that no request takes is
   // cleared by the fast acknowledgement.
   ASSERT(!ep0_early_out_ || ep0_fast_ack_);
+  ASSERT(!ep0_bulk_gate_ || ep0_fast_ack_);
   InitRegs();
   for (uint8_t i = 0U; i < MAX_EPS; ++i)
   {
@@ -1102,8 +1132,8 @@ void FSDevDevice::InitController()
 void FSDevDevice::StartController(bool in_isr)
 {
   UNUSED(in_isr);
-  REQUIRE(controller_ready_);
   WaitDetached();
+  REQUIRE(controller_ready_);
   WriteCntr(static_cast<uint16_t>(ReadCntr() | FSDEV_CNTR_RUN_MASK | FSDEV_CNTR_SOFM));
   Connect(true);
 }
@@ -1122,6 +1152,15 @@ void FSDevDevice::WaitDetached()
   }
   while (static_cast<uint64_t>(Timebase::GetMicroseconds()) - halted_at_us_ < DETACH_US)
   {
+  }
+  if (detach_held_)
+  {
+    // 平台放开 D+ 并恢复控制器（时钟）；控制器重新初始化，与 HaltController 里的一样。
+    // The platform releases D+ and restores the controller (clock); the controller is
+    // initialized again, as in HaltController.
+    ReleaseDetached();
+    detach_held_ = false;
+    InitController();
   }
   halted_ = false;
 }
@@ -1145,9 +1184,14 @@ void FSDevDevice::HaltController()
   }
   pending_stops_ = 0U;
   suspended_ = false;
+  setup_shadow_pending_ = false;
+  ep0_out_data_ = false;
   // 强制复位清掉全部 EPnR，并关掉中断源。 / The forced reset clears every EPnR and
   // switches the interrupt sources off.
   InitController();
+  // 平台可在断开期间把 D+ 拉低（外部上拉的板子）。 / The platform may hold D+ low while
+  // detached (boards with an external pull-up).
+  detach_held_ = HoldDetached();
 }
 
 void FSDevDevice::StopController(bool in_isr)
@@ -1178,9 +1222,13 @@ void FSDevDevice::ResetController(bool in_isr)
 void FSDevDevice::Dispatch()
 {
   FSDevDevice* device = self_;
-  if (device == nullptr || !device->controller_ready_)
+  if (device == nullptr || !device->controller_ready_ || device->detach_held_)
   {
     return;
+  }
+  if (device->ep0_bulk_gate_)
+  {
+    device->CaptureSetup();
   }
   if (device->ep0_fast_ack_)
   {
@@ -1274,6 +1322,10 @@ bool FSDevDevice::HoldStatusWindow()
       // EP0 上有事件：SETUP，或快速确认之后才到的包（再确认一次，不让它等 owner）。
       // An event on EP0: a SETUP, or a packet that arrived after the fast
       // acknowledgement (acknowledged once more so that it does not wait for the owner).
+      if (ep0_bulk_gate_)
+      {
+        CaptureSetup();
+      }
       if (ep0_fast_ack_)
       {
         FastAckEp0();
@@ -1350,6 +1402,71 @@ void FSDevDevice::FastAckEp0()
   ClearCtrRx(0U);
 }
 
+void FSDevDevice::CaptureSetup()
+{
+  if (setup_shadow_pending_)
+  {
+    return;
+  }
+  const uint32_t epr = ReadEp(0U);
+  if (!SetupPending(epr))
+  {
+    return;
+  }
+  // 先读 PMA 再清 CTR_RX，同一次写把类型按控制传输的方向写好（见 ClearCtrRx）。
+  // The PMA is read before CTR_RX is cleared; the same write types EP0 for the direction
+  // of the control transfer (see ClearCtrRx).
+  PmaRead(setup_shadow_, out_[0]->pma_addr_, sizeof(setup_shadow_));
+  const bool has_data = (setup_shadow_[6] | setup_shadow_[7]) != 0U;
+  ep0_out_data_ = has_data && (setup_shadow_[0] & 0x80U) == 0U;
+  setup_shadow_pending_ = true;
+  ClearCtrRx(0U);
+  // 再读一遍：控制器边收边写 PMA，正在收的数据包（之后可能被 NAK）会在两次读之间改写
+  // SETUP 的字节，COUNT 却要等包收完才变。 / Read again: the controller writes the PMA
+  // while it receives, so a data packet on the wire (possibly NAKed later) changes the
+  // SETUP's bytes between the two reads, while COUNT changes only once the packet is in.
+  uint8_t again[sizeof(setup_shadow_)];
+  PmaRead(again, out_[0]->pma_addr_, sizeof(again));
+  if (GetRxCount(0U) != sizeof(setup_shadow_) ||
+      std::memcmp(again, setup_shadow_, sizeof(again)) != 0)
+  {
+    // COUNT 不是 8：类型为 CONTROL 时控制器照收数据包，一个数据包在 SETUP 读走之前覆盖
+    // 了它（读到的是数据），或在读 SETUP 与清 CTR_RX 之间到达、它的 CTR_RX 被这次清掉
+    // （主机以为送到，设备没有它）。两种情形都不交付 SETUP，主机的这次控制传输以超时
+    // 结束，而不是把数据当 SETUP、或把少了第一包的数据当完整的。类型写回 CONTROL，等
+    // 主机的下一个 SETUP。
+    // COUNT is not 8: typed CONTROL the controller takes data packets, and a data packet
+    // either overwrote the SETUP before it was read (what was read is data) or came
+    // between reading the SETUP and clearing CTR_RX, whose clear wiped its CTR_RX (the
+    // host believes it delivered, the device does not have it). Either way the SETUP is
+    // not handed over and the host's control transfer ends with a timeout, rather than
+    // data taken for a SETUP or data without its first packet taken as complete. EP0 is
+    // typed CONTROL again for the host's next SETUP.
+    ++setups_overwritten_;
+    setup_shadow_pending_ = false;
+    ep0_out_data_ = false;
+    ClearCtrRx(0U);
+  }
+}
+
+void FSDevDevice::ServiceSetupShadow(bool in_isr)
+{
+  // 与 HandleEp 的 SETUP 分支相同：同时锁存的 EP0 IN 完成先交付，控制端点上未结束的停止
+  // 在交付 SETUP 之前结束。
+  // As in the SETUP branch of HandleEp: an EP0 IN completion latched as well is handed
+  // over first, and pending stops on the control endpoint end before the SETUP is.
+  if ((ReadEp(0U) & FSDEV_EP_CTR_TX) != 0U)
+  {
+    HandleCtrTx(in_isr, 0U);
+  }
+  setup_shadow_pending_ = false;
+  SetupPacket setup;
+  std::memcpy(&setup, setup_shadow_, sizeof(setup));
+  in_[0]->AdvanceStop(in_isr, 0U, true);
+  out_[0]->AdvanceStop(in_isr, 0U, true);
+  OnSetup(in_isr, setup);
+}
+
 void FSDevDevice::ServiceEp0Shadow(bool in_isr)
 {
   // 这个包之前完成的 EP0 IN 先交付（它的 CTR_TX 还锁存着）。
@@ -1377,7 +1494,22 @@ void FSDevDevice::ClearCtrRx(uint8_t num)
   const uint32_t self = FSDEV_EP_CTR_RX | ep_err_rx_;
   const uint32_t other = FSDEV_EP_CTR_TX | ep_err_tx_;
   const uint32_t cur = ReadEp(num);
-  WriteEp(num, (cur & ep_keep_mask_ & ~self) | other);
+  uint32_t keep = cur & ep_keep_mask_ & ~self;
+  // BULK 闸：控制写期间 EP0 OUT 的 CTR_RX 在写 BULK 的同一次写里清（SETUP 的和每个数据
+  // 包的），清掉之后硬件按 STAT_RX 回 NAK，直到装填把类型写回 CONTROL。别的 EP0 包（例如
+  // 控制读的状态包，它可能在写 BULK 之前就被收下、不经装填）清的同时写回 CONTROL：传输
+  // 到此结束，接下来是 SETUP。
+  // BULK gate: during a control write the CTR_RX of EP0 OUT is cleared in the same write
+  // that types it BULK (the SETUP's and each data packet's), so the hardware answers NAK
+  // by STAT_RX from then on until an arm types it CONTROL again. Any other EP0 packet
+  // (the status packet of a control read, say, which may be taken before BULK is
+  // written and without an arm) is cleared in a write that types EP0 CONTROL again: the
+  // transfer ends there and a SETUP comes next.
+  if (num == 0U && ep0_bulk_gate_)
+  {
+    keep = WithType(keep, ep0_out_data_ ? Endpoint::Type::BULK : Endpoint::Type::CONTROL);
+  }
+  WriteEp(num, keep | other);
 }
 
 void FSDevDevice::ServiceHardware(bool in_isr)
@@ -1403,6 +1535,8 @@ void FSDevDevice::ServiceHardware(bool in_isr)
     suspended_ = false;
     // 复位之前收下的 EP0 包作废。 / An EP0 packet taken before the reset is void.
     ep0_shadow_pending_ = false;
+    setup_shadow_pending_ = false;
+    ep0_out_data_ = false;
     // 未结束的停止在报告复位之前结束。 / Pending stops end before the reset is
     // reported.
     AdvanceStops(in_isr, true);
@@ -1414,6 +1548,11 @@ void FSDevDevice::ServiceHardware(bool in_isr)
     // The EP0 packet the fast acknowledgement took precedes any SETUP still latched
     // and is handled first.
     ServiceEp0Shadow(in_isr);
+  }
+  if (setup_shadow_pending_)
+  {
+    // 入口读走的 SETUP（BULK 闸）。 / The SETUP read at the entry (BULK gate).
+    ServiceSetupShadow(in_isr);
   }
   if (latched_ != 0U)
   {
@@ -1582,6 +1721,10 @@ void FSDevDevice::HandleEp(bool in_isr, uint8_t num)
     // Read the 8 bytes before clearing CTR_RX: no new SETUP is taken while it is set.
     uint8_t raw[8];
     PmaRead(raw, out_[0]->pma_addr_, sizeof(raw));
+    // 方向是 bmRequestType 的位 7，wLength 在字节 6、7。 / The direction is bit 7 of
+    // bmRequestType, wLength sits in bytes 6 and 7.
+    const bool has_data = (raw[6] | raw[7]) != 0U;
+    ep0_out_data_ = has_data && (raw[0] & 0x80U) == 0U;
     ClearCtrRx(0U);
     SetupPacket setup;
     std::memcpy(&setup, raw, sizeof(setup));
