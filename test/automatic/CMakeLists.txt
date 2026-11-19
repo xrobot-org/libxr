@@ -107,6 +107,10 @@ target_compile_definitions(test_ch32_usb PRIVATE LIBXR_CH32_CONFIG_FILE=fake_ch3
 add_test(NAME test_ch32_usb COMMAND test_ch32_usb)
 set_tests_properties(test_ch32_usb PROPERTIES TIMEOUT 30)
 
+# USB 仿真后端和 DAP 仿真（driver/usb/sim/usb_sim.cmake）。
+# The USB simulation backend and the DAP simulation (driver/usb/sim/usb_sim.cmake).
+include(driver/usb/sim/usb_sim.cmake)
+
 add_executable(
   libxr_test
   main.cpp
