@@ -1484,11 +1484,21 @@ void STM32OtgEndpoint::FillFifo()
     {
       break;
     }
+    // 整字用常量长度拷贝（编译为一条非对齐读），末尾不足一个字的部分单独拷一次。
+    // Whole words are copied with a constant length (one unaligned load each); the
+    // part short of a word at the end is copied once.
     const uint8_t* source = hw_data_ + hw_done_;
-    for (uint32_t i = 0; i < words; ++i)
+    size_t offset = 0U;
+    for (; offset + 4U <= length; offset += 4U)
     {
       uint32_t value = 0U;
-      std::memcpy(&value, source + i * 4U, LibXR::min<size_t>(4U, length - i * 4U));
+      std::memcpy(&value, source + offset, 4U);
+      fifo = value;
+    }
+    if (offset < length)
+    {
+      uint32_t value = 0U;
+      std::memcpy(&value, source + offset, length - offset);
       fifo = value;
     }
     hw_done_ += length;
