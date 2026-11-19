@@ -1,3 +1,6 @@
+#if defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wattributes"
+#endif
 #include "esp_i2c.hpp"
 
 #include <algorithm>
@@ -48,6 +51,18 @@ inline void ResetBusRegisterAtomic(i2c_port_t port)
 #pragma GCC diagnostic ignored "-Wunused-variable"
 #endif
   PERIPH_RCC_ATOMIC() { i2c_ll_reset_register(port); }
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+}
+
+inline void SetSourceClockAtomic(i2c_dev_t* dev, i2c_clock_source_t src_clk)
+{
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
+  PERIPH_RCC_ATOMIC() { i2c_ll_set_source_clk(dev, src_clk); }
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
@@ -215,6 +230,7 @@ ErrorCode ESP32I2C::ApplyConfig()
   }
 
   uint32_t source_clock_hz = 0U;
+  SetSourceClockAtomic(hal_.dev, I2C_CLK_SRC_DEFAULT);
   if (ResolveClockSource(source_clock_hz) != ErrorCode::OK)
   {
     return ErrorCode::INIT_ERR;
