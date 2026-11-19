@@ -891,6 +891,27 @@ void TestV2Commands()
     TEST_ASSERT(b.hw.ep1_in.InFlight() == (Bytes{EXECUTE, 0xFFU}));
   }
 
+  // QUEUE / EXECUTE 的请求在最后一条命令之后补零：尾部字节忽略，与不补零时应答相同
+  // （CMSIS-DAP 参考实现的做法） / QUEUE and EXECUTE padded after the last command: the
+  // trailing bytes are ignored and the answer equals the unpadded one (as the CMSIS-DAP
+  // reference does)
+  {
+    V2Bench b;
+    Enumerate(b.dev, b.hw);
+    b.Send({QUEUE, 1U, INFO, PACKET_COUNT_ID, 0U, 0U, 0U, 0U});
+    TEST_ASSERT(b.hw.ep1_in.InFlight() == (Bytes{EXECUTE, 1U, INFO, 1U, 0x04U}));
+    InDone(b.dev, b.hw.ep1_in);
+    b.Send({EXECUTE, 2U, INFO, PACKET_COUNT_ID, INFO, PACKET_SIZE_ID, 0U, 0U, 0U});
+    const Bytes batch = b.hw.ep1_in.InFlight();
+    TEST_ASSERT(batch.size() == 9U && batch[0] == EXECUTE && batch[1] == 2U &&
+                batch[5] == INFO && batch[6] == 2U);
+    InDone(b.dev, b.hw.ep1_in);
+    // 命令数比请求里的命令多：仍然回答错误 / More commands counted than the request
+    // holds: still an error
+    b.Send({EXECUTE, 3U, INFO, PACKET_COUNT_ID, INFO, PACKET_SIZE_ID});
+    TEST_ASSERT(b.hw.ep1_in.InFlight() == (Bytes{EXECUTE, 0xFFU}));
+  }
+
   // 响应放不下的批处理回答错误 / A batch whose responses do not fit answers an error
   {
     V2Bench b;

@@ -1241,7 +1241,8 @@ class DapLinkV2Class : public DeviceClass
    * delay-type commands wait in this thread until they are done.
    *
    * @param cmds     第一条命令 / First command
-   * @param cmds_len 命令部分的长度 / Length of the command part
+   * @param cmds_len 命令部分的长度，最后一条命令之后的字节忽略 / Length of the command
+   *                 part; bytes after the last command are ignored
    * @param count    命令数 / Number of commands
    * @param resp     响应缓冲 / Response buffer
    * @param resp_cap 响应缓冲容量 / Response buffer capacity
@@ -1308,11 +1309,8 @@ class DapLinkV2Class : public DeviceClass
       resp_off = static_cast<uint16_t>(resp_off + cmd_out);
     }
 
-    if (req_off != cmds_len)
-    {
-      return false;
-    }
-
+    // 最后一条命令之后的字节（补零）忽略。 / Bytes after the last command (padding) are
+    // ignored.
     out_len = resp_off;
     return true;
   }
@@ -2489,9 +2487,13 @@ class DapLinkV2Class : public DeviceClass
   }
 
   /**
-   * @brief 校验 [ID, 命令数, 命令...]：每条命令都能按自己的内容确定长度，且恰好占满请求。
+   * @brief 校验 [ID, 命令数, 命令...]：每条命令都能按自己的内容确定长度，且都在请求之内
    *        Validate [ID, count, commands...]: every command's length follows from its
-   *        content and together they fill the request exactly.
+   *        content and all of them lie within the request
+   * @note 最后一条命令之后的字节忽略（主机可能把请求补到包长），与 CMSIS-DAP 参考实现
+   *       相同。
+   *       Bytes after the last command are ignored (a host may pad the request to the
+   *       packet size), as in the CMSIS-DAP reference.
    */
   bool ValidateInlineCommands(const uint8_t* req, uint16_t req_len) const
   {
@@ -2519,7 +2521,7 @@ class DapLinkV2Class : public DeviceClass
       req_off = static_cast<uint16_t>(req_off + cmd_len);
     }
 
-    return req_off == req_len;
+    return req_off <= req_len;
   }
 
   /**

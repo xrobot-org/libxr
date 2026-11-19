@@ -252,15 +252,11 @@ class Session
   void Packetize(Bytes req)
   {
     const int mode = Rand(0, 2);
-    // 补零到 DAP 包长。本树的 DAP v2 把 DAP_ExecuteCommands、DAP_QueueCommands 子命令
-    // 之后的填充当作格式错误（回 DAP_ERROR），CMSIS-DAP 参考实现忽略它；这两种命令默认
-    // 不补，DAP_FUZZ_PAD_GROUPS=1 时也补（复现这一处）。
-    // Zero padding to the DAP packet size. The DAP v2 of this tree takes padding after
-    // the sub-commands of DAP_ExecuteCommands and DAP_QueueCommands as malformed (it
-    // answers DAP_ERROR) where the CMSIS-DAP reference ignores it; those two commands
-    // are not padded by default, and are with DAP_FUZZ_PAD_GROUPS=1 (to reproduce it).
-    const bool group = !req.empty() && (req[0] == 0x7E || req[0] == 0x7F);
-    if (mode == 2 && (!group || std::getenv("DAP_FUZZ_PAD_GROUPS") != nullptr))
+    // 补零到 DAP 包长，DAP_ExecuteCommands、DAP_QueueCommands 也补（子命令之后的字节
+    // 被忽略，同 CMSIS-DAP 参考实现）。
+    // Zero padding to the DAP packet size, DAP_ExecuteCommands and DAP_QueueCommands
+    // included (bytes after the sub-commands are ignored, as in the CMSIS-DAP reference).
+    if (mode == 2)
     {
       req.resize(dap_packet, 0);
     }
