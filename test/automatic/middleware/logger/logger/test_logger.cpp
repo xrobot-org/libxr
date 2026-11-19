@@ -62,8 +62,9 @@ void test_logger()
   auto* old_stream = LibXR::STDIO::write_stream_;
 
   // 临时把日志输出接到 Pipe，检查实际生成的文本；读取后恢复 STDIO 的原指针。
+  // 本用例不执行 PlatformInit，没有 STDIO 线程会同时写日志。
   // Redirect logging to a Pipe to inspect generated text, then restore the original STDIO
-  // pointers.
+  // pointers. The case runs without PlatformInit, so no STDIO worker logs meanwhile.
   LibXR::STDIO::write_ = &output.GetWritePort();
   LibXR::STDIO::write_stream_ = nullptr;
 

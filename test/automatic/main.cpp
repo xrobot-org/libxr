@@ -113,8 +113,10 @@ struct TestCase
   // cases.
   bool isolated;
   // 内部要 fork 的用例须同时隔离并跳过 PlatformInit，且自行确保 fork 时没有其他线程。
+  // 接管 STDIO 写端并检查全部输出的用例也跳过，避免 STDIO 线程的日志混入输出。
   // Cases that fork internally need isolation, no PlatformInit, and no other threads at
-  // fork.
+  // fork. Cases that take over the STDIO writer and check all of its output skip it as
+  // well, so no STDIO worker log lands in that output.
   bool platform_init = true;
 };
 
@@ -279,7 +281,7 @@ constexpr GroupedTestCase kMainTestCases[] = {
       false}},
     {"linux_host_tests",
      {"linux_database_raw", &RunVoidEntry<test_linux_database_raw>, true, false}},
-    {"system_tests", {"logger", &RunVoidEntry<test_logger>, true}},
+    {"system_tests", {"logger", &RunVoidEntry<test_logger>, true, false}},
     {"system_tests",
      {"linux_shm_topic", &RunVoidEntry<test_linux_shm_topic>, true, false}},
     {"system_tests", {"linux_shm_bench", &RunBenchLinuxSharedTopicSet, true, false}},
