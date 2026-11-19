@@ -510,7 +510,7 @@ void DeviceComposition::ServiceClasses(bool in_isr)
 {
   for (size_t i = 0; i < class_count_; ++i)
   {
-    if (classes_[i]->service_pending_.exchange(false, std::memory_order_acq_rel))
+    if (classes_[i]->service_pending_.exchange(0U, std::memory_order_acq_rel) != 0U)
     {
       classes_[i]->OnService(in_isr);
     }

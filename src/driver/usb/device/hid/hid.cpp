@@ -89,7 +89,10 @@ ErrorCode HID::SendInputReport(ConstRawData report, bool in_isr)
   return result == ErrorCode::OK ? ErrorCode::OK : ErrorCode::FAILED;
 }
 
-uint8_t HID::GetIdleRate() const { return idle_rate_.load(std::memory_order_relaxed); }
+uint8_t HID::GetIdleRate() const
+{
+  return static_cast<uint8_t>(idle_rate_.load(std::memory_order_relaxed));
+}
 
 size_t HID::GetMaxConfigSize() const
 {
@@ -291,7 +294,7 @@ ErrorCode HID::OnControlRequest(bool in_isr, const SetupPacket& setup,
       {
         return ErrorCode::ARG_ERR;
       }
-      idle_reply_ = idle_rate_.load(std::memory_order_relaxed);
+      idle_reply_ = static_cast<uint8_t>(idle_rate_.load(std::memory_order_relaxed));
       in_data = {&idle_reply_, 1U};
       return ErrorCode::OK;
 

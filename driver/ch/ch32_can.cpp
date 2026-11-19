@@ -132,7 +132,8 @@ CH32CAN::CH32CAN(ch32_can_id_t id, uint32_t queue_size)
   {
     // 端点地址在 Stop 后仍有效，不能在分配 PMA 后扩大 CAN 过滤器占用。
     // Endpoint addresses survive Stop; reserve CAN filters before allocating PMA.
-    ASSERT(!LibXR::CH32UsbCanShared::usb_pma_configured.load(std::memory_order_acquire));
+    ASSERT(LibXR::CH32UsbCanShared::usb_pma_configured.load(std::memory_order_acquire) ==
+           0U);
   }
 
 #if LIBXR_CH32_HAS_CAN2
@@ -212,12 +213,12 @@ ErrorCode CH32CAN::Init()
     {
       LibXR::CH32UsbCanShared::register_can1_rx0(&can1_rx0_thunk);
       LibXR::CH32UsbCanShared::register_can1_tx(&can1_tx_thunk);
-      LibXR::CH32UsbCanShared::can1_inited.store(true, std::memory_order_release);
+      LibXR::CH32UsbCanShared::can1_inited.store(1U, std::memory_order_release);
     }
 #if LIBXR_CH32_HAS_CAN2
     else if (id_ == CH32_CAN2)
     {
-      LibXR::CH32UsbCanShared::can2_inited.store(true, std::memory_order_release);
+      LibXR::CH32UsbCanShared::can2_inited.store(1U, std::memory_order_release);
     }
 #endif
 #endif

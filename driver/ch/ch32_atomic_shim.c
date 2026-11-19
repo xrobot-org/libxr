@@ -61,25 +61,3 @@ libxr_atomic_compare_exchange_4(volatile void* ptr, void* expected, unsigned int
   libxr_atomic_fallback_exit(interrupt_state);
   return matched;
 }
-
-/* GCC 定长运行时接口：单字节交换（std::atomic<bool>::exchange）。QingKe V4 只有字 AMO，
- * 与 CAS 一样在短暂屏蔽中断下完成。
- * The sized GCC runtime helper for a one-byte exchange (std::atomic<bool>::exchange).
- * QingKe V4 has word AMOs only, so like the CAS it runs under a brief interrupt mask. */
-__attribute__((used, noinline)) unsigned char libxr_atomic_exchange_1(
-    volatile void* ptr, unsigned char desired,
-    int memorder) __asm__("__atomic_exchange_1");
-
-__attribute__((used, noinline)) unsigned char libxr_atomic_exchange_1(
-    volatile void* ptr, unsigned char desired, int memorder)
-{
-  (void)memorder;
-
-  volatile unsigned char* const value = (volatile unsigned char*)ptr;
-  const libxr_atomic_fallback_guard_state_t interrupt_state =
-      libxr_atomic_fallback_enter();
-  const unsigned char observed = *value;
-  *value = desired;
-  libxr_atomic_fallback_exit(interrupt_state);
-  return observed;
-}

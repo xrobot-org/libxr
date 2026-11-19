@@ -75,13 +75,13 @@ DeviceCore::DeviceCore(
 
 void DeviceCore::Init(bool in_isr)
 {
-  enable_requested_.store(true, std::memory_order_release);
+  enable_requested_.store(1U, std::memory_order_release);
   service_.Request(ENABLE_EVENT, in_isr);
 }
 
 void DeviceCore::Deinit(bool in_isr)
 {
-  enable_requested_.store(false, std::memory_order_release);
+  enable_requested_.store(0U, std::memory_order_release);
   service_.Request(ENABLE_EVENT, in_isr);
 }
 
@@ -129,7 +129,7 @@ void DeviceCore::OnBusReset(bool in_isr, Speed speed)
   Deinitialize(in_isr);
   service_.SetSpeed(speed);
   suspended_ = false;
-  if (enable_requested_.load(std::memory_order_acquire))
+  if (enable_requested_.load(std::memory_order_acquire) != 0U)
   {
     Initialize(in_isr);
   }
@@ -157,7 +157,7 @@ void DeviceCore::OnDisconnect(bool in_isr)
 
 void DeviceCore::Start(bool in_isr)
 {
-  stop_requested_.store(false);
+  stop_requested_.store(0U);
   // 这次停止可能已经开始处理、还在等端点停稳后断开：等它断开再启动，不与它同时写
   // 控制器。这里先写"不停止"再读"正在停止"，处理程序先写"正在停止"再读"要停止"，两边
   // 至少有一边看得到对方。
@@ -166,7 +166,7 @@ void DeviceCore::Start(bool in_isr)
   // controller at the same time. This side writes "no stop" and then reads "stopping";
   // the handler writes "stopping" and then reads "stop": at least one of them sees the
   // other.
-  while (stop_busy_.load())
+  while (stop_busy_.load() != 0U)
   {
   }
   StartController(in_isr);
@@ -174,7 +174,7 @@ void DeviceCore::Start(bool in_isr)
 
 void DeviceCore::Stop(bool in_isr)
 {
-  stop_requested_.store(true);
+  stop_requested_.store(1U);
   service_.Request(STOP_EVENT, in_isr);
 }
 
@@ -207,8 +207,8 @@ void DeviceCore::HandleDeviceEvents(bool in_isr, uint32_t events)
   }
   if ((events & STOP_EVENT) != 0U)
   {
-    stop_busy_.store(true);
-    if (stop_requested_.exchange(false) && !detach_pending_)
+    stop_busy_.store(1U);
+    if (stop_requested_.exchange(0U) != 0U && !detach_pending_)
     {
       // 按平常的路径收尾，不等总线：没有停稳的停止之后由后端结束。
       // Wind up the ordinary way without waiting for the bus: a stop that is not
@@ -220,7 +220,7 @@ void DeviceCore::HandleDeviceEvents(bool in_isr, uint32_t events)
     }
     if (!detach_pending_)
     {
-      stop_busy_.store(false);
+      stop_busy_.store(0U);
     }
   }
   if (detach_pending_ && !service_.AnyStopPending())
@@ -229,7 +229,7 @@ void DeviceCore::HandleDeviceEvents(bool in_isr, uint32_t events)
   }
   if ((events & ENABLE_EVENT) != 0U)
   {
-    const bool enable = enable_requested_.load(std::memory_order_acquire);
+    const bool enable = enable_requested_.load(std::memory_order_acquire) != 0U;
     if (enable && !inited_)
     {
       Initialize(in_isr);
@@ -255,7 +255,7 @@ void DeviceCore::FinishDetach(bool in_isr)
   service_.CloseAllEndpoints(in_isr);
   Deinitialize(in_isr);
   detach_pending_ = false;
-  stop_busy_.store(false);
+  stop_busy_.store(0U);
 }
 
 void DeviceCore::Initialize(bool in_isr)

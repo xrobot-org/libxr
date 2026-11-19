@@ -385,7 +385,7 @@ class DapLinkV2Class : public DeviceClass
   void UnbindEndpoints(EndpointPool& pool, bool in_isr) override
   {
     in_ep_ref_.store(nullptr, std::memory_order_release);
-    transfer_abort_.store(true, std::memory_order_release);
+    transfer_abort_.store(1U, std::memory_order_release);
     ResetChannels();
     cmd_sem_.PostFromCallback(in_isr);
     slot_sem_.PostFromCallback(in_isr);
@@ -951,7 +951,7 @@ class DapLinkV2Class : public DeviceClass
 
     dap_state_ = {};
     dap_state_.debug_port = LibXR::USB::DapLinkV2Def::DebugPort::DISABLED;
-    transfer_abort_.store(false, std::memory_order_release);
+    transfer_abort_.store(0U, std::memory_order_release);
 
     swj_clock_hz_ = 1'000'000u;
     (void)swd_.SetClockHz(swj_clock_hz_);
@@ -1036,7 +1036,7 @@ class DapLinkV2Class : public DeviceClass
    */
   uint16_t GetDapPacketSize() const
   {
-    return dap_packet_size_.load(std::memory_order_acquire);
+    return static_cast<uint16_t>(dap_packet_size_.load(std::memory_order_acquire));
   }
 
   /**
@@ -1727,7 +1727,7 @@ class DapLinkV2Class : public DeviceClass
       (void)swd_.SetClockHz(swj_clock_hz_);
 
       dap_state_.debug_port = LibXR::USB::DapLinkV2Def::DebugPort::SWD;
-      transfer_abort_.store(false, std::memory_order_release);
+      transfer_abort_.store(0U, std::memory_order_release);
 
       resp[1] = ToU8(LibXR::USB::DapLinkV2Def::Port::SWD);
     }
@@ -1754,7 +1754,7 @@ class DapLinkV2Class : public DeviceClass
           (void)jtag_->ResetTap();
 
           dap_state_.debug_port = LibXR::USB::DapLinkV2Def::DebugPort::JTAG;
-          transfer_abort_.store(false, std::memory_order_release);
+          transfer_abort_.store(0U, std::memory_order_release);
           ResetJtagChainState();
           resp[1] = ToU8(LibXR::USB::DapLinkV2Def::Port::JTAG);
         }
@@ -1787,7 +1787,7 @@ class DapLinkV2Class : public DeviceClass
       }
     }
     dap_state_.debug_port = LibXR::USB::DapLinkV2Def::DebugPort::DISABLED;
-    transfer_abort_.store(false, std::memory_order_release);
+    transfer_abort_.store(0U, std::memory_order_release);
 
     resp[0] = ToU8(LibXR::USB::DapLinkV2Def::CommandId::DISCONNECT);
     resp[1] = ToU8(LibXR::USB::DapLinkV2Def::Status::OK);
@@ -2681,7 +2681,7 @@ class DapLinkV2Class : public DeviceClass
 
   void SetTransferAbortFlag(bool on)
   {
-    transfer_abort_.store(on, std::memory_order_release);
+    transfer_abort_.store(on ? 1U : 0U, std::memory_order_release);
   }
 
  private:
@@ -2723,7 +2723,7 @@ class DapLinkV2Class : public DeviceClass
     // Clear a stale abort flag when a transfer starts (an abort that arrives while no
     // transfer runs must not abort the next one); an abort that arrives later sets it
     // during the execution.
-    transfer_abort_.store(false, std::memory_order_release);
+    transfer_abort_.store(0U, std::memory_order_release);
 
     const uint8_t COUNT = req[2];
     uint16_t req_off = 3u;
@@ -3195,9 +3195,9 @@ class DapLinkV2Class : public DeviceClass
         }
       }
 
-      if (transfer_abort_.load(std::memory_order_acquire))
+      if ((transfer_abort_.load(std::memory_order_acquire) != 0U))
       {
-        transfer_abort_.store(false, std::memory_order_release);
+        transfer_abort_.store(0U, std::memory_order_release);
         break;
       }
     }
@@ -3279,7 +3279,7 @@ class DapLinkV2Class : public DeviceClass
     // Clear a stale abort flag when a transfer starts (an abort that arrives while no
     // transfer runs must not abort the next one); an abort that arrives later sets it
     // during the execution.
-    transfer_abort_.store(false, std::memory_order_release);
+    transfer_abort_.store(0U, std::memory_order_release);
 
     uint16_t count = 0u;
     count = LoadU16Le(&req[2]);
@@ -3578,7 +3578,7 @@ class DapLinkV2Class : public DeviceClass
     // Clear a stale abort flag when a transfer starts (an abort that arrives while no
     // transfer runs must not abort the next one); an abort that arrives later sets it
     // during the execution.
-    transfer_abort_.store(false, std::memory_order_release);
+    transfer_abort_.store(0U, std::memory_order_release);
 
     const uint8_t TAP_INDEX = req[1];
     if (TAP_INDEX >= jtag_chain_.count)
@@ -3635,7 +3635,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.DpReadTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            transfer_abort_.load(std::memory_order_acquire))
+            (transfer_abort_.load(std::memory_order_acquire) != 0U))
         {
           return ec;
         }
@@ -3652,7 +3652,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.DpWriteTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            transfer_abort_.load(std::memory_order_acquire))
+            (transfer_abort_.load(std::memory_order_acquire) != 0U))
         {
           return ec;
         }
@@ -3669,7 +3669,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.ApReadTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            transfer_abort_.load(std::memory_order_acquire))
+            (transfer_abort_.load(std::memory_order_acquire) != 0U))
         {
           return ec;
         }
@@ -3686,7 +3686,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.ApWriteTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            transfer_abort_.load(std::memory_order_acquire))
+            (transfer_abort_.load(std::memory_order_acquire) != 0U))
         {
           return ec;
         }
@@ -3986,9 +3986,9 @@ class DapLinkV2Class : public DeviceClass
         response_value = LibXR::USB::DapLinkV2Def::DAP_TRANSFER_OK;
       }
 
-      if (transfer_abort_.load(std::memory_order_acquire))
+      if ((transfer_abort_.load(std::memory_order_acquire) != 0U))
       {
-        transfer_abort_.store(false, std::memory_order_release);
+        transfer_abort_.store(0U, std::memory_order_release);
         break;
       }
     }
@@ -4034,7 +4034,7 @@ class DapLinkV2Class : public DeviceClass
     // Clear a stale abort flag when a transfer starts (an abort that arrives while no
     // transfer runs must not abort the next one); an abort that arrives later sets it
     // during the execution.
-    transfer_abort_.store(false, std::memory_order_release);
+    transfer_abort_.store(0U, std::memory_order_release);
 
     const uint8_t TAP_INDEX = req[1];
     if (TAP_INDEX >= jtag_chain_.count)
@@ -4089,7 +4089,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.DpReadTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            transfer_abort_.load(std::memory_order_acquire))
+            (transfer_abort_.load(std::memory_order_acquire) != 0U))
         {
           return ec;
         }
@@ -4106,7 +4106,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.DpWriteTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            transfer_abort_.load(std::memory_order_acquire))
+            (transfer_abort_.load(std::memory_order_acquire) != 0U))
         {
           return ec;
         }
@@ -4123,7 +4123,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.ApReadTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            transfer_abort_.load(std::memory_order_acquire))
+            (transfer_abort_.load(std::memory_order_acquire) != 0U))
         {
           return ec;
         }
@@ -4140,7 +4140,7 @@ class DapLinkV2Class : public DeviceClass
         const ErrorCode ec = dp.ApWriteTxn(addr2b, val, ack);
         idle_after_attempt();
         if (ack != LibXR::Debug::JtagProtocol::Ack::WAIT || retry == 0u ||
-            transfer_abort_.load(std::memory_order_acquire))
+            (transfer_abort_.load(std::memory_order_acquire) != 0U))
         {
           return ec;
         }
@@ -4492,13 +4492,13 @@ class DapLinkV2Class : public DeviceClass
   std::atomic<uint32_t> epoch_{0u};
   /// 通告的 DAP 包长：owner 在绑定时写，两边读 / Announced DAP packet size: written by
   /// the owner at bind, read by both
-  std::atomic<uint16_t> dap_packet_size_{MAX_DAP_PACKET_SIZE};
+  std::atomic<uint32_t> dap_packet_size_{MAX_DAP_PACKET_SIZE};
   /// 绑定的 IN 端点：owner 写，Step 借槽时读 / Bound IN endpoint: written by the owner,
   /// read by Step to borrow slots
   std::atomic<Endpoint*> in_ep_ref_{nullptr};
   /// DAP_TransferAbort：owner 或 Step 置，Step 读、清 / DAP_TransferAbort: set by the
   /// owner or Step, read and cleared by Step
-  std::atomic<bool> transfer_abort_{false};
+  std::atomic<uint32_t> transfer_abort_{0U};
   /// @}
 
   /// @name 仅 owner / Owner only

@@ -57,7 +57,7 @@ bool CDCBase::IsRtsSet() const
 
 ErrorCode CDCBase::SendSerialState(bool in_isr)
 {
-  serial_state_pending_.store(true, std::memory_order_release);
+  serial_state_pending_.store(1U, std::memory_order_release);
   RequestService(in_isr);
   return ErrorCode::OK;
 }
@@ -275,7 +275,7 @@ CDCBase::CDCLineCoding CDCBase::ToLineCoding(const UART::Configuration& cfg)
 
 void CDCBase::TrySendSerialState(bool in_isr)
 {
-  if (comm_in_ == nullptr || !serial_state_pending_.load(std::memory_order_acquire))
+  if (comm_in_ == nullptr || serial_state_pending_.load(std::memory_order_acquire) == 0U)
   {
     return;
   }
@@ -288,7 +288,7 @@ void CDCBase::TrySendSerialState(bool in_isr)
   }
   // 先清再读状态：之后的请求会再置位，不会丢。
   // Clear before reading the state: a later request sets it again and is not lost.
-  serial_state_pending_.store(false, std::memory_order_release);
+  serial_state_pending_.store(0U, std::memory_order_release);
   SerialStateNotification message{};
   message.bmRequestType = 0xA1U;
   message.bNotification = NOTIFICATION_SERIAL_STATE;

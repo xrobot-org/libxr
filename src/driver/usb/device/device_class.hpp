@@ -485,7 +485,7 @@ class DeviceClass : public BosCapabilityProvider
    * @note RequestService 在任何上下文置位，组合层在 owner 中取走。
    *       Set by RequestService anywhere, taken by the composition in the owner.
    */
-  std::atomic<bool> service_pending_{false};
+  std::atomic<uint32_t> service_pending_{0U};
   /// 第一个接口字符串号；组合层构造时写，之后只读 / First interface string index;
   /// written by the composition's constructor, read-only afterwards
   uint8_t interface_string_base_ = 0U;

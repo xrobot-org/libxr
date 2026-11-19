@@ -166,7 +166,10 @@ class GsUsbClass : public DeviceClass
 
   /// 主机是否已用小端标记协商字节序；任何上下文 / Whether the host negotiated the byte
   /// order with the little-endian marker; any context
-  bool IsHostFormatOK() const { return host_format_ok_.load(std::memory_order_acquire); }
+  bool IsHostFormatOK() const
+  {
+    return host_format_ok_.load(std::memory_order_acquire) != 0U;
+  }
 
  protected:
   /// @name DeviceClass 的实现 / DeviceClass implementation
@@ -270,13 +273,13 @@ class GsUsbClass : public DeviceClass
    */
   void UnbindEndpoints(EndpointPool& pool, bool in_isr) override
   {
-    host_format_ok_.store(false, std::memory_order_release);
+    host_format_ok_.store(0U, std::memory_order_release);
     for (uint8_t ch = 0U; ch < CAN_CH_NUM; ++ch)
     {
-      can_enabled_[ch].store(false, std::memory_order_relaxed);
-      fd_enabled_[ch].store(false, std::memory_order_relaxed);
-      berr_enabled_[ch].store(false, std::memory_order_relaxed);
-      timestamps_enabled_[ch].store(false, std::memory_order_relaxed);
+      can_enabled_[ch].store(0U, std::memory_order_relaxed);
+      fd_enabled_[ch].store(0U, std::memory_order_relaxed);
+      berr_enabled_[ch].store(0U, std::memory_order_relaxed);
+      timestamps_enabled_[ch].store(0U, std::memory_order_relaxed);
     }
     Endpoint* out = data_out_;
     UnbindEndpoint(pool, data_in_, in_isr);
@@ -425,7 +428,7 @@ class GsUsbClass : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
-        host_format_ok_.store(cfg.byte_order == HOST_BYTE_ORDER,
+        host_format_ok_.store(cfg.byte_order == HOST_BYTE_ORDER ? 1U : 0U,
                               std::memory_order_release);
         return ErrorCode::OK;
       }
@@ -455,7 +458,7 @@ class GsUsbClass : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
-        berr_enabled_[ch].store(on != 0U, std::memory_order_relaxed);
+        berr_enabled_[ch].store(on != 0U ? 1U : 0U, std::memory_order_relaxed);
         return ErrorCode::OK;
       }
 
@@ -501,7 +504,7 @@ class GsUsbClass : public DeviceClass
         // Only the value in memory and the pending flag change here; the timer task
         // writes the database.
         user_id_.store(user_id, std::memory_order_relaxed);
-        user_id_write_pending_.store(true, std::memory_order_release);
+        user_id_write_pending_.store(1U, std::memory_order_release);
         return ErrorCode::OK;
       }
 
@@ -700,7 +703,7 @@ class GsUsbClass : public DeviceClass
   /// when one is pending
   static void OnUserIdTimerStatic(GsUsbClass* self)
   {
-    if (self->user_id_write_pending_.exchange(false, std::memory_order_acq_rel))
+    if (self->user_id_write_pending_.exchange(0U, std::memory_order_acq_rel) != 0U)
     {
       (void)self->user_id_key_->Set(self->user_id_.load(std::memory_order_relaxed));
     }
@@ -842,18 +845,20 @@ class GsUsbClass : public DeviceClass
         return ErrorCode::ARG_ERR;
     }
     const bool fd = fd_supported_ && (mode.flags & GsUsb::GSCAN_MODE_FD) != 0U;
-    can_enabled_[ch].store(start, std::memory_order_relaxed);
-    fd_enabled_[ch].store(start && fd, std::memory_order_relaxed);
+    can_enabled_[ch].store(start ? 1U : 0U, std::memory_order_relaxed);
+    fd_enabled_[ch].store(start && fd ? 1U : 0U, std::memory_order_relaxed);
 
     LibXR::CAN::Configuration& cfg = config_[ch];
     cfg.mode.loopback = (mode.flags & GsUsb::GSCAN_MODE_LOOP_BACK) != 0U;
     cfg.mode.listen_only = (mode.flags & GsUsb::GSCAN_MODE_LISTEN_ONLY) != 0U;
     cfg.mode.triple_sampling = (mode.flags & GsUsb::GSCAN_MODE_TRIPLE_SAMPLE) != 0U;
     cfg.mode.one_shot = (mode.flags & GsUsb::GSCAN_MODE_ONE_SHOT) != 0U;
-    timestamps_enabled_[ch].store((mode.flags & GsUsb::GSCAN_MODE_HW_TIMESTAMP) != 0U,
-                                  std::memory_order_relaxed);
-    berr_enabled_[ch].store((mode.flags & GsUsb::GSCAN_MODE_BERR_REPORTING) != 0U,
-                            std::memory_order_relaxed);
+    timestamps_enabled_[ch].store(
+        (mode.flags & GsUsb::GSCAN_MODE_HW_TIMESTAMP) != 0U ? 1U : 0U,
+        std::memory_order_relaxed);
+    berr_enabled_[ch].store(
+        (mode.flags & GsUsb::GSCAN_MODE_BERR_REPORTING) != 0U ? 1U : 0U,
+        std::memory_order_relaxed);
 
     const ErrorCode result = cans_[ch]->SetConfig(cfg);
     if (fd_supported_)
@@ -902,7 +907,7 @@ class GsUsbClass : public DeviceClass
       }
       return;
     }
-    if (!can_enabled_[ch].load(std::memory_order_relaxed))
+    if (can_enabled_[ch].load(std::memory_order_relaxed) == 0U)
     {
       return;
     }
@@ -932,7 +937,7 @@ class GsUsbClass : public DeviceClass
   /// 收到 FD 帧：入本通道的队列 / An FD frame arrived: queue it on its channel
   void OnFdCanRx(bool in_isr, uint8_t ch, const LibXR::FDCAN::FDPack& pack)
   {
-    if (!fd_enabled_[ch].load(std::memory_order_relaxed))
+    if (fd_enabled_[ch].load(std::memory_order_relaxed) == 0U)
     {
       return;
     }
@@ -975,7 +980,7 @@ class GsUsbClass : public DeviceClass
    */
   bool MakeErrorFrame(uint8_t ch, const LibXR::CAN::ClassicPack& pack, QueueItem& item)
   {
-    if (!berr_enabled_[ch].load(std::memory_order_relaxed) ||
+    if (berr_enabled_[ch].load(std::memory_order_relaxed) == 0U ||
         !LibXR::CAN::IsErrorId(pack.id))
     {
       return false;
@@ -1170,7 +1175,8 @@ class GsUsbClass : public DeviceClass
   size_t Pack(const QueueItem& item, RawData out) const
   {
     const bool fd = (item.hdr.flags & GsUsb::CAN_FLAG_FD) != 0U;
-    const bool ts = timestamps_enabled_[item.hdr.channel].load(std::memory_order_relaxed);
+    const bool ts =
+        timestamps_enabled_[item.hdr.channel].load(std::memory_order_relaxed) != 0U;
     const size_t payload = fd ? WIRE_FD_DATA_SIZE : WIRE_CLASSIC_DATA_SIZE;
     const size_t total = WIRE_HDR_SIZE + payload + (ts ? WIRE_TS_SIZE : 0U);
     // 绑定时已检查一个槽装得下最长的一帧。
@@ -1303,7 +1309,8 @@ class GsUsbClass : public DeviceClass
     }
     if (fd)
     {
-      if (!fd_enabled_[ch].load(std::memory_order_relaxed) || frame.size_ < WIRE_FD_SIZE)
+      if (fd_enabled_[ch].load(std::memory_order_relaxed) == 0U ||
+          frame.size_ < WIRE_FD_SIZE)
       {
         return false;
       }
@@ -1316,7 +1323,7 @@ class GsUsbClass : public DeviceClass
     }
     else
     {
-      if (!can_enabled_[ch].load(std::memory_order_relaxed))
+      if (can_enabled_[ch].load(std::memory_order_relaxed) == 0U)
       {
         return false;
       }
@@ -1372,7 +1379,7 @@ class GsUsbClass : public DeviceClass
   /// are on, else 0; any context
   uint32_t MakeTimestampUs(uint8_t ch) const
   {
-    if (!timestamps_enabled_[ch].load(std::memory_order_relaxed))
+    if (timestamps_enabled_[ch].load(std::memory_order_relaxed) == 0U)
     {
       return 0U;
     }
@@ -1475,19 +1482,19 @@ class GsUsbClass : public DeviceClass
   /// @{
   /// 字节序已协商；owner 写，任何上下文读 / Byte order negotiated; written by the
   /// owner, read anywhere
-  std::atomic<bool> host_format_ok_{false};
+  std::atomic<uint32_t> host_format_ok_{0U};
   /// 通道已启动（经典帧）；owner 写，CAN 回调读 / Channel started (classic frames);
   /// written by the owner, read by the CAN callbacks
-  std::atomic<bool> can_enabled_[CanChNum] = {};
+  std::atomic<uint32_t> can_enabled_[CanChNum] = {};
   /// 通道以 FD 启动；owner 写，CAN 回调读 / Channel started with FD; written by the
   /// owner, read by the CAN callbacks
-  std::atomic<bool> fd_enabled_[CanChNum] = {};
+  std::atomic<uint32_t> fd_enabled_[CanChNum] = {};
   /// 错误报告打开；owner 写，CAN 回调读 / Error reporting on; written by the owner,
   /// read by the CAN callbacks
-  std::atomic<bool> berr_enabled_[CanChNum] = {};
+  std::atomic<uint32_t> berr_enabled_[CanChNum] = {};
   /// 时间戳打开；owner 写，CAN 回调和 owner 读 / Timestamps on; written by the owner,
   /// read by the CAN callbacks and the owner
-  std::atomic<bool> timestamps_enabled_[CanChNum] = {};
+  std::atomic<uint32_t> timestamps_enabled_[CanChNum] = {};
   /// 丢帧计数；本通道的 CAN 回调加，owner 读 / Drop count; added by the channel's CAN
   /// callback, read by the owner
   std::atomic<uint32_t> rx_drop_[CanChNum] = {};
@@ -1496,7 +1503,7 @@ class GsUsbClass : public DeviceClass
   std::atomic<uint32_t> user_id_{0U};
   /// USER_ID 待写；owner 置位，定时任务清除 / USER_ID write pending; set by the owner,
   /// cleared by the timer task
-  std::atomic<bool> user_id_write_pending_{false};
+  std::atomic<uint32_t> user_id_write_pending_{0U};
   /// @}
 };
 

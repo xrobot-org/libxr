@@ -163,7 +163,7 @@ class CDCUart : public CDCBase, public LibXR::UART
    * @note owner 置位，读者一侧清除并请 owner。
    *       Set by the owner, cleared by the reader side, which then asks the owner.
    */
-  std::atomic<bool> rx_waiting_{false};
+  std::atomic<uint32_t> rx_waiting_{0U};
 };
 
 }  // namespace LibXR::USB

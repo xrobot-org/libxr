@@ -540,7 +540,7 @@ class DeviceCore
    *       Written by Init and Deinit in any context; read in the owner by the device
    *       event handler and OnBusReset.
    */
-  std::atomic<bool> enable_requested_{false};
+  std::atomic<uint32_t> enable_requested_{0U};
   /**
    * @brief 应用要求停止控制器、还没有处理 / The application asked to stop the
    *        controller and it is not served yet
@@ -548,10 +548,10 @@ class DeviceCore
    *       Set by Stop and cleared by Start (any context); taken by the device event
    *       handler in the owner.
    */
-  std::atomic<bool> stop_requested_{false};
+  std::atomic<uint32_t> stop_requested_{0U};
   /// 一次 Stop 从开始处理到断开总线之间为真；Start 等它清零 / True from the start of
   /// a Stop's handling until it has detached; Start waits until it clears
-  std::atomic<bool> stop_busy_{false};
+  std::atomic<uint32_t> stop_busy_{0U};
 
   /// @name 仅 owner / Owner only
   /// @{

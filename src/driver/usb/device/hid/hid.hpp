@@ -394,7 +394,7 @@ class HID : public DeviceClass
   std::atomic<Endpoint*> sender_ep_{nullptr};
   /// 空闲速率：SET_IDLE 和绑定写（owner），任何上下文读 / Idle rate: written by
   /// SET_IDLE and the bind (owner), read anywhere
-  std::atomic<uint8_t> idle_rate_{0U};
+  std::atomic<uint32_t> idle_rate_{0U};
   /// @}
 };
 

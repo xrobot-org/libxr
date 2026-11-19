@@ -11,7 +11,7 @@ void DeviceClass::RequestService(bool in_isr)
 {
   // 先置请求再发事件位：取走事件位的 owner 一定看到这个请求。
   // Set the request before the event bit: an owner that takes the bit sees it.
-  service_pending_.store(true, std::memory_order_release);
+  service_pending_.store(1U, std::memory_order_release);
   ASSERT(service_ != nullptr);
   service_->Request(SERVICE_EVENT, in_isr);
 }

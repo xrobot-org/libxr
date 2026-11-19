@@ -48,7 +48,7 @@ size_t PmaLimit(size_t requested)
   ASSERT(requested <= available);
   // 布局就此固定，之后不能再让 CAN 占用更多。
   // The layout is fixed from here on; CAN may not take more afterwards.
-  CH32UsbCanShared::usb_pma_configured.store(true, std::memory_order_release);
+  CH32UsbCanShared::usb_pma_configured.store(1U, std::memory_order_release);
   return requested == 0U ? available : requested;
 }
 

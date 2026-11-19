@@ -390,7 +390,7 @@ class CDCBase : public DeviceClass
   std::atomic<uint32_t> control_line_state_{0U};
   /// 有待发的 SERIAL_STATE：任何上下文置位，owner 清除 / SERIAL_STATE pending: set
   /// anywhere, cleared by the owner
-  std::atomic<bool> serial_state_pending_{false};
+  std::atomic<uint32_t> serial_state_pending_{0U};
   /// @}
 };
 

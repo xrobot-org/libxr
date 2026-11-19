@@ -145,7 +145,7 @@ class Endpoint
   };
 
   /// 端点状态 / Endpoint state
-  enum class State : uint8_t
+  enum class State : uint32_t
   {
     DISABLED,  ///< 未配置或已关闭 / Not configured, or closed
     IDLE,      ///< 已配置 / Configured

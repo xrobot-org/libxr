@@ -60,7 +60,7 @@ ErrorCode CDCUart::BindEndpoints(EndpointPool& pool, uint8_t first_interface, bo
   rx_head_ = 0U;
   rx_count_ = 0U;
   rx_offset_ = 0U;
-  rx_waiting_.store(false, std::memory_order_relaxed);
+  rx_waiting_.store(0U, std::memory_order_relaxed);
   ArmRx(in_isr);
   // 绑定之前写入的数据现在发送。
   // Data written before the bind is sent now.
@@ -222,7 +222,7 @@ void CDCUart::DrainRx(bool in_isr)
       // 先置位再看空间：期间腾出的空间一定会再请一次 owner。
       // Set before looking at the space: space freed meanwhile always asks the owner
       // again.
-      (void)rx_waiting_.exchange(true, std::memory_order_seq_cst);
+      (void)rx_waiting_.exchange(1U, std::memory_order_seq_cst);
       auto queue = read_port_cdc_.GetReadQueue(in_isr);
       const size_t room = queue.EmptySize();
       const size_t left = slot.data.size_ - rx_offset_;
@@ -242,7 +242,7 @@ void CDCUart::DrainRx(bool in_isr)
         // Read port full: keep the slot, so the host is NAKed.
         return;
       }
-      rx_waiting_.store(false, std::memory_order_relaxed);
+      rx_waiting_.store(0U, std::memory_order_relaxed);
     }
     const ErrorCode result = ep->ReleaseSlot(slot);
     ASSERT(result == ErrorCode::OK);
@@ -283,7 +283,7 @@ void CDCUart::OnReceiveSpace(bool in_isr)
   // 两边都用读-改-写：要么 DrainRx 看到腾出的空间，要么这里看到它的标志。
   // Both sides use a read-modify-write: either DrainRx sees the freed space or this sees
   // its flag.
-  if (rx_waiting_.exchange(false, std::memory_order_seq_cst))
+  if (rx_waiting_.exchange(0U, std::memory_order_seq_cst) != 0U)
   {
     RequestService(in_isr);
   }

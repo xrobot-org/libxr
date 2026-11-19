@@ -286,7 +286,7 @@ class HIDKeyboard : public HID
   ErrorCode Send(const Report& report, bool in_isr);
 
   /// LED 位：owner 写，任何上下文读 / LED bits: written by the owner, read anywhere
-  std::atomic<uint8_t> led_state_{0U};
+  std::atomic<uint32_t> led_state_{0U};
   /// LED 变化回调；应用在启动前设置，owner 读 / LED change callback; set by the
   /// application before start, read by the owner
   Callback<bool, bool, bool> on_led_change_;
