@@ -776,6 +776,27 @@ class Endpoint
    *          data: check before the load and copy a latched SETUP out before loading; a
    *          SETUP arriving during the load has been overwritten, and the backend clears
    *          it without reporting it, the host retrying after its timeout.
+   * @note 也可能在硬件已经锁存总线复位或断开、而后端还没报告的时候被调用：启动在
+   *       owner 一轮的最后，这一轮的状态读取之后才发生的复位要到下一轮才报告。后端不得
+   *       因此断言或出错，可以二选一：
+   *       - 拒绝：返回失败，请求以 FAILED 结束（STM32 OTG、HPM 的非 EP0 端点：复位已
+   *         清掉端点使能）；
+   *       - 接受：复位报告引起的 Close 停掉它，停止可以当场结束，也可以 PENDING，由后端
+   *         平常结束停止的办法结束（FSDEV 等下一个 SOF 或挂起）。
+   *       ESP32-S3 接受：在复位停用的端点上写下的使能位芯片留着，但不发包；复位报告后的
+   *       停止正常结束，没有超时（实测 50 次）。
+   *       It may also be called after the hardware has latched a bus reset or a
+   *       disconnect that the backend has not reported yet: starts come at the end of an
+   *       owner pass, and a reset after that pass's status read is reported in the next
+   *       one. The backend must not assert or fault over this; either is allowed:
+   *       - refuse: return a failure and the request ends with FAILED (STM32 OTG and HPM
+   *         for endpoints other than EP0: the reset has cleared the endpoint's enable);
+   *       - accept: the Close that the reset report triggers stops it; the stop may end
+   *         at once or be PENDING and end the way the backend always ends stops (FSDEV:
+   *         at the next SOF or suspend).
+   *       ESP32-S3 accepts: the chip keeps an enable bit written on an endpoint the reset
+   *       deactivated but sends nothing; the stop after the reset report ends normally,
+   *       without a timeout (measured 50 times).
    */
   virtual ErrorCode StartHardware(const HwRequest& request, bool in_isr) = 0;
 

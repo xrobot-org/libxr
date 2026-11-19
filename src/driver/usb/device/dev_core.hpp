@@ -57,12 +57,20 @@ namespace LibXR::USB
  *       starts.
  * @note 后端在一次状态读取中同时看到的事件按此顺序报告：总线复位、端点完成（EP0 的在
  *       SETUP 之前，见 Endpoint::OnHardwareComplete）、SETUP、挂起和恢复、断开。挂起和
- *       恢复同时出现时，最后报告的那个与硬件此刻的状态一致。
+ *       恢复同时出现时，最后报告的那个与硬件此刻的状态一致。断开总是最后报告：拔出、重新
+ *       插上和主机的复位都落在同一次读取里时（owner 晚到超过主机接入后的等待，至少约
+ *       100 ms），先报的复位初始化了设备，随后的断开又把它 Deinitialize，直到主机下一次
+ *       复位（枚举重试）才恢复。目前报告断开的后端只有 STM32 OTG。
  *       Events the backend sees in one status read are reported in this order: bus
  *       reset, endpoint completions (EP0 ones before the SETUP, see
  *       Endpoint::OnHardwareComplete), SETUP, suspend and resume, disconnect. When
  *       suspend and resume appear together, the one reported last agrees with the state
- *       of the hardware at that moment.
+ *       of the hardware at that moment. Disconnect is always reported last: when an
+ *       unplug, a replug and the host's reset all fall into one read (the owner later
+ *       than the host's wait after attach, at least about 100 ms), the reset reported
+ *       first initializes the device and the disconnect after it deinitializes it again,
+ *       until the host's next reset (an enumeration retry) recovers it. STM32 OTG is
+ *       currently the only backend that reports a disconnect.
  * @note 合法状态：未初始化时闸门 CLOSED、未配置、EP0 关闭、没有控制传输；已配置蕴含
  *       已初始化；每个处理函数返回时闸门等于 (已初始化, 挂起, 已配置) 决定的值。
  *       Legal states: while not initialized the gate is CLOSED, the device is
