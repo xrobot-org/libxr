@@ -898,8 +898,9 @@ class Endpoint
    *         已自行禁用。
    *       - 所有端点共用的状态（例如“总线空闲”）：停止之后读到它成立，是充分证据；
    *         不能只等它，总线一直忙时它可以长时间不成立，必须同时有协议上界。
-   *       - 没有中断能叫醒 owner 时，后端用自己的节拍经 DeviceService::RequestPoll
-   *         叫醒；节拍上下文不碰 USB 寄存器。用来叫醒的中断不得破坏还没读出的事件。
+   *       - 没有中断会让 owner 再处理一轮时，后端用自己的节拍调用
+   *         DeviceService::RequestPoll：发布事件、挂起控制器中断，由中断再处理一轮；
+   *         节拍上下文不碰 USB 寄存器。为此打开的中断不得破坏还没读出的事件。
    *       Evidence of quiescence. Evidence must be later than the stop request.
    *       - The bound the protocol gives: at full and low speed a transaction never
    *         crosses a frame, so the first start of frame after the stop is evidence; at
@@ -920,10 +921,11 @@ class Endpoint
    *         the stop it is sufficient evidence; it must not be the only thing waited
    *         for, since it can stay absent for long while the bus is busy, and the
    *         protocol bound has to stand beside it.
-   *       - Where no interrupt wakes the owner, the backend wakes it from its own tick
-   *         through DeviceService::RequestPoll; the tick context touches no USB
-   *         register. An interrupt used for the wake must not destroy an event not yet
-   *         read.
+   *       - Where no interrupt makes the owner run another pass, the backend's own tick
+   *         calls DeviceService::RequestPoll: it publishes an event and pends the
+   *         controller interrupt, which runs another pass; the tick context touches no
+   *         USB register. An interrupt enabled for this must not destroy an event not
+   *         yet read.
    * @note 结果的证据。期间完成的包必须不多不少地计入；硬件有下列缺陷时，后端按对应的
    *       规则保证这一点，并在自己的头文件里写明它属于哪几类、怎么做、实测依据。
    *       - 完成事件会被之后的事务改写或合并：不能只靠事件；用硬件按端点保存的状态

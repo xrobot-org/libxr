@@ -294,12 +294,13 @@ class CH32USBOtgHS : public USB::DeviceService,
   /// 节拍等待的条件：恒成立，只用它的延时 / Condition of the tick wait: always true,
   /// only its delay is used
   static bool TickCheck(void* arg);
-  /// 节拍等待结束（节拍上下文）：叫醒 owner / The tick wait ended (tick context): wake
-  /// the owner
+  /// 节拍等待结束（节拍上下文）：挂起 USB 中断 / The tick wait ended (tick context):
+  /// pend the USB interrupt
   static void TickDone(void* arg, ErrorCode result);
 
   /**
-   * @brief 约 1 ms 后叫醒 owner 的等待 / Wait that wakes the owner about 1 ms later
+   * @brief 约 1 ms 后挂起 USB 中断的等待，中断随后再处理一轮 / Wait that pends the USB
+   *        interrupt about 1 ms later, which then runs another pass
    * @note 在 owner 里启动：总线没有挂起时每一轮末尾启动（没有别的中断时也能看到帧号
    *       前进），有停止未结束时由端点启动。节拍来自系统层（FreeRTOS：
    *       xTaskIncrementTick 的包装）；裸机时板级工程每毫秒调用一次

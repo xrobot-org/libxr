@@ -144,24 +144,37 @@ class CH32EndpointOtgFs : public USB::Endpoint
   /// 共享块中每个方向的字节数 / Bytes per direction in a shared block
   static constexpr size_t SHARED_BLOCK_HALF = 64U;
 
+  /// 停止时要计入的本端点完成事件 / The completion event of this endpoint to count at
+  /// the stop
+  struct StopEvent
+  {
+    /// 有一个本端点、本方向的完成事件 / There is a completion event of this endpoint
+    /// and direction
+    bool mine = false;
+    size_t size = 0U;     ///< OUT：该事件的 RX_LEN / OUT: RX_LEN of that event
+    bool tog_ok = false;  ///< OUT：该事件的 TOG_OK / OUT: TOG_OK of that event
+  };
+
   /**
-   * @brief 被停请求的结果 / Outcome of the stopped request
-   * @param mine 有一个本端点、本方向的完成事件要计入 / A completion event of this
-   *        endpoint and direction is to be counted
-   * @param size OUT：该事件的 RX_LEN / OUT: RX_LEN of that event
-   * @param tog_ok OUT：该事件的 TOG_OK / OUT: TOG_OK of that event
+   * @brief 结算被停的请求：计入最后一个完成事件，给出结果和字节数 / Settle the stopped
+   *        request: count the last completion event, give the result and byte count
+   * @param event 停止时的完成事件；没有时为 {} / The completion event at the stop; {}
+   *        when there is none
    * @param may_copy 共享端点的这一包还可以拷进槽（停止函数返回之前）/ A shared
    *        endpoint may still copy this packet into the slot (before the stop function
    *        has returned)
+   * @note 计入一个 OUT 包时：EP0 翻软件 toggle，共享端点把这一包拷进槽，累加已收字节。
+   *       Counting an OUT packet flips EP0's software toggle, copies the packet into
+   *       the slot for a shared endpoint and adds to the bytes received.
    */
-  StopOutcome Outcome(bool mine, size_t size, bool tog_ok, bool may_copy);
+  StopOutcome SettleStop(const StopEvent& event, bool may_copy);
   /// 停止转为未结束：计数，记下此刻是否已锁存着 SOF / The stop becomes pending: count
   /// it and note whether a SOF is latched already
   void BeginPending();
   /// 停止不再未结束：计数减一 / The stop is no longer pending: uncount it
   void EndPending();
   /// 结束未结束的停止并报告 / End a pending stop and report it
-  void FinishStop(bool in_isr, bool mine, size_t size, bool tog_ok);
+  void FinishStop(bool in_isr, const StopEvent& event);
   /**
    * @brief 结束所有已停稳的未结束停止 / End every pending stop that is quiescent
    * @param force 调用者已知总线上没有事务（总线复位、挂起、控制端点的 SETUP）
@@ -291,8 +304,8 @@ class CH32EndpointOtgFs : public USB::Endpoint
  *
  * @note 停止，对应 Endpoint::StopHardware 的规则。
  *       停稳的证据：被停请求自己的完成；所有端点共用的 SIE 空闲状态（只作充分证据）；
- *       协议上界是写 NAK 之后经过 STOP_AGE_US（长于任何一包在线上的时间），由毫秒节拍
- *       叫醒 owner 来查。总线复位和挂起也结束它。本后端不报 TIMEOUT。
+ *       协议上界是写 NAK 之后经过 STOP_AGE_US（长于任何一包在线上的时间），毫秒节拍挂起
+ *       USB 中断，由中断再处理一轮时检查。总线复位和挂起也结束它。本后端不报 TIMEOUT。
  *       缺陷一，完成事件会被改写：INT_ST 只有一份，之后被忙 NAK 的令牌和紧跟着到来的
  *       SETUP 都会改写它（置 IS_NAK、清 TOG_OK）；SOF 中断打开时 SOF 也改写它，所以
  *       SOF 中断不开。IN 包是否发出按端点自己的 toggle 位判断（每轮扫描）；OUT 包在带
@@ -341,8 +354,8 @@ class CH32EndpointOtgFs : public USB::Endpoint
  *       Evidence of quiescence: the stopped request's own completion; the SIE-free
  *       status shared by all endpoints (as sufficient evidence only); the protocol
  *       bound is STOP_AGE_US since NAK was written (longer than any packet on the
- *       wire), for which the millisecond tick wakes the owner. A bus reset and suspend
- *       end it too. This backend reports no TIMEOUT.
+ *       wire), checked in the pass the USB interrupt runs when the millisecond tick
+ *       pends it. A bus reset and suspend end it too. This backend reports no TIMEOUT.
  *       Flaw one, completion events are rewritten: there is one INT_ST, and a token
  *       busy-NAKed afterwards as well as a SETUP arriving right after rewrite it
  *       (IS_NAK set, TOG_OK cleared); with the SOF interrupt enabled a SOF rewrites it
@@ -383,16 +396,17 @@ class CH32EndpointOtgHs : public USB::Endpoint
    *        Write NAK; with the SIE free now, collect this endpoint's latched completion
    *        and give the outcome, else PENDING
    * @note 不等线上的事务。未结束的停止由本端点的完成事件、之后读到的 SIE 空闲、总线
-   *       复位或挂起结束；都没有时由毫秒节拍按时间结束（这个控制器的 SOF 中断会改写
-   *       未读的 OUT 事件，不能用来叫醒）。节拍由板级工程每毫秒调用
-   *       DriverAsyncCondition::OnTick 提供。处理 SETUP 期间对控制端点的停止当场完成。
+   *       复位或挂起结束；都没有时由毫秒节拍挂起 USB 中断、在那一轮里按时间结束
+   *       （这个控制器的 SOF 中断会改写未读的 OUT 事件，不能代替节拍）。节拍由板级
+   *       工程每毫秒调用 DriverAsyncCondition::OnTick 提供。处理 SETUP 期间对控制端点
+   *       的停止当场完成。
    *       The transaction on the wire is not waited for. A pending stop ends on this
    *       endpoint's completion event, on the SIE read free later, on a bus reset or on
-   *       suspend; failing all of these the millisecond tick ends it by time (this
-   *       controller's SOF interrupt rewrites an unread OUT event and cannot serve as
-   *       the wake). The board project supplies the tick by calling
-   *       DriverAsyncCondition::OnTick every millisecond. A stop of the control endpoint
-   *       during SETUP handling is complete at once.
+   *       suspend; failing all of these the millisecond tick pends the USB interrupt and
+   *       that pass ends it by time (this controller's SOF interrupt rewrites an unread
+   *       OUT event and cannot stand in for the tick). The board project supplies the
+   *       tick by calling DriverAsyncCondition::OnTick every millisecond. A stop of the
+   *       control endpoint during SETUP handling is complete at once.
    */
   StopOutcome StopHardware(bool in_isr) override;
   ErrorCode StallHardware(bool in_isr) override;
@@ -407,13 +421,23 @@ class CH32EndpointOtgHs : public USB::Endpoint
   /// tog_window_ 的有效位 / Valid bit of tog_window_
   static constexpr uint8_t TOG_WINDOW = 0x80;
 
+  /// 停止时要计入的本端点完成事件 / The completion event of this endpoint to count at
+  /// the stop
+  struct StopEvent
+  {
+    /// 有一个本端点、本方向的完成事件 / There is a completion event of this endpoint
+    /// and direction
+    bool mine = false;
+    bool in_acked = false;  ///< IN：该事件不带 IS_NAK / IN: that event carries no IS_NAK
+    bool out_tog_ok = false;  ///< OUT：该事件的包 toggle 正确 / OUT: packet in step
+    size_t rx_len = 0U;       ///< OUT：该事件的 RX_LEN / OUT: RX_LEN of that event
+  };
+
   /**
-   * @brief 被停请求的结果 / Outcome of the stopped request
-   * @param mine 有一个本端点、本方向的完成事件要计入 / A completion event of this
-   *        endpoint and direction is to be counted
-   * @param in_acked IN：该事件不带 IS_NAK / IN: that event carries no IS_NAK
-   * @param out_tog_ok OUT：该事件的包 toggle 正确 / OUT: that event's packet is in step
-   * @param rx_len OUT：该事件的 RX_LEN / OUT: RX_LEN of that event
+   * @brief 结算被停的请求：计入最后一个完成事件，给出结果和字节数 / Settle the stopped
+   *        request: count the last completion event, give the result and byte count
+   * @param event 停止时的完成事件；没有时为 {} / The completion event at the stop; {}
+   *        when there is none
    * @param flip_out 批量和中断 OUT 的软件 toggle 还没有为这个包翻过 / The software
    *        toggle of a bulk or interrupt OUT has not been flipped for this packet yet
    * @note 没有事件时，批量和中断 IN 仍按自动 toggle 是否翻过判断这一包发出没有
@@ -422,8 +446,7 @@ class CH32EndpointOtgHs : public USB::Endpoint
    *       whether the packet went out (measured on a CH32V307: some IN packets reported
    *       with IS_NAK had been delivered; the toggle is what can be trusted).
    */
-  StopOutcome Outcome(bool mine, bool in_acked, bool out_tog_ok, size_t rx_len,
-                      bool flip_out);
+  StopOutcome SettleStop(const StopEvent& event, bool flip_out);
   /// 停止转为未结束：计数、记下时刻、启动节拍等待 / The stop becomes pending: count it,
   /// note the time and start the tick wait
   void BeginPending();
@@ -587,11 +610,11 @@ class CH32EndpointOtgHs : public USB::Endpoint
   static inline uint8_t pending_stops_ = 0U;
   /**
    * @brief 设备的节拍等待对象 / The device's tick wait
-   * @note 写：设备构造；用：owner（BeginPending、AgeStops）。它只负责在约 1 ms 后叫醒
-   *       owner，停止是否结束由时刻决定。
+   * @note 写：设备构造；用：owner（BeginPending、AgeStops）。它只负责约 1 ms 后挂起 USB
+   *       中断，让中断再处理一轮；停止是否结束由时刻决定。
    *       Written at the device's construction; used in the owner (BeginPending,
-   *       AgeStops). It only wakes the owner about 1 ms later; whether a stop is over is
-   *       decided by its time.
+   *       AgeStops). It only pends the USB interrupt about 1 ms later, so that the
+   *       interrupt runs another pass; whether a stop is over is decided by its time.
    */
   static inline DriverAsyncCondition* tick_ = nullptr;
   /// ServiceHardware 的轮次，从 1 起；ServiceHardware 开头加一 / Pass number of

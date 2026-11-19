@@ -162,10 +162,10 @@ class HPMUSBController : public USB::EndpointPool
    * @brief 启动控制器自带的 GPTIMER0（重复，POLL_US）/ Start the controller's own
    *        GPTIMER0 (repeating, POLL_US)
    * @note 第一个停止转为未结束时调用；它的中断就是本控制器的中断，owner 在里面推进停止。
-   *       挂起时没有 SOF，靠它叫醒。
+   *       挂起时没有 SOF，只有它的中断。
    *       Called when the first stop becomes pending; its interrupt is this
    *       controller's, in which the owner advances the stops. While suspended there is
-   *       no SOF and it does the waking.
+   *       no SOF and its interrupt is the only one.
    */
   void StartPollTimer();
   /// 停止 GPTIMER0 并清 TI0；最后一个停止结束时调用 / Stop GPTIMER0 and clear TI0;
@@ -449,8 +449,8 @@ class HPMUSBDevice : public HPMUSBController,
  *       在途的那一包做完后才清位；实测之后 10 800 次停止没有任何内存写入和完成）；被停
  *       请求自己的 dTD 退役（Active 为 0）；EP0 的 SETUP（ENDPTSTAT 被硬件清零）。总线
  *       空闲时 FLUSH 在调用内完成（实测不超过 1.1 us），所以调用里读 HANDSHAKE_SPINS
- *       次；否则 PENDING，由每个 SOF、控制器 GPTIMER0（每 POLL_US）和其他中断叫醒
- *       owner 再查。
+ *       次；否则 PENDING，每个 SOF、控制器 GPTIMER0（每 POLL_US）和其他中断进来时
+ *       再查。
  *       协议上界在这颗芯片上不能单独作证据：FLUSH 写下之后控制器继续回应 IN 令牌，HS 下
  *       又发出最多 12 包、118 us（实测），即写下停止不等于不再开始新包；FLUSH 自清才是
  *       停稳。超过 STOP_REFLUSH_US 仍未自清就再写一次 FLUSH，超过 STOP_TIMEOUT_US 再查
@@ -496,8 +496,8 @@ class HPMUSBDevice : public HPMUSBController,
  *       the stopped request's own dTD retiring (Active 0); a SETUP on EP0 (ENDPTSTAT
  *       cleared by the hardware). On an idle bus the FLUSH finishes within the call
  *       (measured at most 1.1 us), so the call reads HANDSHAKE_SPINS times; otherwise
- *       PENDING, and every SOF, the controller's GPTIMER0 (every POLL_US) and any
- *       other interrupt wake the owner to check again.
+ *       PENDING, and it is checked again in every SOF, the controller's GPTIMER0 (every
+ *       POLL_US) and any other interrupt.
  *       The protocol bound alone is no evidence on this chip: after the FLUSH is written
  *       the controller keeps answering IN tokens, at HS up to 12 more packets in 118 us
  *       (measured), so a written stop does not mean no new packet starts; the FLUSH

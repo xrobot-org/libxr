@@ -216,8 +216,8 @@ class DeviceService
   virtual void ServiceHardware(bool in_isr) = 0;
 
   /**
-   * @brief 节拍唤醒 owner 做一轮 ServiceHardware / The tick wakes the owner for one
-   *        pass of ServiceHardware
+   * @brief 节拍请求一轮 ServiceHardware（发布事件、挂起中断）/ The tick asks for one
+   *        pass of ServiceHardware (publish an event, pend the interrupt)
    * @param in_isr 是否在中断中 / Whether in an ISR
    * @note 用途：控制器没有中断可等的事由后端按节拍来查，即未结束的停止按时间结束，以及
    *       只能读寄存器得到的状态（例如没有开帧起始中断时的帧号）。

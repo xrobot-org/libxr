@@ -416,8 +416,9 @@ void HPMUSBDevice::ServiceHardware(bool in_isr)
   if ((status & USB_USBSTS_SLI_MASK) != 0U && !suspended_ &&
       (regs_->PORTSC1 & USB_PORTSC1_SUSP_MASK) != 0U)
   {
-    // 挂起期间停止照常结束：没有 SOF，GPTIMER0 仍叫醒 owner。
-    // While suspended stops end as usual: without SOFs GPTIMER0 still wakes the owner.
+    // 挂起期间停止照常结束：没有 SOF，GPTIMER0 的中断照样进来。
+    // While suspended stops end as usual: without SOFs the GPTIMER0 interrupt still
+    // comes.
     suspended_ = true;
     OnSuspend(in_isr);
   }

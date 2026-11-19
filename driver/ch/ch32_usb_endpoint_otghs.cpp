@@ -398,7 +398,7 @@ Endpoint::StopOutcome CH32EndpointOtgHs::StopHardware(bool in_isr)
       BeginPending();
       return {ErrorCode::PENDING, 0U};
     }
-    const StopOutcome outcome = Outcome(false, false, false, 0U, false);
+    const StopOutcome outcome = SettleStop({}, false);
     transfer_active_ = false;
     return outcome;
   }
@@ -473,19 +473,21 @@ Endpoint::StopOutcome CH32EndpointOtgHs::StopHardware(bool in_isr)
   // An OUT packet with IS_NAK, and one with a SETUP latched, is taken as in step, see
   // ServiceHardware.
   const bool setup_latched = (USBHSD->INT_FG & USBHS_UIF_SETUP_ACT) != 0U;
-  const StopOutcome outcome =
-      Outcome(mine, (int_st & USBHS_UIS_IS_NAK) == 0U,
-              setup_latched || (int_st & (USBHS_UIS_TOG_OK | USBHS_UIS_IS_NAK)) != 0U,
-              rx_len, true);
+  const StopOutcome outcome = SettleStop(
+      {mine, (int_st & USBHS_UIS_IS_NAK) == 0U,
+       setup_latched || (int_st & (USBHS_UIS_TOG_OK | USBHS_UIS_IS_NAK)) != 0U, rx_len},
+      true);
   EndPending();
   transfer_active_ = false;
   return outcome;
 }
 
-Endpoint::StopOutcome CH32EndpointOtgHs::Outcome(bool mine, bool in_acked,
-                                                 bool out_tog_ok, size_t rx_len,
-                                                 bool flip_out)
+Endpoint::StopOutcome CH32EndpointOtgHs::SettleStop(const StopEvent& event, bool flip_out)
 {
+  const bool mine = event.mine;
+  const bool in_acked = event.in_acked;
+  const bool out_tog_ok = event.out_tog_ok;
+  const size_t rx_len = event.rx_len;
   const EPNumber ep = GetNumber();
   const bool is_ep0 = ep == EPNumber::EP0;
   const bool iso = GetType() == Type::ISOCHRONOUS;
@@ -619,7 +621,7 @@ void CH32EndpointOtgHs::FinishQuietStops(bool in_isr, bool force, bool only_ep0)
     {
       if (ep != nullptr && ep->stopping_)
       {
-        ep->FinishStop(in_isr, ep->Outcome(false, false, false, 0U, false));
+        ep->FinishStop(in_isr, ep->SettleStop({}, false));
       }
     }
   }
@@ -638,7 +640,7 @@ void CH32EndpointOtgHs::AgeStops(bool in_isr)
     {
       if (ep != nullptr && ep->stopping_ && now - ep->stop_us_ >= STOP_AGE_US)
       {
-        ep->FinishStop(in_isr, ep->Outcome(false, false, false, 0U, false));
+        ep->FinishStop(in_isr, ep->SettleStop({}, false));
       }
     }
   }
@@ -895,7 +897,7 @@ void CH32EndpointOtgHs::TransferComplete(bool in_isr, size_t size, bool tog_ok)
     // 上面已经翻过。
     // A completion of this endpoint while its stop is pending: the transaction on the
     // wire is over. The software toggle of a bulk or interrupt OUT was flipped above.
-    FinishStop(in_isr, Outcome(true, true, tog_ok, size, false));
+    FinishStop(in_isr, SettleStop({true, true, tog_ok, size}, false));
     return;
   }
 

@@ -113,7 +113,7 @@ bool EndsFatally(Func&& func)
   return WEXITSTATUS(status) == FATAL_EXIT;
 }
 
-/// 计时从断开开始，到点之前一直断开，不要接上时到点后停在 DETACHED、不叫醒 owner；
+/// 计时从断开开始，到点之前一直断开，不要接上时到点后停在 DETACHED、不挂起中断；
 /// 之后的 Start 就地接上
 /// The count starts at the detach and the device stays detached until it ends; with no
 /// attach wanted it stops in DETACHED without waking the owner; a later Start attaches
@@ -133,8 +133,8 @@ void TestDetachWithoutAttach()
   TEST_ASSERT(!timer.Detached());
 }
 
-/// 复位的断开：到点之前不叫醒，到点时只 pend 一次，owner 取走一次
-/// A reset's detach: nothing wakes before the time, the tick pends once when it has
+/// 复位的断开：到点之前不挂起中断，到点时只 pend 一次，owner 取走一次
+/// A reset's detach: nothing is pended before the time, the tick pends once when it has
 /// passed and the owner takes it once
 void TestResetAttachesFromTick()
 {

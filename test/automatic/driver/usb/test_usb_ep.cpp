@@ -554,7 +554,8 @@ class FakeDevice final : public DeviceService
     }
   }
 
-  /// 节拍唤醒 owner；只供测试直接调用 / The tick wakes the owner; for direct test calls
+  /// 节拍请求一轮 ServiceHardware；只供测试直接调用 / The tick asks for a pass of
+  /// ServiceHardware; for direct test calls
   void Poll(bool in_isr) { RequestPoll(in_isr); }
 
   /// 控制器中断：挂起的中断在本次返回后接着运行 / Controller interrupt; a pended one
@@ -692,8 +693,8 @@ class FakeDevice final : public DeviceService
     }
   }
 
-  /// 节拍的条件：总是成立，结果函数只唤醒 owner / The tick's condition always holds; the
-  /// result function only wakes the owner
+  /// 节拍的条件：总是成立，结果函数只请求一轮 ServiceHardware / The tick's condition
+  /// always holds; the result function only asks for a pass of ServiceHardware
   static bool TickCheck(void*) { return true; }
 
   static void TickDone(void* arg, ErrorCode)

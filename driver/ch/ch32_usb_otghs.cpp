@@ -78,10 +78,11 @@ bool CH32USBOtgHS::TickCheck(void* arg)
 void CH32USBOtgHS::TickDone(void* arg, ErrorCode result)
 {
   UNUSED(result);
-  // 只叫醒 owner，不碰 USB 寄存器；ServiceHardware 末尾由 AgeStops 结束到期的停止，由
-  // ReportFrame 报告帧起始。
-  // Only wakes the owner and touches no USB register; at the end of ServiceHardware
-  // AgeStops ends the stops that are due and ReportFrame reports the start of frame.
+  // 只发布事件、挂起 USB 中断，不碰 USB 寄存器；中断那一轮 ServiceHardware 末尾由
+  // AgeStops 结束到期的停止，由 ReportFrame 报告帧起始。
+  // Only publishes an event and pends the USB interrupt, touching no USB register; at
+  // the end of that interrupt's ServiceHardware pass AgeStops ends the stops that are
+  // due and ReportFrame reports the start of frame.
   static_cast<CH32USBOtgHS*>(arg)->RequestPoll(true);
 }
 
@@ -368,10 +369,11 @@ void CH32USBOtgHS::ServiceHardware(bool in_isr)
   if (!detach_.Detached() && !suspended_)
   {
     ReportFrame(in_isr);
-    // 下限为 0：下一个节拍就叫醒，约每毫秒一轮（下限为 1 时要等满一个完整的节拍，
+    // 下限为 0：下一个节拍就挂起中断，约每毫秒一轮（下限为 1 时要等满一个完整的节拍，
     // CH32V307 实测是每 2 ms 一轮）。等待已在运行时返回 BUSY。
-    // A lower bound of 0: the next tick wakes, about one pass per millisecond (with 1 a
-    // whole tick has to pass first, which measured as one pass per 2 ms on a CH32V307).
+    // A lower bound of 0: the next tick pends the interrupt, about one pass per
+    // millisecond (with 1 a whole tick has to pass first, which measured as one pass per
+    // 2 ms on a CH32V307).
     // BUSY while the wait already runs.
     (void)tick_.Start(0U, 1U);
   }

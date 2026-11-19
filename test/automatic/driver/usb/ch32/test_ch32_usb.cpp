@@ -965,9 +965,9 @@ void TestHsPendingStop()
   b.cls.in->Flush(false);
 }
 
-/// 没有事件、SIE 也不空闲：节拍叫醒 owner，写 NAK 满 1 ms 的停止按时间结束
-/// No event and no free SIE: the tick wakes the owner and a stop whose NAK is 1 ms old
-/// ends by time
+/// 没有事件、SIE 也不空闲：节拍挂起 USB 中断，写 NAK 满 1 ms 的停止按时间结束
+/// No event and no free SIE: the tick pends the USB interrupt and a stop whose NAK is
+/// 1 ms old ends by time
 void TestHsStopByTime()
 {
   ResetFakes();
@@ -980,9 +980,9 @@ void TestHsStopByTime()
   TEST_ASSERT(b.cls.in_done.size() == 1U &&
               b.cls.in_done[0].result == ErrorCode::ABORTED);
 
-  // 没有别的中断时下一个节拍就叫醒 owner（每轮末尾启动的等待），但停止还不满 1 ms
-  // With no other interrupt coming the next tick wakes the owner (the wait started at
-  // the end of every pass), but the stop is not 1 ms old yet
+  // 没有别的中断时下一个节拍就挂起 USB 中断（每轮末尾启动的等待），但停止还不满 1 ms
+  // With no other interrupt coming the next tick pends the USB interrupt (the wait
+  // started at the end of every pass), but the stop is not 1 ms old yet
   DriverAsyncCondition::OnTick(1U);
   TEST_ASSERT(fake_pfic.pending[USBHS_IRQn]);
   b.cls.Send(10U);
@@ -990,9 +990,9 @@ void TestHsStopByTime()
   TEST_ASSERT(fake_usbhsd.UEP1_TX_LEN == 100U);
   TEST_ASSERT((fake_usbhsd.UEP1_TX_CTRL & USBHS_UEP_T_RES_MASK) == USBHS_UEP_T_RES_NAK);
 
-  // 等待已重新启动；满 1 ms 之后的那次叫醒结束停止，排队的请求挂上
-  // The wait was started again; the wake after 1 ms ends the stop and the queued request
-  // is armed
+  // 等待已重新启动；满 1 ms 之后挂起的那一轮结束停止，排队的请求挂上
+  // The wait was started again; the pass pended after 1 ms ends the stop and the
+  // queued request is armed
   std::this_thread::sleep_for(std::chrono::microseconds(1200));
   DriverAsyncCondition::OnTick(1U);
   DriverAsyncCondition::OnTick(1U);
@@ -1008,11 +1008,11 @@ void TestHsStopByTime()
 }
 
 /// 帧起始由 FRAME_NO 上报，不开 SOF 中断：帧号变了报一次，没变不报；没有别的中断时由
-/// 节拍叫醒 owner；全速只报整帧；挂起期间不报、节拍停下，恢复后继续
+/// 节拍挂起 USB 中断；全速只报整帧；挂起期间不报、节拍停下，恢复后继续
 /// Starts of frame come from FRAME_NO with the SOF interrupt off: one report per change
-/// of the number and none without; the tick wakes the owner when no other interrupt
-/// comes; full speed reports whole frames; nothing is reported and the tick stops while
-/// suspended, and both go on after the resume
+/// of the number and none without; the tick pends the USB interrupt when no other
+/// interrupt comes; full speed reports whole frames; nothing is reported and the tick
+/// stops while suspended, and both go on after the resume
 void TestHsFrameReport()
 {
   ResetFakes();
@@ -1027,8 +1027,9 @@ void TestHsFrameReport()
   fake_usbhsd.FRAME_NO = static_cast<uint16_t>((2U << 13U) | 100U);
   RunHs();
   TEST_ASSERT(b.cls.frames.size() == 1U);
-  // 没有别的中断：节拍叫醒 owner，看到帧号前进
-  // No other interrupt: the tick wakes the owner, which sees the number advance
+  // 没有别的中断：节拍挂起 USB 中断，那一轮看到帧号前进
+  // No other interrupt: the tick pends the USB interrupt, whose pass sees the number
+  // advance
   fake_usbhsd.FRAME_NO = static_cast<uint16_t>((3U << 13U) | 100U);
   DriverAsyncCondition::OnTick(1U);
   DriverAsyncCondition::OnTick(1U);
@@ -1151,11 +1152,11 @@ void TestHsDeviceStop()
   TEST_ASSERT(fake_usbhsd.INT_EN != 0U);
   RunHs();
   TEST_ASSERT((fake_usbhsd.CONTROL & USBHS_UC_DEV_PU_EN) != 0U);
-  // 停止按时间结束之后才断开。断开前最后一轮启动的等待还会叫醒一次，那一轮不再启动
-  // 等待，之后节拍不再叫醒
+  // 停止按时间结束之后才断开。断开前最后一轮启动的等待还会挂起一次中断，那一轮不再
+  // 启动等待，之后节拍不再挂起中断
   // The detach comes once the stops have ended by time. The wait started by the last
-  // pass before the detach wakes once more; that pass starts no wait, and the tick wakes
-  // nothing afterwards
+  // pass before the detach pends the interrupt once more; that pass starts no wait, and
+  // the tick pends nothing afterwards
   std::this_thread::sleep_for(std::chrono::microseconds(1200));
   DriverAsyncCondition::OnTick(1U);
   DriverAsyncCondition::OnTick(1U);

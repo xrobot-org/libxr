@@ -354,15 +354,17 @@ Endpoint::StopOutcome CH32EndpointOtgFs::StopHardware(bool in_isr)
   // Until this function returns the slot still belongs to the request: a shared
   // endpoint copies the collected packet into it.
   const StopOutcome outcome =
-      Outcome(mine, rx_len, (int_st & USBFS_UIS_TOG_OK) != 0U, true);
+      SettleStop({mine, rx_len, (int_st & USBFS_UIS_TOG_OK) != 0U}, true);
   EndPending();
   transfer_active_ = false;
   return outcome;
 }
 
-Endpoint::StopOutcome CH32EndpointOtgFs::Outcome(bool mine, size_t size, bool tog_ok,
-                                                 bool may_copy)
+Endpoint::StopOutcome CH32EndpointOtgFs::SettleStop(const StopEvent& event, bool may_copy)
 {
+  const bool mine = event.mine;
+  const size_t size = event.size;
+  const bool tog_ok = event.tog_ok;
   const bool is_ep0 = GetNumber() == EPNumber::EP0;
   const bool iso = GetType() == Type::ISOCHRONOUS;
   const size_t mps = MaxPacketSize();
@@ -444,9 +446,9 @@ void CH32EndpointOtgFs::EndPending()
   --pending_stops_;
 }
 
-void CH32EndpointOtgFs::FinishStop(bool in_isr, bool mine, size_t size, bool tog_ok)
+void CH32EndpointOtgFs::FinishStop(bool in_isr, const StopEvent& event)
 {
-  const StopOutcome outcome = Outcome(mine, size, tog_ok, false);
+  const StopOutcome outcome = SettleStop(event, false);
   EndPending();
   transfer_active_ = false;
   OnHardwareComplete(in_isr, outcome.actual, outcome.result);
@@ -471,7 +473,7 @@ void CH32EndpointOtgFs::FinishQuietStops(bool in_isr, bool force, bool only_ep0)
     {
       if (ep != nullptr && ep->stopping_)
       {
-        ep->FinishStop(in_isr, false, 0U, false);
+        ep->FinishStop(in_isr, {});
       }
     }
   }
@@ -492,7 +494,7 @@ void CH32EndpointOtgFs::FinishStopsAtSof(bool in_isr)
         ep->sof_before_stop_ = false;
         continue;
       }
-      ep->FinishStop(in_isr, false, 0U, false);
+      ep->FinishStop(in_isr, {});
     }
   }
 }
@@ -624,7 +626,7 @@ void CH32EndpointOtgFs::TransferComplete(bool in_isr, size_t size, bool tog_ok)
     // 停止未结束时到来的本端点完成：线上的那个事务结束了，停止随之结束。
     // A completion of this endpoint while its stop is pending: the transaction on the
     // wire has ended, and so does the stop.
-    FinishStop(in_isr, true, size, tog_ok);
+    FinishStop(in_isr, {true, size, tog_ok});
     return;
   }
   const EPNumber ep = GetNumber();
