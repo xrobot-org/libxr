@@ -391,9 +391,7 @@ class WritePort
      */
     [[nodiscard]] size_t EmptySize() const
     {
-      return owns_port_ && port_ != nullptr && port_->queue_data_ != nullptr
-                 ? port_->queue_data_->EmptySize()
-                 : 0U;
+      return owns_port_ ? port_->queue_data_->EmptySize() : 0U;
     }
 
    private:
