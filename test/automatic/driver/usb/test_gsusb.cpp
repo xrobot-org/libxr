@@ -946,15 +946,21 @@ void TestMultiPacket()
     HostOut(dev, hw.ep2_out, Bytes(short_fd.begin(), short_fd.begin() + 20));
     TEST_ASSERT(fd0.fd_tx.size() == 2U && !hw.ep1_in.inflight);
 
-    // 设备收到的 FD 帧：20 字节 → DLC 11，发往主机 80 字节。
-    // An FD frame the device received: 20 bytes -> DLC 11, 80 bytes to the host.
+    // 设备收到的 FD 帧：20 字节 → DLC 11，发往主机 80 字节。前面先收一帧 64 字节的
+    // 0xFF：后一帧 20 字节之后全是 0，不带前一帧的数据。
+    // An FD frame the device received: 20 bytes -> DLC 11, 80 bytes to the host. A
+    // 64-byte frame of 0xFF comes first: the later frame is all 0 past its 20 bytes and
+    // carries nothing of the earlier one.
+    fd0.InjectFd(0x54U, Bytes(64U, 0xFFU));
+    InDone(dev, hw.ep1_in);
     fd0.InjectFd(0x55U, Pattern(20, 9));
     TEST_ASSERT(hw.ep1_in.inflight && hw.ep1_in.LastLength() == 80U);
     InDone(dev, hw.ep1_in);
     const Bytes& rx = hw.ep1_in.transfers.back();
     TEST_ASSERT(U32(rx, 0) == 0xFFFFFFFFU && U32(rx, 4) == 0x55U && rx[8] == 11U);
     TEST_ASSERT(rx[10] == Gs::CAN_FLAG_FD && rx[12 + 19] == Pattern(20, 9)[19]);
-    TEST_ASSERT(rx[12 + 20] == 0U);
+    TEST_ASSERT(std::all_of(rx.begin() + 12 + 20, rx.begin() + 12 + 64,
+                            [](uint8_t b) { return b == 0U; }));
 
     // FD 通道上的经典帧：到 CAN 的经典发送，回显 24 字节（经典加时间戳）。
     // A classic frame on an FD channel: classic send on CAN, a 24-byte echo (classic
@@ -1038,6 +1044,24 @@ void TestToHost()
     Mode(f.dev, f.hw, 1U, Gs::CanMode::RESET);
     f.can1.Inject(0x13U, {1U});
     TEST_ASSERT(!f.hw.ep1_in.inflight);
+  }
+
+  // 经典帧的数据区在 DLC 之后补 0：先收一帧 8 个 0xFF，再收一帧 2 字节，后一帧不带前一帧
+  // 的数据。
+  // A classic frame's data is 0 past its DLC: a frame of eight 0xFF comes first, then a
+  // 2-byte one, which carries nothing of the earlier frame.
+  {
+    Fixture f;
+    f.Start(true, true);
+    f.can0.Inject(0x101U, Bytes(8U, 0xFFU));
+    InDone(f.dev, f.hw.ep1_in);
+    f.can0.Inject(0x102U, {0x01U, 0x02U});
+    InDone(f.dev, f.hw.ep1_in);
+    const Bytes& frame = f.Sent().back();
+    TEST_ASSERT(U32(frame, 4) == 0x102U && frame[8] == 2U);
+    TEST_ASSERT(frame[12] == 0x01U && frame[13] == 0x02U);
+    TEST_ASSERT(std::all_of(frame.begin() + 14, frame.begin() + 20,
+                            [](uint8_t b) { return b == 0U; }));
   }
 
   // 队列 4：两个在途、四个排队、第七个丢弃；溢出标志恰好一次。

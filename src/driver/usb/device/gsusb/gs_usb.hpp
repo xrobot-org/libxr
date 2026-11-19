@@ -543,6 +543,11 @@ class GsUsbClass : public DeviceClass
 
   /// 发往主机的一帧；FD 由 hdr.flags 的 CAN_FLAG_FD 表示 / One frame for the host; FD
   /// is CAN_FLAG_FD in hdr.flags
+  /// @note 局部的 QueueItem 不清零（每帧都要建一个）：Pack 发出 data 的前 8（经典）或
+  ///       64（FD）字节，填数据的地方把长度之后的字节补 0。
+  ///       A local QueueItem is not zeroed (one is made per frame): Pack sends the first
+  ///       8 (classic) or 64 (FD) bytes of data, and whoever fills the data zeroes the
+  ///       bytes past its length.
   struct QueueItem
   {
     WireHeader hdr;         ///< 帧头 / Header
@@ -893,7 +898,7 @@ class GsUsbClass : public DeviceClass
   /// its channel
   void OnCanRx(bool in_isr, uint8_t ch, const LibXR::CAN::ClassicPack& pack)
   {
-    QueueItem item{};
+    QueueItem item;
     if (pack.type == LibXR::CAN::Type::ERROR)
     {
       // 错误帧来自 CAN 的错误中断，与接收中断不一定同优先级，所以有自己的队列，每个队列
@@ -931,6 +936,7 @@ class GsUsbClass : public DeviceClass
     item.hdr = {ECHO_ID_RX, id, dlc, ch, 0U, 0U};
     item.timestamp_us = MakeTimestampUs(ch);
     std::memcpy(item.data, pack.data, dlc);
+    std::memset(item.data + dlc, 0, WIRE_CLASSIC_DATA_SIZE - dlc);
     PushRx(in_isr, ch, item);
   }
 
@@ -951,10 +957,11 @@ class GsUsbClass : public DeviceClass
       id = pack.id & GsUsb::CAN_SFF_MASK;
     }
     const uint8_t len = pack.len <= 64U ? pack.len : 64U;
-    QueueItem item{};
+    QueueItem item;
     item.hdr = {ECHO_ID_RX, id, LenToDlc(len), ch, GsUsb::CAN_FLAG_FD, 0U};
     item.timestamp_us = MakeTimestampUs(ch);
     LibXR::Memory::FastCopy(item.data, pack.data, len);
+    std::memset(item.data + len, 0, WIRE_FD_DATA_SIZE - len);
     PushRx(in_isr, ch, item);
   }
 
@@ -1098,7 +1105,7 @@ class GsUsbClass : public DeviceClass
         // No free slot: the IN completion comes back here.
         return;
       }
-      QueueItem item{};
+      QueueItem item;
       if (!PickFrame(item))
       {
         (void)data_in_->ReleaseSlot(slot);
@@ -1255,7 +1262,7 @@ class GsUsbClass : public DeviceClass
       ArmOut(in_isr);
       return;
     }
-    QueueItem echo{};
+    QueueItem echo;
     if (ForwardHostFrame(completion.slot.data, echo) &&
         echo_queue_.Push(echo) != ErrorCode::OK)
     {
@@ -1290,7 +1297,7 @@ class GsUsbClass : public DeviceClass
     {
       return false;
     }
-    WireHeader hdr{};
+    WireHeader hdr;
     std::memcpy(&hdr, frame.addr_, WIRE_HDR_SIZE);
     const uint8_t* payload = static_cast<const uint8_t*>(frame.addr_) + WIRE_HDR_SIZE;
     const uint8_t ch = hdr.channel;
@@ -1314,7 +1321,7 @@ class GsUsbClass : public DeviceClass
       {
         return false;
       }
-      LibXR::FDCAN::FDPack pack{};
+      LibXR::FDCAN::FDPack pack;
       pack.id = id;
       pack.type = type;
       pack.len = DlcToLen(hdr.can_dlc);
@@ -1327,7 +1334,7 @@ class GsUsbClass : public DeviceClass
       {
         return false;
       }
-      LibXR::CAN::ClassicPack pack{};
+      LibXR::CAN::ClassicPack pack;
       pack.id = id;
       pack.type = type;
       pack.dlc = hdr.can_dlc <= 8U ? hdr.can_dlc : 8U;
