@@ -73,7 +73,7 @@ ErrorCode WritePort::Stream::Write(ConstRawData data)
 
   ASSERT(data.addr_ != nullptr);
 
-  if (port_->queue_data_ == nullptr || port_->queue_data_->EmptySize() < data.size_)
+  if (port_->queue_data_->EmptySize() < data.size_)
   {
     return ErrorCode::FULL;
   }
@@ -118,10 +118,7 @@ void WritePort::Stream::CompleteEmpty()
 
 WritePort::Stream& WritePort::Stream::operator<<(const ConstRawData& data)
 {
-  if (Acquire() == ErrorCode::OK && EmptySize() >= data.size_)
-  {
-    UNUSED(Write(data));
-  }
+  UNUSED(Write(data));
   return *this;
 }
 

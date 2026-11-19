@@ -103,8 +103,9 @@ class WritePort
   {
     return GetPhase(state_.load(std::memory_order_acquire));
   }
-  /// 尝试从 IDLE 取得生产者独占权 / Try to claim exclusive producer access from IDLE.
-  [[nodiscard]] bool TryClaimProducer();
+  /// 尝试从 IDLE 取得生产者独占权，失败时可选记录当时阶段 /
+  /// Try to claim exclusive producer access from IDLE; optionally record observed phase.
+  [[nodiscard]] bool TryClaimProducer(Phase* failed_phase = nullptr);
   /// 登记后续 BLOCK 对旧超时请求的等待 / Register a later BLOCK retirement waiter.
   [[nodiscard]] bool TryRegisterRetirementWait(WriteOperation& op);
   /// 等旧请求退出，超时不提交新数据 / Await retirement; timeout submits no data.
@@ -390,9 +391,7 @@ class WritePort
      */
     [[nodiscard]] size_t EmptySize() const
     {
-      return owns_port_ && port_ != nullptr && port_->queue_data_ != nullptr
-                 ? port_->queue_data_->EmptySize()
-                 : 0U;
+      return owns_port_ ? port_->queue_data_->EmptySize() : 0U;
     }
 
    private:

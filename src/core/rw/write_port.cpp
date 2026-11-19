@@ -1,6 +1,5 @@
 #include "write_port.hpp"
 
-#include <cstring>
 #include <new>
 
 using namespace LibXR;
@@ -42,13 +41,17 @@ WritePort& WritePort::operator=(WriteFun fun)
   return *this;
 }
 
-bool WritePort::TryClaimProducer()
+bool WritePort::TryClaimProducer(Phase* failed_phase)
 {
   uint32_t observed = state_.load(std::memory_order_acquire);
   for (;;)
   {
-    if (GetPhase(observed) != Phase::IDLE)
+    if (const Phase phase = GetPhase(observed); phase != Phase::IDLE)
     {
+      if (failed_phase != nullptr)
+      {
+        *failed_phase = phase;
+      }
       return false;
     }
 
@@ -149,26 +152,10 @@ void WritePort::WriteQueue::PopAll(uint8_t* destination)
   DEV_ASSERT_FROM_CALLBACK(remaining != 0U, in_isr_);
   DEV_ASSERT_FROM_CALLBACK(destination != nullptr, in_isr_);
 
-  size_t offset = 0U;
-  const size_t accepted = port_.queue_data_->ConsumeWithReader(
-      remaining,
-      [destination, &offset](const uint8_t* first, size_t first_size,
-                             const uint8_t* second, size_t second_size) -> size_t
-      {
-        if (first_size != 0U)
-        {
-          std::memcpy(destination + offset, first, first_size);
-          offset += first_size;
-        }
-        if (second_size != 0U)
-        {
-          std::memcpy(destination + offset, second, second_size);
-          offset += second_size;
-        }
-        return first_size + second_size;
-      });
-  DEV_ASSERT_FROM_CALLBACK(accepted == remaining, in_isr_);
-  popped_size_ += accepted;
+  [[maybe_unused]] const auto pop_result =
+      port_.queue_data_->PopBatch(destination, remaining);
+  DEV_ASSERT_FROM_CALLBACK(pop_result == ErrorCode::OK, in_isr_);
+  popped_size_ += remaining;
 }
 
 void WritePort::WriteQueue::FailFront(ErrorCode reason)
@@ -228,9 +215,9 @@ void WritePort::CompleteRequest(Request& request, ErrorCode result, bool in_isr)
     return;
   }
 
+  uint32_t observed = state_.load(std::memory_order_acquire);
   for (;;)
   {
-    uint32_t observed = state_.load(std::memory_order_acquire);
     const Phase phase = GetPhase(observed);
     if (phase == Phase::BLOCK_WAITING)
     {
@@ -343,7 +330,7 @@ ErrorCode WritePort::WaitForRetirement(WriteOperation& op)
 {
   if (!TryRegisterRetirementWait(op))
   {
-    if (LoadPhase() == Phase::IDLE && TryClaimProducer())
+    if (TryClaimProducer())
     {
       return ErrorCode::OK;
     }
@@ -357,9 +344,9 @@ ErrorCode WritePort::WaitForRetirement(WriteOperation& op)
     return ErrorCode::OK;
   }
 
+  uint32_t observed = state_.load(std::memory_order_acquire);
   for (;;)
   {
-    uint32_t observed = state_.load(std::memory_order_acquire);
     const Phase phase = GetPhase(observed);
     if (phase == Phase::BLOCK_RETIRE_WAITING)
     {
@@ -407,9 +394,9 @@ ErrorCode WritePort::WaitForBlock(WriteOperation& op)
     return result;
   }
 
+  uint32_t observed = state_.load(std::memory_order_acquire);
   for (;;)
   {
-    uint32_t observed = state_.load(std::memory_order_acquire);
     const Phase phase = GetPhase(observed);
     if (phase == Phase::BLOCK_WAITING)
     {
@@ -432,7 +419,7 @@ ErrorCode WritePort::WaitForBlock(WriteOperation& op)
   } while (wait_result == ErrorCode::TIMEOUT);
   REQUIRE(wait_result == ErrorCode::OK);
   const ErrorCode result = block_result_;
-  uint32_t observed = state_.load(std::memory_order_acquire);
+  observed = state_.load(std::memory_order_acquire);
   for (;;)
   {
     DEV_ASSERT(GetPhase(observed) == Phase::BLOCK_CLAIMED);
@@ -462,10 +449,11 @@ ErrorCode WritePort::operator()(ConstRawData data, WriteOperation& op, bool in_i
     return ErrorCode::OK;
   }
 
-  if (!TryClaimProducer())
+  Phase failed_phase = Phase::IDLE;
+  if (!TryClaimProducer(&failed_phase))
   {
     if (op.type == WriteOperation::OperationType::BLOCK &&
-        LoadPhase() == Phase::BLOCK_DETACHED && data.size_ <= Capacity())
+        failed_phase == Phase::BLOCK_DETACHED && data.size_ <= Capacity())
     {
       const ErrorCode retirement = WaitForRetirement(op);
       if (retirement != ErrorCode::OK)
