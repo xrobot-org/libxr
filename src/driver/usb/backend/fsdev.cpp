@@ -265,7 +265,7 @@ bool FSDevEndpoint::TakePacket(ErrorCode& result)
   // 缓冲不会在读之前被覆盖。
   // Read the PMA before clearing CTR_RX: while CTR_RX is set the hardware takes no new
   // SETUP (RM0008 p.631), so EP0's buffer is not overwritten before the read.
-  const size_t bytes = device_.GetRxCount(num);
+  const size_t bytes = device_.TakeRxCount(num);
   const size_t room = length_ - progress_;
   const size_t take = LibXR::min(bytes, room);
   if (take != 0U)
@@ -412,6 +412,15 @@ ErrorCode FSDevEndpoint::CheckHardware(const Config& cfg) const
 void FSDevEndpoint::ConfigureHardware(const Config& cfg)
 {
   const uint8_t num = Num();
+  if (cfg.type == Type::ISOCHRONOUS)
+  {
+    // 等时端点的两个方向都只有 00 和 11：另一方向关闭时回 NAK（见 CloseHardware），在写
+    // 类型之前把它改成 00。 / Both directions of an isochronous endpoint have 00 and 11
+    // only: the other direction answers NAK while closed (see CloseHardware) and is set
+    // to 00 before the type is written.
+    FSDevEndpoint* other = Partner();
+    (void)other->SetStat(other->IsIn() ? FSDEV_STAT_TX_DIS : FSDEV_STAT_RX_DIS);
+  }
   WriteType(TypeBits(cfg.type));
   if (cfg.type == Type::ISOCHRONOUS)
   {
@@ -488,7 +497,15 @@ void FSDevEndpoint::CloseHardware(bool in_isr)
     iso_count_ = 0U;
     return;
   }
-  (void)SetStat(IsIn() ? FSDEV_STAT_TX_DIS : FSDEV_STAT_RX_DIS);
+  // 关闭的端点回 NAK，不写 DISABLED：CH32 上 IN 端点的 STAT_TX 经过 DISABLED 之后，偶尔
+  // 有一个包被发坏（实测，见 CH32USBDeviceFS）；DWC2 后端关闭的端点同样回 NAK。等时端点
+  // 没有 NAK（只有 00 和 11），上面仍写 DISABLED。
+  // A closed endpoint answers NAK and DISABLED is not written: on CH32, after an IN
+  // endpoint's STAT_TX went through DISABLED a later packet occasionally goes out
+  // corrupted (measured, see CH32USBDeviceFS); the DWC2 backends keep a closed endpoint
+  // answering NAK as well. An isochronous endpoint has no NAK (00 and 11 only) and still
+  // gets DISABLED above.
+  (void)SetStat(IsIn() ? FSDEV_STAT_TX_NAK : FSDEV_STAT_RX_NAK);
 }
 
 ErrorCode FSDevEndpoint::StartHardware(const HwRequest& request, bool in_isr)
@@ -1214,6 +1231,7 @@ void FSDevDevice::ResetController(bool in_isr)
 {
   UNUSED(in_isr);
   HaltController();
+  rx_counts_valid_ = 0U;
   WaitDetached();
   WriteCntr(static_cast<uint16_t>(ReadCntr() | FSDEV_CNTR_RUN_MASK | FSDEV_CNTR_SOFM));
   Connect(true);
@@ -1234,6 +1252,9 @@ void FSDevDevice::Dispatch()
   {
     device->FastAckEp0();
   }
+  // EnableRxCountSweep：EP0 的入口处理之后扫一遍 OUT 计数。 / EnableRxCountSweep: the
+  // OUT counts are swept after the EP0 entry steps.
+  device->LatchRxCounts();
   if (device->status_window_ && device->HoldStatusWindow())
   {
     return;
@@ -1537,6 +1558,7 @@ void FSDevDevice::ServiceHardware(bool in_isr)
     ep0_shadow_pending_ = false;
     setup_shadow_pending_ = false;
     ep0_out_data_ = false;
+    rx_counts_valid_ = 0U;
     // 未结束的停止在报告复位之前结束。 / Pending stops end before the reset is
     // reported.
     AdvanceStops(in_isr, true);
@@ -1667,6 +1689,9 @@ void FSDevDevice::HandleCtr(bool in_isr)
   // the unmask, since ISTR.CTR stays high.
   for (unsigned pass = 0U; pass < 8U; ++pass)
   {
+    // EnableRxCountSweep：每轮先扫一遍，EP_ID 只给出一个端点。 / EnableRxCountSweep: a
+    // sweep in every pass, since EP_ID names one endpoint only.
+    LatchRxCounts();
     const uint16_t istr = ReadIstr();
     if ((istr & FSDEV_ISTR_CTR) == 0U)
     {
@@ -1674,6 +1699,44 @@ void FSDevDevice::HandleCtr(bool in_isr)
     }
     HandleEp(in_isr, static_cast<uint8_t>(istr & FSDEV_ISTR_EP_ID));
   }
+}
+
+void FSDevDevice::LatchRxCounts()
+{
+  if (!rx_count_sweep_)
+  {
+    return;
+  }
+  for (uint8_t num = 1U; num < MAX_EPS; ++num)
+  {
+    if (out_[num] != nullptr && !out_[num]->iso_)
+    {
+      LatchRxCount(num, ReadEp(num));
+    }
+  }
+}
+
+void FSDevDevice::LatchRxCount(uint8_t num, uint32_t epr)
+{
+  const uint16_t bit = static_cast<uint16_t>(1U << num);
+  if (!rx_count_latch_ || num == 0U || (epr & FSDEV_EP_CTR_RX) == 0U ||
+      (rx_counts_valid_ & bit) != 0U || out_[num] == nullptr || out_[num]->iso_)
+  {
+    return;
+  }
+  rx_counts_[num] = GetRxCount(num);
+  rx_counts_valid_ = static_cast<uint16_t>(rx_counts_valid_ | bit);
+}
+
+uint16_t FSDevDevice::TakeRxCount(uint8_t num)
+{
+  const uint16_t bit = static_cast<uint16_t>(1U << num);
+  if ((rx_counts_valid_ & bit) != 0U)
+  {
+    rx_counts_valid_ = static_cast<uint16_t>(rx_counts_valid_ & ~bit);
+    return rx_counts_[num];
+  }
+  return GetRxCount(num);
 }
 
 void FSDevDevice::HandleCtrTx(bool in_isr, uint8_t num)
@@ -1707,6 +1770,9 @@ void FSDevDevice::HandleEp(bool in_isr, uint8_t num)
   // delivered first. After a SETUP the hardware has set STAT_TX to NAK (RM0008 p.630),
   // so no IN completion of the old transfer can follow the read.
   const uint32_t epr = ReadEp(num);
+  // OUT 的计数在 IN 完成的处理之前锁存（EnableRxCountLatch）。 / The OUT count is
+  // latched before the IN completion is handled (EnableRxCountLatch).
+  LatchRxCount(num, epr);
   if ((epr & FSDEV_EP_CTR_TX) != 0U)
   {
     HandleCtrTx(in_isr, num);

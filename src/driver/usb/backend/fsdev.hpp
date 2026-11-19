@@ -128,6 +128,19 @@ class FSDevDevice;
  * request completes it. Completion and progress happen in ServiceHardware; a stop does
  * not wait for the transaction on the wire, see StopHardware.
  *
+ * @note 关闭的数据端点回 NAK，不置 DISABLED。CH32 USBD 上 IN 端点的 STAT_TX 经过
+ *       DISABLED 之后偶尔有一个包被发坏（实测，数字见 CH32USBDeviceFS），而 DWC2 后端
+ *       关闭的端点同样回 NAK。主机对已关闭端点的令牌一直得到 NAK，不会完成任何请求。
+ *       等时端点没有 NAK，关闭时仍置 DISABLED；配置成等时之前，同号另一方向从 NAK 改成
+ *       DISABLED（等时端点两个方向都只能是 00 或 11）。
+ *       A closed data endpoint answers NAK and is not set DISABLED. On the CH32 USBD,
+ *       after an IN endpoint's STAT_TX went through DISABLED a later packet occasionally
+ *       goes out corrupted (measured, figures in CH32USBDeviceFS), and the DWC2 backends
+ *       keep a closed endpoint answering NAK as well. The host's tokens for a closed
+ *       endpoint keep getting NAK and complete no request. An isochronous endpoint has no
+ *       NAK and is still set DISABLED when closed; before an endpoint is configured as
+ *       isochronous, the other direction of its number goes from NAK to DISABLED (both
+ *       directions of an isochronous endpoint are 00 or 11 only).
  * @note 停止，对应 Endpoint::StopHardware 的规则。
  *       停稳的证据：STAT 不是 VALID 时当场算停稳（硬件发完一包自己回 NAK，此后不会为
  *       本端点开始事务）；被停请求自己的 CTR；否则靠协议上界，写 NAK 之后帧号变了就
@@ -284,8 +297,10 @@ class FSDevEndpoint : public Endpoint
    *       points at buffer 0 and STAT is set to 11.
    */
   void ConfigureHardware(const Config& cfg) override;
-  /// 非 EP0 置 DISABLED（等时端点同时放开同号另一方向）；EP0 常驻不动 / DISABLED for
-  /// non-EP0 (an isochronous one also frees the other direction); EP0 stays
+  /// 非 EP0 的端点回 NAK（等时端点没有 NAK：置 DISABLED，并放开同号另一方向）；EP0
+  /// 常驻不动，见类说明 / A non-EP0 endpoint answers NAK (an isochronous one has no NAK:
+  /// DISABLED, and the other direction of the number is freed); EP0 stays; see the class
+  /// notes
   void CloseHardware(bool in_isr) override;
   /**
    * @brief 记下请求并装填第一包 / Record the request and arm the first packet
@@ -848,6 +863,46 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
    */
   void EnableEp0BulkGate() { ep0_bulk_gate_ = true; }
 
+  /**
+   * @brief 打开 COUNT_RX 锁存 / Enable the COUNT_RX latch
+   * @note 有的控制器（CH32V203 实测）在 OUT 包等着被读（CTR_RX 置位）时，只要其间有
+   *       一个 IN 事务被 ACK，之后被 NAK 的下一个 OUT 数据包就把 COUNTn_RX 写成 0x3FE
+   *       （收到 0 字节减去 CRC）；PMA 里那个包的数据不变，长度丢了。打开后，中断处理
+   *       一个端点时，先于它的 IN 完成把它的 COUNTn_RX 读下来，取包时用这个值。CTR_RX
+   *       被清（任何写 0 的 EPnR 写）或总线复位时作废。剩下的窗口是 CTR_RX 置位到中断处理这个端点之间（例如中断正忙在别的
+   *       端点的回调里）。扫描全部 OUT 端点能再缩小窗口，但每次多读寄存器都拉长中断，
+   *       EP0 的控制写失败随之上升（CH32V203 实测，见 CH32USBDeviceFS 类说明），所以不做。
+   *       平台构造时调用。
+   *       Some controllers (measured on a CH32V203): while an OUT packet waits to be read
+   *       (CTR_RX set), once an IN transaction has been ACKed meanwhile, the next NAKed
+   *       OUT data packet writes COUNTn_RX 0x3FE (0 bytes taken, minus the CRC); the
+   *       packet's data in the PMA stay, its length is lost. When enabled, COUNTn_RX is
+   *       read when the interrupt handles an endpoint, before its IN completion, and
+   *       taking the packet uses that value. It is void once CTR_RX is cleared (any EPnR
+   *       write with it 0) or on a bus reset. The window left is from CTR_RX being set to
+   *       the interrupt handling that endpoint (say, while it is busy in another
+   *       endpoint's callbacks). Sweeping all OUT endpoints narrows it further, but every
+   *       extra register read lengthens the interrupt and failed control writes on EP0 go
+   *       up (measured on a CH32V203, see the CH32USBDeviceFS class notes), so it is not
+   *       done.
+   *       Called at the platform's construction.
+   */
+  void EnableRxCountLatch() { rx_count_latch_ = true; }
+
+  /**
+   * @brief 另在中断入口（EP0 的入口处理之后）和 CTR 循环每一轮扫一遍全部非等时 OUT 端点
+   *        的计数 / Also sweep the counts of all non-isochronous OUT endpoints at the
+   *        interrupt entry (after the EP0 entry steps) and in every pass of the CTR loop
+   * @note 要求 EnableRxCountLatch。缩小 COUNT_RX 被盖的窗口，但拉长中断；CH32V203 在
+   *       HSI 48 MHz 下 EP0 控制写的失败随之上升（CH32USBDeviceFS 类说明）。默认不开，
+   *       由应用按主频选择。
+   *       Requires EnableRxCountLatch. Narrows the window in which COUNT_RX is
+   *       overwritten but lengthens the interrupt; on a CH32V203 at HSI 48 MHz failed
+   *       control writes on EP0 go up with it (CH32USBDeviceFS class notes). Off by
+   *       default; the application chooses by its clock.
+   */
+  void EnableRxCountSweep() { rx_count_sweep_ = rx_count_latch_; }
+
   /// 接通或断开 D+ 上拉；平台实现 / Connect or disconnect the D+ pull-up; platform
   virtual void Connect(bool on) = 0;
 
@@ -953,6 +1008,12 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
   void WriteEp(uint8_t num, uint32_t value)
   {
     WriteRegister(static_cast<uint32_t>(num) * 4U, value);
+    if ((value & FSDEV_EP_CTR_RX) == 0U)
+    {
+      // CTR_RX 写 0 即清：锁存的计数作废 / CTR_RX written 0 clears it: the latched
+      // count is void
+      rx_counts_valid_ = static_cast<uint16_t>(rx_counts_valid_ & ~(1U << num));
+    }
   }
   /// 读 CNTR / Read CNTR
   uint16_t ReadCntr() { return static_cast<uint16_t>(ReadRegister(FSDEV_REG_CNTR)); }
@@ -1015,6 +1076,15 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
   void HandleCtr(bool in_isr);
   /// 处理端点 num 的 CTR_TX、CTR_RX / Handle CTR_TX and CTR_RX of endpoint num
   void HandleEp(bool in_isr, uint8_t num);
+  /// COUNT_RX 锁存：epr 里 CTR_RX 置位、还没锁存时读下端点 num 的 COUNTn_RX / COUNT_RX
+  /// latch: read COUNTn_RX of endpoint num when epr has CTR_RX set and none is latched
+  void LatchRxCount(uint8_t num, uint32_t epr);
+  /// EnableRxCountSweep：扫一遍非等时 OUT 端点 / EnableRxCountSweep: a sweep of the
+  /// non-isochronous OUT endpoints
+  void LatchRxCounts();
+  /// 取包用的计数：锁存的值（用后作废），没有则现读 / The count for taking a packet: the
+  /// latched value (void after use), else read now
+  uint16_t TakeRxCount(uint8_t num);
   /// 处理端点 num 的 CTR_TX / Handle CTR_TX of endpoint num
   void HandleCtrTx(bool in_isr, uint8_t num);
   /// 处理端点 num 的 CTR_RX（不是 SETUP）/ Handle CTR_RX of endpoint num (no SETUP)
@@ -1098,6 +1168,14 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
   /// 等待期间记下的完成：位 n 是端点 n 的 OUT，位 8+n 是端点 n 的 IN / Completions
   /// latched during the wait: bit n is OUT of endpoint n, bit 8+n is IN of endpoint n
   uint16_t latched_ = 0U;
+  /// EnableRxCountLatch / EnableRxCountLatch
+  bool rx_count_latch_ = false;
+  /// EnableRxCountSweep / EnableRxCountSweep
+  bool rx_count_sweep_ = false;
+  /// 锁存的 COUNTn_RX 计数；位 n 表示端点 n 的有效 / Latched COUNTn_RX counts; bit n
+  /// marks endpoint n's as valid
+  uint16_t rx_counts_[MAX_EPS] = {};
+  uint16_t rx_counts_valid_ = 0U;
   /// 影子里有一个包等 owner 处理；FastAckEp0 置位，owner 清零 / A packet in the shadow
   /// awaits the owner; set by FastAckEp0, cleared by the owner
   bool ep0_shadow_pending_ = false;

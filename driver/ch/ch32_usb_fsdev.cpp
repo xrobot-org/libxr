@@ -130,6 +130,12 @@ CH32USBDeviceFS::CH32USBDeviceFS(
   // window; an early packet is caught by EnableEp0EarlyOut.
   EnableEp0EarlyOut();
   EnableEp0BulkGate();
+  // 实测：OUT 包等着时其间有 IN 被 ACK，之后被 NAK 的 OUT 包把 COUNTn_RX 写成 0x3FE（类
+  // 说明）。处理端点时先于它的 IN 完成锁存计数。
+  // Measured: with an IN ACKed while an OUT packet waits, a NAKed OUT packet after it
+  // writes COUNTn_RX 0x3FE (class notes). The count is latched when the endpoint is
+  // handled, before its IN completion.
+  EnableRxCountLatch();
 
   // 先登记入口再开线。中断源此时全关，到 Start 才打开。两条线同一优先级。
   // Register the entries before the lines are enabled. Every interrupt source is still

@@ -128,6 +128,20 @@ struct Ctl
   /// 等时端点的 STAT 被写成 00、11 以外的值的次数 / Writes that left the STAT of an
   /// isochronous endpoint other than 00 or 11
   static inline unsigned iso_bad_stat = 0;
+  /// CH32 的 COUNT_RX：OUT 包等着被读（CTR_RX 置位）时，被 NAK 的 OUT 数据包不碰它；
+  /// 一旦其间有 IN 事务被 ACK，之后被 NAK 的下一个 OUT 数据包把它写成 0x3FE（收到 0
+  /// 字节减去 CRC），PMA 里的数据不变。CH32V203 实测（118 续六：事件跟踪对齐总线抓包）。
+  /// CH32's COUNT_RX: while an OUT packet waits to be read (CTR_RX set), a NAKed OUT data
+  /// packet leaves it alone; once an IN transaction has been ACKed meanwhile, the next
+  /// NAKed OUT data packet writes it 0x3FE (0 bytes taken, minus the CRC) and the data in
+  /// the PMA stay. Measured on a CH32V203 (event trace aligned with a bus capture).
+  static inline bool nak_count = false;
+  /// 被测设备是否打开 COUNT_RX 锁存（FSDevDevice::EnableRxCountLatch）/ Whether the
+  /// device under test enables the COUNT_RX latch
+  static inline bool rx_latch = false;
+  /// nak_count：端点 num 的 OUT 包等待期间已有 IN 被 ACK / nak_count: an IN was ACKed
+  /// while endpoint num's OUT packet waited
+  static inline bool rx_exposed[8] = {};
   /// 每次读 EPnR 之前调用 / Called before every EPnR read
   static inline std::function<void(uint8_t)> before_read;
   /// 每次写 EPnR 之前调用（参数：号、写入值）/ Called before every EPnR write
@@ -154,6 +168,8 @@ struct Ctl
     rx_overflows = 0;
     drd = false;
     iso_bad_stat = 0;
+    nak_count = false;
+    std::memset(rx_exposed, 0, sizeof(rx_exposed));
     before_read = nullptr;
     before_write = nullptr;
     before_rx_size = nullptr;
@@ -376,6 +392,10 @@ struct Ctl
     if (!setup && !force &&
         (((ep[num] & STAT_RX) != RX_VALID && !blind) || !Answers(num)))
     {
+      if (nak_count && rx_exposed[num] && (ep[num] & CTR_RX) != 0U && Answers(num))
+      {
+        SetReceived(num, 1U, 0x3FEU);
+      }
       return false;
     }
     // CH32：类型为 BULK 的 EP0 不理会 SETUP（TinyUSB #3712）/ CH32: EP0 typed BULK
@@ -405,6 +425,7 @@ struct Ctl
       Write(BufAddr(num, 1U), data, len);
     }
     SetReceived(num, 1U, len);
+    rx_exposed[num] = false;
     ep[num] =
         (ep[num] & ~(STAT_RX | SETUP)) | CTR_RX | RX_NAK | (keep_setup ? SETUP : 0U);
     if (setup)
@@ -423,6 +444,13 @@ struct Ctl
   /// 主机 ACK 了在途的 IN 包 / The host ACKed the IN packet on the wire
   static void AckIn(uint8_t num)
   {
+    for (uint8_t i = 0; nak_count && i < 8U; ++i)
+    {
+      if ((ep[i] & CTR_RX) != 0U)
+      {
+        rx_exposed[i] = true;
+      }
+    }
     ep[num] = (ep[num] & ~STAT_TX) | CTR_TX | TX_NAK;
     UpdateIstr();
   }
@@ -530,6 +558,10 @@ class TestDevice final : public FSDevDevice
     if (Ctl::ep0_gate)
     {
       EnableEp0BulkGate();
+    }
+    if (Ctl::rx_latch)
+    {
+      EnableRxCountLatch();
     }
     InitController();
   }
@@ -1077,6 +1109,47 @@ void TestConfigure()
   out2->Close(false);
   TEST_ASSERT(out2->Configure({Direction::OUT, Type::INTR, 64U}, false) == ErrorCode::OK);
   TEST_ASSERT((Ctl::ep[2] & DTOG_TX) != 0U);
+}
+
+void Sof();
+
+/// 关闭的数据端点回 NAK，不是 DISABLED（CH32 上经过 DISABLED 的 IN 端点会把之后的包发
+/// 坏，见 CH32USBDeviceFS；DWC2 后端关闭的端点同样回 NAK），之后到达的包不完成任何
+/// 请求 / A closed data endpoint answers NAK, not DISABLED (on CH32 an IN endpoint that
+/// went through DISABLED corrupts a later packet, see CH32USBDeviceFS; the DWC2 backends
+/// keep a closed endpoint answering NAK as well), and nothing arriving afterwards
+/// completes a request
+void TestCloseNaks()
+{
+  Fixture f;
+  TEST_ASSERT(f.klass.out->Receive(64U, false) == ErrorCode::OK);
+  TEST_ASSERT(f.klass.Send(Pattern(10, 0x21)) == ErrorCode::OK);
+  TEST_ASSERT((Ctl::ep[1] & STAT_TX) == TX_VALID && (Ctl::ep[1] & STAT_RX) == RX_VALID);
+  f.klass.in->Close(false);
+  f.klass.out->Close(false);
+  // 关闭时两方向都装着请求：停止要等帧号走过才结束，CloseHardware 在那之后才写 / Both
+  // directions had a request armed at the Close: the stops end once the frame number has
+  // moved on, and only then does CloseHardware write
+  for (unsigned i = 0U; i < 4U; ++i)
+  {
+    Sof();
+  }
+  TEST_ASSERT((Ctl::ep[1] & STAT_TX) == TX_NAK && (Ctl::ep[1] & STAT_RX) == RX_NAK);
+  const size_t in_done = f.klass.in_done.size();
+  const size_t out_done = f.klass.out_done.size();
+  const Bytes data = Pattern(64, 0x22);
+  TEST_ASSERT(!Ctl::RxPacket(1, data.data(), data.size(), false));
+  Irq();
+  TEST_ASSERT((Ctl::ep[1] & (CTR_RX | CTR_TX)) == 0U);
+  TEST_ASSERT(f.klass.in_done.size() == in_done && f.klass.out_done.size() == out_done);
+  // 再配置照常 / Configuring again works as usual
+  TEST_ASSERT(f.klass.out->Configure({Direction::OUT, Type::BULK, 64U}, false) ==
+              ErrorCode::OK);
+  TEST_ASSERT(f.klass.in->Configure({Direction::IN, Type::BULK, 64U}, false) ==
+              ErrorCode::OK);
+  TEST_ASSERT(f.klass.out->Receive(64U, false) == ErrorCode::OK);
+  SendOut(1, data);
+  TEST_ASSERT(f.klass.received == data);
 }
 
 // ---------------------------------------------------------------------------
@@ -3304,12 +3377,52 @@ void test_usb_fsdev_control()
   TestEp0EarlyOut();
 }
 
+void TestNakCount();
+
 void test_usb_fsdev_bulk()
 {
   TestBulk();
   TestConfigure();
   TestBusEvents();
   TestCdcEcho();
+  TestCloseNaks();
+  TestNakCount();
+}
+
+/// CH32：OUT 包等着时有 IN 被 ACK，中断先处理那个 IN 完成，期间主机的下一个 OUT 包被
+/// NAK、把 COUNT_RX 写成 0x3FE。等着的包仍按它自己的长度交付。
+/// CH32: an IN is ACKed while an OUT packet waits, the interrupt handles that IN
+/// completion first, and meanwhile the host's next OUT packet is NAKed and writes COUNT_RX
+/// 0x3FE. The waiting packet is still delivered with its own length.
+void TestNakCount()
+{
+  Ctl::rx_latch = true;
+  Fixture f;
+  BulkClass& k = f.klass;
+  Ctl::nak_count = true;
+  TEST_ASSERT(k.out->Receive(64U, false) == ErrorCode::OK);
+  TEST_ASSERT(k.Send(Pattern(10, 0x31)) == ErrorCode::OK);
+  const Bytes data = Pattern(32, 0x41);
+  const Bytes next = Pattern(32, 0x51);
+  TEST_ASSERT(Ctl::RxPacket(1, data.data(), data.size(), false));
+  Ctl::AckIn(1);
+  bool sent = false;
+  Ctl::before_write = [&](uint8_t num, uint32_t value)
+  {
+    if (!sent && num == 1U && (value & CTR_TX) == 0U && (Ctl::ep[1] & CTR_TX) != 0U)
+    {
+      sent = true;
+      TEST_ASSERT(!Ctl::RxPacket(1, next.data(), next.size(), false));
+    }
+  };
+  Irq();
+  Ctl::before_write = nullptr;
+  TEST_ASSERT(sent);
+  TEST_ASSERT(k.out_done.size() == 1U && k.out_done[0].result == ErrorCode::OK &&
+              k.out_done[0].actual == 32U);
+  TEST_ASSERT(k.received == data);
+  Ctl::nak_count = false;
+  Ctl::rx_latch = false;
 }
 
 void test_usb_fsdev_stop()
