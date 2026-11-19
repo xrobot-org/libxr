@@ -467,11 +467,12 @@ void STM32USBOtgDevice::HaltController()
   (void)USB_DevDisconnect(core_);
   // 断开后总线上没有包，NAK 生效和禁用只取决于芯片，照停止的步骤做完（RM0468 p.2807、
   // p.2799-2800）。只写 EPDIS 而不等握手会把端点留在使能状态：STM32H723 实测重新接上后
-  // EP0 IN 还带着旧请求，主机枚举晚 5.7~7.1 s 或失败。 Detached, no packet is on the bus,
-  // so the NAK and the disable depend on the chip alone and the stop procedure is carried
-  // through (RM0468 p.2807, p.2799-2800). Writing EPDIS without the handshakes leaves
-  // endpoints enabled: measured on an STM32H723, EP0 IN still held the old request after
-  // the re-attach and the host enumerated 5.7 to 7.1 s late or not at all.
+  // EP0 IN 还带着旧请求，主机枚举晚 5.7~7.1 s 或失败。
+  // Detached, no packet is on the bus, so the NAK and the disable depend on the chip
+  // alone and the stop procedure is carried through (RM0468 p.2807, p.2799-2800).
+  // Writing EPDIS without the handshakes leaves endpoints enabled: measured on an
+  // STM32H723, EP0 IN still held the old request after the re-attach and the host
+  // enumerated 5.7 to 7.1 s late or not at all.
   for (uint8_t i = 0; i < endpoint_count_; ++i)
   {
     if (in_[i] == nullptr)
@@ -1226,8 +1227,9 @@ Endpoint::HwLimits STM32OtgEndpoint::HardwareLimits(Direction direction, Type ty
   if (type == Type::CONTROL)
   {
     // DIEPTSIZ0 XFRSIZ 7 位、PKTCNT 2 位，DOEPTSIZ0 PKTCNT 1 位（RM0468
-    // p.2734、p.2740）。 DIEPTSIZ0 has a 7-bit XFRSIZ and a 2-bit PKTCNT, DOEPTSIZ0 a
-    // 1-bit PKTCNT (RM0468 p.2734, p.2740).
+    // p.2734、p.2740）。
+    // DIEPTSIZ0 has a 7-bit XFRSIZ and a 2-bit PKTCNT, DOEPTSIZ0 a 1-bit PKTCNT
+    // (RM0468 p.2734, p.2740).
     limits.max_packet_size = LibXR::min<size_t>(64U, room);
     limits.max_packets = 1U;
     limits.max_bytes = limits.max_packet_size;

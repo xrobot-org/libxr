@@ -34,13 +34,13 @@
  *
  * 平台的设备类派生 FSDevDevice：构造时给出寄存器块和 PMA 的地址，打开时钟后调用
  * InitController；实现 Connect、MaskInterrupt、UnmaskInterrupt，可选
- * PendInterrupt；在控制器 中断里调用 Dispatch。寄存器布局不同的变体（32 位寄存器的
- * DRD）覆盖对应的虚函数。 The platform's device class derives from FSDevDevice: it gives
- * the addresses of the register block and the PMA at construction and calls
- * InitController after enabling the clocks; it implements Connect, MaskInterrupt,
- * UnmaskInterrupt and optionally PendInterrupt, and calls Dispatch from the controller
- * interrupt. A variant with another register layout (DRD with 32-bit registers) overrides
- * the corresponding virtuals.
+ * PendInterrupt；在控制器中断里调用 Dispatch。寄存器布局不同的变体（32 位寄存器的
+ * DRD）覆盖对应的虚函数。
+ * The platform's device class derives from FSDevDevice: it gives the addresses of the
+ * register block and the PMA at construction and calls InitController after enabling
+ * the clocks; it implements Connect, MaskInterrupt, UnmaskInterrupt and optionally
+ * PendInterrupt, and calls Dispatch from the controller interrupt. A variant with another
+ * register layout (DRD with 32-bit registers) overrides the corresponding virtuals.
  */
 
 namespace LibXR::USB

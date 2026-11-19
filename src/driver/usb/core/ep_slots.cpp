@@ -138,10 +138,10 @@ LibXR::ErrorCode EndpointSlots::Queue(const Lend& lend, const Request& request,
     if (!ended)
     {
       // 这次借出到此结束：先推进戳，再改变槽状态。之后只会在 LENT 与 STALE
-      // 之间变（停用）， 两种情况都由下面的比较交换收尾。 The lend ends here: the stamp
-      // advances before the slot state changes. From now on the slot can only move from
-      // LENT to STALE (a disable), and either case is finished by the compare-and-swap
-      // below.
+      // 之间变（停用），两种情况都由下面的比较交换收尾。
+      // The lend ends here: the stamp advances before the slot state changes. From now on
+      // the slot can only move from LENT to STALE (a disable), and either case is
+      // finished by the compare-and-swap below.
       record.stamp.store(lend.stamp + 1U, std::memory_order_release);
       ended = true;
     }
