@@ -9,6 +9,7 @@
 #include "libxr_type.hpp"
 #include "usb/core/ep.hpp"
 #include "usb/core/ep_pool.hpp"
+#include "usb/core/usb_detach_timer.hpp"
 #include "usb/core/usb_service.hpp"
 #include "usb/device/dev_core.hpp"
 
@@ -324,18 +325,20 @@ class HPMUSBDevice : public HPMUSBController,
   void SetAddress(uint8_t address, AddressStage stage) override;
   /**
    * @brief 断开、静止，再接上总线 / Detach, quiesce and attach again
-   * @note 返回后硬件上没有任何请求，之后每个 StopHardware 立即返回 ABORTED。断开保持
-   *       RESET_DETACH_US，在 owner 里忙等，主机才会复位总线。
+   * @note 返回后硬件上没有任何请求，之后每个 StopHardware 立即返回 ABORTED。只做前半段
+   *       （HaltController、detach_.OnHalted(true)），不等待；断开保持 RESET_DETACH_MS
+   *       由 detach_ 按节拍计时，到点后 owner 接上，主机才会复位总线。
    *       Afterwards no request is on the hardware, and every later StopHardware returns
-   *       ABORTED at once. The detach lasts RESET_DETACH_US, busy-waiting in the owner,
-   *       so that the host resets the bus.
+   *       ABORTED at once. First half only (HaltController, detach_.OnHalted(true)), no
+   *       wait; the detach lasts RESET_DETACH_MS, counted on the tick by detach_, and the
+   *       owner attaches once it has passed, so that the host resets the bus.
    */
   void ResetController(bool in_isr) override;
   /// @}
 
  private:
-  /// ResetController 断开总线的时长（us）/ How long ResetController stays detached (us)
-  static constexpr uint64_t RESET_DETACH_US = 10000U;
+  /// 最短断开时长（毫秒，节拍计数）/ Minimum detach time (ms, counted in ticks)
+  static constexpr uint32_t RESET_DETACH_MS = 10U;
 
   /**
    * @brief 断开总线，让硬件不再为任何端点工作，作废未结束的停止 / Detach, make the
@@ -344,9 +347,10 @@ class HPMUSBDevice : public HPMUSBController,
    *       Shared by StopController and ResetController.
    */
   void HaltController();
-  /// HaltController 断开之后等够 RESET_DETACH_US / Wait until RESET_DETACH_US have
-  /// passed since HaltController detached
-  void WaitDetached();
+  /// 清状态、打开中断源、接上总线；调用者：StartController、ResetController、
+  /// ServiceHardware（到点的接上）/ Clear the status, enable the interrupt sources and
+  /// attach; callers: StartController, ResetController, ServiceHardware (a due attach)
+  void Attach();
   /// 总线复位的收尾（URI）/ Wind-up of a bus reset (URI)
   void OnUsbReset(bool in_isr);
   /// 端口回到工作状态（PCI）：报告复位或恢复 / The port is operational again (PCI):
@@ -383,10 +387,23 @@ class HPMUSBDevice : public HPMUSBController,
   /// the FLUSH, flush again or report TIMEOUT by time
   void AdvanceStops(bool in_isr);
 
-  /// HaltController 断开总线的时刻（us）和“断开后还没有重新接上” / Time HaltController
-  /// detached (us) and "not attached again since"
-  uint64_t halted_at_us_ = 0U;
-  bool halted_ = false;
+  /**
+   * @brief 最短断开时间 / Minimum detach time
+   * @note HaltController 之后调用 OnHalted：ResetController 传 true，StopController 传
+   *       false，都立即返回。StartController 用 WantAttach：true 时就地接上，false 时只
+   *       使能中断线。ServiceHardware 开头 TakeAttach 为 true 时做后半段（接上）。
+   *       OnHalted after HaltController: true from ResetController, false from
+   *       StopController; both return at once. StartController uses WantAttach: on true
+   *       it attaches in place, on false it only enables the interrupt line. At the start
+   *       of ServiceHardware, when TakeAttach is true, the second half (the attach)
+   *       runs.
+   *       节拍来自系统层（FreeRTOS、ThreadX 的包装）；裸机时板级工程每毫秒调用
+   *       DriverAsyncCondition::OnTick，见 HPMTimebase。
+   *       The tick comes from the system layer (the FreeRTOS or ThreadX wrap);
+   *       bare-metal, the board project calls DriverAsyncCondition::OnTick every
+   *       millisecond, see HPMTimebase.
+   */
+  USB::DetachTimer detach_{*this, RESET_DETACH_MS};
   /// URI 之后还没有报告复位 / A URI was seen and the reset is not reported yet
   bool reset_pending_ = false;
   /// 已向核心报告挂起、还没有报告恢复 / Suspend reported to the core, resume not yet

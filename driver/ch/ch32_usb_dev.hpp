@@ -8,6 +8,7 @@
 #include "libxr_def.hpp"
 #include "libxr_type.hpp"
 #include "usb/core/ep_pool.hpp"
+#include "usb/core/usb_detach_timer.hpp"
 #include "usb/core/usb_service.hpp"
 #include "usb/device/dev_core.hpp"
 
@@ -67,6 +68,9 @@ class CH32USBOtgFS : public USB::DeviceService,
    *        reset the SIE, enable interrupts and the pull-up, then enable the USBFS line
    * @note 调用者：应用，控制器中断之外。 / Caller: the application, outside the
    *       controller interrupt.
+   * @note 不等待：断开时间未到时只记下"要接上"并使能中断线，见 detach_。
+   *       Never waits: while the detach time has not passed it only records "attach
+   *       wanted" and enables the line, see detach_.
    */
   void StartController(bool in_isr) override;
 
@@ -101,7 +105,12 @@ class CH32USBOtgFS : public USB::DeviceService,
   void SetAddress(uint8_t address, AddressStage stage) override;
   /// EP0 RX 置 ACK / EP0 RX to ACK
   void OnControlReady() override;
-  /// 复位 SIE 并重新接上总线 / Reset the SIE and attach again
+  /**
+   * @brief 复位 SIE、断开总线，到点后 owner 重新接上 / Reset the SIE and detach; the
+   *        owner attaches again once the detach time has passed
+   * @note 只做前半段（HaltController、DetachTimer::OnHalted(true)），不等待。
+   *       First half only (HaltController, DetachTimer::OnHalted(true)); never waits.
+   */
   void ResetController(bool in_isr) override;
 
  private:
@@ -118,16 +127,21 @@ class CH32USBOtgFS : public USB::DeviceService,
    */
   static void HaltController();
   /**
-   * @brief HaltController 断开之后等够最短断开时间 / Wait until the minimum detach time
-   *        has passed since HaltController detached
-   * @note StartController 和 ResetController 在重新接上之前调用。
-   *       Called by StartController and ResetController before they attach.
+   * @brief 最短断开时间（5 ms）/ Minimum detach time (5 ms)
+   * @note HaltController 之后调用 OnHalted：ResetController 传 true，StopController 传
+   *       false，都立即返回。StartController 用 WantAttach：true 时就地 SetUpController
+   *       并接上拉，false 时只使能中断线。ServiceHardware 开头 TakeAttach 为 true 时做
+   *       后半段：SetUpController、接上拉。断开期间（Detached()）不报告挂起。时间按节拍
+   *       计数（5 个 1 ms 节拍）。
+   *       OnHalted after HaltController: true from ResetController, false from
+   *       StopController; both return at once. StartController uses WantAttach: on true
+   *       it runs SetUpController and connects the pull-up in place, on false it only
+   *       enables the interrupt line. At the start of ServiceHardware, when TakeAttach is
+   *       true, the second half runs: SetUpController and the pull-up. While detached
+   *       (Detached()) no suspend is reported. The time is a tick count (5 ticks of
+   *       1 ms).
    */
-  static void WaitDetached();
-  /// HaltController 断开总线的时刻（µs）和“断开后还没有重新接上” / Time HaltController
-  /// detached (us) and "not attached again since"
-  static inline uint64_t halted_at_us_ = 0U;
-  static inline bool halted_ = false;
+  USB::DetachTimer detach_{*this, 5U};
   /// 已向设备核心报告挂起（之后还没有报告恢复或复位）；仅 owner / A suspend was
   /// reported to the device core (no resume or reset since); owner only
   bool suspended_ = false;
@@ -191,6 +205,9 @@ class CH32USBOtgHS : public USB::DeviceService,
    *        high speed, then enable the USBHS line
    * @note 调用者：应用，控制器中断之外。 / Caller: the application, outside the
    *       controller interrupt.
+   * @note 不等待：断开时间未到时只记下"要接上"并使能中断线，见 detach_。
+   *       Never waits: while the detach time has not passed it only records "attach
+   *       wanted" and enables the line, see detach_.
    */
   void StartController(bool in_isr) override;
 
@@ -225,7 +242,12 @@ class CH32USBOtgHS : public USB::DeviceService,
   void SetAddress(uint8_t address, AddressStage stage) override;
   /// EP0 RX 置 ACK / EP0 RX to ACK
   void OnControlReady() override;
-  /// 复位 SIE 并重新接上总线 / Reset the SIE and attach again
+  /**
+   * @brief 复位 SIE、断开总线，到点后 owner 重新接上 / Reset the SIE and detach; the
+   *        owner attaches again once the detach time has passed
+   * @note 只做前半段（HaltController、DetachTimer::OnHalted(true)），不等待。
+   *       First half only (HaltController, DetachTimer::OnHalted(true)); never waits.
+   */
   void ResetController(bool in_isr) override;
 
  private:
@@ -242,16 +264,21 @@ class CH32USBOtgHS : public USB::DeviceService,
    */
   static void HaltController();
   /**
-   * @brief HaltController 断开之后等够最短断开时间 / Wait until the minimum detach time
-   *        has passed since HaltController detached
-   * @note StartController 和 ResetController 在重新接上之前调用。
-   *       Called by StartController and ResetController before they attach.
+   * @brief 最短断开时间（5 ms）/ Minimum detach time (5 ms)
+   * @note HaltController 之后调用 OnHalted：ResetController 传 true，StopController 传
+   *       false，都立即返回。StartController 用 WantAttach：true 时就地 SetUpController
+   *       并接上拉，false 时只使能中断线。ServiceHardware 开头 TakeAttach 为 true 时做
+   *       后半段：SetUpController、接上拉。断开期间（Detached()）不报告挂起。时间按节拍
+   *       计数（5 个 1 ms 节拍）。
+   *       OnHalted after HaltController: true from ResetController, false from
+   *       StopController; both return at once. StartController uses WantAttach: on true
+   *       it runs SetUpController and connects the pull-up in place, on false it only
+   *       enables the interrupt line. At the start of ServiceHardware, when TakeAttach is
+   *       true, the second half runs: SetUpController and the pull-up. While detached
+   *       (Detached()) no suspend is reported. The time is a tick count (5 ticks of
+   *       1 ms).
    */
-  static void WaitDetached();
-  /// HaltController 断开总线的时刻（µs）和“断开后还没有重新接上” / Time HaltController
-  /// detached (us) and "not attached again since"
-  static inline uint64_t halted_at_us_ = 0U;
-  static inline bool halted_ = false;
+  USB::DetachTimer detach_{*this, 5U};
   /// 控制器寄存器初始化，Start 和 ResetController 共用 / Controller register set-up
   /// shared by Start and ResetController
   static void SetUpController();
@@ -274,16 +301,19 @@ class CH32USBOtgHS : public USB::DeviceService,
   /**
    * @brief 约 1 ms 后叫醒 owner 的等待 / Wait that wakes the owner about 1 ms later
    * @note 在 owner 里启动：总线没有挂起时每一轮末尾启动（没有别的中断时也能看到帧号
-   *       前进），有停止未结束时由端点启动。板级工程须每毫秒调用一次
-   *       DriverAsyncCondition::OnTick；没有节拍时，帧起始只在控制器有别的中断时上报，
-   *       线上事务不产生事件的那部分停止也要等到控制器的下一次中断才结束。
+   *       前进），有停止未结束时由端点启动。节拍来自系统层（FreeRTOS：
+   *       xTaskIncrementTick 的包装）；裸机时板级工程每毫秒调用一次
+   *       DriverAsyncCondition::OnTick，见 CH32Timebase。没有节拍时，帧起始只在控制器
+   *       有别的中断时上报，线上事务不产生事件的那部分停止也要等到控制器的下一次中断才
+   *       结束。
    *       Started in the owner: at the end of every pass while the bus is not suspended
    *       (so that the frame number is seen to advance with no other interrupt coming),
-   *       and by the endpoints while a stop is pending. The board project must call
-   *       DriverAsyncCondition::OnTick once per millisecond; without the tick, starts of
-   *       frame are reported only when the controller has another interrupt, and the
-   *       stops whose transaction on the wire raises no event end only at the
-   *       controller's next interrupt.
+   *       and by the endpoints while a stop is pending. The tick comes from the system
+   *       layer (FreeRTOS: the xTaskIncrementTick wrap); bare-metal, the board project
+   *       calls DriverAsyncCondition::OnTick every millisecond, see CH32Timebase.
+   *       Without the tick, starts of frame are reported only when the controller has
+   *       another interrupt, and the stops whose transaction on the wire raises no event
+   *       end only at the controller's next interrupt.
    */
   DriverAsyncCondition tick_;
 

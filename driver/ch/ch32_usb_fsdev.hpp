@@ -98,8 +98,8 @@ namespace LibXR
  *       the device dropped that SETUP and the host's status IN got NAK until the timeout;
  *       2 had 8 bytes of data covering the whole SETUP with COUNT still 8, which the
  *       device took for a SETUP and STALLed. In the 90 successes the first data packet
- * got NAK at +15 us (EP0 already BULK). The window depends on the interrupt latency and
- *       software cannot close it; on CH32 about 8-20% of control writes with data end
+ *       got NAK at +15 us (EP0 already BULK). The window depends on the interrupt latency
+ *       and software cannot close it; on CH32 about 8-20% of control writes with data end
  *       with a timeout or a STALL, never with wrong content (a SETUP read differently
  *       twice or with COUNT other than 8 is not handed over).
  * @note 已知缺陷（CH32V203C8 实测，WCH 自己的 SimulateCDC 例子上同样出现）：IN 端点的
@@ -165,12 +165,13 @@ namespace LibXR
  *       CDC; at 48 MHz see above. EP0's SETUP window (the first known defect) and this
  *       one both shrink with the speed of the interrupt handling. With USBD, SYSCLK is
  *       therefore 96 MHz or more.
- * @note 断开时驱动 D+（LIBXR_CH32_USBD_DP_DETACH 为 1，默认）。Bluepill 一类的板子可能
- *       在 D+ 上焊了固定上拉，只关内部上拉断不开，ResetController 之后主机还留着旧地址。
- *       于是构造、Stop、ResetController 的每次断开都：Connect(false) → CNTR = FRES|PDWN →
- *       关 USBD 的接口时钟 → 保存 PA12 的 CFGHR[19:16] 和 OUTDR12 → OUTDR12 = 0、推挽
- *       输出 2 MHz → 保持 DETACH_US → 恢复 PA12 → 开 USBD 时钟 → InitController →
- *       Start 时接上拉。D-（PA11）不动。
+ * @note 断开时驱动 D+（LIBXR_CH32_USBD_DP_DETACH 为 1，默认）。Bluepill 一类的板子可能在
+ *       D+ 上焊了固定上拉，只关内部上拉断不开，ResetController 之后主机还留着旧地址。于是
+ *       构造、Stop、ResetController 的每次断开都：Connect(false) → CNTR = FRES|PDWN → 关
+ *       USBD 的接口时钟 → 保存 PA12 的 CFGHR[19:16] 和 OUTDR12 → OUTDR12 = 0、推挽输出
+ *       2 MHz → 返回，DETACH_MS 按节拍计时、不等待 → 恢复 PA12 → 开 USBD 时钟 →
+ *       InitController → 接上拉（到点后 owner 的 Dispatch，或 Start 就地）。D-（PA11）
+ *       不动。
  *       - 实测（CH32V203C8 仿板，Linux 主机根口）：拉住期间 PA12 的 INDR 两次采样（拉低
  *         之后、放开之前）11/11 次都是 0，即 USBD 时钟关着时 GPIO 的推挽输出压过了收发器
  *         （手册 10-8 只说模块使能后引脚自动接到收发器，没说关时钟之后）；强制
@@ -183,16 +184,17 @@ namespace LibXR
  *       pull-up off does not detach and after ResetController the host keeps the old
  *       address. Every detach (construction, Stop, ResetController) therefore runs:
  *       Connect(false) -> CNTR = FRES|PDWN -> interface clock of USBD off -> save PA12's
- *       CFGHR[19:16] and OUTDR12 -> OUTDR12 = 0 and push-pull output 2 MHz -> hold
- *       DETACH_US -> restore PA12 -> USBD clock on -> InitController -> Start connects
- * the pull-up. D- (PA11) is left alone.
+ *       CFGHR[19:16] and OUTDR12 -> OUTDR12 = 0 and push-pull output 2 MHz -> return,
+ *       DETACH_MS counted on the tick without waiting -> restore PA12 -> USBD clock on ->
+ *       InitController -> connect the pull-up (Dispatch in the owner once the time has
+ *       passed, or Start in place). D- (PA11) is left alone.
  *       - Measured (CH32V203C8 clone board, Linux host root port): during the hold both
  *         samples of PA12's INDR (after the drive, before the release) were 0 in 11/11
  *         holds, so with the USBD clock off the GPIO push-pull output overrides the
  *         transceiver (manual 10-8 says only that the pins connect to the transceiver
- * once the module is enabled, nothing about the clock being off); forced ResetController
- * 10 times, the host logged a disconnect every time and the device came back with a new
- * address every time (10/10, 0.42 s).
+ *         once the module is enabled, nothing about the clock being off); forced
+ *         ResetController 10 times, the host logged a disconnect every time and the
+ *         device came back with a new address every time (10/10, 0.42 s).
  *       - This board has no fixed pull-up on D+: with the drive switched off (macro 0) it
  *         is 10/10 too. The drive is not needed here and matters only on a board with a
  *         fixed pull-up; such a board has not been measured with a CH32.

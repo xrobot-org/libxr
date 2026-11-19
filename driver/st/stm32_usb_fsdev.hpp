@@ -115,9 +115,9 @@
 /*
  * 断开时把 D+（PA12）当 GPIO 推挽输出低，让带固定外部 D+ 上拉的板子也真正断开（见
  * STM32USBDeviceDevFs 的说明）。默认 1；PA12 不能被驱动的板子定义为 0。
- * While detached, D+ (PA12) is driven low as a GPIO push-pull output so that boards with a
- * fixed external D+ pull-up detach as well (see the STM32USBDeviceDevFs notes). Default 1;
- * a board whose PA12 must not be driven defines it as 0.
+ * While detached, D+ (PA12) is driven low as a GPIO push-pull output so that boards with
+ * a fixed external D+ pull-up detach as well (see the STM32USBDeviceDevFs notes). Default
+ * 1; a board whose PA12 must not be driven defines it as 0.
  */
 #if !defined(LIBXR_STM32_FSDEV_DP_DETACH)
 #define LIBXR_STM32_FSDEV_DP_DETACH 1
@@ -147,20 +147,29 @@ namespace LibXR
  *       留着旧地址。于是构造、Stop、ResetController 的每次断开都按下面的顺序做：
  *       Connect(false) → CNTR = FRES|PDWN → 关 USB 外设时钟（HAL 的 RCC 宏；寄存器和 PMA
  *       保留，不复位 RCC）→ 保存 PA12 的 GPIO 配置 → ODR12 = 0（BSRR 的复位半边）、推挽
- *       输出 → 保持 DETACH_US（5 ms）→ 恢复 PA12 的配置 → 开 USB 时钟 → CNTR = FRES 再 0
- *       （InitController）→ Start 打开中断源 → Connect(true)。
+ *       输出 → 返回，DetachTimer 按节拍计 DETACH_MS（5 ms），不等待 →（到点后 owner 的
+ *       Dispatch，或时间已过时 StartController 就地：AttachAgain）恢复 PA12 的配置 → 开
+ *       USB 时钟 → CNTR = FRES 再 0（InitController）→ 打开中断源 → Connect(true)。
  *       - 引脚：所有支持的系列、所有带这个 USB 的封装，D+ 都是 GPIOA 的第 12 位（ST 的
  *         STM32_open_pin_data，887 个型号）。F04x/F070x6 小封装（PA11_PA12_RMP）和
  *         G0B/C071/U073 的共用焊盘（PA12_RMP）把 PA12 换到别的焊盘时，GPIOA 第 12 位跟着
  *         换过去，仍然驱动 D+ 焊盘。D-（PA11）不动。
  *       - 与手册的出入（实测，手册没写）：各系列手册只说 USB 引脚在 USB 使能时自动接到收
  *         发器（RM0008 表 29），或作为“附加功能”优先于 GPIO（各 RM 的 GPIO 章），没有说
- *         USB 断电并关时钟时 GPIO 输出能接管焊盘。这里只在断电、关时钟之后驱动。实测只在 F103
- *         （PA12 是附加功能）上做过：拉低期间 IDR12 读 0，主机记到断开并重新枚举，关掉驱动
- *         的对照镜像主机什么也没看到（报告 119）。PA12 走 AF10 的 H503 和其他系列没有测过。
+ *         USB 断电并关时钟时 GPIO 输出能接管焊盘。这里只在断电、关时钟之后驱动。实测在
+ *         F103（PA12 是附加功能）和 H503（PA12 为模拟模式）上：拉低期间 IDR12 读 0，主
+ *         机记到断开并重新枚举，关掉驱动的对照镜像主机什么也没看到。PA12 设为 AF10 的系
+ *         列没有测过。
  *       - 拉低时内部上拉已关、收发器已断电，引脚只对外部上拉灌电流（1.5 kΩ 约 2.2 mA）。
- *       - 关时钟期间不访问控制器的寄存器：Dispatch 不进，ResetController 在 owner 里做完
- *         整段；Stop 之后到 Start 之前控制器保持断电、关时钟。
+ *       - 关时钟期间不访问控制器的寄存器：Dispatch 只查 TakeAttach，不进；
+ *         ResetController 只做前半段就返回，后半段在之后的 owner 一轮里；Stop 之后到
+ *         Start 之前控制器保持断电、关时钟；拉住时 owner 不运行，不再复位或停止，D+ 一
+ *         直拉住。
+ *       - 关时钟期间控制器的中断请求停在关时钟那一刻，可能一直有效（实测 F103：中断线
+ *         反复进入，节拍中断得不到运行，第 4 次强制复位起就不再接上；屏蔽后 70/70 次复
+ *         位、30/30 次停止再启动都接上）。Dispatch 因此在拉住期间屏蔽中断线，到点时节拍
+ *         打开并挂起（FSDevDevice::WakeHeld）；这是 DeviceService::MaskInterrupt 写明的
+ *         例外。
  *       - 找不到本系列 USB 时钟的 HAL 宏时不关时钟，只置 PDWN。
  * @note D+ is driven while detached (LIBXR_STM32_FSDEV_DP_DETACH 1, the default). Some
  *       boards have a fixed 1.5 kOhm pull-up on D+ (F103 boards of the Bluepill kind;
@@ -170,9 +179,11 @@ namespace LibXR
  *       host keeps the old address. Every detach (construction, Stop, ResetController)
  *       therefore runs: Connect(false) -> CNTR = FRES|PDWN -> USB peripheral clock off
  *       (HAL RCC macro; registers and PMA are kept, no RCC reset) -> save PA12's GPIO
- *       configuration -> ODR12 = 0 (reset half of BSRR) and push-pull output -> hold
- *       DETACH_US (5 ms) -> restore PA12's configuration -> USB clock on -> CNTR = FRES
- *       then 0 (InitController) -> Start enables the interrupt sources -> Connect(true).
+ *       configuration -> ODR12 = 0 (reset half of BSRR) and push-pull output ->
+ *       return; DetachTimer counts DETACH_MS (5 ms) on the tick, no wait -> (once it has
+ *       passed, Dispatch in the owner, or StartController in place when it already has:
+ *       AttachAgain) restore PA12's configuration -> USB clock on -> CNTR = FRES
+ *       then 0 (InitController) -> enable the interrupt sources -> Connect(true).
  *       - Pin: on every supported family and every package with this USB, D+ is bit 12
  *         of GPIOA (ST's STM32_open_pin_data, 887 parts). Where the small F04x/F070x6
  *         packages (PA11_PA12_RMP) or the shared pads of G0B/C071/U073 (PA12_RMP) move
@@ -183,15 +194,25 @@ namespace LibXR
  *         (RM0008 table 29) or, as "additional functions", take priority over the GPIO
  *         (the GPIO chapters); none says that a GPIO output takes the pad over while the
  *         USB is powered down with its clock off. The drive happens only after power-down
- *         and clock off. Measured on an F103 only (PA12 an additional function): IDR12
- *         reads 0 while driven, the host logs a disconnect and enumerates again, and a
- *         control image with the drive off is not seen by the host (report 119). The H503
- *         (PA12 on AF10) and the other families are not measured.
+ *         and clock off. Measured on an F103 (PA12 an additional function) and an H503
+ *         (PA12 in analog mode): IDR12 reads 0 while driven, the host logs a disconnect
+ *         and enumerates again, and a control image with the drive off is not seen by
+ *         the host. Families with PA12 on AF10 are not measured.
  *       - While low, the internal pull-up is off and the transceiver powered down, so the
  *         pin only sinks the external pull-up (about 2.2 mA through 1.5 kOhm).
- *       - With the clock off the controller's registers are not accessed: Dispatch does
- *         not enter, ResetController runs the whole sequence in the owner; between Stop
- *         and Start the controller stays powered down with its clock off.
+ *       - With the clock off the controller's registers are not accessed: Dispatch only
+ *         asks TakeAttach and does not enter; ResetController does the first half and
+ *         returns, the second half follows in a later owner pass; between Stop and Start
+ *         the controller stays powered down with its clock off; while D+ is held the
+ *         owner does not run, so no further reset or stop happens and D+ stays held.
+ *       - With the clock off the controller's interrupt request stays as it was when the
+ *         clock went off and may stay active (measured on an F103: the line kept
+ *         entering, the tick interrupt never ran and from the 4th forced reset on the
+ *         device did not attach again; with the mask 70/70 resets and 30/30
+ *         stop-then-start cycles attached again). Dispatch therefore masks the line while
+ *         held, and the tick opens and pends it when the time has passed
+ *         (FSDevDevice::WakeHeld); this is the exception stated at
+ *         DeviceService::MaskInterrupt.
  *       - Where no HAL macro for the family's USB clock is found, the clock stays on and
  *         only PDWN is set.
  *
@@ -204,6 +225,19 @@ namespace LibXR
  *       HAL_PCD_MspInit); other families use the device header's line names, not
  *       checked one by one; LIBXR_STM32_FSDEV_IRQS overrides. The wake-up line is not
  *       included (whether it enters Dispatch is unchecked).
+ * @note 上拉（F1/F3，没有内部上拉）：Connect 调用用户的 HAL_PCDEx_SetConnectionState，
+ *       传的是 HAL_PCD_DevConnect / DevDisconnect 也会传的那个句柄，即 CubeMX 交给
+ *       HAL_PCD_Init 的句柄（STM32USBInitHandle）：Instance 和 Init 有效；HAL 自己的
+ *       初始化没有运行，其余字段保持调用前的值。工程没有调用 HAL_PCD_Init 时，构造时
+ *       分配一个句柄，只填 Instance。Connect 不构造、不清零句柄（在 F103 上清零一个句柄
+ *       要 122.8 µs）。
+ *       Pull-up (F1/F3, no internal pull-up): Connect calls the user's
+ *       HAL_PCDEx_SetConnectionState with the handle HAL_PCD_DevConnect / DevDisconnect
+ *       would pass, i.e. the one CubeMX passed to HAL_PCD_Init (STM32USBInitHandle):
+ *       Instance and Init are valid; HAL's own initialization did not run and the other
+ *       fields keep their values from before the call. A project that never calls
+ *       HAL_PCD_Init gets a handle allocated at construction with only Instance set.
+ *       Connect builds and zeroes no handle (zeroing one takes 122.8 us on an F103).
  */
 class STM32USBDeviceDevFs : public USB::FSDevDevice
 {
@@ -262,6 +296,9 @@ class STM32USBDeviceDevFs : public USB::FSDevDevice
   /// HoldDetached 保存的 PA12 配置，ReleaseDetached 恢复 / PA12's configuration saved
   /// by HoldDetached, restored by ReleaseDetached
   uint32_t dp_saved_[5] = {};
+  /// F1/F3：HAL_PCDEx_SetConnectionState 的句柄，构造时定，见类说明 / F1/F3: handle for
+  /// HAL_PCDEx_SetConnectionState, set at construction, see the class notes
+  PCD_HandleTypeDef* connection_handle_ = nullptr;
 };
 
 }  // namespace LibXR

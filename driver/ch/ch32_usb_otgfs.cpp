@@ -38,10 +38,6 @@ constexpr uint8_t OTG_FS_CLEARABLE_MASK = USBFS_UIF_FIFO_OV | USBFS_UIF_HST_SOF 
                                           USBFS_UIF_SUSPEND | USBFS_UIF_TRANSFER |
                                           USBFS_UIF_DETECT | USBFS_UIF_BUS_RST;
 
-/// 控制器拔出、主机看到断开的时间（µs）/ Time the controller stays detached so that the
-/// host sees a disconnect (µs)
-constexpr uint32_t DETACH_US = 5000U;
-
 /// 共享端点每个方向的槽字节数 / Slot bytes per direction of a shared endpoint
 constexpr size_t SHARED_SLOT_SIZE = 64U;
 
@@ -170,6 +166,13 @@ void CH32USBOtgFS::ResetEp0()
 
 void CH32USBOtgFS::ServiceHardware(bool in_isr)
 {
+  // 断开时间已到、要接上：先接上，再照常处理这一轮。
+  // The detach time has passed and an attach is wanted: attach first, then handle the
+  // pass as usual.
+  if (detach_.TakeAttach())
+  {
+    SetUpController();
+  }
   while (true)
   {
     const uint16_t fgst = *reinterpret_cast<volatile uint16_t*>(
@@ -376,7 +379,7 @@ void CH32USBOtgFS::ServiceHardware(bool in_isr)
   // pass. This comes after the pass's completions and SETUP (the device core's event
   // order).
   const bool suspended = (USBFSD->MIS_ST & USBFS_UMS_SUSPEND) != 0U;
-  if (!halted_ && suspended != suspended_)
+  if (!detach_.Detached() && suspended != suspended_)
   {
     suspended_ = suspended;
     if (suspended)
@@ -448,8 +451,13 @@ void CH32USBOtgFS::StartController(bool in_isr)
 #else
 #error "The SDK header of this part names no bus clock for the USBFS controller."
 #endif
-  WaitDetached();
-  SetUpController();
+  // 断开时间未到时只记下"要接上"，到点后 owner 接上；中断线照样使能。
+  // While the detach time has not passed only "attach wanted" is recorded and the owner
+  // attaches once it has; the line is enabled all the same.
+  if (detach_.WantAttach())
+  {
+    SetUpController();
+  }
   // 先登记对象再开中断线：没有对象时中断只清标志，会丢掉这期间的总线复位。
   // Register the object before the line is enabled: without an object the interrupt
   // only clears the flags and would drop a bus reset arriving in between.
@@ -467,8 +475,6 @@ void CH32USBOtgFS::HaltController()
   USBFSH->BASE_CTRL = USBFS_UC_RESET_SIE | USBFS_UC_CLR_ALL;
   USBFSD->BASE_CTRL = 0x00U;
   USBFSD->INT_EN = 0x00U;
-  halted_at_us_ = static_cast<uint64_t>(Timebase::GetMicroseconds());
-  halted_ = true;
   for (auto& pair : Ep::map_)
   {
     for (Ep* ep : pair)
@@ -489,34 +495,25 @@ void CH32USBOtgFS::StopController(bool in_isr)
   // 中断线保持使能、对象保持登记：owner 靠这条线运行。
   // The line stays enabled and the object registered: the owner runs on this line.
   HaltController();
+  (void)detach_.OnHalted(false);
 }
 
 void CH32USBOtgFS::ResetController(bool in_isr)
 {
   UNUSED(in_isr);
-  // 拔出一段时间再接上，主机看到断开后重新枚举。
+  // 拔出一段时间再接上，主机看到断开后重新枚举。断开要保持到主机看得见：全速下只断开
+  // 几十微秒，主机 5 次里 4 次看不见（CH32V208 实测），5 ms 以上都看得见。这里只断开，
+  // 不等：detach_ 按节拍计时，到点后 owner 在 ServiceHardware 开头接上。
   // Detached for a while and attached again, the host sees a disconnect and enumerates
-  // again.
+  // again. The detach has to last until the host sees it: at full speed a detach of some
+  // tens of microseconds went unseen 4 times out of 5 (measured on a CH32V208); 5 ms and
+  // more were always seen. Only the detach happens here, no wait: detach_ counts on the
+  // tick and the owner attaches at the start of ServiceHardware once the time has passed.
   HaltController();
-  WaitDetached();
-  SetUpController();
-}
-
-void CH32USBOtgFS::WaitDetached()
-{
-  // 断开要保持到主机看得见：全速下只断开几十微秒，主机 5 次里 4 次看不见（CH32V208
-  // 实测），5 ms 以上都看得见。
-  // The detach has to last until the host sees it: at full speed a detach of some tens
-  // of microseconds went unseen 4 times out of 5 (measured on a CH32V208); 5 ms and
-  // more were always seen.
-  if (!halted_)
+  if (detach_.OnHalted(true) == USB::DetachTimer::HaltResult::ATTACH_NOW)
   {
-    return;
+    SetUpController();
   }
-  while (static_cast<uint64_t>(Timebase::GetMicroseconds()) - halted_at_us_ < DETACH_US)
-  {
-  }
-  halted_ = false;
 }
 
 #endif  // defined(USBFSD)

@@ -225,6 +225,12 @@ class DeviceService
    *       on the tick, that is pending stops that end by time, and state that can only
    *       be read from a register (the frame number where the start-of-frame interrupt
    *       is not enabled, for instance).
+   * @note 新增用途：最短断开时间到点且要接上时（DetachTimer 的结果函数），owner 在这一轮
+   *       ServiceHardware 开头接上总线。断开期间控制器没有中断，这是唯一的唤醒。
+   *       Added purpose: when the minimum detach time has passed and an attach is wanted
+   *       (DetachTimer's result function), the owner attaches at the start of that
+   *       pass's ServiceHardware. A detached controller raises no interrupt, so this is
+   *       the only wake-up.
    * @note 调用者：后端自己持有的毫秒节拍对象（DriverAsyncCondition）的结果函数，在时基
    *       上下文里，后端需要时每个节拍一次。只发布 POLL_EVENT 并挂起控制器中断，不碰
    *       USB 寄存器；当前的 owner（控制器中断，或持有 owner 的线程）在它的下一轮以
@@ -240,6 +246,13 @@ class DeviceService
    *       otherwise the tick interrupt would own in place and class callbacks would run
    *       in the tick context. A backend without pend has no tick fallback and ends
    *       stops only on quiescence interrupts.
+   * @note 例外：没有 pend 的后端可以在线程里调用（in_isr 为 false），调用者就地成为
+   *       owner 做这一轮；ESP32 的定时器服务任务这样接上总线，见
+   *       ESP32USBDevice::detach_。在中断里调用仍然断言。
+   *       Exception: a backend without pend may call it in a thread (in_isr false), and
+   *       the caller owns in place for that pass; ESP32's timer service task attaches
+   *       the bus this way, see ESP32USBDevice::detach_. A call in an interrupt still
+   *       asserts.
    */
   void RequestPoll(bool in_isr);
 
@@ -250,11 +263,28 @@ class DeviceService
    *       器自己的中断使能寄存器。
    *       Called only at the start of OnControllerInterrupt. Effective for every core
    *       on return. Must not touch the controller's own interrupt-enable registers.
+   * @note 例外（FSDEV）：D+ 被拉住、控制器时钟关着时，FSDev 后端在 Dispatch 里屏蔽自己
+   *       的中断线，断开时间到点时由节拍（DetachTimer 的结果函数，FSDevDevice::WakeHeld）
+   *       打开并挂起。原因：时钟关着时控制器的中断请求停在关时钟那一刻，可能一直有效；
+   *       STM32F103 实测，不屏蔽时中断线反复进入、优先级更低的节拍得不到运行，第 4 次
+   *       强制复位就再也没有接上；屏蔽后 70/70 次复位、30/30 次停止再启动都接上了。
+   *       Exception (FSDEV): while D+ is held with the controller clock off, the FSDev
+   *       backend masks its own line in Dispatch, and the tick (DetachTimer's result
+   *       function, FSDevDevice::WakeHeld) unmasks and pends it when the detach time has
+   *       passed. Reason: with the clock off the controller's interrupt request stays as
+   *       it was when the clock went off and may stay active; measured on an STM32F103,
+   *       without the mask the line kept entering, the lower-priority tick never ran and
+   *       the device never attached again from the 4th forced reset on; with the mask
+   *       70/70 resets and 30/30 stop-then-start cycles attached again.
    */
   virtual void MaskInterrupt() = 0;
 
-  /// 解除屏蔽；只在 owner 处理完硬件事件后调用 / Unmask; called only by the owner after
-  /// handling the hardware events
+  /**
+   * @brief 解除屏蔽 / Unmask
+   * @note 只在 owner 处理完硬件事件后调用；FSDEV 拉住 D+ 期间的例外见 MaskInterrupt。
+   *       Called only by the owner after handling the hardware events; for the FSDEV
+   *       exception while D+ is held see MaskInterrupt.
+   */
   virtual void UnmaskInterrupt() = 0;
 
   /**
@@ -272,6 +302,7 @@ class DeviceService
 
  private:
   friend class Endpoint;
+  friend class DetachTimer;
 
   /// SerializedService 中的硬件事件位 / Hardware event bit in the SerializedService
   static constexpr uint32_t HARDWARE_EVENT = 1U << 30U;

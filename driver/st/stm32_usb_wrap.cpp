@@ -52,12 +52,20 @@ extern "C" void libxr_stm32_fsdev_dispatch(PCD_HandleTypeDef* hpcd) __attribute_
 extern "C" HAL_StatusTypeDef __real_HAL_PCD_Init(PCD_HandleTypeDef* hpcd);
 extern "C" void __real_HAL_PCD_IRQHandler(PCD_HandleTypeDef* hpcd);
 
+namespace
+{
+/// __wrap_HAL_PCD_Init 记下的句柄 / The handle __wrap_HAL_PCD_Init recorded
+PCD_HandleTypeDef* init_handle = nullptr;
+}  // namespace
+
 extern "C" HAL_StatusTypeDef __wrap_HAL_PCD_Init(PCD_HandleTypeDef* hpcd)
 {
-  // 设备对象构造时由驱动初始化 core。
-  // The driver initializes the core when its device object is constructed.
+  // 设备对象构造时由驱动初始化 core。句柄记下来，F1/F3 的连接回调要用。
+  // The driver initializes the core when its device object is constructed. The handle
+  // is kept for the connection hook of F1/F3.
   if (libxr_stm32_otg_dispatch != nullptr || libxr_stm32_fsdev_dispatch != nullptr)
   {
+    init_handle = hpcd;
     return HAL_OK;
   }
   return __real_HAL_PCD_Init(hpcd);
@@ -77,6 +85,8 @@ extern "C" void __wrap_HAL_PCD_IRQHandler(PCD_HandleTypeDef* hpcd)
   }
   __real_HAL_PCD_IRQHandler(hpcd);
 }
+
+PCD_HandleTypeDef* LibXR::STM32USBInitHandle() { return init_handle; }
 
 void LibXR::STM32USBRequireWrap()
 {

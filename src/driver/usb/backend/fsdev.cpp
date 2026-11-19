@@ -1149,27 +1149,23 @@ void FSDevDevice::InitController()
 void FSDevDevice::StartController(bool in_isr)
 {
   UNUSED(in_isr);
-  WaitDetached();
-  REQUIRE(controller_ready_);
-  WriteCntr(static_cast<uint16_t>(ReadCntr() | FSDEV_CNTR_RUN_MASK | FSDEV_CNTR_SOFM));
-  Connect(true);
+  // 断开时间未到时只记下"要接上"，到点后 Dispatch 接上；中断线一直是使能的。
+  // While the detach time has not passed only "attach wanted" is recorded and Dispatch
+  // attaches once it has; the line has been enabled all along.
+  if (detach_.WantAttach())
+  {
+    AttachAgain();
+  }
 }
 
-void FSDevDevice::WaitDetached()
+void FSDevDevice::AttachAgain()
 {
   // 断开要保持到主机看得见，否则主机不复位总线：全速下只断开几十微秒，主机多半看不见
-  // （CH32V208、STM32H723 实测），5 ms 以上都看得见。本控制器上没有单独测过。
+  // （CH32V208、STM32H723 实测），5 ms 以上都看得见。到这里时 detach_ 已计够 DETACH_MS。
   // The detach has to last until the host sees it, or the host does not reset the bus:
   // at full speed a detach of some tens of microseconds mostly goes unseen (measured on
-  // a CH32V208 and an STM32H723), and 5 ms or more was always seen. Not measured on
-  // this controller itself.
-  if (!halted_)
-  {
-    return;
-  }
-  while (static_cast<uint64_t>(Timebase::GetMicroseconds()) - halted_at_us_ < DETACH_US)
-  {
-  }
+  // a CH32V208 and an STM32H723), and 5 ms or more was always seen. detach_ has counted
+  // DETACH_MS by the time this runs.
   if (detach_held_)
   {
     // 平台放开 D+ 并恢复控制器（时钟）；控制器重新初始化，与 HaltController 里的一样。
@@ -1178,15 +1174,28 @@ void FSDevDevice::WaitDetached()
     ReleaseDetached();
     detach_held_ = false;
     InitController();
+    // Dispatch 在拉住期间屏蔽了中断线（见 Dispatch）。 / Dispatch masked the line while
+    // held (see Dispatch).
+    UnmaskInterrupt();
   }
-  halted_ = false;
+  REQUIRE(controller_ready_);
+  WriteCntr(static_cast<uint16_t>(ReadCntr() | FSDEV_CNTR_RUN_MASK | FSDEV_CNTR_SOFM));
+  Connect(true);
+}
+
+bool FSDevDevice::WakeHeld(void* arg)
+{
+  auto* self = static_cast<FSDevDevice*>(arg);
+  // 拉住期间 Dispatch 屏蔽了中断线：先打开再挂起，Dispatch 随即接上。不碰 USB 寄存器。
+  // Dispatch masked the line while held: open it, then pend, and Dispatch attaches. No
+  // USB register is touched.
+  self->UnmaskInterrupt();
+  return self->PendInterrupt();
 }
 
 void FSDevDevice::HaltController()
 {
   Connect(false);
-  halted_at_us_ = static_cast<uint64_t>(Timebase::GetMicroseconds());
-  halted_ = true;
   for (FSDevEndpoint* const* table : {in_, out_})
   {
     for (uint8_t i = 0U; i < MAX_EPS; ++i)
@@ -1215,6 +1224,7 @@ void FSDevDevice::StopController(bool in_isr)
 {
   UNUSED(in_isr);
   HaltController();
+  (void)detach_.OnHalted(false);
 }
 
 void FSDevDevice::SetAddress(uint8_t address, AddressStage stage)
@@ -1230,18 +1240,41 @@ void FSDevDevice::SetAddress(uint8_t address, AddressStage stage)
 void FSDevDevice::ResetController(bool in_isr)
 {
   UNUSED(in_isr);
+  // 只断开，不等：到点后 Dispatch 接上。 / Detach only, no wait: Dispatch attaches once
+  // the time has passed.
   HaltController();
   rx_counts_valid_ = 0U;
-  WaitDetached();
-  WriteCntr(static_cast<uint16_t>(ReadCntr() | FSDEV_CNTR_RUN_MASK | FSDEV_CNTR_SOFM));
-  Connect(true);
+  if (detach_.OnHalted(true) == DetachTimer::HaltResult::ATTACH_NOW)
+  {
+    AttachAgain();
+  }
 }
 
 void FSDevDevice::Dispatch()
 {
   FSDevDevice* device = self_;
-  if (device == nullptr || !device->controller_ready_ || device->detach_held_)
+  if (device == nullptr || !device->controller_ready_)
   {
+    return;
+  }
+  // 断开时间已到、要接上：先接上（D+ 拉住时也在这里放开），再照常进入。
+  // The detach time has passed and an attach is wanted: attach first (releasing D+ here
+  // when it is held), then enter as usual.
+  if (device->detach_.TakeAttach())
+  {
+    device->AttachAgain();
+  }
+  if (device->detach_held_)
+  {
+    // 时钟关着，控制器的中断请求停在关时钟那一刻的状态，可能一直有效（STM32F103 实测：
+    // 中断线反复进入，节拍中断优先级更低、得不到运行，断开永远不结束）。拉住期间屏蔽
+    // 中断线，到点时由节拍重新打开（WakeHeld）。
+    // With the clock off the controller's interrupt request stays as it was when the
+    // clock went off and may stay active (measured on an STM32F103: the line kept
+    // entering, the lower-priority tick interrupt never ran and the detach never
+    // ended). The line is masked while held and the tick opens it again when the time
+    // has passed (WakeHeld).
+    device->MaskInterrupt();
     return;
   }
   if (device->ep0_bulk_gate_)

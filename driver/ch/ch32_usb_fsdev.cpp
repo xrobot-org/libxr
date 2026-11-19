@@ -143,10 +143,10 @@ CH32USBDeviceFS::CH32USBDeviceFS(
   CH32UsbCanShared::register_usb_lp_irq(&OnLowPriorityInterrupt);
   CH32UsbCanShared::register_usb_hp_irq(&OnHighPriorityInterrupt);
   MatchHighPriority();
-  // 构造时断开一次（含 D+ 拉低，见类说明），Start 在 DETACH_US 之后接上。Dispatch 在
-  // D+ 被拉住期间不进。
-  // Detach once at construction (with D+ held low, see the class notes); Start attaches
-  // after DETACH_US. Dispatch stays out while D+ is held.
+  // 构造时断开一次（含 D+ 拉低，见类说明），DETACH_MS 之后由 Start 或 owner 接上。
+  // Dispatch 在 D+ 被拉住期间不进。
+  // Detach once at construction (with D+ held low, see the class notes); Start or the
+  // owner attaches after DETACH_MS. Dispatch stays out while D+ is held.
   DetachAtConstruction();
   NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
   NVIC_EnableIRQ(USB_HP_CAN1_TX_IRQn);

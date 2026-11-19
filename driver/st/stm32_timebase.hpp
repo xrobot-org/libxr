@@ -3,6 +3,39 @@
 #include "main.h"
 #include "timebase.hpp"
 
+#if defined(LIBXR_SYSTEM_none)
+/**
+ * @brief 裸机时 DriverAsyncCondition 的节拍源：HAL_IncTick 的链接时包装
+ *        Bare-metal tick source of DriverAsyncCondition: the link-time wrap of
+ *        HAL_IncTick
+ *
+ * 只在系统层为 none 时编译和链接（driver/st/CMakeLists.txt 加
+ * -Wl,--wrap=HAL_IncTick；否则 __real_HAL_IncTick 是未定义引用）。FreeRTOS、ThreadX 下
+ * 节拍来自系统层，HAL_IncTick 不包装，不会重复计数。包装调用 __real_HAL_IncTick（HAL
+ * 的 __weak 定义或工程自己在另一个文件里的强定义）后调用 OnTick(uwTickFreq)，跟着 HAL
+ * tick 走，与工程构造 STM32Timebase 还是 STM32TimerTimebase 无关：类选错只影响时间戳
+ * （实测：HAL 节拍来自 TIM2、SysTick 归 FreeRTOS 的 H503 工程上，STM32Timebase 的时间戳
+ * 每毫秒回退一次），不影响节拍
+ * 计数。目标文件的静态构造调用 RegisterTickSource。stm32*_hal.c 与 stm32*_hal_pcd.c
+ * 一样不参与 LTO。失效：工程在同一个源文件里定义并调用 HAL_IncTick（--wrap 只替换未定义
+ * 的引用），没有节拍，由 DetachTimer 的检测报出。
+ * Compiled and linked only when the system layer is none (driver/st/CMakeLists.txt adds
+ * -Wl,--wrap=HAL_IncTick; otherwise __real_HAL_IncTick would be an undefined
+ * reference). Under FreeRTOS or ThreadX the tick comes from the system layer and
+ * HAL_IncTick is not wrapped, so nothing counts twice. The wrapper calls
+ * __real_HAL_IncTick (HAL's __weak definition, or the project's own strong one in
+ * another file), then OnTick(uwTickFreq); it follows the HAL tick whether the project
+ * constructed STM32Timebase or STM32TimerTimebase: the wrong class only affects
+ * timestamps (measured on an H503 project whose HAL tick runs from TIM2 while FreeRTOS
+ * owns SysTick: STM32Timebase stepped back once per millisecond), not the tick count.
+ * Static construction of its object file calls RegisterTickSource. stm32*_hal.c stays out
+ * of LTO like stm32*_hal_pcd.c. Failure: the project defines and calls HAL_IncTick in the
+ * same source file (--wrap replaces undefined references only); there is then no tick,
+ * and DetachTimer's check reports it.
+ */
+extern "C" void __wrap_HAL_IncTick(void);
+#endif
+
 namespace LibXR
 {
 /**

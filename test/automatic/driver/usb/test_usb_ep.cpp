@@ -3925,12 +3925,14 @@ void CheckContractAsserts()
       TEST_ASSERT(b->ep.GetState() == Endpoint::State::IDLE);
     }
   }
-  // 没有 pend 的后端不能用节拍唤醒 / A backend without pend cannot use the tick wake
+  // 没有 pend 的后端不能在中断里用节拍唤醒（线程里可以，就地成为 owner，见
+  // test_usb_detach_timer.cpp）/ A backend without pend cannot use the tick wake in an
+  // interrupt (a thread can and owns in place, see test_usb_detach_timer.cpp)
   TEST_ASSERT(EndsFatally(
       []()
       {
         Bench b(true);
-        b.dev.Poll(false);
+        b.dev.Poll(true);
       }));
 #endif
 }

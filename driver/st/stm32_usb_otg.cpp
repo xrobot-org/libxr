@@ -87,8 +87,6 @@ bool OddFrame(USB_OTG_DeviceTypeDef* device)
   return (((device->DSTS & USB_OTG_DSTS_FNSOF) >> USB_OTG_DSTS_FNSOF_Pos) & 1U) != 0U;
 }
 
-uint64_t NowUs() { return static_cast<uint64_t>(Timebase::GetMicroseconds()); }
-
 /**
  * @brief 读寄存器直到 done 成立，最多 HANDSHAKE_SPINS 次 / Read registers until done
  *        holds, HANDSHAKE_SPINS times at most
@@ -417,10 +415,15 @@ STM32USBOtgDevice::STM32USBOtgDevice(
 void STM32USBOtgDevice::StartController(bool in_isr)
 {
   UNUSED(in_isr);
-  WaitDetached();
-  MaskInterrupt();
-  last_sof_position_ = NO_SOF_POSITION;
-  Connect();
+  // 断开时间未到时只记下"要接上"并使能中断线，到点后 owner 接上。
+  // While the detach time has not passed only "attach wanted" is recorded and the line
+  // enabled; the owner attaches once the time has passed.
+  if (detach_.WantAttach())
+  {
+    MaskInterrupt();
+    last_sof_position_ = NO_SOF_POSITION;
+    Connect();
+  }
   UnmaskInterrupt();
 }
 
@@ -430,6 +433,7 @@ void STM32USBOtgDevice::StopController(bool in_isr)
   HaltController();
   core_->GAHBCFG &= ~USB_OTG_GAHBCFG_GINT;
   core_->GINTMSK &= ~USB_OTG_GINTMSK_SOFM;
+  (void)detach_.OnHalted(false);
 }
 
 void STM32USBOtgDevice::MaskInterrupt() { NVIC_DisableIRQ(irqn_); }
@@ -461,8 +465,6 @@ void STM32USBOtgDevice::OnControlReady() { ArmSetup(); }
 void STM32USBOtgDevice::HaltController()
 {
   (void)USB_DevDisconnect(core_);
-  halted_at_us_ = NowUs();
-  halted_ = true;
   // 断开后总线上没有包，NAK 生效和禁用只取决于芯片，照停止的步骤做完（RM0468 p.2807、
   // p.2799-2800）。只写 EPDIS 而不等握手会把端点留在使能状态：STM32H723 实测重新接上后
   // EP0 IN 还带着旧请求，主机枚举晚 5.7~7.1 s 或失败。 Detached, no packet is on the bus,
@@ -563,27 +565,20 @@ void STM32USBOtgDevice::HaltController()
 void STM32USBOtgDevice::ResetController(bool in_isr)
 {
   UNUSED(in_isr);
-  HaltController();
-  WaitDetached();
-  Connect();
-}
-
-void STM32USBOtgDevice::WaitDetached()
-{
   // 断开要保持到主机看得见，否则主机不复位总线，核心等不到 OnBusReset（STM32H723 实测：
-  // 只断开 8~10 µs 时主机 10 次里 9 次看不见）。核心没有给后端的延时接续，只能在这里等。
+  // 只断开 8~10 µs 时主机 10 次里 9 次看不见）。这里只断开，不等：detach_ 按节拍计
+  // RESET_DETACH_MS，到点后 owner 在 ServiceHardware 开头接上。
   // The detach has to last until the host sees it, or the host does not reset the bus
   // and the core never gets OnBusReset (measured on an STM32H723: a detach of 8 to 10 us
-  // went unseen 9 times out of 10). The core has no deferred continuation for the
-  // backend, so the wait happens here.
-  if (!halted_)
+  // went unseen 9 times out of 10). Only the detach happens here, no wait: detach_
+  // counts RESET_DETACH_MS on the tick and the owner attaches at the start of
+  // ServiceHardware once it has passed.
+  HaltController();
+  if (detach_.OnHalted(true) == USB::DetachTimer::HaltResult::ATTACH_NOW)
   {
-    return;
+    last_sof_position_ = NO_SOF_POSITION;
+    Connect();
   }
-  while (NowUs() - halted_at_us_ < RESET_DETACH_US)
-  {
-  }
-  halted_ = false;
 }
 
 void STM32USBOtgDevice::Dispatch(USB_OTG_GlobalTypeDef* core)
@@ -618,6 +613,14 @@ void STM32USBOtgDevice::Dispatch(USB_OTG_GlobalTypeDef* core)
 
 void STM32USBOtgDevice::ServiceHardware(bool in_isr)
 {
+  // 断开时间已到、要接上：先接上，再读这一轮的快照。
+  // The detach time has passed and an attach is wanted: attach first, then take this
+  // pass's snapshot.
+  if (detach_.TakeAttach())
+  {
+    last_sof_position_ = NO_SOF_POSITION;
+    Connect();
+  }
   // 一次快照，不重读。顺序：总线复位、枚举完成（报告复位）、RX FIFO、IN（完成先于
   // SETUP）、OUT（数据完成、EP0 IN 完成、SETUP）、等时漏帧、SOF、恢复、挂起、断开。
   // One snapshot, no re-read. Order: bus reset, enumeration done (reports the reset),

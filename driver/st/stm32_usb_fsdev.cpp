@@ -123,6 +123,17 @@ STM32USBDeviceDevFs::STM32USBDeviceDevFs(
   hpcd.Instance = Regs();
   HAL_PCD_MspInit(&hpcd);
   STM32USBRequireWrap();
+#if !defined(USB_BCDR_DPPU) && !defined(SYSCFG_PMC_USB_PU)
+  // F1/F3 的连接回调：HAL 会传的那个句柄，没有时分配一个只填 Instance 的，只此一次。
+  // F1/F3 connection hook: the handle HAL would pass, or else one allocated here once
+  // with only Instance set.
+  connection_handle_ = STM32USBInitHandle();
+  if (connection_handle_ == nullptr)
+  {
+    connection_handle_ = new PCD_HandleTypeDef();
+    connection_handle_->Instance = Regs();
+  }
+#endif
 
 #if defined(LIBXR_STM32_FSDEV_IRQS)
   const IRQn_Type lines[] = {LIBXR_STM32_FSDEV_IRQS};
@@ -158,9 +169,9 @@ STM32USBDeviceDevFs::STM32USBDeviceDevFs(
   // may be used.
   EnableEp0FastAck();
   EnableEp0LateStatus();
-  // 构造时断开一次（含 D+ 拉低，见类说明），Start 在 DETACH_US 之后接上。
-  // Detach once at construction (with D+ held low, see the class notes); Start attaches
-  // after DETACH_US.
+  // 构造时断开一次（含 D+ 拉低，见类说明），DETACH_MS 之后由 Start 或 owner 接上。
+  // Detach once at construction (with D+ held low, see the class notes); Start or the
+  // owner attaches after DETACH_MS.
   DetachAtConstruction();
 }
 
@@ -214,7 +225,8 @@ bool STM32USBDeviceDevFs::HoldDetached()
   dp_saved_[0] = GPIOA->CRH & (0xFUL << 16U);
   dp_saved_[1] = GPIOA->ODR & (1UL << 12U);
   GPIOA->BSRR = 1UL << (12U + 16U);
-  GPIOA->CRH = (GPIOA->CRH & ~(0xFUL << 16U)) | (0x2UL << 16U);  // 推挽输出 2 MHz / push-pull out
+  GPIOA->CRH =
+      (GPIOA->CRH & ~(0xFUL << 16U)) | (0x2UL << 16U);  // 推挽输出 2 MHz / push-pull out
 #else
   dp_saved_[0] = GPIOA->MODER & (3UL << 24U);
   dp_saved_[1] = GPIOA->ODR & (1UL << 12U);
@@ -302,9 +314,7 @@ void STM32USBDeviceDevFs::Connect(bool on)
 #else
   // F1/F3 没有内部上拉，由用户的 HAL_PCDEx_SetConnectionState 控制。
   // F1/F3 have no internal pull-up; the user's HAL_PCDEx_SetConnectionState controls it.
-  PCD_HandleTypeDef hpcd = {};
-  hpcd.Instance = Regs();
-  HAL_PCDEx_SetConnectionState(&hpcd, on ? 1U : 0U);
+  HAL_PCDEx_SetConnectionState(connection_handle_, on ? 1U : 0U);
 #endif
 }
 

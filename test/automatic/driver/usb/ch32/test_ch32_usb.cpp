@@ -14,6 +14,9 @@
  * later on an event, a free SIE, a bus reset or by time.
  */
 
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -23,6 +26,7 @@
 #include <vector>
 
 #include "ch32_usb_dev.hpp"
+#include "libxr_assert.hpp"
 #include "test_assert.hpp"
 
 extern "C" void USBHS_IRQHandler(void);
@@ -230,6 +234,28 @@ class PairClass final : public DeviceClass
   Callback<const Completion&> out_cb_;
 };
 
+/// 测试可以直接复位控制器（扮演 owner 处理 STOP_FAILED_EVENT）/ The test may reset the
+/// controller directly (playing the owner on STOP_FAILED_EVENT)
+template <typename Usb>
+class ResettableUsb : public Usb
+{
+ public:
+  using Usb::Usb;
+  void ForceReset() { this->ResetController(true); }
+};
+
+/// 节拍 n 次，每次之后让挂起的中断运行 / Tick n times and let a pended interrupt run
+/// after each
+template <typename Pended>
+void TickAnd(int count, Pended pended)
+{
+  for (int i = 0; i < count; ++i)
+  {
+    DriverAsyncCondition::OnTick(1U);
+    pended();
+  }
+}
+
 /// 按 32 字节对齐的块 / Block aligned to 32 bytes
 template <size_t N>
 struct alignas(64) Block
@@ -284,7 +310,7 @@ struct HsBench
   Block<2048> ep1_out;
   Block<4096> ep1_in;
   PairClass cls;
-  CH32USBOtgHS usb;
+  ResettableUsb<CH32USBOtgHS> usb;
 
   explicit HsBench(Type in_type = Type::BULK, uint16_t bound = 512U)
       : cls(EPNumber::EP1, EPNumber::EP1, in_type, bound),
@@ -1143,7 +1169,14 @@ void TestHsDeviceStop()
   DriverAsyncCondition::OnTick(1U);
   TEST_ASSERT(!fake_pfic.pending[USBHS_IRQn]);
   fake_usbhsd.MIS_ST = USBHS_UMS_SIE_FREE;
+  // 断开之后已过 4 个节拍：Start 不等，第 6 个节拍才接上 / 4 ticks since the detach:
+  // Start does not wait, the sixth tick attaches
   b.usb.Start(false);
+  PendedHs();
+  TEST_ASSERT((fake_usbhsd.CONTROL & USBHS_UC_DEV_PU_EN) == 0U);
+  TickAnd(1, PendedHs);
+  TEST_ASSERT((fake_usbhsd.CONTROL & USBHS_UC_DEV_PU_EN) == 0U);
+  TickAnd(1, PendedHs);
   TEST_ASSERT((fake_usbhsd.CONTROL & USBHS_UC_DEV_PU_EN) != 0U);
   b.Enumerate();
   b.cls.Send(10U);
@@ -1487,7 +1520,7 @@ struct FsBench
   Block<128> ep3;
   PairClass single;
   PairClass shared;
-  CH32USBOtgFS usb;
+  ResettableUsb<CH32USBOtgFS> usb;
 
   explicit FsBench(Type in_type = Type::BULK)
       : single(EPNumber::EP2, EPNumber::EP1, in_type, 64U),
@@ -2079,7 +2112,15 @@ void TestFsDeviceStop()
   TEST_ASSERT((fake_usbfsd.BASE_CTRL & USBFS_UC_DEV_PU_EN) == 0U);
   TEST_ASSERT(fake_usbfsd.INT_EN == 0U && fake_pfic.enabled[USBFS_IRQn]);
   fake_usbfsd.MIS_ST = USBFS_UMS_SIE_FREE;
+  // Start 紧跟断开：不等，第 6 个节拍才接上 / Start right after the detach: no wait, the
+  // sixth tick attaches
   b.usb.Start(false);
+  PendedFs();
+  TEST_ASSERT((fake_usbfsd.BASE_CTRL & USBFS_UC_DEV_PU_EN) == 0U);
+  TickAnd(5, PendedFs);
+  TEST_ASSERT((fake_usbfsd.BASE_CTRL & USBFS_UC_DEV_PU_EN) == 0U);
+  TickAnd(1, PendedFs);
+  TEST_ASSERT((fake_usbfsd.BASE_CTRL & USBFS_UC_DEV_PU_EN) != 0U);
   b.Enumerate();
   // 之前的停止没有留下计数：新的未结束停止照常打开、关掉 SOF 中断
   // The earlier stop left no count behind: a new pending stop enables and masks the SOF
@@ -2113,6 +2154,154 @@ void TestFsEp0StopAtSetup()
   TEST_ASSERT(CH32EndpointOtgFs::PendingStops() == 0U);
   TEST_ASSERT((fake_usbfsd.UEP0_TX_CTRL & USBFS_UEP_T_RES_MASK) == USBFS_UEP_T_RES_ACK);
   TEST_ASSERT(fake_usbfsd.UEP0_TX_LEN == 18U);
+}
+
+/// 复位只断开：几十微秒内返回、上拉和中断源关掉；第 6 个节拍挂起中断，owner 接上，
+/// 主机以新地址重新枚举
+/// The reset only detaches: back within tens of microseconds with the pull-up and the
+/// interrupt sources off; the sixth tick pends the interrupt and the owner attaches, and
+/// the host enumerates again with a new address
+template <typename Bench, typename Pended>
+void CheckResetAsync(Bench& b, volatile uint8_t& pu_reg, uint8_t pu_bit,
+                     volatile uint8_t& int_en, Pended pended)
+{
+  b.Enumerate();
+  const auto before = std::chrono::steady_clock::now();
+  b.usb.ForceReset();
+  TEST_ASSERT(std::chrono::steady_clock::now() - before <
+              std::chrono::microseconds(1000));
+  TEST_ASSERT((pu_reg & pu_bit) == 0U && int_en == 0U);
+  TickAnd(5, pended);
+  TEST_ASSERT((pu_reg & pu_bit) == 0U);
+  TickAnd(1, pended);
+  TEST_ASSERT((pu_reg & pu_bit) != 0U && int_en != 0U);
+  b.Enumerate();
+}
+
+/// 复位的断开期间再复位：计时不重新开始；断开期间 Stop：不接上；之后 Start 就地接上
+/// Another reset during a reset's detach: the count does not start over; Stop during
+/// the detach: no attach; a later Start attaches in place
+template <typename Bench, typename Pended>
+void CheckDetachRequests(Bench& b, volatile uint8_t& pu_reg, uint8_t pu_bit,
+                         Pended pended)
+{
+  b.Enumerate();
+  b.usb.ForceReset();
+  TickAnd(3, pended);
+  b.usb.ForceReset();
+  TEST_ASSERT((pu_reg & pu_bit) == 0U);
+  TickAnd(2, pended);
+  TEST_ASSERT((pu_reg & pu_bit) == 0U);
+  TickAnd(1, pended);
+  TEST_ASSERT((pu_reg & pu_bit) != 0U);
+  b.Enumerate();
+  b.usb.ForceReset();
+  TickAnd(2, pended);
+  b.usb.Stop(false);
+  pended();
+  TickAnd(10, pended);
+  TEST_ASSERT((pu_reg & pu_bit) == 0U);
+  // 时间早已够：Start 不等，就地接上 / The time passed long ago: Start does not wait
+  // and attaches in place
+  const auto before = std::chrono::steady_clock::now();
+  b.usb.Start(false);
+  TEST_ASSERT(std::chrono::steady_clock::now() - before <
+              std::chrono::microseconds(1000));
+  pended();
+  TEST_ASSERT((pu_reg & pu_bit) != 0U);
+  b.Enumerate();
+}
+
+void TestHsResetAsync()
+{
+  ResetFakes();
+  HsBench b;
+  fake_usbhsd.MIS_ST = USBHS_UMS_SIE_FREE;
+  CheckResetAsync(b, fake_usbhsd.CONTROL, USBHS_UC_DEV_PU_EN, fake_usbhsd.INT_EN,
+                  PendedHs);
+}
+
+void TestHsDetachRequests()
+{
+  ResetFakes();
+  HsBench b;
+  CheckDetachRequests(b, fake_usbhsd.CONTROL, USBHS_UC_DEV_PU_EN, PendedHs);
+}
+
+/// 断开期间 SIE 复位、总线没有活动，MIS_ST 可能显示挂起：不报告挂起。报告了的话核心
+/// 关上闸门，断开期间（R1）启动的请求不再上硬件
+/// While detached the SIE is reset and the bus idle, so MIS_ST may show suspend: no
+/// suspend is reported. Were it reported, the core would close its gate and a request
+/// started while detached (R1) would not reach the hardware
+void TestHsNoSuspendWhileDetached()
+{
+  ResetFakes();
+  HsBench b;
+  b.Enumerate();
+  b.usb.ForceReset();
+  fake_usbhsd.MIS_ST = USBHS_UMS_SIE_FREE | USBHS_UMS_SUSPEND;
+  LatchHs(USBHS_UIF_SUSPEND, 0U);
+  RunHs();
+  fake_usbhsd.UEP1_TX_LEN = 0U;
+  b.cls.Send(10U);
+  PendedHs();
+  TEST_ASSERT(fake_usbhsd.UEP1_TX_LEN == 10U);
+}
+
+/// 全速同上：断开期间不报告挂起，断开期间启动的请求照常上硬件
+/// Full speed, the same: no suspend reported while detached, a request started while
+/// detached reaches the hardware as usual
+void TestFsNoSuspendWhileDetached()
+{
+  ResetFakes();
+  FsBench b;
+  b.Enumerate();
+  b.usb.ForceReset();
+  fake_usbfsd.MIS_ST = USBFS_UMS_SIE_FREE | USBFS_UMS_SUSPEND;
+  LatchFs(USBFS_UIF_SUSPEND, 0U);
+  RunFs();
+  fake_usbfsd.UEP2_TX_LEN = 0U;
+  b.single.Send(64U);
+  PendedFs();
+  TEST_ASSERT(fake_usbfsd.UEP2_TX_LEN == 64U);
+}
+
+void TestFsResetAsync()
+{
+  ResetFakes();
+  FsBench b;
+  CheckResetAsync(b, fake_usbfsd.BASE_CTRL, USBFS_UC_DEV_PU_EN, fake_usbfsd.INT_EN,
+                  PendedFs);
+}
+
+void TestFsDetachRequests()
+{
+  ResetFakes();
+  FsBench b;
+  CheckDetachRequests(b, fake_usbfsd.BASE_CTRL, USBFS_UC_DEV_PU_EN, PendedFs);
+}
+
+/// 没有登记节拍源时构造后端是致命错误（必须在登记之前运行）/ Constructing a backend
+/// without a registered tick source is fatal (must run before the registration)
+void CheckNoTickSourceFatal()
+{
+  TEST_ASSERT(!DriverAsyncCondition::HasTickSource());
+  std::fflush(nullptr);
+  const pid_t child = fork();
+  TEST_ASSERT(child >= 0);
+  constexpr int FATAL_EXIT = 77;
+  if (child == 0)
+  {
+    auto cb = LibXR::Assert::FatalCallback::Create(
+        [](bool, int code, const char*, uint32_t) { _exit(code); }, FATAL_EXIT);
+    LibXR::Assert::RegisterFatalErrorCallback(cb);
+    ResetFakes();
+    FsBench b;
+    _exit(0);
+  }
+  int status = 0;
+  TEST_ASSERT(waitpid(child, &status, 0) == child);
+  TEST_ASSERT(WIFEXITED(status) && WEXITSTATUS(status) == FATAL_EXIT);
 }
 
 struct Case
@@ -2156,7 +2345,22 @@ int main(int argc, char** argv)
       {"fs_ep0_stop_at_setup", TestFsEp0StopAtSetup},
       {"hs_clear_halt_keeps_requests", TestHsClearHaltKeepsRequests},
       {"fs_clear_halt_keeps_requests", TestFsClearHaltKeepsRequests},
+      {"hs_reset_async", TestHsResetAsync},
+      {"hs_detach_requests", TestHsDetachRequests},
+      {"hs_no_suspend_while_detached", TestHsNoSuspendWhileDetached},
+      {"fs_reset_async", TestFsResetAsync},
+      {"fs_detach_requests", TestFsDetachRequests},
+      {"fs_no_suspend_while_detached", TestFsNoSuspendWhileDetached},
   };
+  // 登记之前：没有节拍源时构造是致命错误。之后测试扮演唯一的节拍源。
+  // Before the registration: construction without a tick source is fatal. Afterwards
+  // the test plays the only tick source.
+  if (argc <= 1 || std::strstr("no_tick_source_fatal", argv[1]) != nullptr)
+  {
+    CheckNoTickSourceFatal();
+    std::printf("ok no_tick_source_fatal\n");
+  }
+  DriverAsyncCondition::RegisterTickSource();
   for (const Case& c : cases)
   {
     // 可选参数：只跑名字含这段文字的用例 / Optional argument: run only the cases whose

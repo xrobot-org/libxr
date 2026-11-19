@@ -4,6 +4,34 @@
 
 using namespace LibXR;
 
+namespace
+{
+/// 已有节拍源登记；启动时写一次 / A tick source has registered; written once at start
+std::atomic<bool> tick_source_registered{false};
+/// OnTick 的调用次数；只有节拍源写（不可重入），所以用读加写而不是读改写
+/// Number of OnTick calls; only the tick source writes it (not reentrant), hence a load
+/// and a store instead of a read-modify-write
+std::atomic<uint32_t> tick_count{0U};
+}  // namespace
+
+void DriverAsyncCondition::RegisterTickSource()
+{
+  // 两个节拍源会让每个等待计两次、提前结束。
+  // Two tick sources would count every wait twice and end it early.
+  REQUIRE(!tick_source_registered.load(std::memory_order_acquire));
+  tick_source_registered.store(true, std::memory_order_release);
+}
+
+bool DriverAsyncCondition::HasTickSource()
+{
+  return tick_source_registered.load(std::memory_order_acquire);
+}
+
+uint32_t DriverAsyncCondition::TickCount()
+{
+  return tick_count.load(std::memory_order_relaxed);
+}
+
 DriverAsyncCondition::DriverAsyncCondition(CheckFun check, DoneFun done, void* arg)
     : check_(check), done_(done), arg_(arg)
 {
@@ -62,6 +90,8 @@ ErrorCode DriverAsyncCondition::Start(uint32_t min_ms, uint32_t max_ms)
 
 void DriverAsyncCondition::OnTick(uint32_t elapsed_ms)
 {
+  tick_count.store(tick_count.load(std::memory_order_relaxed) + 1U,
+                   std::memory_order_relaxed);
   for (DriverAsyncCondition* node = head_.load(std::memory_order_acquire);
        node != nullptr; node = node->next_)
   {

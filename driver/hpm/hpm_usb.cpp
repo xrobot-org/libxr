@@ -284,14 +284,24 @@ void HPMUSBDevice::Dispatch()
 void HPMUSBDevice::StartController(bool in_isr)
 {
   UNUSED(in_isr);
-  WaitDetached();
-  MaskInterrupt();
-  reset_pending_ = false;
-  suspended_ = false;
+  // 断开时间未到时只记下"要接上"并使能中断线，到点后 owner 接上。
+  // While the detach time has not passed only "attach wanted" is recorded and the line
+  // enabled; the owner attaches once the time has passed.
+  if (detach_.WantAttach())
+  {
+    MaskInterrupt();
+    reset_pending_ = false;
+    suspended_ = false;
+    Attach();
+  }
+  UnmaskInterrupt();
+}
+
+void HPMUSBDevice::Attach()
+{
   regs_->USBSTS = regs_->USBSTS;
   regs_->USBINTR = INTERRUPTS;
   usb_dcd_connect(regs_);
-  UnmaskInterrupt();
 }
 
 void HPMUSBDevice::StopController(bool in_isr)
@@ -299,6 +309,7 @@ void HPMUSBDevice::StopController(bool in_isr)
   UNUSED(in_isr);
   HaltController();
   regs_->USBINTR = 0U;
+  (void)detach_.OnHalted(false);
 }
 
 void HPMUSBDevice::MaskInterrupt()
@@ -333,8 +344,6 @@ void HPMUSBDevice::HaltController()
   // hardware holds no request any more: pending stops are void and reported no more, and
   // every later StopHardware returns ABORTED at once.
   regs_->USBCMD &= ~USB_USBCMD_RS_MASK;
-  halted_at_us_ = NowUs();
-  halted_ = true;
   (void)FlushAll();
   regs_->ENDPTSETUPSTAT = regs_->ENDPTSETUPSTAT;
   regs_->ENDPTCOMPLETE = regs_->ENDPTCOMPLETE;
@@ -363,6 +372,13 @@ void HPMUSBDevice::HaltController()
 
 void HPMUSBDevice::ServiceHardware(bool in_isr)
 {
+  // 断开时间已到、要接上：先接上，再读这一轮的快照。
+  // The detach time has passed and an attach is wanted: attach first, then take this
+  // pass's snapshot.
+  if (detach_.TakeAttach())
+  {
+    Attach();
+  }
   // 一次快照。先清读到的 USBSTS 位，再读 ENDPTCOMPLETE 和 ENDPTSETUPSTAT：之后才到的
   // 完成会再置 UI，不会丢。顺序：总线复位、复位结束、端点完成（同号先 IN 后 OUT）、
   // 未结束的停止、SETUP、恢复、挂起、帧起始。
@@ -1193,26 +1209,16 @@ void libxr_hpm_usb0_isr(void) { HPMUSBDevice::Dispatch(); }
 void HPMUSBDevice::ResetController(bool in_isr)
 {
   UNUSED(in_isr);
+  // 断开要保持到主机看得见，否则主机不复位总线。这里只断开，不等：detach_ 按节拍计
+  // RESET_DETACH_MS，到点后 owner 在 ServiceHardware 开头接上。
+  // The detach has to last until the host sees it, or the host does not reset the bus.
+  // Only the detach happens here, no wait: detach_ counts RESET_DETACH_MS on the tick
+  // and the owner attaches at the start of ServiceHardware once it has passed.
   HaltController();
-  WaitDetached();
-  regs_->USBSTS = regs_->USBSTS;
-  regs_->USBINTR = INTERRUPTS;
-  usb_dcd_connect(regs_);
-}
-
-void HPMUSBDevice::WaitDetached()
-{
-  // 断开要保持到主机看得见，否则主机不复位总线；核心没有给后端的延时接续，只能在这里等。
-  // The detach has to last until the host sees it, or the host does not reset the bus;
-  // the core has no deferred continuation for the backend, so the wait happens here.
-  if (!halted_)
+  if (detach_.OnHalted(true) == USB::DetachTimer::HaltResult::ATTACH_NOW)
   {
-    return;
+    Attach();
   }
-  while (NowUs() - halted_at_us_ < RESET_DETACH_US)
-  {
-  }
-  halted_ = false;
 }
 
 #endif

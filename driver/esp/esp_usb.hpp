@@ -10,6 +10,7 @@
 #include "soc/soc_caps.h"
 #include "usb/core/ep.hpp"
 #include "usb/core/ep_pool.hpp"
+#include "usb/core/usb_detach_timer.hpp"
 #include "usb/core/usb_service.hpp"
 #include "usb/device/dev_core.hpp"
 
@@ -304,30 +305,55 @@ class ESP32USBDevice : public ESP32USBController,
    * @brief 断开、复位 core、重建基线，再接上总线 / Detach, reset the core, rebuild the
    *        baseline and attach again
    * @note 返回后所有端点寄存器的 EPENA 和 XFRC 为 0，未结束的停止作废、不再报告，
-   *       之后每个 StopHardware 立即返回 ABORTED。断开保持 RESET_DETACH_US，在 owner
-   *       里忙等，主机才会复位总线。core 复位失败时保持断开。
+   *       之后每个 StopHardware 立即返回 ABORTED。只做前半段，不等待；断开保持
+   *       RESET_DETACH_MS，到点后由任务接上，见 detach_。core 复位失败时保持断开
+   *       （调用 OnHalted(false)，不是 OnHalted(true)）。
    *       Afterwards EPENA and XFRC of every endpoint register are 0, pending stops are
    *       void and reported no more, and every later StopHardware returns ABORTED at
-   *       once. The detach lasts RESET_DETACH_US, busy-waiting in the owner, so that the
-   *       host resets the bus. If the core reset fails the device stays detached.
+   *       once. First half only, no wait; the detach lasts RESET_DETACH_MS and a task
+   *       attaches once it has passed, see detach_. If the core reset fails the device
+   *       stays detached (OnHalted(false) instead of OnHalted(true)).
    */
   void ResetController(bool in_isr) override;
   /// @}
 
  private:
-  /// ResetController 断开总线的时长（µs）/ How long ResetController stays detached (µs)
-  static constexpr int64_t RESET_DETACH_US = 10000;
+  /// 最短断开时长（毫秒，节拍计数）/ Minimum detach time (ms, counted in ticks)
+  static constexpr uint32_t RESET_DETACH_MS = 10U;
   /**
-   * @brief HaltController 断开之后等够 RESET_DETACH_US / Wait until RESET_DETACH_US have
-   *        passed since HaltController detached
-   * @note StartController 和 ResetController 在重新接上之前调用。
-   *       Called by StartController and ResetController before they attach.
+   * @brief 最短断开时间 / Minimum detach time
+   * @note 用法同其他后端：HaltController 之后 OnHalted，StartController 用 WantAttach，
+   *       ServiceHardware 开头 TakeAttach。
+   *       Used as in the other backends: OnHalted after HaltController, WantAttach in
+   *       StartController, TakeAttach at the start of ServiceHardware.
+   * @note 本后端没有 PendInterrupt，断开期间控制器也没有中断。节拍是 IDF 的 tick 钩子，
+   *       在 CPU 0 的节拍中断里运行，所以不能在那里就地成为 owner（类的回调会进中断）。
+   *       到点时 DetachTimer 调用 DeferAttach（defer）：xTimerPendFunctionCallFromISR
+   *       把 AttachInTask 交给 FreeRTOS 的定时器服务任务；AttachInTask 在该任务里
+   *       RequestPoll(false)，就地成为 owner，这一轮开头 TakeAttach 后接上。owner 因此
+   *       不进中断。新规则（只 ESP）：结果函数调用了一个 RTOS 的 FromISR 接口；IDF 的
+   *       tick 中断在 1 级，低于系统调用上限，合法。定时器队列满时 defer 返回 false，
+   *       1 ms 后再试。接上可能晚于定时器任务（configTIMER_TASK_PRIORITY）被更高优先级
+   *       任务占住的时间，只会变长。
+   *       This backend has no PendInterrupt, and a detached controller raises no
+   *       interrupt. The tick is IDF's tick hook, running in CPU 0's tick interrupt, so
+   *       it must not own in place there (class callbacks would run in the interrupt).
+   *       When the time has passed DetachTimer calls DeferAttach (defer):
+   *       xTimerPendFunctionCallFromISR hands AttachInTask to FreeRTOS's timer service
+   *       task; there AttachInTask calls RequestPoll(false) and owns in place, and the
+   *       pass attaches after TakeAttach at its start. The owner thus stays out of the
+   *       interrupt. New rule (ESP only): the result function calls an RTOS FromISR
+   *       function; IDF's tick interrupt is at level 1, below the system call ceiling,
+   *       so this is legal. With the timer queue full defer returns false and it is tried
+   *       again 1 ms later. The attach can be later by as long as higher-priority tasks
+   *       hold the timer task (configTIMER_TASK_PRIORITY); longer only.
    */
-  void WaitDetached();
-  /// HaltController 断开总线的时刻（µs）和“断开后还没有重新接上” / Time HaltController
-  /// detached (us) and "not attached again since"
-  int64_t halted_at_us_ = 0;
-  bool halted_ = false;
+  USB::DetachTimer detach_{*this, RESET_DETACH_MS, DeferAttach, this};
+  /// 节拍上下文：xTimerPendFunctionCallFromISR(AttachInTask) / Tick context:
+  /// xTimerPendFunctionCallFromISR(AttachInTask)
+  static bool DeferAttach(void* arg);
+  /// 定时器服务任务：RequestPoll(false) / Timer service task: RequestPoll(false)
+  static void AttachInTask(void* arg, uint32_t unused);
   /// 6 号 CPU 中断：接到它的中断源被屏蔽 / CPU interrupt 6: a source routed to it is
   /// masked
   static constexpr uint32_t DISABLED_CPU_INTERRUPT = 6U;

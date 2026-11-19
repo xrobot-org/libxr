@@ -13,6 +13,8 @@
 #include "esp_private/usb_phy.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/timers.h"
 #include "soc/interrupts.h"
 #include "soc/usb_dwc_cfg.h"
 #include "soc/usb_dwc_struct.h"
@@ -489,17 +491,46 @@ void ESP32USBDevice::IsrEntry(void* arg)
 void ESP32USBDevice::StartController(bool in_isr)
 {
   UNUSED(in_isr);
-  WaitDetached();
-  MaskInterrupt();
-  Connect();
-  UnmaskInterrupt();
+  // 断开时间未到时只记下"要接上"，到点后定时器服务任务做接上的一轮。
+  // While the detach time has not passed only "attach wanted" is recorded; the timer
+  // service task runs the attach pass once it has passed.
+  if (detach_.WantAttach())
+  {
+    MaskInterrupt();
+    Connect();
+    UnmaskInterrupt();
+  }
+}
+
+// 到点后的接上由定时器服务任务做（xTimerPendFunctionCallFromISR），见 detach_。
+// The attach once the time has passed runs in the timer service task
+// (xTimerPendFunctionCallFromISR), see detach_.
+static_assert(INCLUDE_xTimerPendFunctionCall == 1,
+              "ESP32 USB needs CONFIG_FREERTOS_USE_TIMERS (timer service task)");
+
+bool ESP32USBDevice::DeferAttach(void* arg)
+{
+  // 节拍钩子（CPU 0 的节拍中断）：只把这一轮交给定时器服务任务，owner 不进中断。
+  // Tick hook (CPU 0's tick interrupt): only hand the pass to the timer service task, so
+  // the owner stays out of the interrupt.
+  BaseType_t woken = pdFALSE;
+  const BaseType_t queued = xTimerPendFunctionCallFromISR(AttachInTask, arg, 0U, &woken);
+  portYIELD_FROM_ISR(woken);
+  return queued == pdPASS;
+}
+
+void ESP32USBDevice::AttachInTask(void* arg, uint32_t unused)
+{
+  UNUSED(unused);
+  // 定时器服务任务就地成为 owner；ServiceHardware 开头 TakeAttach 后接上。
+  // The timer service task owns in place; ServiceHardware attaches after TakeAttach at
+  // its start.
+  static_cast<ESP32USBDevice*>(arg)->RequestPoll(false);
 }
 
 bool ESP32USBDevice::HaltController()
 {
   WriteDctl(DCTL_SFTDISCON, 0U);
-  halted_at_us_ = NowUs();
-  halted_ = true;
   reset_enum_pending_ = false;
   // core 复位之后硬件上没有任何请求：未结束的停止作废，不再报告。
   // After the core reset the hardware holds no request: pending stops are void and
@@ -531,6 +562,7 @@ void ESP32USBDevice::StopController(bool in_isr)
 {
   UNUSED(in_isr);
   (void)HaltController();
+  (void)detach_.OnHalted(false);
 }
 
 void ESP32USBDevice::MaskInterrupt()
@@ -571,32 +603,30 @@ void ESP32USBDevice::ResetController(bool in_isr)
     // core 复位没有完成：保持断开、全局中断屏蔽，主机看到设备消失。
     // The core reset did not finish: stay detached with the global interrupt masked;
     // the host sees the device disappear.
+    (void)detach_.OnHalted(false);
     return;
   }
-  WaitDetached();
-  Connect();
-}
-
-void ESP32USBDevice::WaitDetached()
-{
   // 断开要保持到主机看得见，否则主机不复位总线（实测：只断开几微秒到几十微秒时主机
-  // 多半不重新枚举）。核心没有给后端的延时接续，只能在这里等。
+  // 多半不重新枚举）。这里只断开，不等：到点后定时器服务任务做接上的一轮。
   // The detach has to last until the host sees it, or the host does not reset the bus
   // (measured: a detach of a few to a few tens of microseconds is mostly not enumerated
-  // again). The core has no deferred continuation for the backend, so the wait happens
-  // here.
-  if (!halted_)
+  // again). Only the detach happens here, no wait: the timer service task runs the
+  // attach pass once the time has passed.
+  if (detach_.OnHalted(true) == USB::DetachTimer::HaltResult::ATTACH_NOW)
   {
-    return;
+    Connect();
   }
-  while (NowUs() - halted_at_us_ < RESET_DETACH_US)
-  {
-  }
-  halted_ = false;
 }
 
 void ESP32USBDevice::ServiceHardware(bool in_isr)
 {
+  // 断开时间已到、要接上：先接上，再读这一轮的快照。
+  // The detach time has passed and an attach is wanted: attach first, then take this
+  // pass's snapshot.
+  if (detach_.TakeAttach())
+  {
+    Connect();
+  }
   // 一次快照，不重读；还有标志时电平中断会再进来。顺序：总线复位（当场报告）、枚举
   // 完成、全局 OUT NAK 生效、IN（完成、NAK 生效）、OUT（数据完成、EP0 IN 完成、
   // SETUP）、等时漏帧、SOF（停止的超时计数）、恢复、挂起、OTG。

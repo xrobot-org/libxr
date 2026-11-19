@@ -32,6 +32,7 @@
 #include "cdc_uart.hpp"
 #include "dev_core.hpp"
 #include "device_class.hpp"
+#include "driver_async_condition.hpp"
 #include "ep.hpp"
 #include "test_assert.hpp"
 #include "usb/backend/fsdev.hpp"
@@ -148,6 +149,20 @@ struct Ctl
   static inline std::function<void(uint8_t, uint32_t)> before_write;
   /// 每次写接收区大小之前调用 / Called before every write of a receive size
   static inline std::function<void(uint8_t)> before_rx_size;
+  /// 被测设备有 PendInterrupt：挂起即进中断（中断里挂起则在返回后再进），如同真实的
+  /// 控制器线 / The device under test has PendInterrupt: a pend enters the interrupt at
+  /// once (a pend inside the interrupt enters again after it returns), as a real line
+  static inline bool pend = false;
+  static inline bool pended = false;
+  static inline unsigned irq_depth = 0;
+  /// 被测设备断开时拉住 D+、关时钟（HoldDetached 返回 true）/ The device under test
+  /// holds D+ with the clock off while detached (HoldDetached returns true)
+  static inline bool hold = false;
+  static inline bool held = false;
+  static inline unsigned holds = 0;
+  static inline unsigned releases = 0;
+  /// 拉住期间对寄存器的访问 / Register accesses while held
+  static inline unsigned held_accesses = 0;
 
   static constexpr uint32_t KEEP = 0x0F0FU;  ///< 类型、KIND、地址 / Type, KIND, address
   static constexpr uint32_t TOGGLE = STAT_TX | STAT_RX | DTOG_TX | DTOG_RX;
@@ -173,6 +188,14 @@ struct Ctl
     before_read = nullptr;
     before_write = nullptr;
     before_rx_size = nullptr;
+    pend = false;
+    pended = false;
+    irq_depth = 0;
+    hold = false;
+    held = false;
+    holds = 0;
+    releases = 0;
+    held_accesses = 0;
   }
 
   /// ISTR.CTR 是各端点 CTR 的或，EP_ID 为编号最小者 / ISTR.CTR is the OR of the
@@ -237,6 +260,7 @@ struct Ctl
 
   static uint32_t ReadRegister(uint32_t offset)
   {
+    held_accesses += held ? 1U : 0U;
     if (offset < 32U)
     {
       return ReadEp(static_cast<uint8_t>(offset / 4U));
@@ -259,6 +283,7 @@ struct Ctl
 
   static void WriteRegister(uint32_t offset, uint32_t value)
   {
+    held_accesses += held ? 1U : 0U;
     if (offset < 32U)
     {
       WriteEp(static_cast<uint8_t>(offset / 4U), value & 0xFFFFU);
@@ -706,7 +731,24 @@ class TestDevice final : public FSDevDevice
     masked = true;
     ++masks;
   }
-  void UnmaskInterrupt() override { masked = false; }
+  void UnmaskInterrupt() override;
+  bool PendInterrupt() override;
+  bool HoldDetached() override
+  {
+    if (!Ctl::hold)
+    {
+      return false;
+    }
+    Ctl::held = true;
+    ++Ctl::holds;
+    return true;
+  }
+  void ReleaseDetached() override
+  {
+    TEST_ASSERT(Ctl::held);
+    Ctl::held = false;
+    ++Ctl::releases;
+  }
 };
 
 constexpr uint8_t REQ_IN = 0x01U;
@@ -893,8 +935,51 @@ SetupPacket Make(uint8_t type, uint8_t request, uint16_t value, uint16_t index,
   return SetupPacket{type, request, value, index, length};
 }
 
-/// 控制器中断 / The controller interrupt
-void Irq() { FSDevDevice::Dispatch(); }
+/// 控制器中断；有 PendInterrupt 时运行到不再挂起 / The controller interrupt; with
+/// PendInterrupt it runs until nothing is pending
+void Irq()
+{
+  ++Ctl::irq_depth;
+  do
+  {
+    Ctl::pended = false;
+    FSDevDevice::Dispatch();
+  } while (Ctl::pend && Ctl::pended);
+  --Ctl::irq_depth;
+}
+
+bool TestDevice::PendInterrupt()
+{
+  if (!Ctl::pend)
+  {
+    return false;
+  }
+  Ctl::pended = true;
+  // 屏蔽着的线挂起后不进，打开时才进 / A masked line does not enter when pended, only
+  // once it is opened
+  if (Ctl::irq_depth == 0U && !masked)
+  {
+    Irq();
+  }
+  return true;
+}
+
+void TestDevice::UnmaskInterrupt()
+{
+  masked = false;
+  if (Ctl::pend && Ctl::pended && Ctl::irq_depth == 0U)
+  {
+    Irq();
+  }
+}
+
+void Ticks(int count)
+{
+  for (int i = 0; i < count; ++i)
+  {
+    LibXR::DriverAsyncCondition::OnTick(1U);
+  }
+}
 
 void SendSetup(const SetupPacket& setup)
 {
@@ -951,8 +1036,9 @@ void ControlNone(const SetupPacket& setup)
 /// 两个数据端点号：EP1（IN/OUT 各 64）、EP2（IN 40、OUT 96）/ Two data numbers
 struct Fixture
 {
-  explicit Fixture(bool arm_out = false)
-      : device({{ep0_out.Raw(64), 64}, {ep1_out.Raw(), 64}, {ep2_out.Raw(), 96}},
+  explicit Fixture(bool arm_out = false, bool pend = false, bool hold = false)
+      : mode(pend, hold),
+        device({{ep0_out.Raw(64), 64}, {ep1_out.Raw(), 64}, {ep2_out.Raw(), 96}},
                {{ep0_in.Raw(64), 64}, {ep1_in.Raw(128), 64}, {ep2_in.Raw(), 40}},
                {{&klass}})
   {
@@ -974,6 +1060,16 @@ struct Fixture
   {
     Clean() { Ctl::Reset(); }
   } clean;
+  /// 设备的 PendInterrupt 和 D+ 拉住在设备的整个生命期内不变 / The device's
+  /// PendInterrupt and D+ hold stay the same for its whole life
+  struct Mode
+  {
+    Mode(bool pend, bool hold)
+    {
+      Ctl::pend = pend;
+      Ctl::hold = hold;
+    }
+  } mode;
   Block ep0_out, ep0_in, ep1_out, ep1_in, ep2_out, ep2_in;
   BulkClass klass;
   TestDevice device;
@@ -1649,7 +1745,7 @@ void TestCompletionAfterStop()
 void TestStopTimeout()
 {
   {
-    Fixture f;
+    Fixture f(false, true);
     TEST_ASSERT(f.klass.Send(Pattern(64, 1)) == ErrorCode::OK);
     Ctl::stuck = 1;
     f.klass.in->Flush(false);
@@ -1657,10 +1753,22 @@ void TestStopTimeout()
     TEST_ASSERT(f.klass.in_done.size() == 1U &&
                 f.klass.in_done[0].result == ErrorCode::ABORTED);
     const unsigned connects = Ctl::connects;
-    Irq();  // 重写仍失败：TIMEOUT，控制器复位 / the rewrite fails too: TIMEOUT, reset
-    TEST_ASSERT(Ctl::connects == connects + 1U && Ctl::pull_up);
-    TEST_ASSERT((Ctl::cntr & 0x8000U) != 0U && Ctl::stuck == -1);
+    // 重写仍失败：TIMEOUT，控制器复位。复位只断开、不等 / The rewrite fails too:
+    // TIMEOUT, reset. The reset only detaches and does not wait
+    const auto before = std::chrono::steady_clock::now();
+    Irq();
+    TEST_ASSERT(std::chrono::steady_clock::now() - before <
+                std::chrono::microseconds(1000));
+    TEST_ASSERT(Ctl::connects == connects && !Ctl::pull_up);
+    TEST_ASSERT((Ctl::cntr & 0x8000U) == 0U && Ctl::stuck == -1);
     TEST_ASSERT(f.klass.in_done.size() == 1U);
+    // 断开时间由节拍计：第 6 个节拍才接上 / The detach time is counted by the tick: the
+    // sixth tick attaches
+    Ticks(5);
+    TEST_ASSERT(!Ctl::pull_up);
+    Ticks(1);
+    TEST_ASSERT(Ctl::connects == connects + 1U && Ctl::pull_up);
+    TEST_ASSERT((Ctl::cntr & 0x8000U) != 0U);
     // 主机重新枚举后照常工作 / Works again after the host enumerates again
     Ctl::BusReset();
     Irq();
@@ -1736,7 +1844,7 @@ void TestStartDuringReset()
 /// Start and the host's reset, enumeration and transfers work as usual
 void TestDeviceStop()
 {
-  Fixture f;
+  Fixture f(false, true);
   BulkClass& k = f.klass;
   TEST_ASSERT(k.Send(Pattern(64, 5)) == ErrorCode::OK);
   k.in->Flush(false);  // 停止未结束 / the stop is pending
@@ -1759,12 +1867,17 @@ void TestDeviceStop()
   const unsigned reads = Ctl::fnr_reads;
   Irq();
   TEST_ASSERT(Ctl::fnr_reads == reads);
-  // 紧接着 Start：上拉要在断开至少 5 ms 之后才接回 / Start right away: the pull-up
-  // comes back no earlier than 5 ms after the detach
+  // 紧接着 Start：不等，只记下要接上；上拉在断开时间计够之后才接回 / Start right
+  // away: no wait, the attach is only recorded; the pull-up comes back once the detach
+  // time has been counted
   const auto detached = std::chrono::steady_clock::now();
   f.device.Start(false);
-  TEST_ASSERT(std::chrono::steady_clock::now() - detached >=
-              std::chrono::microseconds(4000));
+  TEST_ASSERT(std::chrono::steady_clock::now() - detached <
+              std::chrono::microseconds(1000));
+  TEST_ASSERT(!Ctl::pull_up);
+  Ticks(5);
+  TEST_ASSERT(!Ctl::pull_up);
+  Ticks(1);
   TEST_ASSERT(Ctl::pull_up && (Ctl::cntr & 0x8200U) == 0x8200U);
   Ctl::BusReset();
   Irq();
@@ -1772,6 +1885,91 @@ void TestDeviceStop()
   TEST_ASSERT(k.in != nullptr);
   TEST_ASSERT(k.Send(Pattern(30, 4)) == ErrorCode::OK);
   TEST_ASSERT(TakeIn(1) == Pattern(30, 4));
+}
+
+/// 让 EP1 IN 的停止失败，设备核心因此复位控制器 / Make the stop of EP1 IN fail so that
+/// the device core resets the controller
+void FailStop(Fixture& f)
+{
+  TEST_ASSERT(f.klass.Send(Pattern(64, 1)) == ErrorCode::OK);
+  Ctl::stuck = 1;
+  f.klass.in->Flush(false);
+  Irq();  // 重写仍失败：TIMEOUT / the rewrite fails too: TIMEOUT
+}
+
+/// 复位在 owner 里只做前半段（几十微秒内返回），D+ 拉住期间不访问寄存器，断开期间
+/// 来的请求留到接上的那一轮；第 6 个节拍放开 D+、重新初始化、接上
+/// The reset does the first half only in the owner (back within tens of microseconds),
+/// no register is touched while D+ is held, and requests arriving while detached wait
+/// for the attach pass; the sixth tick releases D+, initializes again and attaches
+void TestResetDetachHeld()
+{
+  Fixture f(false, true, true);
+  const unsigned connects = Ctl::connects;
+  const auto before = std::chrono::steady_clock::now();
+  FailStop(f);
+  TEST_ASSERT(std::chrono::steady_clock::now() - before <
+              std::chrono::microseconds(1000));
+  TEST_ASSERT(Ctl::held && Ctl::holds == 1U && !Ctl::pull_up);
+  const unsigned accesses = Ctl::held_accesses;
+  // 断开期间：控制器中断和应用的请求都不碰寄存器；中断进来一次后线被屏蔽（时钟关着时
+  // 中断请求可能一直有效）/ While detached neither the controller interrupt nor an
+  // application request touches a register; after one entry the line is masked (with
+  // the clock off the interrupt request may stay active)
+  Irq();
+  TEST_ASSERT(f.device.masked);
+  const unsigned masks = f.device.masks;
+  f.device.Deinit(false);
+  f.device.Init(false);
+  Ticks(5);
+  TEST_ASSERT(Ctl::held && Ctl::held_accesses == accesses && !Ctl::pull_up);
+  TEST_ASSERT(f.device.masked && f.device.masks == masks);
+  // 第 6 个节拍打开中断线并挂起，Dispatch 接上 / The sixth tick opens and pends the
+  // line, and Dispatch attaches
+  Ticks(1);
+  TEST_ASSERT(!Ctl::held && Ctl::releases == 1U && !f.device.masked);
+  TEST_ASSERT(Ctl::pull_up && Ctl::connects == connects + 1U);
+  // 主机重新枚举后照常工作 / Works again after the host enumerates again
+  Ctl::BusReset();
+  Irq();
+  ControlNone(Make(0x00U, 9U, 1U, 0U, 0U));
+  TEST_ASSERT(f.klass.Send(Pattern(30, 4)) == ErrorCode::OK);
+  TEST_ASSERT(TakeIn(1) == Pattern(30, 4));
+}
+
+/// 复位的断开期间 Stop：撤销接上；Stop 在接上的那一轮之前不处理（D+ 拉住），所以先接上
+/// 再断开（已接受的 R3）；没有拉住时 Stop 当场撤销，不接上
+/// Stop during a reset's detach withdraws the attach; with D+ held the Stop is served
+/// only in the attach pass, so it attaches and detaches again (accepted R3); without the
+/// hold the Stop withdraws it at once and nothing attaches
+void TestStopDuringResetDetach()
+{
+  {
+    Fixture f(false, true, false);
+    const unsigned connects = Ctl::connects;
+    FailStop(f);
+    TEST_ASSERT(!Ctl::pull_up);
+    f.device.Stop(false);
+    Ticks(10);
+    TEST_ASSERT(!Ctl::pull_up && Ctl::connects == connects);
+    // 之后的 Start：时间早已够，当场接上 / A later Start: the time passed long ago, it
+    // attaches in place
+    f.device.Start(false);
+    TEST_ASSERT(Ctl::pull_up && Ctl::connects == connects + 1U);
+  }
+  {
+    Fixture f(false, true, true);
+    const unsigned connects = Ctl::connects;
+    FailStop(f);
+    f.device.Stop(false);
+    Ticks(6);
+    TEST_ASSERT(Ctl::connects == connects + 1U);
+    TEST_ASSERT(!Ctl::pull_up && Ctl::held && Ctl::holds == 2U);
+    Ticks(10);
+    TEST_ASSERT(!Ctl::pull_up && Ctl::held);
+    f.device.Start(false);
+    TEST_ASSERT(Ctl::pull_up && !Ctl::held && Ctl::connects == connects + 2U);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3389,11 +3587,14 @@ void test_usb_fsdev_bulk()
   TestNakCount();
 }
 
-/// CH32：OUT 包等着时有 IN 被 ACK，中断先处理那个 IN 完成，期间主机的下一个 OUT 包被
-/// NAK、把 COUNT_RX 写成 0x3FE。等着的包仍按它自己的长度交付。
-/// CH32: an IN is ACKed while an OUT packet waits, the interrupt handles that IN
-/// completion first, and meanwhile the host's next OUT packet is NAKed and writes COUNT_RX
-/// 0x3FE. The waiting packet is still delivered with its own length.
+/**
+ * @brief CH32：OUT 包等着时有 IN 被 ACK / CH32: an IN is ACKed while an OUT packet waits
+ * @note 中断先处理那个 IN 完成，期间主机的下一个 OUT 包被 NAK、把 COUNT_RX 写成 0x3FE。
+ *       等着的包仍按它自己的长度交付。
+ *       The interrupt handles that IN completion first, and meanwhile the host's next OUT
+ *       packet is NAKed and writes COUNT_RX 0x3FE. The waiting packet is still delivered
+ *       with its own length.
+ */
 void TestNakCount()
 {
   Ctl::rx_latch = true;
@@ -3437,6 +3638,12 @@ void test_usb_fsdev_stop()
   TestStopTimeout();
   TestDeviceStop();
   TestStartDuringReset();
+}
+
+void test_usb_fsdev_detach()
+{
+  TestResetDetachHeld();
+  TestStopDuringResetDetach();
 }
 
 void test_usb_fsdev_clear_out() { TestClearStallKeepsOut(); }

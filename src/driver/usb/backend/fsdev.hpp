@@ -6,6 +6,7 @@
 
 #include "usb/core/ep.hpp"
 #include "usb/core/ep_pool.hpp"
+#include "usb/core/usb_detach_timer.hpp"
 #include "usb/core/usb_service.hpp"
 #include "usb/device/dev_core.hpp"
 
@@ -674,6 +675,11 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
    *       Caller: the application, any thread, after InitController. Not through the
    *       owner: until here every interrupt source is off, so the CNTR write does not
    *       race ServiceHardware.
+   * @note 不等待。detach_.WantAttach 为 true（断开时间已过）时就地 AttachAgain；为
+   *       false 时什么也不做，到点后 Dispatch 做 AttachAgain。
+   *       Never waits. When detach_.WantAttach is true (the detach time has passed) it
+   *       runs AttachAgain in place; when false it does nothing more, and Dispatch runs
+   *       AttachAgain once the time has passed.
    */
   void StartController(bool in_isr) override;
 
@@ -695,6 +701,20 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
    *       CAN 中断也会进来）。
    *       Caller: the platform's controller interrupt handler. Does nothing before
    *       InitController (with a vector shared with CAN, CAN interrupts come here too).
+   * @note 先查 detach_.TakeAttach：为 true 就在这里 AttachAgain 再照常进入。之后仍
+   *       detach_held_ 时只屏蔽中断线：时钟关着时控制器的中断请求可能一直有效（STM32F103
+   *       实测：不屏蔽时第 4 次强制复位就不再接上，屏蔽后 70/70），不屏蔽会反复进入、饿死
+   *       节拍。这是 DeviceService::MaskInterrupt 写明的例外。断开期间到来的请求保持
+   *       发布，到接上的这一轮（WakeHeld 打开中断线并挂起），或 StartController 就地接上
+   *       之后的第一轮才处理。
+   *       It first asks detach_.TakeAttach: when true it runs AttachAgain here and enters
+   *       as usual. With detach_held_ still set afterwards it only masks the line: with
+   *       the clock off the controller's interrupt request may stay active (measured on
+   *       an STM32F103: without the mask no attach from the 4th forced reset on, with it
+   *       70/70) and would keep entering and starve the tick. This is the exception
+   *       stated at DeviceService::MaskInterrupt. Requests that arrive while detached
+   *       stay published and are served in the attach pass (WakeHeld opens and pends the
+   *       line) or the first pass after StartController attached in place.
    */
   static void Dispatch();
 
@@ -845,18 +865,19 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
    *       - First thing at the interrupt entry (CaptureSetup): an unhandled SETUP is read
    *         into a shadow and CTR_RX is cleared; for a control write with a data stage
    *         the same write types EP0 BULK. COUNT is checked afterwards: other than 8
-   * means a data packet overwrote the SETUP or came between the read and the clear; that
-   *         SETUP is not handed over, the transfer ends with a timeout and EP0 is typed
-   *         CONTROL again.
+   *         means a data packet overwrote the SETUP or came between the read and the
+   *         clear; that SETUP is not handed over, the transfer ends with a timeout and
+   *         EP0 is typed CONTROL again.
    *       - Data packets of a control write are armed typed BULK (VALID and BULK in one
    *         write), and each one's CTR_RX is cleared in a write that types it BULK: the
    *         controller answers NAK by STAT_RX for the whole data stage.
    *       - Every other arm (data IN, status IN, status OUT) and a STALL type EP0
    *         CONTROL again in the same write; clearing EP0's CTR_RX outside a control
-   * write (the status packet of a control read, say) does too. So the type is CONTROL
-   *         whenever a SETUP is awaited; only during the data stage of a control write
-   *         does a SETUP of the host go unanswered (which happens only when the host
-   *         abandons the control write, and the bus reset that follows recovers it).
+   *         write (the status packet of a control read, say) does too. So the type is
+   *         CONTROL whenever a SETUP is awaited; only during the data stage of a
+   *         control write does a SETUP of the host go unanswered (which happens only
+   *         when the host abandons the control write, and the bus reset that follows
+   *         recovers it).
    *       An early status packet (taken after a control read while EP0 is still typed
    *       CONTROL) is caught by the fast acknowledgement or EnableEp0EarlyOut. Called at
    *       the platform's construction; requires EnableEp0FastAck as well.
@@ -869,9 +890,10 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
    *       一个 IN 事务被 ACK，之后被 NAK 的下一个 OUT 数据包就把 COUNTn_RX 写成 0x3FE
    *       （收到 0 字节减去 CRC）；PMA 里那个包的数据不变，长度丢了。打开后，中断处理
    *       一个端点时，先于它的 IN 完成把它的 COUNTn_RX 读下来，取包时用这个值。CTR_RX
-   *       被清（任何写 0 的 EPnR 写）或总线复位时作废。剩下的窗口是 CTR_RX 置位到中断处理这个端点之间（例如中断正忙在别的
-   *       端点的回调里）。扫描全部 OUT 端点能再缩小窗口，但每次多读寄存器都拉长中断，
-   *       EP0 的控制写失败随之上升（CH32V203 实测，见 CH32USBDeviceFS 类说明），所以不做。
+   *       被清（任何写 0 的 EPnR 写）或总线复位时作废。剩下的窗口是 CTR_RX 置位到中断
+   *       处理这个端点之间（例如中断正忙在别的端点的回调里）。扫描全部 OUT 端点能再缩小
+   *       窗口，但每次多读寄存器都拉长中断，EP0 的控制写失败随之上升（CH32V203 实测，见
+   *       CH32USBDeviceFS 类说明），所以不做。
    *       平台构造时调用。
    *       Some controllers (measured on a CH32V203): while an OUT packet waits to be read
    *       (CTR_RX set), once an IN transaction has been ACKed meanwhile, the next NAKed
@@ -969,22 +991,34 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
   virtual bool HoldDetached() { return false; }
   /**
    * @brief 断开时间到，平台放开 D+ / The detach time is over, the platform releases D+
-   * @note 调用者：WaitDetached，等够 DETACH_US 之后、接上拉之前，仅在 HoldDetached 返回
-   *       true 之后。默认什么也不做。
-   *       Caller: WaitDetached, after DETACH_US and before the pull-up is connected, only
-   *       after HoldDetached returned true. Does nothing by default.
+   * @note 调用者：AttachAgain（Dispatch 在 owner 里，或 StartController 就地），断开
+   *       时间已过、接上拉之前，仅在 HoldDetached 返回 true 之后。默认什么也不做。
+   *       Caller: AttachAgain (Dispatch in the owner, or StartController in place), after
+   *       the detach time and before the pull-up is connected, only after HoldDetached
+   *       returned true. Does nothing by default.
    */
   virtual void ReleaseDetached() {}
   /**
-   * @brief 构造时断开一次，Start 时按 DETACH_US 接上 / Detach once at construction; Start
-   *        attaches after DETACH_US
+   * @brief 构造时断开一次，Start 时按 DETACH_MS 接上 / Detach once at construction; Start
+   *        attaches after DETACH_MS
+   * @note HaltController 之后 detach_.OnHalted(false)：从构造起开始计时，Start 时已过
+   *       就地接上，未过则到点后由 owner 接上。构造时节拍可能还没开始（STM32 的 HAL
+   *       tick 在 HAL_Init 之后才有）；计时只会因此变长。
+   *       detach_.OnHalted(false) after HaltController: the count starts at construction;
+   *       Start attaches in place when it has passed, otherwise the owner attaches once
+   *       it has. The tick may not run yet at construction (on STM32 the HAL tick runs
+   *       only after HAL_Init); that only makes the count longer.
    * @note 调用者：平台的构造函数，代替 InitController。复位后主机可能还以为设备在线（外部
    *       上拉的板子），这一次断开让主机重新枚举。
    *       Caller: the platform's constructor, instead of InitController. After a reset
    *       the host may still believe the device is present (boards with an external
    *       pull-up); this detach makes it enumerate again.
    */
-  void DetachAtConstruction() { HaltController(); }
+  void DetachAtConstruction()
+  {
+    HaltController();
+    (void)detach_.OnHalted(false);
+  }
 
   /// 处理硬件事件，见类说明 / Handle hardware events, see the class notes
   void ServiceHardware(bool in_isr) override;
@@ -992,13 +1026,15 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
   void SetAddress(uint8_t address, AddressStage stage) override;
   /**
    * @brief 停止失败后复位控制器 / Reset the controller after a failed stop
-   * @note 断开上拉、强制复位、重写 BTABLE、等够最短断开时间、打开中断源、接上拉。复位清掉
-   *       全部 EPnR（STAT 为 DISABLED、没有 CTR），未结束的停止就此作废、不再报告，之后
-   *       的 StopHardware 返回 ABORTED。
-   *       Disconnects the pull-up, forces a reset, writes the BTABLE again, waits out the
-   *       minimum detach time, enables the interrupt sources and connects the pull-up.
-   *       The reset clears every EPnR (STAT DISABLED, no CTR); pending stops are void and
-   *       reported no more, and a later StopHardware returns ABORTED.
+   * @note 只做前半段：断开上拉、强制复位、重写 BTABLE、平台拉住 D+（HaltController），
+   *       detach_.OnHalted(true)，返回，不等待。到点后 Dispatch 做 AttachAgain。复位
+   *       清掉全部 EPnR（STAT 为 DISABLED、没有 CTR），未结束的停止就此作废、不再报告，
+   *       之后的 StopHardware 返回 ABORTED。
+   *       First half only: disconnect the pull-up, force a reset, write the BTABLE again,
+   *       the platform holds D+ (HaltController), detach_.OnHalted(true), return without
+   *       waiting. Dispatch runs AttachAgain once the time has passed. The reset clears
+   *       every EPnR (STAT DISABLED, no CTR); pending stops are void and reported no
+   *       more, and a later StopHardware returns ABORTED.
    */
   void ResetController(bool in_isr) override;
 
@@ -1054,23 +1090,47 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
    */
   void HaltController();
   /**
-   * @brief HaltController 断开之后等够 DETACH_US / Wait until DETACH_US have passed since
-   *        HaltController detached
-   * @note StartController 和 ResetController 在重新接上之前调用。
-   *       Called by StartController and ResetController before they attach.
+   * @brief 后半段：detach_held_ 时 ReleaseDetached、InitController，再开中断源、接上拉
+   *        Second half: with detach_held_ ReleaseDetached and InitController, then the
+   *        interrupt sources and the pull-up
+   * @note 调用者：Dispatch（owner，TakeAttach 为 true）或 StartController（WantAttach
+   *       为 true）。拉住过时还打开 Dispatch 屏蔽的中断线。
+   *       Callers: Dispatch (owner, TakeAttach true) or StartController (WantAttach
+   *       true). After a hold it also opens the line Dispatch masked.
    */
-  void WaitDetached();
-  /// 断开至少保持这么久主机才看得见（µs）/ Time a detach must last for the host to
-  /// see it (µs)
-  static constexpr uint64_t DETACH_US = 5000U;
-  /// HaltController 断开总线的时刻（µs）和“断开后还没有重新接上” / Time HaltController
-  /// detached (us) and "not attached again since"
-  uint64_t halted_at_us_ = 0U;
-  bool halted_ = false;
+  void AttachAgain();
+  /// 断开至少保持这么久主机才看得见（毫秒，节拍计数）/ Time a detach must last for the
+  /// host to see it (ms, counted in ticks)
+  static constexpr uint32_t DETACH_MS = 5U;
+  /**
+   * @brief 最短断开时间 / Minimum detach time
+   * @note HaltController 之后 OnHalted：ResetController 传 true，StopController 和构造
+   *       传 false。D+ 拉住、时钟关着时不会再调用 HaltController：那期间 Dispatch 只屏蔽
+   *       中断线，owner 不运行，StopController 和 ResetController 都要等接上之后。
+   *       OnHalted after HaltController: true from ResetController, false from
+   *       StopController and construction. HaltController is never called while D+ is
+   *       held with the clock off: Dispatch only masks the line then and the owner does
+   *       not run, so StopController and ResetController wait for the attach.
+   */
+  DetachTimer detach_{*this, DETACH_MS, WakeHeld, this};
+  /**
+   * @brief 到点的唤醒（节拍上下文，DetachTimer 的 defer）：打开中断线并挂起
+   *        Wake-up when the time has passed (tick context, DetachTimer's defer): open the
+   *        interrupt line and pend it
+   * @note 拉住期间 Dispatch 屏蔽了中断线（时钟关着时中断请求可能一直有效），所以不能只
+   *       挂起。没有拉住时打开是空操作。这是"只有 owner 屏蔽、打开中断线"的例外，原因和
+   *       F103 的实测见 DeviceService::MaskInterrupt。
+   *       Dispatch masked the line while held (with the clock off the interrupt request
+   *       may stay active), so a pend alone is not enough. Without a hold the unmask
+   *       changes nothing. This is the exception to "only the owner masks and unmasks
+   *       the line"; the reason and the F103 measurement are at
+   *       DeviceService::MaskInterrupt.
+   */
+  static bool WakeHeld(void* arg);
   /// HoldDetached 动了控制器，ReleaseDetached 之前不访问它；HaltController 写，
-  /// WaitDetached 和 Dispatch 读 / HoldDetached touched the controller, which is not
-  /// accessed until ReleaseDetached; written by HaltController, read by WaitDetached and
-  /// Dispatch
+  /// AttachAgain 清，Dispatch 读 / HoldDetached touched the controller, which is not
+  /// accessed until ReleaseDetached; written by HaltController, cleared by AttachAgain,
+  /// read by Dispatch
   volatile bool detach_held_ = false;
   /// CTR 循环，最多 8 轮 / CTR loop, at most 8 passes
   void HandleCtr(bool in_isr);

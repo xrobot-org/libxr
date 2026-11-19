@@ -79,13 +79,18 @@ bool DeviceService::AnyStopPending() const
 
 void DeviceService::RequestPoll(bool in_isr)
 {
-  UNUSED(in_isr);
-  // 只发布、只挂起：节拍上下文永远不成为 owner。
-  // Publish and pend only: the tick context never becomes the owner.
+  // 只发布、只挂起：节拍上下文永远不成为 owner。没有 pend 时只允许线程调用，它就地
+  // 成为 owner（ESP32 的定时器服务任务）。
+  // Publish and pend only: the tick context never becomes the owner. Without pend only
+  // a thread may call this, and it owns in place (ESP32's timer service task).
   service_.Publish(POLL_EVENT);
-  const bool pended = PendInterrupt();
-  ASSERT(pended);
-  UNUSED(pended);
+  if (PendInterrupt())
+  {
+    return;
+  }
+  ASSERT(!in_isr);
+  service_.Invoke(POLL_EVENT, in_isr,
+                  [this](uint32_t taken, bool owner_isr) { Serve(taken, owner_isr); });
 }
 
 void DeviceService::Enter(uint32_t events, bool in_isr)

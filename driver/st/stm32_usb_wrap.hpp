@@ -1,5 +1,7 @@
 #pragma once
 
+#include "main.h"
+
 namespace LibXR
 {
 
@@ -21,5 +23,20 @@ namespace LibXR
  *       does not always show, see stm32_usb_wrap.cpp.
  */
 void STM32USBRequireWrap();
+
+#if defined(HAL_PCD_MODULE_ENABLED)
+/**
+ * @brief CubeMX 交给 HAL_PCD_Init 的句柄 / The handle CubeMX passed to HAL_PCD_Init
+ * @return 寄存器运行期接管时由 __wrap_HAL_PCD_Init 记下的指针；工程没有调用
+ *         HAL_PCD_Init 时为 nullptr / The pointer __wrap_HAL_PCD_Init recorded when a
+ *         register runtime took over; nullptr when the project never called HAL_PCD_Init
+ * @note 句柄里 Instance 和 Init 是 MX_USB_*_PCD_Init 写好的；HAL 自己的初始化没有运行，
+ *       State、Lock、端点数组等保持调用之前的值。
+ *       Instance and Init were filled in by MX_USB_*_PCD_Init; HAL's own initialization
+ *       did not run, so State, Lock, the endpoint arrays and so on keep their values from
+ *       before the call.
+ */
+PCD_HandleTypeDef* STM32USBInitHandle();
+#endif
 
 }  // namespace LibXR

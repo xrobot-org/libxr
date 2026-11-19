@@ -143,6 +143,7 @@ add_executable(
   driver/usb/test_dfu.cpp
   driver/usb/test_gsusb.cpp
   driver/usb/test_dap.cpp
+  driver/usb/test_usb_detach_timer.cpp
   driver/usb/test_usb_fsdev.cpp
   driver/timebase/test_timebase.cpp
   middleware/database/database/test_database.cpp

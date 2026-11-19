@@ -20,6 +20,15 @@ extern "C" __attribute__((weak)) void vApplicationStackOverflowHook(TaskHandle_t
 
 uint32_t LibXR::libxr_freertos_timebase_tick_offset = 0;
 
+#if defined(ESP_PLATFORM)
+namespace LibXR::Detail
+{
+/// IDF 的 tick 钩子登记为节拍源（tick.cpp）/ Registers IDF's tick hook as the tick
+/// source (tick.cpp)
+void RegisterEspTickHook();
+}  // namespace LibXR::Detail
+#endif
+
 void LibXR::PlatformInit(uint32_t timer_pri, uint32_t timer_stack_depth)
 {
   if (!Timebase::IsReady())
@@ -35,6 +44,12 @@ void LibXR::PlatformInit(uint32_t timer_pri, uint32_t timer_stack_depth)
   uint32_t timebase_tick = static_cast<uint32_t>(Timebase::GetMilliseconds());
 
   libxr_freertos_timebase_tick_offset = rtos_tick - timebase_tick;
+
+#if defined(ESP_PLATFORM)
+  // DriverAsyncCondition 的节拍源，见 libxr_system.hpp。
+  // Tick source of DriverAsyncCondition, see libxr_system.hpp.
+  Detail::RegisterEspTickHook();
+#endif
 }
 
 #ifndef ESP_PLATFORM

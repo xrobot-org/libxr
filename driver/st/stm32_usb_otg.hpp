@@ -6,6 +6,7 @@
 
 #include "usb/core/ep.hpp"
 #include "usb/core/ep_pool.hpp"
+#include "usb/core/usb_detach_timer.hpp"
 #include "usb/core/usb_service.hpp"
 #include "usb/device/dev_core.hpp"
 
@@ -307,10 +308,14 @@ class STM32USBOtgDevice : public STM32OtgController,
    * @brief 断开、禁用全部端点、清空 FIFO，再接上总线 / Detach, disable every
    *        endpoint, flush the FIFOs and attach again
    * @note 返回后端点寄存器的 EPENA 和 XFRC 都为 0，所以之后每个 StopHardware 立即返回
-   *       ABORTED。断开保持 RESET_DETACH_US，在 owner 里忙等，主机才会复位总线。
+   *       ABORTED。只做前半段（HaltController、detach_.OnHalted(true)），不等待；断开
+   *       保持 RESET_DETACH_MS 由 detach_ 按节拍计时，到点后 owner 接上（Connect），主机
+   *       才会复位总线。
    *       Afterwards EPENA and XFRC of every endpoint are 0, so every later StopHardware
-   *       returns ABORTED at once. The detach lasts RESET_DETACH_US, busy-waiting in the
-   *       owner, so that the host resets the bus.
+   *       returns ABORTED at once. First half only (HaltController,
+   *       detach_.OnHalted(true)), no wait; the detach lasts RESET_DETACH_MS, counted on
+   *       the tick by detach_, and the owner attaches once it has passed (Connect), so
+   *       that the host resets the bus.
    */
   void ResetController(bool in_isr) override;
   /// @}
@@ -324,19 +329,24 @@ class STM32USBOtgDevice : public STM32OtgController,
    *       Shared by StopController and ResetController.
    */
   void HaltController();
-  /// ResetController 断开总线的时长（µs）/ How long ResetController stays detached (µs)
-  static constexpr uint64_t RESET_DETACH_US = 10000U;
+  /// 最短断开时长（毫秒，节拍计数）/ Minimum detach time (ms, counted in ticks)
+  static constexpr uint32_t RESET_DETACH_MS = 10U;
   /**
-   * @brief HaltController 断开之后等够 RESET_DETACH_US / Wait until RESET_DETACH_US have
-   *        passed since HaltController detached
-   * @note StartController 和 ResetController 在重新接上之前调用。
-   *       Called by StartController and ResetController before they attach.
+   * @brief 最短断开时间 / Minimum detach time
+   * @note HaltController 之后调用 OnHalted：ResetController 传 true，StopController 传
+   *       false，都立即返回。StartController 用 WantAttach：true 时就地接上，false 时只
+   *       使能中断线。ServiceHardware 开头 TakeAttach 为 true 时做后半段（接上）。
+   *       OnHalted after HaltController: true from ResetController, false from
+   *       StopController; both return at once. StartController uses WantAttach: on true
+   *       it attaches in place, on false it only enables the interrupt line. At the start
+   *       of ServiceHardware, when TakeAttach is true, the second half (the attach)
+   *       runs.
+   * @note HaltController 里的 Spin 循环（等 GINTSTS.GINAKEFF / BOUTNAKEFF、EPDISD、
+   *       FIFO 刷新、core 软复位）是芯片定上限的握手，不属于断开等待。
+   *       The Spin loops in HaltController (GINAKEFF / BOUTNAKEFF, EPDISD, FIFO flush,
+   *       core soft reset) are handshakes bounded by the chip, not the detach wait.
    */
-  void WaitDetached();
-  /// HaltController 断开总线的时刻（µs）和“断开后还没有重新接上” / Time HaltController
-  /// detached (us) and "not attached again since"
-  uint64_t halted_at_us_ = 0U;
-  bool halted_ = false;
+  USB::DetachTimer detach_{*this, RESET_DETACH_MS};
   /// DSTS.FNSOF 是 14 位，用作“没有”的值 / DSTS.FNSOF has 14 bits; the "none" value
   static constexpr uint32_t NO_SOF_POSITION = 0xFFFFFFFFU;
 

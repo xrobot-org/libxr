@@ -142,15 +142,18 @@ class DeviceCore
    * @note 应用调用，在调用者的上下文里执行 StartController。撤销还没有开始处理的
    *       Stop；已经开始处理的 Stop 要等它断开总线之后才启动（在调用者的上下文里忙等，
    *       通常一个包或一帧的时间）。所以不要在 owner 里（类的回调里）或能打断 owner 的
-   *       中断里调用。后端在断开之后的最短断开时间内不重新接上，不够时也在这里等够
-   *       （几毫秒）。
+   *       中断里调用。后端在断开之后的最短断开时间内不重新接上；时间未到时这里不等，
+   *       只记下"要接上"并使能中断线，到点后 owner 接上（见 USB::DetachTimer）。所以
+   *       返回时总线可能还没有接上。
    *       Called by the application; runs StartController in the caller's context. It
    *       cancels a Stop whose handling has not begun; one that is being handled is
    *       waited for until it has detached (a busy wait in the caller's context,
    *       normally a packet or a frame). So do not call it in the owner (in a class
    *       callback) or from an interrupt that can preempt the owner. A backend does not
-   *       attach again within its minimum detach time after a detach; the rest of that
-   *       time is waited out here as well (a few milliseconds).
+   *       attach again within its minimum detach time after a detach; while that time
+   *       has not passed this does not wait, it records "attach wanted" and enables the
+   *       interrupt line, and the owner attaches once it has passed (see
+   *       USB::DetachTimer). So the bus may not be attached yet on return.
    */
   void Start(bool in_isr);
 
@@ -310,22 +313,36 @@ class DeviceCore
    *        failed
    * @note 仅 owner，收到 STOP_FAILED_EVENT 时调用。返回时硬件不再为任何端点收发或读写
    *       内存，所有未结束的停止就此结束且不再报告，之后每个 StopHardware 立即返回
-   *       ABORTED；控制器重新接上总线，主机重新枚举，复位照常报告。
+   *       ABORTED；总线已断开。只做前半段，不等待：最短断开时间由 DetachTimer 计时，
+   *       到点后 owner 在之后的一轮里重新接上，主机重新枚举，复位照常报告。断开期间
+   *       （中断线使能）owner 照常处理请求：端点可以打开、关闭，停止立即结束；硬件在
+   *       接上时重新初始化，之后的总线复位让核心重新 Initialize。已经断开时（等断开期间
+   *       又复位）不重新计时。
    *       Owner only, called on STOP_FAILED_EVENT. On return the hardware no longer
    *       moves data or reads or writes memory for any endpoint, every pending stop has
    *       ended and is not reported any more, and every later StopHardware returns
-   *       ABORTED at once; the controller attaches again, the host enumerates again and
-   *       the reset is reported as usual.
+   *       ABORTED at once; the bus is detached. Only the first half, no wait: the
+   *       minimum detach time is counted by DetachTimer, and once it has passed the owner
+   *       attaches in a later pass, the host enumerates again and the reset is reported
+   *       as usual. While detached (line enabled) the owner serves requests as usual:
+   *       endpoints may be opened and closed and their stops end at once; the hardware
+   *       is initialized again when it attaches, and the following bus reset makes the
+   *       core Initialize again. Already detached (another reset while the detach runs),
+   *       the count is not restarted.
    */
   virtual void ResetController(bool in_isr) = 0;
 
   /**
    * @brief 启动控制器并接上总线 / Start the controller and attach to the bus
    * @note 后端实现；由 Start 在应用的上下文里调用，不经 owner。最迟在这里使能控制器
-   *       中断线，之后总线复位才会报告上来。
+   *       中断线，之后总线复位才会报告上来。不等待：最短断开时间已过（或从未断开）时
+   *       就地接上；未过时只记下"要接上"（DetachTimer::WantAttach），到点后 owner 接上。
    *       Implemented by the backend; called by Start in the application's context, not
    *       through the owner. Enables the controller's interrupt line here at the latest;
-   *       bus resets are reported only afterwards.
+   *       bus resets are reported only afterwards. Never waits: when the minimum detach
+   *       time has passed (or there was no detach) it attaches in place; otherwise it
+   *       only records "attach wanted" (DetachTimer::WantAttach) and the owner attaches
+   *       once the time has passed.
    */
   virtual void StartController(bool in_isr) = 0;
 
@@ -347,6 +364,14 @@ class DeviceCore
    *       every later StopHardware returning ABORTED at once. Neither case attaches
    *       again. The interrupt line itself stays enabled: an owner pass always unmasks
    *       it at its end, and later requests need it to run.
+   * @note 不等待。断开之后开始最短断开时间的计时（DetachTimer::OnHalted(false)）；
+   *       正在计时时（复位的断开还没结束就停止）沿用原来的计时，并撤销"要接上"。到点
+   *       与否都不再接上，直到下一次 StartController。
+   *       Never waits. After the detach the minimum detach time starts counting
+   *       (DetachTimer::OnHalted(false)); while it already counts (a stop before a
+   *       reset's detach has ended) the running count is kept and "attach wanted" is
+   *       withdrawn. Nothing attaches again before the next StartController, whether
+   *       the time has passed or not.
    */
   virtual void StopController(bool in_isr) = 0;
 
