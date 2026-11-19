@@ -42,13 +42,17 @@ WritePort& WritePort::operator=(WriteFun fun)
   return *this;
 }
 
-bool WritePort::TryClaimProducer()
+bool WritePort::TryClaimProducer(Phase* failed_phase)
 {
   uint32_t observed = state_.load(std::memory_order_acquire);
   for (;;)
   {
-    if (GetPhase(observed) != Phase::IDLE)
+    if (const Phase phase = GetPhase(observed); phase != Phase::IDLE)
     {
+      if (failed_phase != nullptr)
+      {
+        *failed_phase = phase;
+      }
       return false;
     }
 
@@ -343,7 +347,7 @@ ErrorCode WritePort::WaitForRetirement(WriteOperation& op)
 {
   if (!TryRegisterRetirementWait(op))
   {
-    if (LoadPhase() == Phase::IDLE && TryClaimProducer())
+    if (TryClaimProducer())
     {
       return ErrorCode::OK;
     }
@@ -462,10 +466,11 @@ ErrorCode WritePort::operator()(ConstRawData data, WriteOperation& op, bool in_i
     return ErrorCode::OK;
   }
 
-  if (!TryClaimProducer())
+  Phase failed_phase = Phase::IDLE;
+  if (!TryClaimProducer(&failed_phase))
   {
     if (op.type == WriteOperation::OperationType::BLOCK &&
-        LoadPhase() == Phase::BLOCK_DETACHED && data.size_ <= Capacity())
+        failed_phase == Phase::BLOCK_DETACHED && data.size_ <= Capacity())
     {
       const ErrorCode retirement = WaitForRetirement(op);
       if (retirement != ErrorCode::OK)

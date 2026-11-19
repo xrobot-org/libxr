@@ -162,6 +162,132 @@ void test_rw_write_port_block_reused_waiter_discards_stale_signal()
   JoinThreadIfNeeded(finisher2);
   TEST_ASSERT(sem.Value() == 0);
 }
+
+struct RetirementRaceContext
+{
+  LibXR::WritePort* port;
+  std::atomic<uint32_t>* stage;
+  LibXR::Semaphore* round_done;
+  uint32_t iterations;
+};
+
+void RunRetirementRaceConsumer(RetirementRaceContext ctx)
+{
+  using namespace LibXR;
+
+  uint8_t sink[16];
+  for (uint32_t iter = 0; iter < ctx.iterations; ++iter)
+  {
+    const uint32_t target = iter + 1U;
+    while (ctx.stage->load(std::memory_order_acquire) != target)
+    {
+      Thread::Yield();
+    }
+
+    if ((iter & 1U) != 0U)
+    {
+      Thread::Yield();
+    }
+
+    for (uint8_t step = 0; step < 2U; ++step)
+    {
+      for (;;)
+      {
+        auto queue = ctx.port->GetWriteQueue(false);
+        if (queue.Empty())
+        {
+          Thread::Yield();
+          continue;
+        }
+        TEST_ASSERT(queue.AvailableSize() <= sizeof(sink));
+        queue.PopAll(sink);
+        break;
+      }
+    }
+
+    ctx.round_done->Post();
+  }
+}
+
+void test_rw_write_port_block_detached_retirement_race()
+{
+  // 旧 BLOCK 超时进入 BLOCK_DETACHED 后，后端释放到 IDLE 与后续 BLOCK 并发时不能返回
+  // BUSY，且超过 Capacity() 的后续 BLOCK 在未退队前仍优先返回 BUSY。
+  // Racing backend retirement from BLOCK_DETACHED to IDLE against a follow-up BLOCK
+  // write within Capacity() must never return BUSY; oversized BLOCK still returns BUSY
+  // while detached.
+  using namespace LibXR;
+
+  WritePort w(2, 16);
+  w = PendingWriteFun;
+
+  static const uint8_t DETACHED_TX[] = {0x11};
+  static const uint8_t OVERSIZED_TX[17] = {0x22};
+  static const uint8_t FOLLOW_UP_TX[16] = {
+      0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+      0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
+  };
+
+  {
+    Semaphore sem_detached;
+    WriteOperation detached_op(sem_detached, 0);
+    TEST_ASSERT(w(ConstRawData{DETACHED_TX, sizeof(DETACHED_TX)}, detached_op) ==
+                ErrorCode::TIMEOUT);
+
+    Semaphore sem_oversized;
+    WriteOperation oversized_op(sem_oversized, ASYNC_TIMEOUT_MS);
+    TEST_ASSERT(w(ConstRawData{OVERSIZED_TX, sizeof(OVERSIZED_TX)}, oversized_op) ==
+                ErrorCode::BUSY);
+    TEST_ASSERT(sem_oversized.Value() == 0);
+
+    WriteOperation async_op;
+    TEST_ASSERT(w(ConstRawData{DETACHED_TX, sizeof(DETACHED_TX)}, async_op) ==
+                ErrorCode::BUSY);
+
+    uint8_t sink[16];
+    auto queue = w.GetWriteQueue(false);
+    TEST_ASSERT(!queue.Empty());
+    queue.PopAll(sink);
+    TEST_ASSERT(sem_detached.Value() == 0);
+  }
+
+  constexpr uint32_t ITERATIONS = 128U;
+  std::atomic<uint32_t> stage{0U};
+  Semaphore round_done;
+  Thread consumer;
+  consumer.Create(RetirementRaceContext{&w, &stage, &round_done, ITERATIONS},
+                  RunRetirementRaceConsumer, "wr_retire_race", 1024,
+                  Thread::Priority::MEDIUM);
+
+  Semaphore sem1;
+  Semaphore sem2;
+  for (uint32_t iter = 0; iter < ITERATIONS; ++iter)
+  {
+    WriteOperation op1(sem1, 0);
+    TEST_ASSERT(w(ConstRawData{DETACHED_TX, sizeof(DETACHED_TX)}, op1) ==
+                ErrorCode::TIMEOUT);
+    TEST_ASSERT(sem1.Value() == 0);
+
+    stage.store(iter + 1U, std::memory_order_release);
+    if ((iter % 3U) == 1U)
+    {
+      Thread::Yield();
+    }
+
+    const size_t follow_up_size = (iter % 4U == 0U) ? w.Capacity() : 4U;
+    WriteOperation op2(sem2, ASYNC_TIMEOUT_MS);
+    const ErrorCode ec = w(ConstRawData{FOLLOW_UP_TX, follow_up_size}, op2);
+    TEST_ASSERT(ec != ErrorCode::BUSY);
+    TEST_ASSERT(ec == ErrorCode::OK);
+
+    ExpectWaitOk(round_done, ASYNC_TIMEOUT_MS);
+    TEST_ASSERT(sem1.Value() == 0);
+    TEST_ASSERT(sem2.Value() == 0);
+    TEST_ASSERT(w.Size() == 0);
+  }
+
+  JoinThreadIfNeeded(consumer);
+}
 }  // namespace
 
 void test_write_port()
@@ -204,4 +330,5 @@ void test_write_port()
   test_rw_block_write_timeout_detaches_waiter();
   test_rw_write_port_block_pending_result_propagates();
   test_rw_write_port_block_reused_waiter_discards_stale_signal();
+  test_rw_write_port_block_detached_retirement_race();
 }
