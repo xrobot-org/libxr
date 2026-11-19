@@ -601,7 +601,8 @@ void Endpoint::FinishInflight(bool in_isr, ErrorCode result, size_t actual)
   // 提前交下去的请求里最早的那个顶上来成为在途请求；先改好状态再回调。
   // The earliest of the requests handed down ahead moves up and becomes the one in
   // flight; the state is settled before the callback.
-  const Ahead next = ahead_count_ != 0U ? AheadAt(0U) : Ahead{};
+  const Ahead next =
+      ahead_count_ != 0U ? AheadAt(0U) : Ahead{EndpointSlots::NO_SLOT, 0U, false, false};
   (void)PopAhead();
   inflight_ = next.index;
   data_length_ = next.length;

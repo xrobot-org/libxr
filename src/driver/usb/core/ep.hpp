@@ -1323,13 +1323,21 @@ class Endpoint
    *       at the stop); the state may be any.
    */
   uint8_t inflight_ = NO_REQUEST;
-  /// 一个提前交给硬件的请求 / One request handed to the hardware ahead of its turn
+  /**
+   * @brief 一个提前交给硬件的请求 / One request handed to the hardware ahead of its turn
+   * @note 成员没有默认值，创建时要写全：EndRequests 每次调用都建一个这种数组，只用到
+   *       前面几个，带默认值的话整个数组每次都要初始化（F103 上每次约 16 µs）。
+   *       The members have no default values and are written in full on creation:
+   *       EndRequests builds an array of these on every call and uses only the first
+   *       few; with default values the whole array would be initialised every time
+   *       (about 16 µs per call on an F103).
+   */
   struct Ahead
   {
-    uint8_t index = EndpointSlots::NO_SLOT;  ///< 槽；没有时为 NO_SLOT / Slot, or none
-    size_t length = 0;                       ///< 请求长度 / Request length
-    bool owed = false;    ///< 之后还欠结尾零长度包 / A closing packet is owed after it
-    bool failed = false;  ///< StartHardware 返回了失败 / StartHardware returned a failure
+    uint8_t index;  ///< 槽；没有时为 NO_SLOT / Slot, or NO_SLOT for none
+    size_t length;  ///< 请求长度 / Request length
+    bool owed;      ///< 之后还欠结尾零长度包 / A closing packet is owed after it
+    bool failed;    ///< StartHardware 返回了失败 / StartHardware returned a failure
   };
   /**
    * @brief 排在在途请求之后、已提前交给硬件的请求的槽，按先后 / Slots of the requests
