@@ -1,1127 +1,893 @@
 #include "dev_core.hpp"
 
-#include <cstdint>
-
-#include "core.hpp"
-#include "device_composition.hpp"
 #include "libxr_mem.hpp"
-#include "libxr_type.hpp"
 
 using namespace LibXR::USB;
+using LibXR::ConstRawData;
+using LibXR::ErrorCode;
+using LibXR::RawData;
+using LibXR::USB::DescriptorType;
+using LibXR::USB::Recipient;
+using LibXR::USB::RequestType;
+using LibXR::USB::Speed;
+using LibXR::USB::StandardRequest;
+using LibXR::USB::USBSpec;
+
+namespace
+{
+
+/// 方向位置位即 IN 请求 / The direction bit set means an IN request
+bool IsIn(const LibXR::USB::SetupPacket& setup)
+{
+  return (setup.bmRequestType & LibXR::USB::REQ_DIRECTION_MASK) != 0U;
+}
+
+/// 请求的接收者 / Recipient of the request
+Recipient RecipientOf(const LibXR::USB::SetupPacket& setup)
+{
+  return static_cast<Recipient>(setup.bmRequestType & LibXR::USB::REQ_RECIPIENT_MASK);
+}
+
+/// 端点地址的 wIndex 是否合法（只有方向位和端点号）/ Whether wIndex is a valid
+/// endpoint address (direction bit and number only)
+bool IsEndpointIndex(uint16_t index) { return (index & 0xff70U) == 0U; }
+
+/// 标准特性选择子 / Standard feature selectors
+constexpr uint16_t FEATURE_ENDPOINT_HALT = 0U;
+
+}  // namespace
 
 DeviceCore::DeviceCore(
-    EndpointPool& ep_pool, USBSpec spec, Speed speed,
+    DeviceService& service, EndpointPool& pool, USBSpec spec, Speed speed,
     DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid, uint16_t bcd,
-    const std::initializer_list<const DescriptorStrings::LanguagePack*>& lang_list,
-    const std::initializer_list<const std::initializer_list<ConfigDescriptorItem*>>&
-        configs,
+    const std::initializer_list<const DescriptorStrings::LanguagePack*>& languages,
+    const std::initializer_list<const std::initializer_list<DeviceClass*>>& configs,
     ConstRawData uid)
-    : composition_(ep_pool, lang_list, configs, uid),
-      device_desc_(spec, packet_size, vid, pid, bcd, composition_.GetConfigNum()),
-      endpoint_({ep_pool, nullptr, nullptr, {}, {}}),
-      state_({false,
-              speed,
-              Context::UNKNOWN,
-              Context::UNKNOWN,
-              {nullptr, 0},
-              {nullptr, 0},
-              0xff,
-              nullptr,
-              false})
+    : service_(service),
+      pool_(pool),
+      max_speed_(speed),
+      device_desc_(spec, packet_size, vid, pid, bcd,
+                   static_cast<uint8_t>(configs.size())),
+      composition_(pool, service, languages, configs, uid)
 {
-  ASSERT(IsValidUSBCombination(spec, speed, packet_size));
+  const auto packet = static_cast<uint8_t>(packet_size);
+  ASSERT(speed == Speed::FULL || speed == Speed::HIGH);
+  ASSERT(packet == 8U || packet == 16U || packet == 32U || packet == 64U);
+  ASSERT(speed != Speed::HIGH || packet == 64U);
+  ASSERT(pool_.GetEndpoint0In() != nullptr && pool_.GetEndpoint0Out() != nullptr);
 
-  endpoint_.ep0_in_cb =
-      LibXR::Callback<LibXR::ConstRawData&>::Create(OnEP0InCompleteStatic, this);
+  const size_t capacity = composition_.ControlReceiveCapacity();
+  control_buffer_ = {new uint8_t[capacity], capacity};
+  (void)composition_.WriteDeviceDescriptor(device_desc_);
 
-  endpoint_.ep0_out_cb =
-      LibXR::Callback<LibXR::ConstRawData&>::Create(OnEP0OutCompleteStatic, this);
-}
-
-void DeviceCore::OnEP0OutCompleteStatic(bool in_isr, DeviceCore* self,
-                                        LibXR::ConstRawData& data)
-{
-  self->OnEP0OutComplete(in_isr, data);
-}
-
-void DeviceCore::OnEP0InCompleteStatic(bool in_isr, DeviceCore* self,
-                                       LibXR::ConstRawData& data)
-{
-  self->OnEP0InComplete(in_isr, data);
-}
-
-bool DeviceCore::IsValidUSBCombination(USBSpec spec, Speed speed,
-                                       DeviceDescriptor::PacketSize0 packet_size)
-{
-  const uint8_t SIZE = static_cast<uint8_t>(packet_size);
-
-  switch (speed)
-  {
-    case Speed::LOW:
-      // USB 1.0/1.1 可允许 LOW，包长必须为 8
-      // USB 1.0/1.1 allows LOW speed; EP0 max packet size must be 8.
-      return (spec == USBSpec::USB_1_0 || spec == USBSpec::USB_1_1) && SIZE == 8;
-
-    case Speed::FULL:
-      // USB 1.x/2.0 均可运行在 FULL
-      // USB 1.x/2.0 can run at FULL speed.
-      if (!(spec >= USBSpec::USB_1_0 && spec <= USBSpec::USB_2_1))
-      {
-        return false;
-      }
-      return SIZE == 8 || SIZE == 16 || SIZE == 32 || SIZE == 64;
-
-    case Speed::HIGH:
-      // 只有 USB 2.0+ 才能跑 HIGH，包长必须是 64
-      // Only USB 2.0+ supports HIGH speed; EP0 max packet size must be 64.
-      if (spec < USBSpec::USB_2_0)
-      {
-        return false;
-      }
-      return SIZE == 64;
-
-    case Speed::SUPER:  // NOLINT
-    case Speed::SUPER_PLUS:
-      return false;
-
-    default:
-      return false;
-  }
-}
-
-void DeviceCore::ReadZLP(Context context)
-{
-  state_.out0 = context;
-  endpoint_.out0->TransferZLP();
-}
-
-void DeviceCore::WriteZLP(Context context)
-{
-  state_.in0 = context;
-  endpoint_.in0->TransferZLP();
-}
-
-void DeviceCore::ResetControlTransferState()
-{
-  // USB reset / 重枚举会重建 DeviceCore，但软件侧前一笔控制传输
-  // 不一定已经自然清干净。这里必须把 EP0 软状态全部清零，
-  // 否则下一轮 DFU DNLOAD 可能继承陈旧状态，只在“第二次传输”时才坏。
-  // USB reset / re-enumeration can rebuild DeviceCore while a previous control
-  // transfer is still partially remembered in software. If these fields leak
-  // across sessions, the next DFU DNLOAD may fail only on the second run.
-  state_.in0 = Context::UNKNOWN;
-  state_.out0 = Context::UNKNOWN;
-  state_.write_remain = {nullptr, 0};
-  state_.read_remain = {nullptr, 0};
-  state_.pending_addr = 0xFF;
-  state_.out0_buffer = nullptr;
-  state_.need_write_zlp = false;
-  state_.status_out_armed = false;
+  // EP0 的回调在这里设一次，之后每次 Configure 都沿用。
+  // EP0's callbacks are set here once; every later Configure keeps them.
+  pool_.GetEndpoint0In()->SetOnComplete(Callback<const Endpoint::Completion&>::Create(
+      [](bool in_isr, DeviceCore* self, const Endpoint::Completion& completion)
+      { self->InComplete(in_isr, completion); }, this));
+  pool_.GetEndpoint0Out()->SetOnComplete(Callback<const Endpoint::Completion&>::Create(
+      [](bool in_isr, DeviceCore* self, const Endpoint::Completion& completion)
+      { self->OutComplete(in_isr, completion); }, this));
+  service_.SetDeviceHandler(
+      Callback<uint32_t>::Create([](bool in_isr, DeviceCore* self, uint32_t events)
+                                 { self->HandleDeviceEvents(in_isr, events); }, this));
 }
 
 void DeviceCore::Init(bool in_isr)
 {
-  endpoint_.in0 = endpoint_.pool.GetEndpoint0In();
-  endpoint_.out0 = endpoint_.pool.GetEndpoint0Out();
-
-  endpoint_.in0->Configure({Endpoint::Direction::IN, Endpoint::Type::CONTROL, 64});
-  endpoint_.out0->Configure({Endpoint::Direction::OUT, Endpoint::Type::CONTROL, 64});
-
-  endpoint_.in0->SetOnTransferCompleteCallback(endpoint_.ep0_in_cb);
-  endpoint_.out0->SetOnTransferCompleteCallback(endpoint_.ep0_out_cb);
-
-  ResetControlTransferState();
-  composition_.Init(in_isr);
-
-  state_.inited = true;
+  enable_requested_.store(1U, std::memory_order_release);
+  service_.Request(ENABLE_EVENT, in_isr);
 }
 
 void DeviceCore::Deinit(bool in_isr)
 {
-  state_.inited = false;
-  composition_.Deinit(in_isr);
-  endpoint_.in0->Close();
-  endpoint_.out0->Close();
-  ResetControlTransferState();
-  ResetClassRequestState();
+  enable_requested_.store(0U, std::memory_order_release);
+  service_.Request(ENABLE_EVENT, in_isr);
 }
 
-void DeviceCore::ResetClassRequestState()
+void DeviceCore::OnSetup(bool in_isr, const SetupPacket& setup)
 {
-  class_req_.write = false;
-  class_req_.read = false;
-  class_req_.class_in_data_status_pending = false;
-  class_req_.class_ptr = nullptr;
-  class_req_.b_request = 0u;
-  class_req_.data = {nullptr, 0};
-}
-
-void DeviceCore::OnEP0OutComplete(bool in_isr, LibXR::ConstRawData& data)
-{
-  if (!state_.inited)
+  if (!inited_)
   {
     return;
   }
-  const bool STATUS_OUT_DONE = state_.status_out_armed &&
-                               class_req_.class_in_data_status_pending &&
-                               endpoint_.in0->GetState() != Endpoint::State::BUSY;
-  auto status = this->state_.out0;
-  state_.out0 = Context::UNKNOWN;
-
-  switch (status)
+  // 旧传输到此为止：先回到空闲，Flush 交回的旧请求因此不会被当作当前传输处理。
+  // The old transfer ends here: back to idle first, so the old requests a flush hands
+  // back are not taken for the current transfer.
+  AbortTransfer(in_isr);
+  Endpoint* in0 = pool_.GetEndpoint0In();
+  Endpoint* out0 = pool_.GetEndpoint0Out();
+  // Flush 不离开 STALLED；上一个传输被拒绝时，清除 STALL 才能收发新传输。
+  // Flush does not leave STALLED; after a refused transfer, clearing the halt is what
+  // lets the new one move data.
+  if (in0->IsStalled())
   {
-    case Context::ZLP:
-      // 主机中断 IN 操作后，重新配置控制端点
-      // Re-configure control endpoint after host aborts IN transfer.
-      state_.status_out_armed = false;
-      if (endpoint_.in0->GetState() == Endpoint::State::BUSY)
-      {
-        endpoint_.in0->Close();
-        endpoint_.in0->Configure({Endpoint::Direction::IN, Endpoint::Type::CONTROL, 64});
-        state_.in0 = Context::ZLP;
-        state_.write_remain = {nullptr, 0};
-      }
-      // fall through
-    case Context::STATUS_OUT:
-      state_.status_out_armed = false;
-      if (STATUS_OUT_DONE && class_req_.class_ptr != nullptr)
-      {
-        class_req_.class_ptr->OnClassInDataStatusComplete(in_isr, class_req_.b_request);
-        ResetClassRequestState();
-      }
-      break;
-
-    case Context::DATA_OUT:
-      if (data.size_ > 0)
-      {
-        LibXR::Memory::FastCopy(state_.out0_buffer, data.addr_, data.size_);
-      }
-
-      if (state_.read_remain.size_ > 0)
-      {
-        state_.out0_buffer += data.size_;
-        DevReadEP0Data(state_.read_remain, endpoint_.out0->MaxTransferSize());
-      }
-      else if (class_req_.read)
-      {
-        class_req_.read = false;
-        class_req_.class_ptr->OnClassData(in_isr, class_req_.b_request, class_req_.data);
-        ResetClassRequestState();
-        WriteZLP();
-      }
-      else
-      {
-        WriteZLP();
-      }
-      break;
-
-    default:
-      StallControlEndpoint();
-      break;
-  }
-}
-
-void DeviceCore::OnEP0InComplete(bool in_isr, LibXR::ConstRawData& data)
-{
-  if (!state_.inited)
-  {
-    return;
-  }
-  UNUSED(in_isr);
-  UNUSED(data);
-
-  auto status = state_.in0;
-
-  state_.in0 = Context::UNKNOWN;
-
-  switch (status)
-  {
-    case Context::ZLP:
-      break;
-
-    case Context::STATUS_IN_COMPLETE:
-      if (state_.pending_addr != 0xFF)
-      {
-        SetAddress(state_.pending_addr, Context::STATUS_IN_COMPLETE);
-        state_.pending_addr = 0xFF;
-      }
-      break;
-
-    case Context::DATA_IN:
-      if (state_.write_remain.size_ > 0)
-      {
-        DevWriteEP0Data(state_.write_remain, endpoint_.in0->MaxTransferSize());
-      }
-      else if (state_.need_write_zlp)
-      {
-        state_.need_write_zlp = false;
-        ArmStatusOutIfNeeded();
-        WriteZLP();
-      }
-      else if (class_req_.write)
-      {
-        class_req_.write = false;
-        class_req_.class_ptr->OnClassData(in_isr, class_req_.b_request, data);
-        if (!class_req_.class_in_data_status_pending)
-        {
-          ResetClassRequestState();
-        }
-      }
-      break;
-
-    default:
-      StallControlEndpoint();
-      break;
-  }
-}
-
-void DeviceCore::DevWriteEP0Data(LibXR::ConstRawData data, size_t packet_max_length,
-                                 size_t request_size, bool early_read_zlp)
-{
-  state_.in0 = Context::DATA_IN;
-
-  const bool FIRST_CHUNK = (state_.write_remain.size_ == 0);
-  const size_t PAYLOAD_TOTAL_SIZE = data.size_;
-  const size_t HOST_REQUEST_SIZE = (request_size > 0) ? request_size : PAYLOAD_TOTAL_SIZE;
-  size_t transfer_total_size = PAYLOAD_TOTAL_SIZE;
-
-  if (FIRST_CHUNK)
-  {
-    state_.status_out_armed = false;
-  }
-
-  // 限制最大传输长度
-  // Clamp max transfer length.
-  if (request_size > 0 && request_size < data.size_)
-  {
-    data.size_ = request_size;
-    transfer_total_size = request_size;
-  }
-
-  // `need_write_zlp` 依据主机可见的完整 control-IN 总长度推导，
-  // 而不是依据当前拆分后的单个分片长度。
-  // `need_write_zlp` is derived from the full control-IN payload length visible to the
-  // host, not from the current split chunk.
-  if (FIRST_CHUNK)
-  {
-    state_.need_write_zlp = (HOST_REQUEST_SIZE > transfer_total_size) &&
-                            ((transfer_total_size % endpoint_.in0->MaxPacketSize()) == 0);
-  }
-
-  if (data.size_ == 0 || data.size_ > 0xFFFF)
-  {
-    // 数据长度为 0，直接 STALL（协议层面不允许）
-    // If length is 0, STALL directly (not allowed by protocol).
-    StallControlEndpoint();
-    return;
-  }
-
-  // 判断是否需要拆包或发送 ZLP
-  // Determine whether to split packets or send ZLP.
-  bool has_more = data.size_ > packet_max_length;
-
-  // 拆分数据包
-  // Split packets.
-  if (has_more)
-  {
-    state_.write_remain = {
-        reinterpret_cast<const uint8_t*>(data.addr_) + packet_max_length,
-        data.size_ - packet_max_length};
-    data.size_ = packet_max_length;
+    (void)in0->ClearStall(in_isr);
   }
   else
   {
-    state_.write_remain = {nullptr, 0};
-    // 对单缓冲/软件补挂 STATUS OUT 的控制器，最后一个 IN 包发出前必须先挂好
-    // STATUS OUT，否则主机可能在我们收到 IN 完成回调前就发出零长度 OUT，导致
-    // 枚举阶段直接丢掉状态包。
-    if (!state_.need_write_zlp && !state_.status_out_armed)
+    in0->Flush(in_isr);
+  }
+  if (out0->IsStalled())
+  {
+    (void)out0->ClearStall(in_isr);
+  }
+  else
+  {
+    out0->Flush(in_isr);
+  }
+  setup_ = setup;
+  if (Dispatch(in_isr) != ErrorCode::OK)
+  {
+    StallTransfer(in_isr);
+  }
+}
+
+void DeviceCore::OnBusReset(bool in_isr, Speed speed)
+{
+  ASSERT(static_cast<uint8_t>(speed) <= static_cast<uint8_t>(max_speed_));
+  Deinitialize(in_isr);
+  service_.SetSpeed(speed);
+  suspended_ = false;
+  if (enable_requested_.load(std::memory_order_acquire) != 0U)
+  {
+    Initialize(in_isr);
+  }
+}
+
+void DeviceCore::OnSuspend(bool in_isr)
+{
+  UNUSED(in_isr);
+  suspended_ = true;
+  UpdateGate();
+}
+
+void DeviceCore::OnResume(bool in_isr)
+{
+  UNUSED(in_isr);
+  suspended_ = false;
+  UpdateGate();
+}
+
+void DeviceCore::OnDisconnect(bool in_isr)
+{
+  Deinitialize(in_isr);
+  suspended_ = false;
+}
+
+void DeviceCore::Start(bool in_isr)
+{
+  stop_requested_.store(0U);
+  // 这次停止可能已经开始处理、还在等端点停稳后断开：等它断开再启动，不与它同时写
+  // 控制器。这里先写"不停止"再读"正在停止"，处理程序先写"正在停止"再读"要停止"，两边
+  // 至少有一边看得到对方。
+  // That stop may already be under way and awaiting the endpoints' quiescence before
+  // it detaches: wait for the detach before starting, so the two never write the
+  // controller at the same time. This side writes "no stop" and then reads "stopping";
+  // the handler writes "stopping" and then reads "stop": at least one of them sees the
+  // other.
+  while (stop_busy_.load() != 0U)
+  {
+  }
+  StartController(in_isr);
+}
+
+void DeviceCore::Stop(bool in_isr)
+{
+  stop_requested_.store(1U);
+  service_.Request(STOP_EVENT, in_isr);
+}
+
+void DeviceCore::OnStartOfFrame(bool in_isr, uint16_t frame, uint8_t microframe)
+{
+  composition_.StartOfFrame(in_isr, frame, microframe);
+}
+
+void DeviceCore::HandleDeviceEvents(bool in_isr, uint32_t events)
+{
+  if ((events & DeviceService::STOP_FAILED_EVENT) != 0U)
+  {
+    AbortTransfer(in_isr);
+    if (detach_pending_)
     {
-      ArmStatusOutIfNeeded();
+      // 等断开时有停止失败：不重新接上，直接让控制器静止并断开。
+      // A stop failed while a detach is awaited: no re-attach, the controller is made
+      // quiescent and detached right away.
+      FinishDetach(in_isr);
+    }
+    else
+    {
+      ResetController(in_isr);
+      // 复位后每个停止立即结束：被卡住的槽在这里变空闲，所有端点关闭。
+      // After the reset every stop ends at once: the stuck slot becomes free here and
+      // every endpoint is closed.
+      service_.CloseAllEndpoints(in_isr);
+      Deinitialize(in_isr);
     }
   }
-
-  auto buffer = endpoint_.in0->GetBuffer();
-  ASSERT(buffer.size_ >= data.size_);
-  LibXR::Memory::FastCopy(buffer.addr_, data.addr_, data.size_);
-
-  if (early_read_zlp && !state_.status_out_armed)
+  if ((events & STOP_EVENT) != 0U)
   {
-    ArmStatusOutIfNeeded();
+    stop_busy_.store(1U);
+    if (stop_requested_.exchange(0U) != 0U && !detach_pending_)
+    {
+      // 按平常的路径收尾，不等总线：没有停稳的停止之后由后端结束。
+      // Wind up the ordinary way without waiting for the bus: a stop that is not
+      // quiescent is ended by the backend later.
+      AbortTransfer(in_isr);
+      Deinitialize(in_isr);
+      detach_pending_ = true;
+      service_.WatchStops(true);
+    }
+    if (!detach_pending_)
+    {
+      stop_busy_.store(0U);
+    }
   }
-
-  endpoint_.in0->Transfer(data.size_);
+  if (detach_pending_ && !service_.AnyStopPending())
+  {
+    FinishDetach(in_isr);
+  }
+  if ((events & ENABLE_EVENT) != 0U)
+  {
+    const bool enable = enable_requested_.load(std::memory_order_acquire) != 0U;
+    if (enable && !inited_)
+    {
+      Initialize(in_isr);
+    }
+    else if (!enable && inited_)
+    {
+      Deinitialize(in_isr);
+    }
+  }
+  if ((events & DeviceClass::SERVICE_EVENT) != 0U)
+  {
+    composition_.ServiceClasses(in_isr);
+  }
 }
 
-void DeviceCore::ArmStatusOutIfNeeded()
+void DeviceCore::FinishDetach(bool in_isr)
 {
-  if (!state_.status_out_armed)
-  {
-    ReadZLP();
-    state_.status_out_armed = true;
-  }
+  service_.WatchStops(false);
+  StopController(in_isr);
+  // 等断开期间的总线复位可能又打开了 EP0；控制器静止之后每个停止立即结束。
+  // A bus reset while the detach was awaited may have reopened EP0; with the controller
+  // quiescent every stop ends at once.
+  service_.CloseAllEndpoints(in_isr);
+  Deinitialize(in_isr);
+  detach_pending_ = false;
+  stop_busy_.store(0U);
 }
 
-void DeviceCore::DevReadEP0Data(LibXR::RawData data, size_t packet_max_length)
+void DeviceCore::Initialize(bool in_isr)
 {
-  state_.out0 = Context::DATA_OUT;
-
-  // 限制最大接收长度
-  // Validate/clamp max receive length.
-  if (data.size_ == 0 || data.size_ > 0xFFFF)
+  Endpoint* in0 = pool_.GetEndpoint0In();
+  Endpoint* out0 = pool_.GetEndpoint0Out();
+  const auto packet = static_cast<uint16_t>(device_desc_.data_.bMaxPacketSize0);
+  // EP0 的包长必须正好是设备描述符里写的，否则主机和硬件对包边界的看法不同。
+  // EP0's packet size must be exactly the one in the device descriptor, or the host
+  // and the hardware disagree on packet boundaries.
+  const bool ok =
+      in0->Configure({Endpoint::Direction::IN, Endpoint::Type::CONTROL, packet},
+                     in_isr) == ErrorCode::OK &&
+      out0->Configure({Endpoint::Direction::OUT, Endpoint::Type::CONTROL, packet},
+                      in_isr) == ErrorCode::OK &&
+      in0->MaxPacketSize() == packet && out0->MaxPacketSize() == packet;
+  if (!ok)
   {
-    StallControlEndpoint();
+    in0->Close(in_isr);
+    out0->Close(in_isr);
     return;
   }
-
-  // 数据长度 <= 一个包长，直接收一次即可
-  // If length <= one packet, receive once.
-  if (data.size_ <= packet_max_length)
-  {
-    state_.read_remain = {nullptr, 0};  // 标记本次已收完 / Mark as completed
-  }
-  else
-  {
-    // 数据需要多包接收
-    // Multi-packet receive.
-    state_.read_remain = {reinterpret_cast<uint8_t*>(data.addr_) + packet_max_length,
-                          data.size_ - packet_max_length};
-    data.size_ = packet_max_length;
-  }
-
-  state_.out0_buffer = reinterpret_cast<uint8_t*>(data.addr_);
-  endpoint_.out0->Transfer(data.size_);
+  inited_ = true;
+  UpdateGate();
+  OnControlReady();
 }
 
-void DeviceCore::OnSetupPacket(bool in_isr, const SetupPacket* setup)
+void DeviceCore::Deinitialize(bool in_isr)
 {
-  if (!state_.inited)
+  if (!inited_)
   {
     return;
   }
-  ResetClassRequestState();
-
-  RequestDirection direction =
-      static_cast<RequestDirection>(setup->bmRequestType & REQ_DIRECTION_MASK);
-  RequestType type = static_cast<RequestType>(setup->bmRequestType & REQ_TYPE_MASK);
-  Recipient recipient = static_cast<Recipient>(setup->bmRequestType & REQ_RECIPIENT_MASK);
-
-  if (endpoint_.in0->IsStalled())
-  {
-    endpoint_.in0->ClearStall();
-  }
-
-  if (endpoint_.out0->IsStalled())
-  {
-    endpoint_.out0->ClearStall();
-  }
-
-  LibXR::ErrorCode ans = LibXR::ErrorCode::OK;
-
-  switch (type)
-  {
-    case RequestType::STANDARD:
-      ans = ProcessStandardRequest(in_isr, setup, direction, recipient);
-      break;
-    case RequestType::CLASS:
-      ans = ProcessClassRequest(in_isr, setup, direction, recipient);
-      break;
-    case RequestType::VENDOR:
-      ans = ProcessVendorRequest(in_isr, setup, direction, recipient);
-      break;
-    default:
-      ans = LibXR::ErrorCode::ARG_ERR;
-      break;
-  }
-
-  if (ans != LibXR::ErrorCode::OK)
-  {
-    StallControlEndpoint();
-  }
+  AbortTransfer(in_isr);
+  (void)composition_.SetConfiguration(0U, service_.GetSpeed(), in_isr);
+  pool_.GetEndpoint0In()->Close(in_isr);
+  pool_.GetEndpoint0Out()->Close(in_isr);
+  inited_ = false;
+  UpdateGate();
 }
 
-LibXR::ErrorCode DeviceCore::ProcessStandardRequest(bool in_isr,
-                                                    const SetupPacket*& setup,
-                                                    RequestDirection direction,
-                                                    Recipient recipient)
+void DeviceCore::UpdateGate()
 {
-  UNUSED(in_isr);
-  UNUSED(direction);
-  UNUSED(recipient);
-
-  // 根据 recipient 处理不同目标的请求。
-  // Handle requests for different recipients.
-  StandardRequest req = static_cast<StandardRequest>(setup->bRequest);
-
-  LibXR::ErrorCode ans = LibXR::ErrorCode::OK;
-
-  switch (req)
+  using Gate = DeviceService::StartGate;
+  Gate gate = Gate::CLOSED;
+  if (inited_ && !suspended_)
   {
-    case StandardRequest::GET_STATUS:
-      // 设备 / 接口 / 端点的状态请求。
-      // GET_STATUS for device/interface/endpoint.
-      ans = RespondWithStatus(setup, recipient);
-      break;
+    gate = (composition_.GetConfiguration() != 0U) ? Gate::ALL : Gate::EP0;
+  }
+  service_.SetStartGate(gate);
+}
 
-    case StandardRequest::CLEAR_FEATURE:
-      // 解除某个特性（如端点 HALT）。
-      // Clear a feature (e.g., endpoint HALT).
-      ans = ClearFeature(setup, recipient);
-      break;
+ErrorCode DeviceCore::Dispatch(bool in_isr)
+{
+  const auto type = static_cast<RequestType>(setup_.bmRequestType & REQ_TYPE_MASK);
+  return (type == RequestType::STANDARD) ? HandleStandard(in_isr)
+                                         : HandleClassOrVendor(in_isr);
+}
 
-    case StandardRequest::SET_FEATURE:
-      // 设置特性（如 Remote Wakeup / 端点 STALL）。
-      // Set a feature (e.g., remote wakeup/endpoint STALL).
-      ans = ApplyFeature(setup, recipient);
-      break;
+ErrorCode DeviceCore::HandleStandard(bool in_isr)
+{
+  const bool input = IsIn(setup_);
+  const Recipient recipient = RecipientOf(setup_);
+  auto* answer = static_cast<uint8_t*>(control_buffer_.addr_);
+  switch (static_cast<StandardRequest>(setup_.bRequest))
+  {
+    case StandardRequest::GET_DESCRIPTOR:
+      if (!input || setup_.wLength == 0U)
+      {
+        return ErrorCode::ARG_ERR;
+      }
+      return SendDescriptor(in_isr);
 
     case StandardRequest::SET_ADDRESS:
-      // 设置 USB 地址，status 阶段后生效。
-      // Set USB address; takes effect after status stage.
-      ans = PrepareAddressChange(setup->wValue);
-      break;
-
-    case StandardRequest::GET_DESCRIPTOR:
-      // 返回设备 / 配置 / 字符串等描述符。
-      // Return device/config/string descriptors.
-      ans = SendDescriptor(in_isr, setup, recipient);
-      break;
-
-    case StandardRequest::SET_DESCRIPTOR:
-      // TODO: 很少用，可选实现
-      // TODO: rarely used; optional implementation.
-      break;
+      if (input || recipient != Recipient::DEVICE || setup_.wIndex != 0U ||
+          setup_.wLength != 0U || setup_.wValue > 127U ||
+          composition_.GetConfiguration() != 0U)
+      {
+        return ErrorCode::ARG_ERR;
+      }
+      // 状态 IN 完成后的那一次写入在 InComplete 里，地址从 setup_ 取。
+      // The write after the status IN is in InComplete, with the address from setup_.
+      SetAddress(static_cast<uint8_t>(setup_.wValue), AddressStage::BEFORE_STATUS);
+      StatusIn(in_isr);
+      return ErrorCode::OK;
 
     case StandardRequest::GET_CONFIGURATION:
-      // 返回当前配置。
-      // Return current configuration.
-      ans = SendConfiguration();
-      break;
+      if (!input || recipient != Recipient::DEVICE || setup_.wValue != 0U ||
+          setup_.wIndex != 0U || setup_.wLength != 1U)
+      {
+        return ErrorCode::ARG_ERR;
+      }
+      answer[0] = composition_.GetConfiguration();
+      StartIn(in_isr, {answer, 1U});
+      return ErrorCode::OK;
 
     case StandardRequest::SET_CONFIGURATION:
-      // 设置当前配置（切换 config 描述符索引）。
-      // Set current configuration (switch configuration index).
-      ans = SwitchConfiguration(setup->wValue, in_isr);
-      break;
+    {
+      if (input || recipient != Recipient::DEVICE || setup_.wIndex != 0U ||
+          setup_.wLength != 0U || setup_.wValue > composition_.ConfigCount())
+      {
+        return ErrorCode::ARG_ERR;
+      }
+      const ErrorCode result = composition_.SetConfiguration(
+          static_cast<uint8_t>(setup_.wValue), service_.GetSpeed(), in_isr);
+      // 失败时组合层已回到未配置，闸门也跟着改。
+      // On failure the composition is back to unconfigured; the gate follows.
+      UpdateGate();
+      if (result != ErrorCode::OK)
+      {
+        return result;
+      }
+      StatusIn(in_isr);
+      return ErrorCode::OK;
+    }
 
     case StandardRequest::GET_INTERFACE:
+    case StandardRequest::SET_INTERFACE:
     {
-      if (recipient != Recipient::INTERFACE)
+      const bool get =
+          setup_.bRequest == static_cast<uint8_t>(StandardRequest::GET_INTERFACE);
+      if (recipient != Recipient::INTERFACE || input != get || setup_.wIndex > 255U ||
+          (get ? (setup_.wValue != 0U || setup_.wLength != 1U)
+               : (setup_.wValue > 255U || setup_.wLength != 0U)))
       {
-        ans = LibXR::ErrorCode::ARG_ERR;
-        break;
+        return ErrorCode::ARG_ERR;
       }
-
-      uint8_t interface_index = static_cast<uint8_t>(setup->wIndex & 0xFF);
-
-      uint8_t alt = 0;
-      auto* item = composition_.FindClassByInterfaceNumber(interface_index);
-
-      if (item != nullptr)
+      const auto itf = static_cast<uint8_t>(setup_.wIndex);
+      DeviceClass* item = composition_.FindClassByInterface(itf);
+      if (item == nullptr)
       {
-        item->GetAltSetting(interface_index, alt);
+        return ErrorCode::NOT_FOUND;
+      }
+      if (!get)
+      {
+        const ErrorCode result =
+            item->SetAltSetting(in_isr, itf, static_cast<uint8_t>(setup_.wValue));
+        if (result != ErrorCode::OK)
+        {
+          return result;
+        }
+        StatusIn(in_isr);
+        return ErrorCode::OK;
+      }
+      uint8_t alt = 0U;
+      if (item->GetAltSetting(itf, alt) != ErrorCode::OK)
+      {
+        alt = 0U;
+      }
+      answer[0] = alt;
+      StartIn(in_isr, {answer, 1U});
+      return ErrorCode::OK;
+    }
+
+    case StandardRequest::GET_STATUS:
+    {
+      if (!input || setup_.wLength != 2U || setup_.wValue != 0U)
+      {
+        return ErrorCode::ARG_ERR;
+      }
+      uint16_t status = 0U;
+      if (recipient == Recipient::DEVICE)
+      {
+        if (setup_.wIndex != 0U)
+        {
+          return ErrorCode::ARG_ERR;
+        }
+        status = composition_.DeviceStatus();
+      }
+      else if (recipient == Recipient::INTERFACE)
+      {
+        if (setup_.wIndex > 255U || composition_.FindClassByInterface(
+                                        static_cast<uint8_t>(setup_.wIndex)) == nullptr)
+        {
+          return ErrorCode::NOT_FOUND;
+        }
+      }
+      else if (recipient == Recipient::ENDPOINT)
+      {
+        Endpoint* ep = nullptr;
+        if (!IsEndpointIndex(setup_.wIndex) ||
+            pool_.FindEndpoint(static_cast<uint8_t>(setup_.wIndex), ep) != ErrorCode::OK)
+        {
+          return ErrorCode::NOT_FOUND;
+        }
+        status = ep->IsStalled() ? 1U : 0U;
       }
       else
       {
-        ans = LibXR::ErrorCode::NOT_FOUND;
-        break;
+        return ErrorCode::ARG_ERR;
       }
-
-      DevWriteEP0Data(LibXR::ConstRawData(&alt, 1), endpoint_.in0->MaxTransferSize(), 1);
-      return LibXR::ErrorCode::OK;
+      answer[0] = static_cast<uint8_t>(status);
+      answer[1] = static_cast<uint8_t>(status >> 8U);
+      StartIn(in_isr, {answer, 2U});
+      return ErrorCode::OK;
     }
 
-    case StandardRequest::SET_INTERFACE:
+    case StandardRequest::SET_FEATURE:
+    case StandardRequest::CLEAR_FEATURE:
     {
-      if (recipient != Recipient::INTERFACE)
+      // 只支持数据端点的 HALT；远程唤醒和测试模式一律拒绝。
+      // Only the halt of a data endpoint is supported; remote wakeup and test mode are
+      // refused.
+      if (input || setup_.wLength != 0U || recipient != Recipient::ENDPOINT ||
+          setup_.wValue != FEATURE_ENDPOINT_HALT || !IsEndpointIndex(setup_.wIndex) ||
+          (setup_.wIndex & 0x0fU) == 0U)
       {
-        ans = LibXR::ErrorCode::ARG_ERR;
-        break;
+        return ErrorCode::NOT_SUPPORT;
       }
-
-      uint8_t interface_index = static_cast<uint8_t>(setup->wIndex & 0xFF);
-      uint8_t alt_setting = static_cast<uint8_t>(setup->wValue);
-
-      auto* item = composition_.FindClassByInterfaceNumber(interface_index);
-      if (item == nullptr)
+      const auto address = static_cast<uint8_t>(setup_.wIndex);
+      Endpoint* ep = nullptr;
+      if (pool_.FindEndpoint(address, ep) != ErrorCode::OK ||
+          ep->GetType() == Endpoint::Type::ISOCHRONOUS)
       {
-        ans = LibXR::ErrorCode::NOT_FOUND;
-        break;
+        return ErrorCode::NOT_SUPPORT;
       }
-
-      ans = item->SetAltSetting(interface_index, alt_setting);
-      if (ans == LibXR::ErrorCode::OK)
+      const bool set =
+          setup_.bRequest == static_cast<uint8_t>(StandardRequest::SET_FEATURE);
+      const ErrorCode result = set ? ep->Stall(in_isr) : ep->ClearStall(in_isr);
+      if (result != ErrorCode::OK)
       {
-        WriteZLP();
+        return result;
       }
-      break;
+      if (!set)
+      {
+        if (DeviceClass* item = composition_.FindClassByEndpoint(address))
+        {
+          item->OnHaltCleared(in_isr, address);
+        }
+      }
+      StatusIn(in_isr);
+      return ErrorCode::OK;
     }
 
     case StandardRequest::SYNCH_FRAME:
-      // TODO: 一般仅用于同步端点
-      // TODO: typically used for isochronous endpoint sync.
-      ans = LibXR::ErrorCode::NOT_SUPPORT;
-      break;
-
     default:
-      // 未知请求，直接 STALL
-      // Unknown request; STALL.
-      ans = LibXR::ErrorCode::ARG_ERR;
-      break;
+      return ErrorCode::NOT_SUPPORT;
   }
-
-  return ans;
 }
 
-LibXR::ErrorCode DeviceCore::RespondWithStatus(const SetupPacket* setup,
-                                               Recipient recipient)
+ErrorCode DeviceCore::SendDescriptor(bool in_isr)
 {
-  if (setup->wLength != 2)
+  const auto type = static_cast<DescriptorType>(setup_.wValue >> 8U);
+  const auto index = static_cast<uint8_t>(setup_.wValue);
+  const bool high_capable = max_speed_ == Speed::HIGH;
+  ConstRawData data{nullptr, 0};
+  switch (static_cast<uint8_t>(type))
   {
-    return LibXR::ErrorCode::ARG_ERR;
-  }
-
-  uint16_t status = 0;
-  switch (recipient)
-  {
-    case Recipient::DEVICE:
-      status = composition_.GetDeviceStatus();
-      break;
-
-    case Recipient::INTERFACE:
-      status = 0x0000;
-      break;
-
-    case Recipient::ENDPOINT:
-    {
-      uint8_t ep_addr = setup->wIndex & 0xFF;
-      Endpoint* ep = nullptr;
-      endpoint_.pool.FindEndpoint(ep_addr, ep);
-
-      if (ep == nullptr)
+    case static_cast<uint8_t>(DescriptorType::DEVICE):
+      if (index != 0U)
       {
-        return LibXR::ErrorCode::NOT_FOUND;
+        return ErrorCode::ARG_ERR;
       }
-
-      if (ep->GetState() == Endpoint::State::STALLED)
-      {
-        status = 0x0001;
-      }
-      break;
-    }
-
-    default:
-      return LibXR::ErrorCode::ARG_ERR;
-  }
-
-  LibXR::ConstRawData data(&status, 2);
-  DevWriteEP0Data(data, endpoint_.in0->MaxTransferSize(), setup->wLength);
-
-  return LibXR::ErrorCode::OK;
-}
-
-LibXR::ErrorCode DeviceCore::ClearFeature(const SetupPacket* setup, Recipient recipient)
-{
-  switch (recipient)
-  {
-    case Recipient::ENDPOINT:
-    {
-      // 只允许清除 ENDPOINT_HALT 特性（wValue==0）
-      // Only ENDPOINT_HALT (wValue==0) is allowed.
-      if (setup->wValue == 0)  // 0 = ENDPOINT_HALT
-      {
-        uint8_t ep_addr =
-            setup->wIndex & 0xFF;  // 端点号（低 7 位=EP 号, 高位=方向）/ Endpoint address
-        Endpoint* ep = nullptr;
-        endpoint_.pool.FindEndpoint(ep_addr, ep);
-        if (ep)
-        {
-          auto ans = ep->ClearStall();
-          if (ans != LibXR::ErrorCode::OK)
-          {
-            return ans;
-          }
-          WriteZLP();  // 状态阶段：回复 ZLP / Status stage: send ZLP
-        }
-        else
-        {
-          return LibXR::ErrorCode::NOT_FOUND;
-        }
-      }
-      else
-      {
-        return LibXR::ErrorCode::ARG_ERR;
-      }
-      break;
-    }
-
-    case Recipient::DEVICE:
-      // 可选：处理 Remote Wakeup 等设备级特性
-      // Optional: device-level feature handling (e.g., remote wakeup).
-      if (setup->wValue == 1)  // 1 = DEVICE_REMOTE_WAKEUP
-      {
-        DisableRemoteWakeup();
-        WriteZLP();
-      }
-      else
-      {
-        return LibXR::ErrorCode::ARG_ERR;
-      }
-      break;
-
-    default:
-      return LibXR::ErrorCode::ARG_ERR;
-  }
-
-  return LibXR::ErrorCode::OK;
-}
-
-LibXR::ErrorCode DeviceCore::ApplyFeature(const SetupPacket* setup, Recipient recipient)
-{
-  switch (recipient)
-  {
-    case Recipient::ENDPOINT:
-    {
-      if (setup->wValue == 0)  // 0 = ENDPOINT_HALT
-      {
-        uint8_t ep_addr = setup->wIndex & 0xFF;
-        Endpoint* ep = nullptr;
-        endpoint_.pool.FindEndpoint(ep_addr, ep);
-        if (ep)
-        {
-          auto ans = ep->Stall();
-          if (ans != LibXR::ErrorCode::OK)
-          {
-            return ans;
-          }
-          WriteZLP();  // 状态阶段回复 ZLP / Status stage: send ZLP
-        }
-        else
-        {
-          return LibXR::ErrorCode::NOT_FOUND;
-        }
-      }
-      else
-      {
-        return LibXR::ErrorCode::ARG_ERR;
-      }
-      break;
-    }
-
-    case Recipient::DEVICE:
-      if (setup->wValue == 1)  // 1 = DEVICE_REMOTE_WAKEUP
-      {
-        EnableRemoteWakeup();
-        WriteZLP();
-      }
-      else
-      {
-        return LibXR::ErrorCode::ARG_ERR;
-      }
-      break;
-
-    default:
-      return LibXR::ErrorCode::ARG_ERR;
-  }
-
-  return LibXR::ErrorCode::OK;
-}
-
-LibXR::ErrorCode DeviceCore::SendDescriptor(bool in_isr, const SetupPacket* setup,
-                                            Recipient recipient)
-{
-  uint8_t desc_type = (setup->wValue >> 8) & 0xFF;
-  uint8_t desc_idx = (setup->wValue) & 0xFF;
-  ConstRawData data = {nullptr, 0};
-
-  bool early_read_zlp = false;
-
-  switch (desc_type)
-  {
-    case 0x01:  // DEVICE
       data = device_desc_.GetData();
-      // 覆盖设备描述符（非 IAD 时可用）
-      // Override device descriptor (available when not using IAD).
-      (void)composition_.TryOverrideDeviceDescriptor(device_desc_);
-      early_read_zlp = true;
       break;
 
-    case 0x02:  // CONFIGURATION
+    case static_cast<uint8_t>(DescriptorType::CONFIGURATION):
     {
-      auto ec = composition_.BuildConfigDescriptor();
-      if (ec != LibXR::ErrorCode::OK)
+      RawData config{nullptr, 0};
+      const ErrorCode result =
+          composition_.WriteConfigDescriptor(index, service_.GetSpeed(), config);
+      if (result != ErrorCode::OK)
       {
-        return ec;
+        return result;
       }
-      data = composition_.GetConfigDescriptor();
+      data = config;
       break;
     }
 
-    case 0x03:  // STRING
+    case static_cast<uint8_t>(DescriptorType::STRING):
     {
-      uint8_t string_idx = desc_idx;
-      uint16_t lang = setup->wIndex;
-      auto ec = composition_.GetStringDescriptor(string_idx, lang, data);
-      if (ec != LibXR::ErrorCode::OK)
+      const ErrorCode result =
+          composition_.GetStringDescriptor(index, setup_.wIndex, data);
+      if (result != ErrorCode::OK)
       {
-        return ec;
+        return result;
       }
       break;
     }
 
-    // BOS (0x0F)
-    case 0x0F:  // BOS
+    case 6U:  // DEVICE_QUALIFIER
     {
-      data = composition_.GetBosDescriptor();
-      early_read_zlp = true;
+      if (!high_capable || index != 0U)
+      {
+        return ErrorCode::NOT_SUPPORT;
+      }
+      const auto& d = device_desc_.data_;
+      const auto spec = static_cast<uint16_t>(d.bcdUSB);
+      auto* q = static_cast<uint8_t*>(control_buffer_.addr_);
+      q[0] = 10U;
+      q[1] = 6U;
+      q[2] = static_cast<uint8_t>(spec);
+      q[3] = static_cast<uint8_t>(spec >> 8U);
+      q[4] = static_cast<uint8_t>(d.bDeviceClass);
+      q[5] = d.bDeviceSubClass;
+      q[6] = d.bDeviceProtocol;
+      q[7] = static_cast<uint8_t>(d.bMaxPacketSize0);
+      q[8] = composition_.ConfigCount();
+      q[9] = 0U;
+      data = {q, 10U};
       break;
     }
 
-    case 0x06:  // Device Qualifier
-    case 0x07:  // Other Speed Configurations
-      return LibXR::ErrorCode::NOT_SUPPORT;
+    case 7U:  // OTHER_SPEED_CONFIGURATION
+    {
+      if (!high_capable)
+      {
+        return ErrorCode::NOT_SUPPORT;
+      }
+      const Speed other =
+          (service_.GetSpeed() == Speed::HIGH) ? Speed::FULL : Speed::HIGH;
+      RawData config{nullptr, 0};
+      const ErrorCode result = composition_.WriteConfigDescriptor(index, other, config);
+      if (result != ErrorCode::OK)
+      {
+        return result;
+      }
+      static_cast<uint8_t*>(config.addr_)[1] = 7U;
+      data = config;
+      break;
+    }
+
+    case static_cast<uint8_t>(DescriptorType::BOS):
+      if (index != 0U || device_desc_.GetUSBSpec() < USBSpec::USB_2_1)
+      {
+        return ErrorCode::NOT_SUPPORT;
+      }
+      data = composition_.Bos().GetBosDescriptor();
+      break;
 
     default:
     {
-      uint8_t intf_num = 0;
-
-      if (recipient == Recipient::INTERFACE)
+      // 其他类型只可能是接口的类特定描述符。
+      // Any other type can only be an interface's class-specific descriptor.
+      if (RecipientOf(setup_) != Recipient::INTERFACE)
       {
-        intf_num = setup->wIndex & 0xFF;
+        return ErrorCode::NOT_SUPPORT;
       }
-      else
+      DeviceClass* item =
+          composition_.FindClassByInterface(static_cast<uint8_t>(setup_.wIndex));
+      if (item == nullptr)
       {
-        return LibXR::ErrorCode::ARG_ERR;
+        return ErrorCode::NOT_FOUND;
       }
-
-      auto* item = composition_.FindClassByInterfaceNumber(intf_num);
-      if (item && item->OnGetDescriptor(in_isr, setup->bRequest, setup->wValue,
-                                        setup->wLength, data) == LibXR::ErrorCode::OK)
+      const ErrorCode result = item->OnGetDescriptor(in_isr, setup_, data);
+      if (result != ErrorCode::OK)
       {
-        break;
+        return result;
       }
-      return LibXR::ErrorCode::ARG_ERR;
+      break;
     }
   }
-
-  DevWriteEP0Data(data, endpoint_.in0->MaxTransferSize(), setup->wLength, early_read_zlp);
-  return LibXR::ErrorCode::OK;
+  StartIn(in_isr, data);
+  return ErrorCode::OK;
 }
 
-LibXR::ErrorCode DeviceCore::PrepareAddressChange(uint16_t address)
+ErrorCode DeviceCore::HandleClassOrVendor(bool in_isr)
 {
-  state_.pending_addr = static_cast<uint8_t>(address & 0x7F);
-
-  const LibXR::ErrorCode pre_status = SetAddress(address, Context::SETUP_BEFORE_STATUS);
-  WriteZLP(Context::STATUS_IN_COMPLETE);
-  const LibXR::ErrorCode armed = SetAddress(address, Context::STATUS_IN_ARMED);
-  return (pre_status != LibXR::ErrorCode::OK) ? pre_status : armed;
-}
-
-LibXR::ErrorCode DeviceCore::SwitchConfiguration(uint16_t value, bool in_isr)
-{
-  if (composition_.SwitchConfig(value, in_isr) != LibXR::ErrorCode::OK)
+  const auto type = static_cast<RequestType>(setup_.bmRequestType & REQ_TYPE_MASK);
+  const Recipient recipient = RecipientOf(setup_);
+  if (type != RequestType::CLASS && type != RequestType::VENDOR)
   {
-    return LibXR::ErrorCode::NOT_FOUND;
+    return ErrorCode::NOT_SUPPORT;
   }
 
-  // ACK status 阶段
-  // ACK status stage.
-  WriteZLP();
-
-  return LibXR::ErrorCode::OK;
-}
-
-LibXR::ErrorCode DeviceCore::SendConfiguration()
-{
-  uint8_t cfg = composition_.GetCurrentConfig();
-  LibXR::ConstRawData data(&cfg, 1);
-  DevWriteEP0Data(data, endpoint_.in0->MaxTransferSize(), 1);
-
-  return LibXR::ErrorCode::OK;
-}
-
-void DeviceCore::StallControlEndpoint()
-{
-  endpoint_.pool.GetEndpoint0Out()->Stall();
-  endpoint_.pool.GetEndpoint0In()->Stall();
-}
-
-void DeviceCore::ClearControlEndpointStall()
-{
-  endpoint_.pool.GetEndpoint0Out()->ClearStall();
-  endpoint_.pool.GetEndpoint0In()->ClearStall();
-}
-
-LibXR::ErrorCode DeviceCore::ProcessClassRequest(bool in_isr, const SetupPacket* setup,
-                                                 RequestDirection /*direction*/,
-                                                 Recipient recipient)
-{
-  // 只处理 Class 请求（bmRequestType bits[6:5] == 01）。
-  // Only handle Class requests (bmRequestType bits[6:5] == 01).
-  if ((setup->bmRequestType & 0x60) != 0x20)
+  if (recipient == Recipient::DEVICE)
   {
-    return LibXR::ErrorCode::NOT_SUPPORT;
+    if (type != RequestType::VENDOR)
+    {
+      return ErrorCode::NOT_SUPPORT;
+    }
+    BosVendorResult bos{};
+    const ErrorCode result =
+        composition_.Bos().ProcessVendorRequest(in_isr, &setup_, bos);
+    if (result != ErrorCode::OK)
+    {
+      return result;
+    }
+    if (setup_.wLength == 0U)
+    {
+      StatusIn(in_isr);
+      return ErrorCode::OK;
+    }
+    if (!IsIn(setup_))
+    {
+      return ErrorCode::ARG_ERR;
+    }
+    StartIn(in_isr, bos.in_data);
+    return ErrorCode::OK;
   }
 
   DeviceClass* item = nullptr;
-
-  switch (recipient)
+  if (recipient == Recipient::INTERFACE)
   {
-    case Recipient::INTERFACE:
+    item = composition_.FindClassByInterface(static_cast<uint8_t>(setup_.wIndex));
+  }
+  else if (recipient == Recipient::ENDPOINT)
+  {
+    item = composition_.FindClassByEndpoint(static_cast<uint8_t>(setup_.wIndex));
+  }
+  if (item == nullptr)
+  {
+    return ErrorCode::NOT_FOUND;
+  }
+  ConstRawData in_data{nullptr, 0};
+  const ErrorCode result = item->OnControlRequest(in_isr, setup_, in_data);
+  if (result != ErrorCode::OK)
+  {
+    return result;
+  }
+  // 从这里起类接受了传输；之后的任何错误都经 StallTransfer 给它 OnControlAbort。
+  // From here the class has accepted the transfer; any later error gives it
+  // OnControlAbort through StallTransfer.
+  control_class_ = item;
+  if (setup_.wLength == 0U)
+  {
+    StatusIn(in_isr);
+    return ErrorCode::OK;
+  }
+  if (IsIn(setup_))
+  {
+    if (in_data.size_ != 0U && in_data.addr_ == nullptr)
     {
-      // 低字节 = 接口号。
-      // Low byte = interface number.
-      uint8_t if_num = static_cast<uint8_t>(setup->wIndex & 0xFF);
-      item = composition_.FindClassByInterfaceNumber(if_num);
-      break;
+      return ErrorCode::ARG_ERR;
     }
-    case Recipient::ENDPOINT:
-    {
-      // 低字节 = 端点地址（含 0x80 方向位）。
-      // Low byte = endpoint address (including 0x80 direction bit).
-      uint8_t ep_addr = static_cast<uint8_t>(setup->wIndex & 0xFF);
-      item = composition_.FindClassByEndpointAddress(ep_addr);
-      break;
-    }
-    default:
-      // Device / Other 一般不在这里处理。
-      // Device/Other is typically not handled here.
-      return LibXR::ErrorCode::NOT_SUPPORT;
+    StartIn(in_isr, in_data);
+    return ErrorCode::OK;
   }
-
-  if (!item)
+  if (setup_.wLength > control_buffer_.size_)
   {
-    return LibXR::ErrorCode::NOT_FOUND;
+    return ErrorCode::ARG_ERR;
   }
-
-  DeviceClass::ControlTransferResult result{};
-  auto ec = item->OnClassRequest(in_isr, setup->bRequest, setup->wValue, setup->wLength,
-                                 setup->wIndex, result);
-  if (ec != LibXR::ErrorCode::OK)
-  {
-    return ec;
-  }
-
-  // 不允许同时提供读写缓冲
-  // Do not allow both read and write buffers simultaneously.
-  const bool HAS_READ_BUF = (result.read_data.size_ > 0);
-  const bool HAS_WRITE_BUF = (result.write_data.size_ > 0);
-  if (HAS_READ_BUF && HAS_WRITE_BUF)
-  {
-    return LibXR::ErrorCode::ARG_ERR;
-  }
-
-  // Host->Device（OUT）：从主机读数据进 read_data
-  // Host->Device (OUT): read host data into read_data.
-  if (HAS_READ_BUF)
-  {
-    if (setup->wLength == 0 || result.read_data.size_ < setup->wLength)
-    {
-      return LibXR::ErrorCode::ARG_ERR;
-    }
-
-    class_req_.read = true;
-    class_req_.write = false;
-    class_req_.class_in_data_status_pending = false;
-    class_req_.class_ptr = item;
-    class_req_.b_request = setup->bRequest;
-    class_req_.data = result.read_data;
-
-    DevReadEP0Data(result.read_data, endpoint_.in0->MaxTransferSize());
-    return LibXR::ErrorCode::OK;
-  }
-
-  // Device->Host（IN）：从 write_data 发数据给主机
-  // Device->Host (IN): send write_data to host.
-  if (HAS_WRITE_BUF)
-  {
-    if (setup->wLength == 0)
-    {
-      return LibXR::ErrorCode::ARG_ERR;
-    }
-
-    class_req_.write = true;
-    class_req_.read = false;
-    class_req_.class_in_data_status_pending = true;
-    class_req_.class_ptr = item;
-    class_req_.b_request = setup->bRequest;
-    class_req_.data = result.write_data;
-
-    // Class IN 传输需要主机请求的 wLength，
-    // 这样 EP0 才能判断当 payload 短于请求值、但又恰好整除 bMaxPacketSize0 时，
-    // 是否还需要补一个结束 ZLP（例如 DFU UPLOAD 尾包）。
-    // Class IN transfers need the host-requested wLength so EP0 can decide
-    // whether a terminating ZLP is required when the payload is shorter than
-    // the request but still an exact multiple of bMaxPacketSize0.
-    DevWriteEP0Data(result.write_data, endpoint_.in0->MaxTransferSize(), setup->wLength);
-    return LibXR::ErrorCode::OK;
-  }
-
-  // 无数据阶段：按类的意愿发送/接收 ZLP（如果有）
-  // No data stage: send/receive ZLP as requested by class (if any).
-  if (result.read_zlp)
-  {
-    ReadZLP();
-    return LibXR::ErrorCode::OK;
-  }
-  if (result.write_zlp)
-  {
-    WriteZLP();
-    return LibXR::ErrorCode::OK;
-  }
-
-  return LibXR::ErrorCode::OK;
+  transferred_ = 0U;
+  ReceiveNextOut(in_isr);
+  return ErrorCode::OK;
 }
 
-LibXR::ErrorCode DeviceCore::ProcessVendorRequest(bool in_isr, const SetupPacket*& setup,
-                                                  RequestDirection /*direction*/,
-                                                  Recipient recipient)
+void DeviceCore::StartIn(bool in_isr, ConstRawData data)
 {
-  // 只处理 Vendor 请求（bmRequestType bits[6:5] == 10）
-  // Only handle Vendor requests (bmRequestType bits[6:5] == 10).
-  if ((setup->bmRequestType & 0x60) != 0x40)
+  const size_t length = (data.size_ < setup_.wLength) ? data.size_ : setup_.wLength;
+  in_data_ = {data.addr_, length};
+  transferred_ = 0U;
+  phase_ = Phase::DATA_IN;
+  // 主机可以在任何一个 IN 包之后进入状态阶段，所以状态 OUT 先于第一包挂好。
+  // The host may enter the status stage after any IN packet, so the status OUT is
+  // armed before the first packet.
+  if (pool_.GetEndpoint0Out()->Receive(0U, in_isr) != ErrorCode::OK)
   {
-    return LibXR::ErrorCode::NOT_SUPPORT;
+    StallTransfer(in_isr);
+    return;
   }
-
-  // 先交给 BOS capabilities 尝试处理（WinUSB / WebUSB / ContainerID 等）。
-  // First, try BOS capabilities (WinUSB / WebUSB / ContainerID, etc.).
-  {
-    BosVendorResult bos_ret{};
-    auto bec = composition_.ProcessBosVendorRequest(in_isr, setup, bos_ret);
-    if (bec == LibXR::ErrorCode::OK && bos_ret.handled)
-    {
-      if (bos_ret.in_data.addr_ != nullptr && bos_ret.in_data.size_ > 0)
-      {
-        if (setup->wLength == 0)
-        {
-          return LibXR::ErrorCode::ARG_ERR;
-        }
-
-        DevWriteEP0Data(bos_ret.in_data, endpoint_.in0->MaxTransferSize(), setup->wLength,
-                        bos_ret.early_read_zlp);
-        return LibXR::ErrorCode::OK;
-      }
-
-      if (bos_ret.write_zlp)
-      {
-        WriteZLP();
-        return LibXR::ErrorCode::OK;
-      }
-
-      // handled 但既没有 in_data 也没有 write_zlp：默认 ACK
-      // handled but no in_data and no write_zlp: default ACK.
-      WriteZLP();
-      return LibXR::ErrorCode::OK;
-    }
-
-    // bec != OK：匹配但错误，直接返回让上层 STALL
-    // bec != OK: matched but failed; return to upper layer to STALL.
-    if (bec != LibXR::ErrorCode::NOT_SUPPORT && bec != LibXR::ErrorCode::OK)
-    {
-      return bec;
-    }
-  }
-
-  DeviceClass* item = nullptr;
-
-  switch (recipient)
-  {
-    case Recipient::INTERFACE:
-    {
-      uint8_t if_num = static_cast<uint8_t>(setup->wIndex & 0xFF);
-      item = composition_.FindClassByInterfaceNumber(if_num);
-      break;
-    }
-    case Recipient::ENDPOINT:
-    {
-      uint8_t ep_addr = static_cast<uint8_t>(setup->wIndex & 0xFF);
-      item = composition_.FindClassByEndpointAddress(ep_addr);
-      break;
-    }
-    default:
-      // 先不处理 DEVICE/OTHER 级别的 Vendor 请求
-      // 暂不处理 DEVICE / OTHER 级别的 Vendor 请求。
-      // Do not handle DEVICE / OTHER vendor requests for now.
-      return LibXR::ErrorCode::NOT_SUPPORT;
-  }
-
-  if (!item)
-  {
-    return LibXR::ErrorCode::NOT_FOUND;
-  }
-
-  DeviceClass::ControlTransferResult result{};
-  auto ec = item->OnVendorRequest(in_isr, setup->bRequest, setup->wValue, setup->wLength,
-                                  setup->wIndex, result);
-  if (ec != LibXR::ErrorCode::OK)
-  {
-    return ec;
-  }
-
-  const bool HAS_READ_BUF = (result.read_data.size_ > 0);
-  const bool HAS_WRITE_BUF = (result.write_data.size_ > 0);
-
-  if (HAS_READ_BUF && HAS_WRITE_BUF)
-  {
-    return LibXR::ErrorCode::ARG_ERR;
-  }
-
-  // Host -> Device（OUT）路径：从主机读数据进 read_data。
-  // Host->Device (OUT): read host data into read_data.
-  if (HAS_READ_BUF)
-  {
-    if (setup->wLength == 0 || result.read_data.size_ < setup->wLength)
-    {
-      return LibXR::ErrorCode::ARG_ERR;
-    }
-
-    class_req_.read = true;
-    class_req_.write = false;
-    class_req_.class_in_data_status_pending = false;
-    class_req_.class_ptr = item;
-    class_req_.b_request = setup->bRequest;
-    class_req_.data = result.read_data;
-
-    DevReadEP0Data(result.read_data, endpoint_.in0->MaxTransferSize());
-    return LibXR::ErrorCode::OK;
-  }
-
-  // Device -> Host（IN）路径：从 write_data 发数据给主机。
-  // Device->Host (IN): send write_data to host.
-  if (HAS_WRITE_BUF)
-  {
-    if (setup->wLength == 0)
-    {
-      return LibXR::ErrorCode::ARG_ERR;
-    }
-
-    class_req_.write = true;
-    class_req_.read = false;
-    class_req_.class_in_data_status_pending = false;
-    class_req_.class_ptr = item;
-    class_req_.b_request = setup->bRequest;
-    class_req_.data = result.write_data;
-
-    DevWriteEP0Data(result.write_data, endpoint_.in0->MaxTransferSize(), setup->wLength);
-    return LibXR::ErrorCode::OK;
-  }
-
-  // 无数据阶段，只需要 ZLP 的情况
-  // No data stage; ZLP only.
-  if (result.read_zlp)
-  {
-    ReadZLP();
-    return LibXR::ErrorCode::OK;
-  }
-  if (result.write_zlp)
-  {
-    WriteZLP();
-    return LibXR::ErrorCode::OK;
-  }
-
-  return LibXR::ErrorCode::OK;
+  SendNextIn(in_isr);
 }
 
-Speed DeviceCore::GetSpeed() const { return state_.speed; }
+void DeviceCore::SendNextIn(bool in_isr)
+{
+  Endpoint* in0 = pool_.GetEndpoint0In();
+  const size_t remaining = in_data_.size_ - transferred_;
+  const size_t packet = in0->MaxPacketSize();
+  const size_t amount = (remaining < packet) ? remaining : packet;
+  Endpoint::Slot slot;
+  if (in0->AcquireSlot(slot) != ErrorCode::OK)
+  {
+    StallTransfer(in_isr);
+    return;
+  }
+  if (amount != 0U)
+  {
+    LibXR::Memory::FastCopy(slot.data.addr_,
+                            static_cast<const uint8_t*>(in_data_.addr_) + transferred_,
+                            amount);
+  }
+  // 比 wLength 短的应答以短包结束；最后一包正好满包时由 Submit 补结尾零长度包。
+  // A reply shorter than wLength must end with a short packet; when the last packet is
+  // full, Submit adds the closing zero-length packet.
+  const bool last = transferred_ + amount == in_data_.size_;
+  const bool zlp = last && in_data_.size_ < setup_.wLength;
+  if (in0->Submit(slot, amount, zlp, in_isr) != ErrorCode::OK)
+  {
+    (void)in0->ReleaseSlot(slot);
+    StallTransfer(in_isr);
+    return;
+  }
+  transferred_ += amount;
+}
+
+void DeviceCore::ReceiveNextOut(bool in_isr)
+{
+  phase_ = Phase::DATA_OUT;
+  Endpoint* out0 = pool_.GetEndpoint0Out();
+  if (out0->Receive(out0->MaxPacketSize(), in_isr) != ErrorCode::OK)
+  {
+    StallTransfer(in_isr);
+  }
+}
+
+void DeviceCore::StatusIn(bool in_isr)
+{
+  phase_ = Phase::STATUS_IN;
+  Endpoint* in0 = pool_.GetEndpoint0In();
+  Endpoint::Slot slot;
+  if (in0->AcquireSlot(slot) != ErrorCode::OK)
+  {
+    StallTransfer(in_isr);
+    return;
+  }
+  if (in0->Submit(slot, 0U, false, in_isr) != ErrorCode::OK)
+  {
+    (void)in0->ReleaseSlot(slot);
+    StallTransfer(in_isr);
+  }
+}
+
+void DeviceCore::Finish(bool in_isr)
+{
+  DeviceClass* item = control_class_;
+  control_class_ = nullptr;
+  phase_ = Phase::IDLE;
+  in_data_ = {nullptr, 0};
+  transferred_ = 0U;
+  if (item != nullptr)
+  {
+    item->OnControlComplete(in_isr, setup_);
+  }
+  OnControlReady();
+}
+
+void DeviceCore::StallTransfer(bool in_isr)
+{
+  AbortTransfer(in_isr);
+  (void)pool_.GetEndpoint0In()->Stall(in_isr);
+  (void)pool_.GetEndpoint0Out()->Stall(in_isr);
+}
+
+void DeviceCore::AbortTransfer(bool in_isr)
+{
+  DeviceClass* item = control_class_;
+  control_class_ = nullptr;
+  phase_ = Phase::IDLE;
+  in_data_ = {nullptr, 0};
+  transferred_ = 0U;
+  if (item != nullptr)
+  {
+    item->OnControlAbort(in_isr, setup_);
+  }
+}
+
+void DeviceCore::InComplete(bool in_isr, const Endpoint::Completion& completion)
+{
+  if (completion.result != ErrorCode::OK)
+  {
+    return;
+  }
+  if (phase_ == Phase::DATA_IN)
+  {
+    if (transferred_ < in_data_.size_)
+    {
+      SendNextIn(in_isr);
+    }
+    else
+    {
+      phase_ = Phase::STATUS_OUT;
+    }
+    return;
+  }
+  if (phase_ != Phase::STATUS_IN)
+  {
+    return;
+  }
+  if (setup_.bmRequestType == 0U &&
+      setup_.bRequest == static_cast<uint8_t>(StandardRequest::SET_ADDRESS))
+  {
+    SetAddress(static_cast<uint8_t>(setup_.wValue), AddressStage::STATUS_COMPLETE);
+  }
+  Finish(in_isr);
+}
+
+void DeviceCore::OutComplete(bool in_isr, const Endpoint::Completion& completion)
+{
+  Endpoint* out0 = pool_.GetEndpoint0Out();
+  const bool ok = completion.result == ErrorCode::OK;
+  // 先拷走要的数据，再交回槽，然后才据此动作（动作里可能再挂接收）。
+  // Copy what is needed, hand the slot back, and only then act (acting may arm the
+  // next receive).
+  const bool fits = transferred_ + completion.actual <= setup_.wLength;
+  if (ok && phase_ == Phase::DATA_OUT && fits && completion.actual != 0U)
+  {
+    LibXR::Memory::FastCopy(static_cast<uint8_t*>(control_buffer_.addr_) + transferred_,
+                            completion.slot.data.addr_, completion.actual);
+  }
+  if (completion.slot.Valid())
+  {
+    (void)out0->ReleaseSlot(completion.slot);
+  }
+  if (!ok)
+  {
+    return;
+  }
+
+  if (phase_ == Phase::DATA_OUT)
+  {
+    if (!fits)
+    {
+      StallTransfer(in_isr);
+      return;
+    }
+    transferred_ += completion.actual;
+    if (transferred_ < setup_.wLength && completion.actual == out0->MaxPacketSize())
+    {
+      ReceiveNextOut(in_isr);
+      return;
+    }
+    ASSERT(control_class_ != nullptr);
+    if (control_class_->OnControlData(
+            in_isr, setup_, {control_buffer_.addr_, transferred_}) != ErrorCode::OK)
+    {
+      StallTransfer(in_isr);
+      return;
+    }
+    StatusIn(in_isr);
+    return;
+  }
+
+  if (phase_ == Phase::DATA_IN || phase_ == Phase::STATUS_OUT)
+  {
+    // 状态 OUT 到了：传输结束。IN 数据没发完也不再发（主机已进入状态阶段）。阶段先改，
+    // Flush 交回的 IN 完成就会被忽略。
+    // The status OUT arrived: the transfer is over. IN data not yet sent is not sent
+    // any more (the host is in the status stage). The phase changes first, so the IN
+    // completion the flush hands back is ignored.
+    phase_ = Phase::STATUS_OUT;
+    pool_.GetEndpoint0In()->Flush(in_isr);
+    Finish(in_isr);
+  }
+}

@@ -1,1192 +1,740 @@
 #pragma once
 
-#include <cstring>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 
-#include "dfu/dfu_def.hpp"
+#include "dfu_def.hpp"
+#include "flash.hpp"
+#include "timebase.hpp"
 
 namespace LibXR::USB
 {
+
 /**
- * @brief Bootloader DFU 的通用后端：围绕 Flash 基类实现 download/upload/manifest
- *        Generic bootloader DFU backend built around the Flash base interface.
+ * @class DfuBootloaderBackend
+ * @brief bootloader DFU 的 Flash 后端：下载、上传、manifest 与 seal / Flash backend of
+ *        the bootloader DFU: download, upload, manifestation and the seal
+ *
+ * 镜像放在 Flash 的 [image_offset, image_offset + seal_offset)，其后是 seal 记录（魔数、
+ * 长度、CRC32 和它的反码）。下载的块先拷进内部缓冲，擦写和 manifest 的校验只在
+ * RunPendingWork() 里做，不在 USB 中断里。
+ * The image lives at [image_offset, image_offset + seal_offset) of the flash, followed
+ * by the seal record (magic, length, CRC32 and its inverse). A downloaded block is first
+ * copied into an internal buffer; erase, program and the manifestation check run only in
+ * RunPendingWork(), never in the USB interrupt.
+ *
+ * @note 工作槽 job_state_ 的状态：EMPTY → STAGED（owner 暂存）→ READY（owner 放行）→
+ *       RUNNING（RunPendingWork 认领）→ DONE → EMPTY（owner 在 CommitWorkResult 里取
+ *       走）；CANCELLED 位由 owner 在 RUNNING、DONE 时置上，表示结果作废。标"仅 owner"的
+ *       函数只在设备 owner 中调用。
+ *       States of the job slot job_state_: EMPTY → STAGED (staged by the owner) → READY
+ *       (released by the owner) → RUNNING (claimed by RunPendingWork) → DONE → EMPTY
+ *       (taken by the owner in CommitWorkResult); the owner sets the CANCELLED bit while
+ *       RUNNING or DONE to void the result. Functions marked "owner only" are called in
+ *       the device's owner only.
  */
 class DfuBootloaderBackend
 {
  public:
-  using JumpCallback = void (*)(void*);
-  static constexpr uint32_t SEAL_MAGIC = 0x4C414553u;  // "SEAL"
+  /// 跳到应用的函数，参数为 jump_app_ctx / Function that jumps to the application; its
+  /// argument is jump_app_ctx
+  using JumpFun = void (*)(void*);
+  /// seal 魔数（ASCII "SEAL" 小端）/ Seal magic (ASCII "SEAL", little-endian)
+  static constexpr uint32_t SEAL_MAGIC = 0x4C414553U;
 
   LIBXR_PACKED_BEGIN
-  /**
-   * @brief seal 区固定记录 / Fixed record stored in the seal region
-   */
+  /// seal 记录 / Seal record
   struct SealRecord
   {
-    uint32_t magic = SEAL_MAGIC;
-    uint32_t image_size = 0u;
-    uint32_t crc32 = 0u;
-    uint32_t crc32_inv = 0u;
+    uint32_t magic = SEAL_MAGIC;  ///< SEAL_MAGIC
+    uint32_t image_size = 0U;     ///< 镜像字节数 / Image size in bytes
+    uint32_t crc32 = 0U;          ///< 镜像的 CRC32 / CRC32 of the image
+    uint32_t crc32_inv = 0U;      ///< crc32 的反码 / Inverse of crc32
   };
   LIBXR_PACKED_END
 
-  // Backend 负责：
-  // - 管理 download/upload/manifest 状态
-  // - 通过 Flash 基类接口驱动擦写读
-  // - 维护镜像有效性与 seal 元数据
-  // Backend responsibilities:
-  // - own download/upload/manifest bookkeeping
-  // - drive flash erase/write/read through the Flash base interface
-  // - maintain image validity and seal metadata
+  /**
+   * @brief 构造并检查 Flash 里已有的镜像 / Construct and check the image already in
+   *        the flash
+   * @param flash 放镜像和 seal 的 Flash / Flash that holds the image and the seal
+   * @param image_offset 镜像区起点 / Start of the image region
+   * @param image_size_limit 镜像区字节数，含 seal / Bytes of the image region, seal
+   *        included
+   * @param seal_offset seal 相对镜像区起点的偏移，也是镜像的上限 / Offset of the seal
+   *        from the image start, also the image limit
+   * @param jump_to_app 启动应用的函数 / Function that launches the application
+   * @param jump_app_ctx 传给它的参数 / Its argument
+   * @param autorun manifest 完成后是否自动请求启动 / Whether manifestation requests a
+   *        launch by itself
+   * @note 初始化时；分配擦除表、seal 暂存和下载缓冲，读 Flash 算 CRC。
+   *       At initialization; allocates the erase map, the seal scratch and the download
+   *       buffer, and reads the flash for the CRC.
+   */
   DfuBootloaderBackend(Flash& flash, size_t image_offset, size_t image_size_limit,
-                       size_t seal_offset, JumpCallback jump_to_app,
-                       void* jump_app_ctx = nullptr, bool autorun = true)
-      : flash_(flash),
-        image_offset_(image_offset),
-        image_size_limit_(image_size_limit),
-        seal_offset_(seal_offset),
-        jump_to_app_(jump_to_app),
-        jump_app_ctx_(jump_app_ctx),
-        autorun_(autorun)
-  {
-    erase_block_size_ = flash_.MinEraseSize();
-    if (erase_block_size_ == 0u)
-    {
-      erase_block_size_ = 1u;
-    }
-    erase_block_count_ = (image_size_limit_ + erase_block_size_ - 1u) / erase_block_size_;
-    if (erase_block_count_ > 0u)
-    {
-      erased_blocks_ = new uint8_t[erase_block_count_];
-      std::memset(erased_blocks_, 0, erase_block_count_);
-    }
-    seal_storage_size_ =
-        AlignUp(sizeof(SealRecord), NonZeroWriteSize(flash_.MinWriteSize()));
-    seal_storage_ = new uint8_t[seal_storage_size_];
-    transfer_size_ = PayloadLimit();
-    if (transfer_size_ == 0u)
-    {
-      transfer_size_ = 1024u;
-    }
-    if (transfer_size_ > 4096u)
-    {
-      transfer_size_ = 4096u;
-    }
-    write_buffer_ = new uint8_t[transfer_size_];
-    ResetTransferState();
-    image_.launch_requested = false;
-    image_.ready = false;
-    image_.stored_size = 0u;
-  }
+                       size_t seal_offset, JumpFun jump_to_app,
+                       void* jump_app_ctx = nullptr, bool autorun = true);
 
   DfuBootloaderBackend(const DfuBootloaderBackend&) = delete;
   DfuBootloaderBackend& operator=(const DfuBootloaderBackend&) = delete;
 
-  /**
-   * @brief 报告 DFU 能力集 / Report DFU capabilities
-   */
-  DFUCapabilities GetDfuCapabilities() const
-  {
-    DFUCapabilities caps = {};
-    caps.can_download = true;
-    caps.can_upload = true;
-    caps.manifestation_tolerant = false;
-    caps.will_detach = false;
-    caps.detach_timeout_ms = 0u;
+  /// @name 前端调用，仅 owner / Called by the frontend, owner only
+  /// @{
 
-    if (transfer_size_ > 0xFFFFu)
-    {
-      caps.transfer_size = 0xFFFFu;
-    }
-    else
-    {
-      caps.transfer_size = static_cast<uint16_t>(transfer_size_);
-    }
-    return caps;
-  }
-
-  ErrorCode DfuSetAlternate(uint8_t alt)
-  {
-    return (alt == 0u) ? ErrorCode::OK : ErrorCode::NOT_SUPPORT;
-  }
+  /// 能力；构造后不变 / Capabilities; fixed after construction
+  DFUCapabilities GetDfuCapabilities() const;
+  /// 只支持 alt 0 / Only alternate 0
+  ErrorCode DfuSetAlternate(uint8_t alt);
+  /// 放弃会话：作废工作，清传输状态；不取消已登记的启动 / Abort the session: void the
+  /// work and clear the transfer state; a recorded launch is not cancelled
+  void DfuAbort(uint8_t alt);
+  /// 同 DfuAbort / Same as DfuAbort
+  void DfuClearStatus(uint8_t alt);
 
   /**
-   * @brief 放弃当前协议会话 / Abort the current protocol session
+   * @brief 接收一块 DNLOAD，暂存为待写 / Take one DNLOAD block and stage it
+   * @param alt 备用设置号；非 0 返回 ERR_TARGET / Alternate setting; non-zero returns
+   *        ERR_TARGET
+   * @param block_num 块号；0 开始新会话，之后必须连续 / Block number; 0 starts a new
+   *        session, then consecutive
+   * @param data 块数据，不超过传输大小 / Block data, at most the transfer size
+   * @param poll_timeout_ms 输出：主机应等的毫秒数 / Output: milliseconds the host waits
+   * @return OK：已暂存；其他：DFU 状态码 / OK: staged; otherwise a DFU status code
    */
-  void DfuAbort(uint8_t)
-  {
-    ResetTransferState();
-    image_.launch_requested = false;
-    image_.ready = false;
-    image_.stored_size = 0u;
-  }
-
-  /**
-   * @brief 清除 DFU 错误态 / Clear the DFU error state
-   */
-  void DfuClearStatus(uint8_t)
-  {
-    ResetTransferState();
-    image_.launch_requested = false;
-  }
-
   DFUStatusCode DfuDownload(uint8_t alt, uint16_t block_num, ConstRawData data,
-                            uint32_t& poll_timeout_ms)
-  {
-    poll_timeout_ms = 0u;
+                            uint32_t& poll_timeout_ms);
 
-    if (alt != 0u)
-    {
-      return DFUStatusCode::ERR_TARGET;
-    }
-    if (data.addr_ == nullptr || data.size_ == 0u || data.size_ > transfer_size_)
-    {
-      return DFUStatusCode::ERR_USBR;
-    }
-    if (HasPendingWrite() || HasPendingManifest())
-    {
-      return DFUStatusCode::ERR_NOTDONE;
-    }
+  /// 最近一次写入的结果；busy 表示还在写 / Result of the latest write; busy while it
+  /// still runs
+  DFUStatusCode DfuGetDownloadStatus(uint8_t alt, bool& busy, uint32_t& poll_timeout_ms);
 
-    if ((block_num == 0u) &&
-        (download_.session_started &&
-         (download_.received_bytes != 0u || download_.expected_block_num != 0u)))
-    {
-      // 主机没有先发 ABORT/CLRSTATUS，就直接从 block 0 重启 DNLOAD；
-      // 这里把它视为新会话，并丢弃旧的部分传输状态。
-      // The host restarted DNLOAD from block 0 without an explicit
-      // ABORT/CLRSTATUS first; treat that as a fresh session and discard the
-      // old partial transfer state.
-      ResetTransferState();
-    }
-
-    if (!download_.session_started)
-    {
-      if (block_num != 0u)
-      {
-        return DFUStatusCode::ERR_ADDRESS;
-      }
-      StartDownloadSession();
-    }
-    else if (block_num != download_.expected_block_num)
-    {
-      return DFUStatusCode::ERR_ADDRESS;
-    }
-
-    const size_t offset = download_.received_bytes;
-    const size_t payload_limit = PayloadLimit();
-    if (offset + data.size_ < offset || (offset + data.size_) > payload_limit)
-    {
-      return DFUStatusCode::ERR_ADDRESS;
-    }
-
-    std::memcpy(write_buffer_, data.addr_, data.size_);
-    write_.offset = offset;
-    write_.len = data.size_;
-    write_.block_num = block_num;
-    write_.pending = true;
-    download_.last_status = DFUStatusCode::OK;
-    download_.next_poll_timeout_ms = ComputeWritePollTimeout(offset, data.size_);
-    poll_timeout_ms = download_.next_poll_timeout_ms;
-    return DFUStatusCode::OK;
-  }
-
-  DFUStatusCode DfuGetDownloadStatus(uint8_t alt, bool& busy, uint32_t& poll_timeout_ms)
-  {
-    if (alt != 0u)
-    {
-      busy = false;
-      poll_timeout_ms = 0u;
-      return DFUStatusCode::ERR_TARGET;
-    }
-    busy = HasPendingWrite();
-    poll_timeout_ms = busy ? download_.next_poll_timeout_ms : 0u;
-    return download_.last_status;
-  }
-
+  /**
+   * @brief UPLOAD 一块，从 Flash 读回镜像 / UPLOAD one block, read back from the flash
+   * @return 写进 data 的字节数；0 表示结束或出错（看 status）/ Bytes written into
+   *         data; 0 at the end or on error (see status)
+   */
   size_t DfuUpload(uint8_t alt, uint16_t block_num, RawData data, DFUStatusCode& status,
-                   uint32_t& poll_timeout_ms)
-  {
-    poll_timeout_ms = 0u;
-    status = DFUStatusCode::OK;
+                   uint32_t& poll_timeout_ms);
 
-    if (alt != 0u)
-    {
-      status = DFUStatusCode::ERR_TARGET;
-      return 0u;
-    }
-    if (data.addr_ == nullptr || data.size_ == 0u)
-    {
-      status = DFUStatusCode::ERR_USBR;
-      return 0u;
-    }
-
-    if (block_num == 0u)
-    {
-      upload_.session_started = true;
-      upload_.offset = 0u;
-      upload_.expected_block_num = 1u;
-      size_t image_size = 0u;
-      if (image_.ready)
-      {
-        image_size = image_.stored_size;
-      }
-      else if (!ProbeStoredImage(&image_size))
-      {
-        image_size = 0u;
-      }
-      upload_.image_size = image_size;
-      if (upload_.image_size == 0u)
-      {
-        status = DFUStatusCode::ERR_FIRMWARE;
-        return 0u;
-      }
-    }
-    else if (!upload_.session_started || block_num != upload_.expected_block_num)
-    {
-      status = DFUStatusCode::ERR_ADDRESS;
-      return 0u;
-    }
-
-    if (upload_.offset >= upload_.image_size)
-    {
-      return 0u;
-    }
-
-    size_t read_size = upload_.image_size - upload_.offset;
-    if (read_size > data.size_)
-    {
-      read_size = data.size_;
-    }
-    if (flash_.Read(image_offset_ + upload_.offset,
-                    {reinterpret_cast<uint8_t*>(data.addr_), read_size}) != ErrorCode::OK)
-    {
-      status = DFUStatusCode::ERR_FIRMWARE;
-      return 0u;
-    }
-
-    upload_.offset += read_size;
-    upload_.expected_block_num = static_cast<uint16_t>(block_num + 1u);
-    return read_size;
-  }
+  /// 暂存 manifest（算 CRC、写 seal）/ Stage manifestation (CRC, seal)
+  DFUStatusCode DfuManifest(uint8_t alt, uint32_t& poll_timeout_ms);
+  /// manifest 的结果；busy 表示还在做 / Manifestation result; busy while it runs
+  DFUStatusCode DfuGetManifestStatus(uint8_t alt, bool& busy, uint32_t& poll_timeout_ms);
+  /// 主机确认了 GETSTATUS：STAGED 改为 READY / The host acknowledged GETSTATUS: STAGED
+  /// becomes READY
+  void AllowPendingWork();
+  /// 把 DONE 的结果并入会话状态并清空工作槽 / Fold a DONE result into the session and
+  /// empty the job slot
+  void CommitWorkResult();
+  /// 到 MANIFEST-WAIT-RESET 且主机确认：autorun 时登记启动 / Reached
+  /// MANIFEST-WAIT-RESET and acknowledged: record a launch when autorun is on
+  void DfuCommitManifestWaitReset(uint8_t alt);
+  /// @}
 
   /**
-   * @brief 启动 manifest 阶段 / Start the manifest stage
+   * @brief 执行放行的工作 / Run the released work
+   * @return 是否执行了 / Whether work ran
+   * @note 调用者：DFUClass::Process，应用的一个上下文；可能阻塞（擦写 Flash）。
+   *       Caller: DFUClass::Process, one application context; may block (flash
+   *       erase and program).
    */
-  DFUStatusCode DfuManifest(uint8_t alt, uint32_t& poll_timeout_ms)
-  {
-    poll_timeout_ms = 0u;
+  bool RunPendingWork();
 
-    if (alt != 0u)
-    {
-      return DFUStatusCode::ERR_TARGET;
-    }
-    if (!download_.session_started || download_.received_bytes == 0u || HasPendingWrite())
-    {
-      return DFUStatusCode::ERR_NOTDONE;
-    }
-    manifest_.pending = true;
-    manifest_.last_status = DFUStatusCode::OK;
-    poll_timeout_ms = manifest_.poll_timeout_ms;
-    return DFUStatusCode::OK;
-  }
-
-  /**
-   * @brief 查询 manifest 异步状态 / Query manifest async status
-   */
-  DFUStatusCode DfuGetManifestStatus(uint8_t alt, bool& busy, uint32_t& poll_timeout_ms)
-  {
-    if (alt != 0u)
-    {
-      busy = false;
-      poll_timeout_ms = 0u;
-      return DFUStatusCode::ERR_TARGET;
-    }
-    busy = HasPendingManifest();
-    poll_timeout_ms = busy ? manifest_.poll_timeout_ms : 0u;
-    return manifest_.last_status;
-  }
-
-  void Process()
-  {
-    // 这里仅推进协议自身拥有的异步工作；
-    // app launch 仍然保持为显式的板级/应用层策略决策。
-    // Only protocol-owned asynchronous work advances here;
-    // app launch remains an explicit board/application policy decision.
-    if (write_.pending)
-    {
-      ProcessPendingWrite();
-      return;
-    }
-    if (manifest_.pending)
-    {
-      ProcessPendingManifest();
-    }
-  }
-
-  bool TryRequestRunApp()
-  {
-    // Run-app 请求不修改 DFU 传输状态；它只记录一个待消费的镜像启动请求，
-    // 由外层 boot/application 循环决定何时真正跳转。
-    // The run-app request does not mutate DFU transfer state; it only records
-    // an image-backed launch request for the outer boot/application loop.
-    if (!image_.ready)
-    {
-      size_t image_size = 0u;
-      image_.ready = ProbeStoredImage(&image_size);
-      image_.stored_size = image_.ready ? image_size : 0u;
-    }
-    if (image_.ready)
-    {
-      image_.launch_requested = true;
-      return true;
-    }
-    return false;
-  }
-
-  void DfuCommitManifestWaitReset(uint8_t alt)
-  {
-    if (alt != 0u)
-    {
-      return;
-    }
-    if (autorun_ && image_.ready)
-    {
-      image_.launch_requested = true;
-    }
-  }
-
-  bool TryConsumeAppLaunch(uint32_t)
-  {
-    if (!image_.launch_requested || !image_.ready)
-    {
-      return false;
-    }
-    image_.launch_requested = false;
-    if (jump_to_app_ != nullptr)
-    {
-      jump_to_app_(jump_app_ctx_);
-    }
-    return true;
-  }
-
-  bool HasPendingWork() const { return HasPendingWrite() || HasPendingManifest(); }
-
-  bool HasValidImage() const { return image_.ready; }
-  size_t ImageSize() const { return image_.stored_size; }
+  /// @name 任何上下文 / Any context
+  /// @{
+  /// 请求启动应用；有未完成工作或没有镜像时拒绝 / Request a launch; refused while work
+  /// is pending or no image exists
+  bool TryRequestRunApp();
+  /// 有启动请求且条件满足时取走请求并跳转 / Take a launch request and jump when allowed
+  bool TryConsumeAppLaunch(uint32_t now_ms);
+  /// 工作槽是否非空 / Whether the job slot is not empty
+  bool HasPendingWork() const;
+  /// 是否有通过校验的镜像 / Whether a verified image exists
+  bool HasValidImage() const { return ImageSize() != 0U; }
+  /// 已校验镜像的字节数，没有为 0 / Bytes of the verified image, 0 without one
+  size_t ImageSize() const;
+  /// @}
 
  private:
-  // download/upload 只允许访问 seal 记录之前的 payload 区域。
-  // Download/upload only operate on the payload area before the seal record.
-  size_t PayloadLimit() const
-  {
-    if (seal_offset_ > image_size_limit_)
-    {
-      return 0u;
-    }
-    return seal_offset_;
-  }
-
-  static size_t NonZeroWriteSize(size_t write_size)
-  {
-    return (write_size == 0u) ? 1u : write_size;
-  }
-
-  static size_t AlignUp(size_t value, size_t align)
-  {
-    if (align <= 1u)
-    {
-      return value;
-    }
-    const size_t rem = value % align;
-    return (rem == 0u) ? value : (value + align - rem);
-  }
-
-  // 开启新的下载会话，并使之前缓存的镜像有效性视图失效。
-  // Start a fresh download session and invalidate any previously cached image view.
-  void StartDownloadSession()
-  {
-    ResetTransferState();
-    if (erase_block_count_ > 0u)
-    {
-      std::memset(erased_blocks_, 0, erase_block_count_);
-    }
-    download_.session_started = true;
-    image_.ready = false;
-    image_.stored_size = 0u;
-    image_.launch_requested = false;
-  }
-
-  void ResetTransferState()
-  {
-    // 这里只重置协议拥有的传输会话状态；
-    // 镜像有效性和启动策略单独放在 ImageState 里。
-    // Reset only protocol-owned transfer session state;
-    // image validity and launch policy are tracked separately in ImageState.
-    download_ = {};
-    write_ = {};
-    manifest_ = {};
-    upload_ = {};
-  }
-
-  bool HasPendingWrite() const { return write_.pending; }
-
-  bool HasPendingManifest() const { return manifest_.pending; }
-
-  // 为下一次 GETSTATUS 返回一个粗粒度的 host-visible poll timeout；
-  // 仍需擦除的块会比纯写入步骤报告更长的等待时间。
-  // Return a coarse host-visible poll timeout for the next GETSTATUS;
-  // blocks that still need erase are reported slower than pure program-only writes.
-  uint32_t ComputeWritePollTimeout(size_t offset, size_t len) const
-  {
-    const size_t first_block = offset / erase_block_size_;
-    const size_t last_block = (offset + len - 1u) / erase_block_size_;
-    for (size_t block = first_block; block <= last_block && block < erase_block_count_;
-         ++block)
-    {
-      if (erased_blocks_[block] == 0u)
-      {
-        return 25u;
-      }
-    }
-    return 10u;
-  }
-
-  // 执行一次延迟写入步骤：
-  // 1) 对新覆盖到的擦除块各擦一次
-  // 2) 再把刚收到的 payload 分片编程进去
-  // Execute one deferred write step:
-  // 1) erase each newly touched erase block once
-  // 2) program the just-received payload chunk
-  void ProcessPendingWrite()
-  {
-    if (!EnsureBlocksErased(write_.offset, write_.len))
-    {
-      download_.last_status = DFUStatusCode::ERR_ERASE;
-      write_.pending = false;
-      return;
-    }
-    if (flash_.Write(image_offset_ + write_.offset, {write_buffer_, write_.len}) !=
-        ErrorCode::OK)
-    {
-      download_.last_status = DFUStatusCode::ERR_PROG;
-      write_.pending = false;
-      return;
-    }
-
-    download_.received_bytes = write_.offset + write_.len;
-    download_.expected_block_num = static_cast<uint16_t>(write_.block_num + 1u);
-    download_.last_status = DFUStatusCode::OK;
-    write_.pending = false;
-  }
-
-  // 通过计算固定 CRC32 并写入 seal 记录来完成镜像定稿。
-  // Finalize the image by computing the fixed CRC32 and writing the seal record.
-  void ProcessPendingManifest()
-  {
-    const size_t payload_limit = PayloadLimit();
-    if (download_.received_bytes == 0u || download_.received_bytes > payload_limit)
-    {
-      manifest_.last_status = DFUStatusCode::ERR_ADDRESS;
-      manifest_.pending = false;
-      return;
-    }
-
-    uint32_t crc32 = 0u;
-    if (!ComputeImageCrc32(download_.received_bytes, crc32))
-    {
-      manifest_.last_status = DFUStatusCode::ERR_VERIFY;
-      manifest_.pending = false;
-      return;
-    }
-    if (!WriteSeal(download_.received_bytes, crc32))
-    {
-      manifest_.last_status = DFUStatusCode::ERR_VERIFY;
-      manifest_.pending = false;
-      return;
-    }
-
-    image_.stored_size = download_.received_bytes;
-    image_.ready = true;
-    image_.launch_requested = false;
-    manifest_.last_status = DFUStatusCode::OK;
-    download_.session_started = false;
-    download_.received_bytes = 0u;
-    download_.expected_block_num = 0u;
-    upload_.session_started = false;
-    upload_.offset = 0u;
-    upload_.expected_block_num = 0u;
-    upload_.image_size = 0u;
-    manifest_.pending = false;
-  }
-
-  // 计算 seal 记录使用的固定 CRC32，只覆盖 payload 区域。
-  // Compute the fixed CRC32 used by the seal record over the payload area only.
-  bool ComputeImageCrc32(size_t image_size, uint32_t& crc32_out)
-  {
-    uint32_t crc = 0xFFFFFFFFu;
-    size_t offset = 0u;
-    while (offset < image_size)
-    {
-      size_t chunk = image_size - offset;
-      if (chunk > sizeof(crc_buffer_))
-      {
-        chunk = sizeof(crc_buffer_);
-      }
-      if (flash_.Read(image_offset_ + offset, {crc_buffer_, chunk}) != ErrorCode::OK)
-      {
-        return false;
-      }
-      const uint8_t* buf = crc_buffer_;
-      size_t remain = chunk;
-      while (remain-- > 0u)
-      {
-        crc = LibXR::CRC32::tab_[(crc ^ *buf++) & 0xFFu] ^ (crc >> 8);
-      }
-      offset += chunk;
-    }
-    crc32_out = crc;
-    return true;
-  }
-
-  // 从 flash 中读取当前 seal 记录。
-  // Read the current seal record from flash.
-  bool ReadSeal(SealRecord& seal)
-  {
-    return flash_.Read(image_offset_ + seal_offset_, {reinterpret_cast<uint8_t*>(&seal),
-                                                      sizeof(seal)}) == ErrorCode::OK;
-  }
-
-  // Seal may share the last erase block with payload. Reuse the per-session
-  // erase map so manifest does not wipe a block that was already erased and
-  // partially programmed by DNLOAD payload chunks.
-  bool WriteSeal(size_t image_size, uint32_t crc32)
-  {
-    std::memset(seal_storage_, 0xFF, seal_storage_size_);
-    auto* seal = reinterpret_cast<SealRecord*>(seal_storage_);
-    seal->magic = SEAL_MAGIC;
-    seal->image_size = static_cast<uint32_t>(image_size);
-    seal->crc32 = crc32;
-    seal->crc32_inv = ~crc32;
-
-    if (!EnsureBlocksErased(seal_offset_, seal_storage_size_))
-    {
-      return false;
-    }
-    return flash_.Write(image_offset_ + seal_offset_,
-                        {seal_storage_, seal_storage_size_}) == ErrorCode::OK;
-  }
-
-  // 探测 flash 当前是否已有有效的已封印镜像，
-  // 并可选返回它记录的 payload 大小。
-  // Probe whether flash already contains a valid sealed image, and optionally
-  // return its stored payload size.
-  bool ProbeStoredImage(size_t* out_image_size)
-  {
-    SealRecord seal = {};
-    if (!ReadSeal(seal))
-    {
-      return false;
-    }
-    if (seal.magic != SEAL_MAGIC)
-    {
-      return false;
-    }
-    if ((seal.crc32 ^ seal.crc32_inv) != 0xFFFFFFFFu)
-    {
-      return false;
-    }
-    const size_t image_size = static_cast<size_t>(seal.image_size);
-    if (image_size == 0u || image_size > PayloadLimit())
-    {
-      return false;
-    }
-    uint32_t actual_crc = 0u;
-    if (!ComputeImageCrc32(image_size, actual_crc))
-    {
-      return false;
-    }
-    if (actual_crc != seal.crc32)
-    {
-      return false;
-    }
-    if (out_image_size != nullptr)
-    {
-      *out_image_size = image_size;
-    }
-    return true;
-  }
-
-  // 对 [offset, offset+len) 覆盖到的每个块，
-  // 在一次下载会话里最多只擦除一次。
-  // Erase every block touched by [offset, offset+len) at most once per
-  // download session.
-  bool EnsureBlocksErased(size_t offset, size_t len)
-  {
-    if (len == 0u)
-    {
-      return true;
-    }
-
-    const size_t first_block = offset / erase_block_size_;
-    const size_t last_block = (offset + len - 1u) / erase_block_size_;
-    if (last_block >= erase_block_count_)
-    {
-      return false;
-    }
-
-    for (size_t block = first_block; block <= last_block; ++block)
-    {
-      if (erased_blocks_[block] != 0u)
-      {
-        continue;
-      }
-      const size_t block_offset = block * erase_block_size_;
-      if (flash_.Erase(image_offset_ + block_offset, erase_block_size_) != ErrorCode::OK)
-      {
-        return false;
-      }
-      erased_blocks_[block] = 1u;
-    }
-    return true;
-  }
-
-  /**
-   * @brief 镜像级状态：独立于一次具体的 DFU 传输会话
-   *        Image-level state kept outside any single DFU transfer session.
-   */
-  struct ImageState
-  {
-    bool launch_requested = false;
-    bool ready = false;
-    size_t stored_size = 0u;
-  };
-
-  /**
-   * @brief Download 会话状态 / Download session state
-   */
+  /// 下载会话 / Download session
   struct DownloadState
   {
     bool session_started = false;
-    size_t received_bytes = 0u;
-    uint16_t expected_block_num = 0u;
-    uint32_t next_poll_timeout_ms = 0u;
+    size_t received_bytes = 0U;
+    uint16_t expected_block_num = 0U;
+    uint32_t next_poll_timeout_ms = 0U;
     DFUStatusCode last_status = DFUStatusCode::OK;
   };
 
-  /**
-   * @brief 延迟写入步骤状态 / Deferred write-step state
-   */
+  /// 一次写入 / One write step
   struct WriteState
   {
-    size_t offset = 0u;
-    size_t len = 0u;
-    uint16_t block_num = 0u;
+    size_t offset = 0U;
+    size_t len = 0U;
+    uint16_t block_num = 0U;
     bool pending = false;
   };
 
-  /**
-   * @brief Manifest 会话状态 / Manifest session state
-   */
+  /// manifest 会话 / Manifestation session
   struct ManifestState
   {
     bool pending = false;
-    uint32_t poll_timeout_ms = 50u;
+    uint32_t poll_timeout_ms = 50U;
     DFUStatusCode last_status = DFUStatusCode::OK;
   };
 
-  /**
-   * @brief Upload 会话状态 / Upload session state
-   */
+  /// 上传会话 / Upload session
   struct UploadState
   {
     bool session_started = false;
-    size_t offset = 0u;
-    uint16_t expected_block_num = 0u;
-    size_t image_size = 0u;
+    size_t offset = 0U;
+    uint16_t expected_block_num = 0U;
+    size_t image_size = 0U;
   };
 
-  Flash& flash_;                  ///< 底层 flash 设备 / Underlying flash device
-  size_t image_offset_ = 0u;      ///< 镜像区起始偏移 / Image base offset
-  size_t image_size_limit_ = 0u;  ///< 镜像区总边界 / Image region limit
-  size_t seal_offset_ = 0u;  ///< seal 相对镜像区偏移 / Seal offset inside image region
-  JumpCallback jump_to_app_ = nullptr;  ///< 跳 app 回调 / App jump callback
-  void* jump_app_ctx_ = nullptr;        ///< 跳转上下文 / Jump callback context
-  bool autorun_ = true;    ///< manifest 后是否自动请求运行 / Autorun after manifest
-  ImageState image_ = {};  ///< 镜像级状态 / Image-level state
-  size_t erase_block_size_ = 1u;      ///< 最小擦除粒度 / Minimum erase granularity
-  size_t erase_block_count_ = 0u;     ///< 受管块数量 / Number of tracked erase blocks
-  uint8_t* erased_blocks_ = nullptr;  ///< 每块擦除标记 / Per-block erase marks
-  size_t seal_storage_size_ = 0u;     ///< seal 暂存大小 / Seal scratch size
-  uint8_t* seal_storage_ = nullptr;   ///< seal 暂存区 / Seal scratch buffer
-  size_t transfer_size_ = 0u;         ///< 单次 DFU 传输上限 / Per-transfer DFU limit
-  uint8_t* write_buffer_ = nullptr;   ///< 下载块暂存区 / Download chunk buffer
+  /// 工作种类 / Kind of work
+  enum class WorkKind : uint8_t
+  {
+    WRITE,
+    MANIFEST
+  };
+
+  /// 一份工作：owner 在 STAGED 之前写，RunPendingWork 在 READY 之后读 / One job:
+  /// written by the owner before STAGED, read by RunPendingWork after READY
+  struct Work
+  {
+    WorkKind kind = WorkKind::WRITE;
+    WriteState write{};
+    size_t image_size = 0U;
+  };
+
+  static constexpr uint32_t EMPTY = 0U, STAGED = 1U, READY = 2U, RUNNING = 3U, DONE = 4U;
+  static constexpr uint32_t CANCELLED = 0x80000000U;
+  static constexpr uint32_t MIN_WRITE_POLL_MS = 10U;     ///< 报告下限 / Lower bound
+  static constexpr uint32_t MAX_WRITE_POLL_MS = 1000U;   ///< 报告上限 / Upper bound
+  static constexpr uint32_t MIN_REMAINING_POLL_MS = 5U;  ///< 剩余下限 / Remaining floor
+
+  /// 镜像上限：seal 之前的字节数 / Image limit: the bytes before the seal
+  size_t PayloadLimit() const;
+  /// 块 0：清传输状态和擦除表，旧镜像和启动请求作废 / Block 0: clear the transfer
+  /// state and the erase map; the old image and launch request become void
+  void StartDownloadSession();
+  /// 清下载、写入、manifest、上传四个会话 / Clear the download, write, manifest and
+  /// upload sessions
+  void ResetTransferState();
+  /// 这一块要不要擦除，返回对应的实测耗时 / Whether this block erases; returns the
+  /// matching measured duration
+  uint32_t ComputeWritePollTimeout(size_t offset, size_t len);
+  /// 写入还剩的估计时间 / Estimated time left for the write
+  uint32_t RemainingWriteTime() const;
+  /// 从 Flash 读回镜像算 CRC32 / Read the image back from flash and compute its CRC32
+  bool ComputeImageCrc32(size_t image_size, uint32_t& crc32_out);
+  /// 读 seal 记录 / Read the seal record
+  bool ReadSeal(SealRecord& seal);
+  /// 写 seal 记录 / Write the seal record
+  bool WriteSeal(size_t image_size, uint32_t crc32);
+  /// 检查 Flash 里的 seal 和 CRC / Check the seal and CRC in flash
+  bool ProbeStoredImage(size_t* out_image_size);
+  /// 擦除区间覆盖的块，每会话每块一次 / Erase the blocks of a range, once per block
+  /// and session
+  bool EnsureBlocksErased(size_t offset, size_t len);
+  /// 作废工作槽里的工作 / Void the work in the job slot
+  void CancelWork();
+  /// 每次 Flash 调用之前：工作没被作废 / Before each flash call: the work is not void
+  bool BeginFlashStep();
+
+  /// @name 构造时固定 / Fixed at construction
+  /// @{
+  Flash& flash_;                     ///< 镜像所在 Flash / Flash of the image
+  size_t image_offset_;              ///< 镜像区起点 / Image region start
+  size_t image_size_limit_;          ///< 镜像区字节数 / Image region bytes
+  size_t seal_offset_;               ///< seal 偏移 / Seal offset
+  JumpFun jump_to_app_;              ///< 跳转函数 / Jump function
+  void* jump_app_ctx_;               ///< 跳转参数 / Jump argument
+  bool autorun_;                     ///< manifest 后自动启动 / Launch after manifestation
+  size_t erase_block_size_ = 1U;     ///< 擦除块大小 / Erase block size
+  size_t erase_block_count_ = 0U;    ///< 擦除块个数 / Erase block count
+  size_t seal_storage_size_ = 0U;    ///< seal 按写入粒度对齐的长度 / Aligned seal size
+  uint8_t* seal_storage_ = nullptr;  ///< seal 暂存，工作中写 / Seal scratch, work only
+  size_t transfer_size_ = 0U;        ///< 一块的上限 / Largest block
+  /// 暂存的块；owner 在 STAGED 之前写，工作中读 / The staged block; written by the
+  /// owner before STAGED, read by the work
+  uint8_t* write_buffer_ = nullptr;
+  /// @}
+
+  /// @name 仅 owner / Owner only
+  /// @{
+  DownloadState download_{};
+  WriteState write_{};
+  ManifestState manifest_{};
+  UploadState upload_{};
+  Work job_{};
+  /// @}
+
+  /// @name owner 与 RunPendingWork 之间，按 job_state_ 交接 / Between the owner and
+  ///       RunPendingWork, handed over through job_state_
+  /// @{
+  std::atomic<uint32_t> job_state_{EMPTY};
+  uint32_t job_started_ms_ = 0U;    ///< 当前步骤开始时刻 / Start of the current step
+  bool write_needs_erase_ = false;  ///< 当前写入要擦除 / The current write erases
+  uint32_t measured_erase_write_ms_ = 25U;  ///< 上次擦除+编程 / Last erase+program
+  uint32_t measured_write_ms_ = 10U;        ///< 上次只编程 / Last program only
+  DFUStatusCode job_result_ = DFUStatusCode::OK;
+  uint8_t* erased_blocks_ = nullptr;  ///< 每块是否已擦 / Per-block erase marks
   uint8_t crc_buffer_[256] = {};      ///< CRC 分块缓冲 / CRC chunk buffer
-  DownloadState download_ = {};       ///< Download 状态 / Download state
-  WriteState write_ = {};             ///< 写入步骤状态 / Write-step state
-  ManifestState manifest_ = {};       ///< Manifest 状态 / Manifest state
-  UploadState upload_ = {};           ///< Upload 状态 / Upload state
+  /// @}
+
+  /// @name 任何上下文 / Any context
+  /// @{
+  /**
+   * @brief 已校验镜像的字节数，0 为没有 / Bytes of the verified image, 0 for none
+   * @note owner 写（新会话清零、manifest 成功写入）；任何上下文读。
+   *       Written by the owner (cleared by a new session, set by a successful
+   *       manifestation); read anywhere.
+   */
+  std::atomic<size_t> published_image_size_{0U};
+  /**
+   * @brief 有启动请求 / A launch is requested
+   * @note 置位：RUN_APP 完成、autorun 的 WAIT_RESET 确认（owner）或 TryRequestRunApp；
+   *       清零：新的下载会话（owner）；TryConsumeAppLaunch 取走。
+   *       Set by a completed RUN_APP, an acknowledged autorun WAIT_RESET (owner) or
+   *       TryRequestRunApp; cleared by a new download session (owner); taken by
+   *       TryConsumeAppLaunch.
+   */
+  std::atomic<uint32_t> launch_request_{0U};
+  /// @}
 };
 
 /**
- * @brief 通用 DFU 前端：实现标准 DFU 状态机，backend 只负责存储细节
- *        Generic DFU frontend: implements the standard DFU state machine while
- *        the backend handles storage details only.
+ * @class DFUClass
+ * @brief DFU 模式的前端：标准 DFU 状态机，后端只管存储 / DFU-mode frontend: the
+ *        standard DFU state machine, the backend only handles storage
+ *
+ * 只用 EP0。DNLOAD 的数据由核心收齐后经 OnControlData 交给后端暂存；GETSTATUS 的状态
+ * 阶段完成（OnControlComplete）才放行后端的擦写，擦写在应用调用 Process() 的上下文里
+ * 执行，结果经 RequestService 由 owner 在 OnService 中取回。
+ * EP0 only. The core receives the DNLOAD data in full and OnControlData hands it to the
+ * backend to stage; only the completed status stage of GETSTATUS (OnControlComplete)
+ * releases the backend's flash work, which runs in the context that calls Process(),
+ * and the owner collects the result in OnService after RequestService.
+ *
+ * @tparam Backend 后端，需提供 DfuBootloaderBackend 的"前端调用"组和 RunPendingWork /
+ *         The backend, providing the "called by the frontend" group of
+ *         DfuBootloaderBackend and RunPendingWork
+ * @tparam MAX_TRANSFER_SIZE wTransferSize 上限，也是 UPLOAD 缓冲和控制 OUT 缓冲的大小
+ *         / Upper bound of wTransferSize, also the size of the UPLOAD buffer and of the
+ *         control OUT buffer
+ * @note 除 Process() 外只在设备的 owner 中运行。
+ *       Apart from Process(), runs in the device's owner only.
  */
-template <typename Backend, size_t MAX_TRANSFER_SIZE = 4096u>
+template <typename Backend, size_t MAX_TRANSFER_SIZE = 4096U>
 class DFUClass : public DfuInterfaceClassBase
 {
-  static_assert(MAX_TRANSFER_SIZE > 0u, "DFU transfer size must be non-zero.");
-  static_assert(MAX_TRANSFER_SIZE <= 0xFFFFu,
-                "DFU transfer size must fit in wTransferSize.");
-
-  static constexpr uint8_t INTERFACE_CLASS = 0xFEu;
-  static constexpr uint8_t INTERFACE_SUB_CLASS = 0x01u;
-  static constexpr uint8_t INTERFACE_PROTOCOL = 0x02u;
-  static constexpr uint16_t DFU_VERSION = 0x0110u;
-
-  static constexpr uint8_t ATTR_CAN_DOWNLOAD = 0x01u;
-  static constexpr uint8_t ATTR_CAN_UPLOAD = 0x02u;
-  static constexpr uint8_t ATTR_MANIFESTATION_TOLERANT = 0x04u;
-  static constexpr uint8_t ATTR_WILL_DETACH = 0x08u;
+  static_assert(MAX_TRANSFER_SIZE > 0U, "DFU transfer size must be non-zero.");
+  static_assert(MAX_TRANSFER_SIZE <= 0xFFFFU, "DFU transfer size must fit in 16 bits.");
 
  public:
-  LIBXR_PACKED_BEGIN
-  /**
-   * @brief DFU Functional Descriptor（固件模式）
-   *        DFU Functional Descriptor for firmware mode.
-   */
-  struct FunctionalDescriptor
-  {
-    uint8_t bLength = 9;
-    uint8_t bDescriptorType = 0x21;
-    uint8_t bmAttributes = 0;
-    uint16_t wDetachTimeOut = 0;
-    uint16_t wTransferSize = 0;
-    uint16_t bcdDFUVersion = DFU_VERSION;
-  };
-
-  /**
-   * @brief GETSTATUS 返回包 / GETSTATUS response payload
-   */
-  struct StatusResponse
-  {
-    uint8_t bStatus = 0;
-    uint8_t bwPollTimeout[3] = {0, 0, 0};
-    uint8_t bState = 0;
-    uint8_t iString = 0;
-
-    void SetPollTimeout(uint32_t timeout_ms)
-    {
-      bwPollTimeout[0] = static_cast<uint8_t>(timeout_ms & 0xFFu);
-      bwPollTimeout[1] = static_cast<uint8_t>((timeout_ms >> 8) & 0xFFu);
-      bwPollTimeout[2] = static_cast<uint8_t>((timeout_ms >> 16) & 0xFFu);
-    }
-  };
-
-  /**
-   * @brief Bootloader DFU 的接口描述符块 / Bootloader DFU descriptor block
-   */
-  struct DescriptorBlock
-  {
-    ConfigDescriptorItem::InterfaceDescriptor interface_desc = {
-        9,
-        static_cast<uint8_t>(DescriptorType::INTERFACE),
-        0,
-        0,
-        0,
-        INTERFACE_CLASS,
-        INTERFACE_SUB_CLASS,
-        INTERFACE_PROTOCOL,
-        0};
-    FunctionalDescriptor func_desc = {};
-  };
-  LIBXR_PACKED_END
-
-  static_assert(sizeof(FunctionalDescriptor) == 9,
-                "DFU functional descriptor size mismatch.");
-  static_assert(sizeof(StatusResponse) == 6, "DFU status response size mismatch.");
-
- public:
+  /// 默认接口字符串 / Default interface string
   static constexpr const char* DEFAULT_INTERFACE_STRING = "XRUSB DFU";
-  static constexpr const char* DEFAULT_WINUSB_DEVICE_INTERFACE_GUID =
-      DfuInterfaceClassBase::DEFAULT_WINUSB_DEVICE_INTERFACE_GUID;
-  static constexpr uint8_t DEFAULT_WINUSB_VENDOR_CODE =
-      DfuInterfaceClassBase::DEFAULT_WINUSB_VENDOR_CODE;
 
   /**
-   * @brief Backend 需要满足的接口契约 / Backend contract requirements
-   *
-   * - `DFUCapabilities GetDfuCapabilities() const`
-   * - `ErrorCode DfuSetAlternate(uint8_t alt)`
-   * - `void DfuAbort(uint8_t alt)`
-   * - `void DfuClearStatus(uint8_t alt)`
-   * - `DFUStatusCode DfuDownload(uint8_t alt, uint16_t block_num, ConstRawData data,
-   *                              uint32_t& poll_timeout_ms)`
-   * - `DFUStatusCode DfuGetDownloadStatus(uint8_t alt, bool& busy,
-   *                                       uint32_t& poll_timeout_ms)`
-   * - `size_t DfuUpload(uint8_t alt, uint16_t block_num, RawData data,
-   *                     DFUStatusCode& status, uint32_t& poll_timeout_ms)`
-   * - `DFUStatusCode DfuManifest(uint8_t alt, uint32_t& poll_timeout_ms)`
-   * - `DFUStatusCode DfuGetManifestStatus(uint8_t alt, bool& busy,
-   *                                       uint32_t& poll_timeout_ms)`
+   * @brief 构造 / Construct
+   * @param backend 后端，须已构造 / The backend, already constructed
+   * @param interface_string 接口字符串 / Interface string
+   * @param webusb_landing_page_url WebUSB 落地页；nullptr 不启用 / WebUSB landing page;
+   *        nullptr disables it
+   * @param webusb_vendor_code WebUSB 厂商请求码 / WebUSB vendor request code
+   * @param winusb_device_interface_guid WinUSB GUID；nullptr 或空串不请求绑定 / WinUSB
+   *        GUID; nullptr or "" requests no binding
+   * @note 读一次后端能力，写功能描述符。
+   *       Reads the backend's capabilities once and writes the functional descriptor.
    */
   explicit DFUClass(
       Backend& backend, const char* interface_string = DEFAULT_INTERFACE_STRING,
       const char* webusb_landing_page_url = nullptr,
-      uint8_t webusb_vendor_code = LibXR::USB::WebUsb::WEBUSB_VENDOR_CODE_DEFAULT,
-      const char* winusb_device_interface_guid = DEFAULT_WINUSB_DEVICE_INTERFACE_GUID,
-      uint8_t winusb_vendor_code = DEFAULT_WINUSB_VENDOR_CODE)
-      : DfuInterfaceClassBase(interface_string, webusb_landing_page_url,
-                              webusb_vendor_code, winusb_device_interface_guid,
-                              winusb_vendor_code),
-        backend_(backend)
+      uint8_t webusb_vendor_code = WebUsb::WEBUSB_VENDOR_CODE_DEFAULT,
+      const char* winusb_device_interface_guid = DEFAULT_WINUSB_DEVICE_INTERFACE_GUID)
+      : DfuInterfaceClassBase(interface_string, PROTOCOL_DFU_MODE,
+                              webusb_landing_page_url, webusb_vendor_code,
+                              winusb_device_interface_guid),
+        backend_(backend),
+        caps_(ClampCapabilities(backend.GetDfuCapabilities()))
   {
+    functional_.bmAttributes = static_cast<uint8_t>(
+        (caps_.can_download ? ATTR_CAN_DOWNLOAD : 0U) |
+        (caps_.can_upload ? ATTR_CAN_UPLOAD : 0U) |
+        (caps_.manifestation_tolerant ? ATTR_MANIFESTATION_TOLERANT : 0U) |
+        (caps_.will_detach ? ATTR_WILL_DETACH : 0U));
+    functional_.wDetachTimeOut = caps_.detach_timeout_ms;
+    functional_.wTransferSize = caps_.transfer_size;
+  }
+
+  /**
+   * @brief 执行后端放行的擦写或校验 / Run the erase/program or check the backend
+   *        released
+   * @note 应用主循环周期调用，一个上下文，可能阻塞。执行了就 RequestService，owner 在
+   *       OnService 里取回结果，下一个 GETSTATUS 看到它。
+   *       Called periodically by the application loop, from one context; may block. When
+   *       work ran it calls RequestService; the owner collects the result in OnService
+   *       and the next GETSTATUS sees it.
+   */
+  void Process()
+  {
+    if (backend_.RunPendingWork())
+    {
+      RequestService(false);
+    }
   }
 
  protected:
-  void BindEndpoints(EndpointPool&, uint8_t start_itf_num, bool) override
+  /// @name DeviceClass 的实现 / DeviceClass implementation
+  /// @{
+
+  /// 记下接口号，协议状态回到 DFU_IDLE，后端选 alt 0 / Record the interface number,
+  /// protocol state back to DFU_IDLE, the backend selects alt 0
+  [[nodiscard]] ErrorCode BindEndpoints(EndpointPool& pool, uint8_t first_interface,
+                                        bool in_isr) override
   {
-    // 固件态 DFU 在绑定阶段发布单接口描述符，并校验 backend 能力。
-    // Firmware DFU publishes one interface and validates backend capabilities during
-    // bind.
-    interface_num_ = start_itf_num;
-    current_alt_setting_ = 0u;
-
-    caps_ = backend_.GetDfuCapabilities();
-    if (caps_.transfer_size == 0u || caps_.transfer_size > MAX_TRANSFER_SIZE)
-    {
-      caps_.transfer_size = static_cast<uint16_t>(MAX_TRANSFER_SIZE);
-    }
-
-    desc_block_.interface_desc.bInterfaceNumber = interface_num_;
-    desc_block_.interface_desc.bAlternateSetting = 0u;
-    desc_block_.interface_desc.iInterface = GetInterfaceStringIndex(0u);
-    desc_block_.func_desc.bmAttributes = BuildAttributeBitmap(caps_);
-    desc_block_.func_desc.wDetachTimeOut = caps_.detach_timeout_ms;
-    desc_block_.func_desc.wTransferSize = caps_.transfer_size;
-    desc_block_.func_desc.bcdDFUVersion = DFU_VERSION;
-
-    SetData(RawData{reinterpret_cast<uint8_t*>(&desc_block_), sizeof(desc_block_)});
-
-    ResetProtocolState();
-    auto ec = backend_.DfuSetAlternate(current_alt_setting_);
-    if (ec != ErrorCode::OK)
-    {
-      inited_ = false;
-      return;
-    }
-    inited_ = true;
+    UNUSED(pool);
+    UNUSED(in_isr);
+    interface_ = first_interface;
+    ClearErrorState();
+    return backend_.DfuSetAlternate(ALT_SETTING);
   }
 
-  void UnbindEndpoints(EndpointPool&, bool) override
+  /// 后端放弃会话（作废工作），协议状态回到 DFU_IDLE / The backend drops the session
+  /// (voids the work), protocol state back to DFU_IDLE
+  void UnbindEndpoints(EndpointPool& pool, bool in_isr) override
   {
-    if (inited_)
-    {
-      // 解绑时先把 backend 置回 abort 状态，
-      // 这样下一次绑定总是从干净的协议会话开始。
-      // Unbind must leave the backend in an aborted state so the next bind
-      // always starts from a clean protocol session.
-      backend_.DfuAbort(current_alt_setting_);
-    }
-    inited_ = false;
-    ResetProtocolState();
+    UNUSED(pool);
+    UNUSED(in_isr);
+    backend_.DfuAbort(ALT_SETTING);
+    ClearErrorState();
   }
 
-  size_t GetInterfaceCount() override { return 1u; }
-  bool HasIAD() override { return false; }
-  size_t GetMaxConfigSize() override { return sizeof(desc_block_); }
-  ErrorCode WriteDeviceDescriptor(DeviceDescriptor& header) override
+  /// 单功能设备：设备类改为 0xFE/1/2 / Single-function device: device class 0xFE/1/2
+  ErrorCode WriteDeviceDescriptor(DeviceDescriptor& descriptor) override
   {
-    header.data_.bDeviceClass = DeviceDescriptor::ClassID::APPLICATION_SPECIFIC;
-    header.data_.bDeviceSubClass = INTERFACE_SUB_CLASS;
-    header.data_.bDeviceProtocol = INTERFACE_PROTOCOL;
+    descriptor.data_.bDeviceClass = DeviceDescriptor::ClassID::APPLICATION_SPECIFIC;
+    descriptor.data_.bDeviceSubClass = 0x01U;
+    descriptor.data_.bDeviceProtocol = PROTOCOL_DFU_MODE;
     return ErrorCode::OK;
   }
 
-  ErrorCode SetAltSetting(uint8_t itf, uint8_t alt) override
+  /// 控制 OUT 缓冲至少 MAX_TRANSFER_SIZE / Control OUT buffer of at least
+  /// MAX_TRANSFER_SIZE
+  size_t GetControlReceiveCapacity() const override { return MAX_TRANSFER_SIZE; }
+
+  /**
+   * @brief SET_INTERFACE / SET_INTERFACE
+   * @return OK：alt 0，放弃会话、清错误；NOT_SUPPORT：alt 非 0；BUSY：DNBUSY、MANIFEST、
+   *         MANIFEST-WAIT-RESET 中。
+   *         OK: alt 0, the session is dropped and the error cleared; NOT_SUPPORT: a
+   *         non-zero alt; BUSY: in DNBUSY, MANIFEST or MANIFEST-WAIT-RESET.
+   */
+  ErrorCode SetAltSetting(bool in_isr, uint8_t itf, uint8_t alt) override
   {
-    if (itf != interface_num_)
-    {
-      return ErrorCode::NOT_FOUND;
-    }
-    if (alt != 0u)
+    UNUSED(in_isr);
+    UNUSED(itf);
+    if (alt != ALT_SETTING)
     {
       return ErrorCode::NOT_SUPPORT;
     }
     if (state_ == DFUState::DFU_DNBUSY || state_ == DFUState::DFU_MANIFEST ||
         state_ == DFUState::DFU_MANIFEST_WAIT_RESET)
     {
-      // 协议仍处于非空闲阶段时，不允许切换 alternate setting。
-      // Alternate setting cannot change while the protocol is in a non-idle phase.
       return ErrorCode::BUSY;
     }
-
-    auto ec = backend_.DfuSetAlternate(alt);
-    if (ec != ErrorCode::OK)
+    const ErrorCode result = backend_.DfuSetAlternate(alt);
+    if (result != ErrorCode::OK)
     {
-      return ec;
+      return result;
     }
-
-    backend_.DfuAbort(current_alt_setting_);
-    current_alt_setting_ = alt;
+    backend_.DfuAbort(ALT_SETTING);
     ClearErrorState();
     return ErrorCode::OK;
   }
 
-  ErrorCode GetAltSetting(uint8_t itf, uint8_t& alt) override
+  /**
+   * @brief DFU 类请求的 SETUP 阶段 / SETUP stage of a DFU class request
+   * @return 形状不对（见 CheckClassRequest）时 NOT_SUPPORT 或 ARG_ERR，不改状态。
+   *         DNBUSY、MANIFEST 中，主机等够 bwPollTimeout 之前的任何请求都被拒绝并进入
+   *         DFU_ERROR；等够之后转到对应的 SYNC 状态再处理。协议上不允许的请求进入
+   *         DFU_ERROR 并返回 ARG_ERR（核心 STALL）。
+   *         NOT_SUPPORT or ARG_ERR for a wrong shape (see CheckClassRequest), without a
+   *         state change. In DNBUSY and MANIFEST any request before the host has waited
+   *         bwPollTimeout is refused and enters DFU_ERROR; after it the state moves to
+   *         the matching SYNC state and the request is handled. A request the protocol
+   *         does not allow enters DFU_ERROR and returns ARG_ERR (the core stalls).
+   * @note in_data 指向 status_response_、state_response_ 或 transfer_buffer_，它们只在
+   *       下一个同类请求时改写。
+   *       in_data points to status_response_, state_response_ or transfer_buffer_, which
+   *       change only at the next request of the same kind.
+   */
+  ErrorCode OnControlRequest(bool in_isr, const SetupPacket& setup,
+                             ConstRawData& in_data) override
   {
-    if (itf != interface_num_)
+    UNUSED(in_isr);
+    const ErrorCode check = CheckClassRequest(setup);
+    if (check != ErrorCode::OK)
     {
-      return ErrorCode::NOT_FOUND;
+      return check;
     }
-    alt = current_alt_setting_;
-    return ErrorCode::OK;
-  }
-
-  ErrorCode OnGetDescriptor(bool, uint8_t, uint16_t wValue, uint16_t,
-                            ConstRawData& out_data) override
-  {
-    const uint8_t desc_type = static_cast<uint8_t>((wValue >> 8) & 0xFFu);
-    if (desc_type != desc_block_.func_desc.bDescriptorType)
+    if (state_ == DFUState::DFU_DNBUSY || state_ == DFUState::DFU_MANIFEST)
     {
-      return ErrorCode::NOT_SUPPORT;
+      const uint32_t now = static_cast<uint32_t>(Timebase::GetMilliseconds());
+      if (!poll_waiting_ || static_cast<int32_t>(now - poll_deadline_) < 0)
+      {
+        return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
+      }
+      state_ = (state_ == DFUState::DFU_DNBUSY) ? DFUState::DFU_DNLOAD_SYNC
+                                                : DFUState::DFU_MANIFEST_SYNC;
+      poll_waiting_ = false;
     }
-
-    out_data = {reinterpret_cast<const uint8_t*>(&desc_block_.func_desc),
-                sizeof(desc_block_.func_desc)};
-    return ErrorCode::OK;
-  }
-
-  ErrorCode OnClassRequest(bool, uint8_t bRequest, uint16_t wValue, uint16_t wLength,
-                           uint16_t wIndex, ControlTransferResult& result) override
-  {
-    if (!inited_)
+    switch (static_cast<DFURequest>(setup.bRequest))
     {
-      return ErrorCode::INIT_ERR;
-    }
-    if ((wIndex & 0xFFu) != interface_num_)
-    {
-      return ErrorCode::NOT_FOUND;
-    }
-
-    switch (static_cast<DFURequest>(bRequest))
-    {
-      case DFURequest::DETACH:
-        return HandleDetach(result);
-
       case DFURequest::DNLOAD:
-        return HandleDnload(wValue, wLength, result);
-
+        return HandleDnload(setup);
       case DFURequest::UPLOAD:
-        return HandleUpload(wValue, wLength, result);
-
+        return HandleUpload(setup, in_data);
       case DFURequest::GETSTATUS:
-        return HandleGetStatus(result);
-
+        return HandleGetStatus(in_data);
       case DFURequest::CLRSTATUS:
-        return HandleClearStatus(result);
-
+        if (state_ != DFUState::DFU_ERROR)
+        {
+          return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
+        }
+        backend_.DfuClearStatus(ALT_SETTING);
+        ClearErrorState();
+        return ErrorCode::OK;
       case DFURequest::GETSTATE:
-        return HandleGetState(result);
-
+        state_response_ = static_cast<uint8_t>(state_);
+        in_data = {&state_response_, sizeof(state_response_)};
+        return ErrorCode::OK;
       case DFURequest::ABORT:
-        return HandleAbort(result);
-
+        return HandleAbort();
+      case DFURequest::DETACH:  // 属于运行时类 / Belongs to the runtime class
       default:
         return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
     }
   }
 
-  ErrorCode OnClassData(bool, uint8_t bRequest, LibXR::ConstRawData& data) override
+  /**
+   * @brief DNLOAD 的数据阶段收齐 / The DNLOAD data stage arrived in full
+   * @return OK：块交给了后端（后端拒绝时进入 DFU_ERROR，仍返回 OK，主机从 GETSTATUS
+   *         看到）；ARG_ERR：收到的字节数不等于 wLength（短包），进入 DFU_ERROR。
+   *         OK: the block went to the backend (a backend refusal enters DFU_ERROR and
+   *         still returns OK; the host sees it in GETSTATUS); ARG_ERR: the bytes
+   *         received differ from wLength (a short packet), DFU_ERROR is entered.
+   * @note 块号就是 setup.wValue，长度就是 setup.wLength，类不另存。
+   *       The block number is setup.wValue and the length setup.wLength; the class
+   *       stores neither.
+   */
+  ErrorCode OnControlData(bool in_isr, const SetupPacket& setup,
+                          ConstRawData data) override
   {
-    const auto request = static_cast<DFURequest>(bRequest);
-    UNUSED(data);
-
-    if (request != DFURequest::DNLOAD)
+    UNUSED(in_isr);
+    if (setup.bRequest != static_cast<uint8_t>(DFURequest::DNLOAD))
     {
       return ErrorCode::NOT_SUPPORT;
     }
-
-    if (pending_dnload_length_ == 0u)
+    // 短包意味着块被截断，按整块写会把垃圾写进 Flash。
+    // A short packet means a truncated block; writing it as a whole block would put
+    // garbage into the flash.
+    if (data.size_ != setup.wLength)
     {
-      // 这里出现零长度 OUT data stage 只在“DNLOAD 已结束”的路径上才是合法的。
-      // A zero-length OUT data stage is legal here only for the already-finished
-      // DNLOAD path.
-      return ErrorCode::OK;
+      EnterErrorState(DFUStatusCode::ERR_STALLEDPKT);
+      return ErrorCode::ARG_ERR;
     }
-
-    uint32_t poll_timeout_ms = 0u;
-    auto status = backend_.DfuDownload(current_alt_setting_, pending_block_num_, data,
-                                       poll_timeout_ms);
-    pending_dnload_length_ = 0u;
+    uint32_t poll_timeout_ms = 0U;
+    const DFUStatusCode status =
+        backend_.DfuDownload(ALT_SETTING, setup.wValue, data, poll_timeout_ms);
     poll_timeout_ms_ = poll_timeout_ms;
-
-    if (status == DFUStatusCode::OK)
-    {
-      state_ = DFUState::DFU_DNLOAD_SYNC;
-      status_ = DFUStatusCode::OK;
-      download_started_ = true;
-    }
-    else
+    if (status != DFUStatusCode::OK)
     {
       EnterErrorState(status);
+      return ErrorCode::OK;
     }
+    state_ = DFUState::DFU_DNLOAD_SYNC;
+    status_ = DFUStatusCode::OK;
     return ErrorCode::OK;
   }
 
-  void OnClassInDataStatusComplete(bool, uint8_t bRequest) override
+  /**
+   * @brief 状态阶段完成 / A status stage completed
+   * @note 只看 GETSTATUS：应答为 DNBUSY 或 MANIFEST 时放行后端工作；为
+   *       MANIFEST-WAIT-RESET 时让后端登记 autorun。应答被主机确认之前不放行，主机没
+   *       收到的应答不触发任何工作。
+   *       Only GETSTATUS matters: an answer of DNBUSY or MANIFEST releases the backend
+   *       work; MANIFEST-WAIT-RESET lets the backend record autorun. Nothing is released
+   *       before the host acknowledged the answer, so an answer the host never got
+   *       starts no work.
+   */
+  void OnControlComplete(bool in_isr, const SetupPacket& setup) override
   {
-    if (static_cast<DFURequest>(bRequest) != DFURequest::GETSTATUS)
+    UNUSED(in_isr);
+    if ((setup.bmRequestType & REQ_TYPE_MASK) !=
+            static_cast<uint8_t>(RequestType::CLASS) ||
+        setup.bRequest != static_cast<uint8_t>(DFURequest::GETSTATUS))
     {
       return;
     }
-    if (state_ == DFUState::DFU_MANIFEST_WAIT_RESET)
+    if (state_ == DFUState::DFU_DNBUSY || state_ == DFUState::DFU_MANIFEST)
     {
-      // 只有在主机完成了报告 MANIFEST-WAIT-RESET 的那笔 GETSTATUS 的 STATUS OUT 后，
-      // 才真正提交 autorun。
-      // Commit autorun only after the host completes the STATUS OUT of the
-      // GETSTATUS request that reported MANIFEST-WAIT-RESET.
-      backend_.DfuCommitManifestWaitReset(current_alt_setting_);
+      backend_.AllowPendingWork();
+    }
+    else if (state_ == DFUState::DFU_MANIFEST_WAIT_RESET)
+    {
+      backend_.DfuCommitManifestWaitReset(ALT_SETTING);
     }
   }
 
+  /**
+   * @brief 被接受的传输没有完成 / An accepted transfer did not complete
+   * @note 只看 DNLOAD：后端放弃会话（暂存的块作废）；已进入 DFU_ERROR 的（数据阶段
+   *       出错后的 STALL）保留错误给 GETSTATUS，否则回到 DFU_IDLE。
+   *       Only DNLOAD matters: the backend drops the session (a staged block is voided);
+   *       a transfer that already entered DFU_ERROR (the stall after a bad data stage)
+   *       keeps the error for GETSTATUS, otherwise the state returns to DFU_IDLE.
+   */
+  void OnControlAbort(bool in_isr, const SetupPacket& setup) override
+  {
+    UNUSED(in_isr);
+    if ((setup.bmRequestType & REQ_TYPE_MASK) !=
+            static_cast<uint8_t>(RequestType::CLASS) ||
+        setup.bRequest != static_cast<uint8_t>(DFURequest::DNLOAD))
+    {
+      return;
+    }
+    backend_.DfuAbort(ALT_SETTING);
+    if (state_ != DFUState::DFU_ERROR)
+    {
+      ClearErrorState();
+    }
+  }
+
+  /// 取回后端完成的工作 / Collect the backend's finished work
+  void OnService(bool in_isr) override
+  {
+    UNUSED(in_isr);
+    backend_.CommitWorkResult();
+  }
+  /// @}
+
  private:
-  static constexpr uint8_t BuildAttributeBitmap(const DFUCapabilities& caps)
+  /// 本类只支持的备用设置 / The only alternate setting this class supports
+  static constexpr uint8_t ALT_SETTING = 0U;
+  static constexpr uint8_t PROTOCOL_DFU_MODE = 0x02U;
+  static constexpr uint8_t ATTR_CAN_DOWNLOAD = 0x01U;
+  static constexpr uint8_t ATTR_CAN_UPLOAD = 0x02U;
+  static constexpr uint8_t ATTR_MANIFESTATION_TOLERANT = 0x04U;
+  static constexpr uint8_t ATTR_WILL_DETACH = 0x08U;
+
+  /// wTransferSize 为 0 或超过 MAX_TRANSFER_SIZE 时取 MAX_TRANSFER_SIZE / wTransferSize
+  /// becomes MAX_TRANSFER_SIZE when 0 or above it
+  static DFUCapabilities ClampCapabilities(DFUCapabilities caps)
   {
-    return static_cast<uint8_t>(
-        (caps.can_download ? ATTR_CAN_DOWNLOAD : 0u) |
-        (caps.can_upload ? ATTR_CAN_UPLOAD : 0u) |
-        (caps.manifestation_tolerant ? ATTR_MANIFESTATION_TOLERANT : 0u) |
-        (caps.will_detach ? ATTR_WILL_DETACH : 0u));
+    if (caps.transfer_size == 0U || caps.transfer_size > MAX_TRANSFER_SIZE)
+    {
+      caps.transfer_size = static_cast<uint16_t>(MAX_TRANSFER_SIZE);
+    }
+    return caps;
   }
 
-  ErrorCode HandleDetach(ControlTransferResult&)
-  {
-    // 固件态 DFU 不实现 DETACH；该请求由 runtime DFU 处理。
-    // Firmware-mode DFU does not implement DETACH; runtime DFU owns that request.
-    return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
-  }
-
-  ErrorCode HandleDnload(uint16_t block_num, uint16_t wLength,
-                         ControlTransferResult& result)
+  ErrorCode HandleDnload(const SetupPacket& setup)
   {
     if (!caps_.can_download)
     {
       return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
     }
-    if (!(state_ == DFUState::DFU_IDLE || state_ == DFUState::DFU_DNLOAD_IDLE))
+    if (state_ != DFUState::DFU_IDLE && state_ != DFUState::DFU_DNLOAD_IDLE)
     {
       return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
     }
-    if (wLength > caps_.transfer_size)
+    if (setup.wLength > caps_.transfer_size)
     {
       return ProtocolStall(DFUStatusCode::ERR_USBR);
     }
-
-    if (wLength == 0u)
+    if (setup.wLength != 0U)
     {
-      // 零长度 DNLOAD 表示结束数据阶段并进入 manifest，
-      // 但前提是之前至少成功接收过一个 payload block。
-      // A zero-length DNLOAD terminates the data phase and requests manifest,
-      // but only after at least one payload block was accepted.
-      pending_dnload_length_ = 0u;
-      pending_block_num_ = block_num;
-      if (!download_started_)
-      {
-        EnterErrorState(DFUStatusCode::ERR_NOTDONE);
-      }
-      else
-      {
-        state_ = DFUState::DFU_MANIFEST_SYNC;
-        status_ = DFUStatusCode::OK;
-        poll_timeout_ms_ = 0u;
-      }
-      result.SendStatusInZLP() = true;
+      // 核心收齐数据阶段后调用 OnControlData。
+      // The core receives the data stage, then calls OnControlData.
       return ErrorCode::OK;
     }
-
-    pending_block_num_ = block_num;
-    pending_dnload_length_ = wLength;
-    result.OutData() = {transfer_buffer_, wLength};
+    // 零长度 DNLOAD 结束下载、请求 manifest；只在已经收过块（DNLOAD-IDLE）时合法。
+    // A zero-length DNLOAD ends the download and asks for manifestation; legal only
+    // after blocks were taken (DNLOAD-IDLE).
+    if (state_ != DFUState::DFU_DNLOAD_IDLE)
+    {
+      EnterErrorState(DFUStatusCode::ERR_NOTDONE);
+      return ErrorCode::OK;
+    }
+    state_ = DFUState::DFU_MANIFEST_SYNC;
+    status_ = DFUStatusCode::OK;
+    poll_timeout_ms_ = 0U;
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleUpload(uint16_t block_num, uint16_t wLength,
-                         ControlTransferResult& result)
+  ErrorCode HandleUpload(const SetupPacket& setup, ConstRawData& in_data)
   {
     if (!caps_.can_upload)
     {
       return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
     }
-    if (!(state_ == DFUState::DFU_IDLE || state_ == DFUState::DFU_UPLOAD_IDLE))
+    if (state_ != DFUState::DFU_IDLE && state_ != DFUState::DFU_UPLOAD_IDLE)
     {
       return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
     }
-    if (wLength == 0u)
+    if (setup.wLength == 0U)
     {
       return ProtocolStall(DFUStatusCode::ERR_USBR);
     }
-
-    size_t req_size = wLength;
-    if (req_size > caps_.transfer_size)
-    {
-      req_size = caps_.transfer_size;
-    }
-
-    DFUStatusCode op_status = DFUStatusCode::OK;
-    uint32_t poll_timeout_ms = 0u;
-    const size_t read_size =
-        backend_.DfuUpload(current_alt_setting_, block_num, {transfer_buffer_, req_size},
-                           op_status, poll_timeout_ms);
-
+    const size_t want =
+        (setup.wLength > caps_.transfer_size) ? caps_.transfer_size : setup.wLength;
+    DFUStatusCode status = DFUStatusCode::OK;
+    uint32_t poll_timeout_ms = 0U;
+    const size_t got = backend_.DfuUpload(
+        ALT_SETTING, setup.wValue, {transfer_buffer_, want}, status, poll_timeout_ms);
     poll_timeout_ms_ = poll_timeout_ms;
-    if (op_status != DFUStatusCode::OK)
+    if (status != DFUStatusCode::OK)
     {
-      return ProtocolStall(op_status);
+      return ProtocolStall(status);
     }
-    if (read_size > req_size)
+    if (got > want)
     {
       return ProtocolStall(DFUStatusCode::ERR_USBR);
     }
-
+    // 短块表示上传结束 / A short block ends the upload
     status_ = DFUStatusCode::OK;
-    state_ = (read_size < req_size) ? DFUState::DFU_IDLE : DFUState::DFU_UPLOAD_IDLE;
-    result.InData() = {transfer_buffer_, read_size};
+    state_ = (got < want) ? DFUState::DFU_IDLE : DFUState::DFU_UPLOAD_IDLE;
+    in_data = {transfer_buffer_, got};
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleGetStatus(ControlTransferResult& result)
+  ErrorCode HandleGetStatus(ConstRawData& in_data)
   {
     AdvanceStateForStatusRead();
+    if (state_ == DFUState::DFU_DNBUSY || state_ == DFUState::DFU_MANIFEST)
+    {
+      // 等待从交出应答时算起，少算 1 ms 抵消毫秒取整：按 bwPollTimeout 等待的主机不会
+      // 早到。状态阶段的完成可能因 Flash 擦写关中断而推迟，不能从那里算。
+      // The wait counts from handing over this answer, 1 ms short to absorb the
+      // millisecond rounding, so a host that waits bwPollTimeout never comes early. The
+      // status stage can complete late while flash work runs with interrupts off, so
+      // the wait must not count from there.
+      const uint32_t wait = (poll_timeout_ms_ > 0U) ? poll_timeout_ms_ - 1U : 0U;
+      poll_deadline_ = static_cast<uint32_t>(Timebase::GetMilliseconds()) + wait;
+      poll_waiting_ = true;
+    }
     status_response_.bStatus = static_cast<uint8_t>(status_);
     status_response_.SetPollTimeout(poll_timeout_ms_);
     status_response_.bState = static_cast<uint8_t>(state_);
-    status_response_.iString = 0u;
-    result.InData() = {reinterpret_cast<const uint8_t*>(&status_response_),
-                       sizeof(status_response_)};
+    status_response_.iString = 0U;
+    in_data = {&status_response_, sizeof(status_response_)};
     return ErrorCode::OK;
   }
 
-  ErrorCode HandleClearStatus(ControlTransferResult& result)
-  {
-    if (state_ != DFUState::DFU_ERROR)
-    {
-      return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
-    }
-    backend_.DfuClearStatus(current_alt_setting_);
-    ClearErrorState();
-    result.SendStatusInZLP() = true;
-    return ErrorCode::OK;
-  }
-
-  ErrorCode HandleGetState(ControlTransferResult& result)
-  {
-    state_response_ = static_cast<uint8_t>(state_);
-    result.InData() = {&state_response_, sizeof(state_response_)};
-    return ErrorCode::OK;
-  }
-
-  ErrorCode HandleAbort(ControlTransferResult& result)
+  ErrorCode HandleAbort()
   {
     switch (state_)
     {
@@ -1195,62 +743,60 @@ class DFUClass : public DfuInterfaceClassBase
       case DFUState::DFU_DNLOAD_IDLE:
       case DFUState::DFU_UPLOAD_IDLE:
       case DFUState::DFU_MANIFEST_SYNC:
-        backend_.DfuAbort(current_alt_setting_);
+        backend_.DfuAbort(ALT_SETTING);
         ClearErrorState();
-        result.SendStatusInZLP() = true;
         return ErrorCode::OK;
-
       default:
         return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
     }
   }
 
+  /// GETSTATUS 是推进状态机的同步点 / GETSTATUS is the point that advances the state
+  /// machine
   void AdvanceStateForStatusRead()
   {
-    // 标准 DFU 状态机是在 GETSTATUS 这个同步点上推进的。
-    // GETSTATUS is the synchronization point that advances the standard DFU state
-    // machine.
     switch (state_)
     {
       case DFUState::DFU_DNLOAD_SYNC:
-        RefreshDownloadStatus();
-        break;
-
-      case DFUState::DFU_MANIFEST_SYNC:
-      {
-        if (status_ != DFUStatusCode::OK)
-        {
-          state_ = DFUState::DFU_ERROR;
-          break;
-        }
-
-        uint32_t poll_timeout_ms = 0u;
-        auto manifest_status =
-            backend_.DfuManifest(current_alt_setting_, poll_timeout_ms);
-        poll_timeout_ms_ = poll_timeout_ms;
-        if (manifest_status == DFUStatusCode::OK)
-        {
-          status_ = DFUStatusCode::OK;
-          state_ = DFUState::DFU_MANIFEST;
-        }
-        else
-        {
-          EnterErrorState(manifest_status);
-        }
-        break;
-      }
-
       case DFUState::DFU_DNBUSY:
         RefreshDownloadStatus();
         break;
-
+      case DFUState::DFU_MANIFEST_SYNC:
+        if (manifest_started_)
+        {
+          RefreshManifestStatus();
+        }
+        else
+        {
+          StartManifest();
+        }
+        break;
       case DFUState::DFU_MANIFEST:
         RefreshManifestStatus();
         break;
-
       default:
         break;
     }
+  }
+
+  void StartManifest()
+  {
+    if (status_ != DFUStatusCode::OK)
+    {
+      state_ = DFUState::DFU_ERROR;
+      return;
+    }
+    uint32_t poll_timeout_ms = 0U;
+    const DFUStatusCode status = backend_.DfuManifest(ALT_SETTING, poll_timeout_ms);
+    poll_timeout_ms_ = poll_timeout_ms;
+    if (status != DFUStatusCode::OK)
+    {
+      EnterErrorState(status);
+      return;
+    }
+    status_ = DFUStatusCode::OK;
+    state_ = DFUState::DFU_MANIFEST;
+    manifest_started_ = true;
   }
 
   void RefreshDownloadStatus()
@@ -1260,22 +806,16 @@ class DFUClass : public DfuInterfaceClassBase
       state_ = DFUState::DFU_ERROR;
       return;
     }
-
     bool busy = false;
-    uint32_t poll_timeout_ms = 0u;
-    const auto download_status =
-        backend_.DfuGetDownloadStatus(current_alt_setting_, busy, poll_timeout_ms);
+    uint32_t poll_timeout_ms = 0U;
+    const DFUStatusCode status =
+        backend_.DfuGetDownloadStatus(ALT_SETTING, busy, poll_timeout_ms);
     poll_timeout_ms_ = poll_timeout_ms;
-    if (download_status != DFUStatusCode::OK)
+    if (status != DFUStatusCode::OK)
     {
-      EnterErrorState(download_status);
+      EnterErrorState(status);
       return;
     }
-
-    // backend 报 busy 时映射到 DFU_DNBUSY；
-    // 否则主机可以从 DFU_DNLOAD_IDLE 继续发送下一块 DNLOAD。
-    // A backend-reported busy maps to DFU_DNBUSY; otherwise the host may
-    // continue sending the next DNLOAD block from DFU_DNLOAD_IDLE.
     state_ = busy ? DFUState::DFU_DNBUSY : DFUState::DFU_DNLOAD_IDLE;
   }
 
@@ -1286,61 +826,43 @@ class DFUClass : public DfuInterfaceClassBase
       state_ = DFUState::DFU_ERROR;
       return;
     }
-
     bool busy = false;
-    uint32_t poll_timeout_ms = 0u;
-    const auto manifest_status =
-        backend_.DfuGetManifestStatus(current_alt_setting_, busy, poll_timeout_ms);
+    uint32_t poll_timeout_ms = 0U;
+    const DFUStatusCode status =
+        backend_.DfuGetManifestStatus(ALT_SETTING, busy, poll_timeout_ms);
     poll_timeout_ms_ = poll_timeout_ms;
-    if (manifest_status != DFUStatusCode::OK)
+    if (status != DFUStatusCode::OK)
     {
-      EnterErrorState(manifest_status);
+      EnterErrorState(status);
       return;
     }
-
     if (busy)
     {
       state_ = DFUState::DFU_MANIFEST;
       return;
     }
-
-    // manifest 完成后，要么回到 IDLE（tolerant），要么进入 WAIT_RESET（non-tolerant）。
-    // Manifest completion returns either to IDLE (tolerant) or WAIT_RESET (non-tolerant).
-    download_started_ = false;
+    // 完成后：能容忍 manifest 的回 IDLE，否则等复位。
+    // Done: back to IDLE when manifestation tolerant, otherwise wait for a reset.
+    manifest_started_ = false;
     state_ = caps_.manifestation_tolerant ? DFUState::DFU_IDLE
                                           : DFUState::DFU_MANIFEST_WAIT_RESET;
   }
 
-  void ResetProtocolState()
-  {
-    // 这里只重置前端拥有的协议状态；
-    // 镜像级 bookkeeping 保留在 backend_ 里。
-    // Reset only frontend-owned protocol state;
-    // image-level bookkeeping stays in backend_.
-    pending_block_num_ = 0u;
-    pending_dnload_length_ = 0u;
-    poll_timeout_ms_ = 0u;
-    current_alt_setting_ = 0u;
-    download_started_ = false;
-    ClearErrorState();
-  }
-
   void ClearErrorState()
   {
+    poll_waiting_ = false;
+    manifest_started_ = false;
     status_ = DFUStatusCode::OK;
     state_ = DFUState::DFU_IDLE;
-    poll_timeout_ms_ = 0u;
+    poll_timeout_ms_ = 0U;
   }
 
+  /// 锁存错误，直到 CLRSTATUS 或 ABORT / Latch an error until CLRSTATUS or ABORT
   void EnterErrorState(DFUStatusCode status)
   {
-    // 一旦锁存错误，前端会保持在 DFU_ERROR，
-    // 直到 CLRSTATUS/ABORT 把它清掉。
-    // Once an error is latched, the frontend stays in DFU_ERROR
-    // until CLRSTATUS/ABORT clears it.
     status_ = status;
     state_ = DFUState::DFU_ERROR;
-    poll_timeout_ms_ = 0u;
+    poll_timeout_ms_ = 0U;
   }
 
   ErrorCode ProtocolStall(DFUStatusCode status)
@@ -1349,53 +871,70 @@ class DFUClass : public DfuInterfaceClassBase
     return ErrorCode::ARG_ERR;
   }
 
- private:
-  Backend& backend_;                     ///< 后端实现 / Backend implementation
-  DFUCapabilities caps_ = {};            ///< 能力集缓存 / Capability cache
-  DescriptorBlock desc_block_ = {};      ///< 描述符缓存 / Descriptor cache
-  StatusResponse status_response_ = {};  ///< GETSTATUS 缓冲区 / GETSTATUS buffer
-  uint8_t state_response_ = 0u;          ///< GETSTATE 缓冲字节 / GETSTATE byte buffer
-  uint8_t transfer_buffer_[MAX_TRANSFER_SIZE] =
-      {};                          ///< EP0 传输缓冲 / EP0 transfer buffer
-  bool download_started_ = false;  ///< 是否已有有效下载数据 / Whether payload has started
-  uint16_t pending_block_num_ = 0u;      ///< 待提交 block 编号 / Pending block number
-  uint16_t pending_dnload_length_ = 0u;  ///< 待提交 DNLOAD 长度 / Pending DNLOAD length
-  uint32_t poll_timeout_ms_ = 0u;        ///< 当前轮询超时 / Current poll timeout
-  DFUState state_ = DFUState::DFU_IDLE;  ///< DFU 状态 / DFU state
-  DFUStatusCode status_ = DFUStatusCode::OK;  ///< DFU 状态码 / DFU status code
+  /// 后端；构造时固定 / The backend; fixed at construction
+  Backend& backend_;
+  /// 能力，wTransferSize 已截到 MAX_TRANSFER_SIZE；构造时固定 / Capabilities with
+  /// wTransferSize clipped to MAX_TRANSFER_SIZE; fixed at construction
+  const DFUCapabilities caps_;
+
+  /// @name 仅 owner / Owner only
+  /// @{
+  DFUState state_ = DFUState::DFU_IDLE;       ///< 协议状态 / Protocol state
+  DFUStatusCode status_ = DFUStatusCode::OK;  ///< 锁存的状态码 / Latched status code
+  /// 最近一次报告的 bwPollTimeout / Latest reported bwPollTimeout
+  uint32_t poll_timeout_ms_ = 0U;
+  /**
+   * @brief DNBUSY、MANIFEST 的轮询期限 / Poll deadline of DNBUSY and MANIFEST
+   * @note HandleGetStatus 写，OnControlRequest 读。
+   *       Written by HandleGetStatus, read by OnControlRequest.
+   */
+  uint32_t poll_deadline_ = 0U;
+  /// poll_deadline_ 有效 / poll_deadline_ is valid
+  bool poll_waiting_ = false;
+  /// MANIFEST-SYNC 是 manifest 之后的那一次（不再启动 manifest）/ This MANIFEST-SYNC
+  /// follows manifestation (do not start it again)
+  bool manifest_started_ = false;
+  DFUStatusResponse status_response_{};  ///< GETSTATUS 应答 / GETSTATUS answer
+  uint8_t state_response_ = 0U;          ///< GETSTATE 应答 / GETSTATE answer
+  /// UPLOAD 应答 / UPLOAD answer
+  uint8_t transfer_buffer_[MAX_TRANSFER_SIZE] = {};
+  /// @}
 };
 
-/**
- * @brief 把 backend 与前端 DFUClass 组装在一起的存储基类
- *        Storage base that assembles the backend and the DFU frontend class.
- */
+/// 先于 DFUClass 构造后端的存储基类 / Storage base that constructs the backend before
+/// DFUClass
 class DfuBootloaderClassStorage
 {
  protected:
-  using JumpCallback = DfuBootloaderBackend::JumpCallback;
-
+  /// 参数同 DfuBootloaderBackend / Parameters as for DfuBootloaderBackend
   DfuBootloaderClassStorage(Flash& flash, size_t image_base, size_t image_limit,
-                            size_t seal_offset, JumpCallback jump_to_app,
-                            void* jump_app_ctx = nullptr, bool autorun = true)
-      : backend_(flash, image_base, image_limit, seal_offset, jump_to_app, jump_app_ctx,
-                 autorun),
+                            size_t seal_offset, DfuBootloaderBackend::JumpFun jump_to_app,
+                            void* jump_app_ctx, bool autorun)
+      : storage_backend_(flash, image_base, image_limit, seal_offset, jump_to_app,
+                         jump_app_ctx, autorun),
         image_base_(image_base),
         image_limit_(image_limit),
         seal_offset_(seal_offset)
   {
   }
 
-  DfuBootloaderBackend backend_;
-  size_t image_base_ = 0u;
-  size_t image_limit_ = 0u;
-  size_t seal_offset_ = 0u;
+  DfuBootloaderBackend storage_backend_;  ///< Flash 后端 / Flash backend
+  const size_t image_base_;               ///< 镜像区起点 / Image region start
+  const size_t image_limit_;              ///< 镜像区字节数 / Image region bytes
+  const size_t seal_offset_;              ///< seal 偏移 / Seal offset
 };
 
 /**
- * @brief 面向单镜像 bootloader 区的 DFU 类
- *        Bootloader DFU class for a single image region.
+ * @class DfuBootloaderClassT
+ * @brief 单镜像区的 bootloader DFU 类 / Bootloader DFU class for one image region
+ *
+ * 另有一个厂商请求 RUN_APP（0x5A，接收者为本接口，无数据阶段，wValue 为 0）：状态阶段
+ * 完成后登记启动请求，由应用调用 TryConsumeAppLaunch 执行。
+ * Adds the vendor request RUN_APP (0x5A, recipient this interface, no data stage,
+ * wValue 0): once its status stage completes a launch is recorded, which the
+ * application carries out by calling TryConsumeAppLaunch.
  */
-template <size_t MAX_TRANSFER_SIZE = 4096u>
+template <size_t MAX_TRANSFER_SIZE = 4096U>
 class DfuBootloaderClassT : private DfuBootloaderClassStorage,
                             public DFUClass<DfuBootloaderBackend, MAX_TRANSFER_SIZE>
 {
@@ -1403,72 +942,116 @@ class DfuBootloaderClassT : private DfuBootloaderClassStorage,
   using Base = DFUClass<DfuBootloaderBackend, MAX_TRANSFER_SIZE>;
 
  public:
-  using JumpCallback = DfuBootloaderBackend::JumpCallback;
-  static constexpr uint8_t VENDOR_REQUEST_RUN_APP = 0x5Au;
+  /// 跳到应用的函数 / Function that jumps to the application
+  using JumpFun = DfuBootloaderBackend::JumpFun;
+  /// 厂商请求码 RUN_APP / Vendor request code RUN_APP
+  static constexpr uint8_t VENDOR_REQUEST_RUN_APP = 0x5AU;
 
-  DfuBootloaderClassT(
-      Flash& flash, size_t image_base, size_t image_limit, size_t seal_offset,
-      JumpCallback jump_to_app, void* jump_app_ctx = nullptr, bool autorun = true,
-      const char* interface_string = Base::DEFAULT_INTERFACE_STRING,
-      const char* webusb_landing_page_url = nullptr,
-      uint8_t webusb_vendor_code = LibXR::USB::WebUsb::WEBUSB_VENDOR_CODE_DEFAULT,
-      const char* winusb_device_interface_guid =
-          Base::DEFAULT_WINUSB_DEVICE_INTERFACE_GUID,
-      uint8_t winusb_vendor_code = Base::DEFAULT_WINUSB_VENDOR_CODE)
+  /**
+   * @brief 构造 / Construct
+   * @param flash 放镜像的 Flash / Flash that stores the image
+   * @param image_base 镜像区起点 / Start of the image region
+   * @param image_limit 镜像区字节数，含 seal / Bytes of the image region, seal included
+   * @param seal_offset seal 相对镜像区起点的偏移 / Seal offset from the image start
+   * @param jump_to_app 启动应用的函数 / Function that launches the application
+   * @param jump_app_ctx 它的参数 / Its argument
+   * @param autorun manifest 完成后是否自动请求启动 / Whether manifestation requests a
+   *        launch by itself
+   * @param interface_string 接口字符串 / Interface string
+   * @param webusb_landing_page_url WebUSB 落地页；nullptr 不启用 / WebUSB landing page;
+   *        nullptr disables it
+   * @param webusb_vendor_code WebUSB 厂商请求码 / WebUSB vendor request code
+   * @param winusb_device_interface_guid WinUSB GUID
+   */
+  DfuBootloaderClassT(Flash& flash, size_t image_base, size_t image_limit,
+                      size_t seal_offset, JumpFun jump_to_app,
+                      void* jump_app_ctx = nullptr, bool autorun = true,
+                      const char* interface_string = Base::DEFAULT_INTERFACE_STRING,
+                      const char* webusb_landing_page_url = nullptr,
+                      uint8_t webusb_vendor_code = WebUsb::WEBUSB_VENDOR_CODE_DEFAULT,
+                      const char* winusb_device_interface_guid =
+                          DfuInterfaceClassBase::DEFAULT_WINUSB_DEVICE_INTERFACE_GUID)
       : Storage(flash, image_base, image_limit, seal_offset, jump_to_app, jump_app_ctx,
                 autorun),
-        Base(Storage::backend_, interface_string, webusb_landing_page_url,
-             webusb_vendor_code, winusb_device_interface_guid, winusb_vendor_code)
+        Base(Storage::storage_backend_, interface_string, webusb_landing_page_url,
+             webusb_vendor_code, winusb_device_interface_guid)
   {
   }
 
-  // 这里只推进 backend 拥有的异步工作；真正跳 app 仍保持显式调用。
-  // Process only backend-owned async work; actual app launch remains explicit.
-  void Process() { Storage::backend_.Process(); }
-  bool RequestRunApp() { return Storage::backend_.TryRequestRunApp(); }
+  using Base::Process;
 
+  /// 请求启动应用；任何上下文 / Request an application launch; any context
+  bool RequestRunApp() { return Storage::storage_backend_.TryRequestRunApp(); }
+  /// 有启动请求且允许时跳转并返回 true；任何上下文 / Jump and return true when a launch
+  /// is requested and allowed; any context
   bool TryConsumeAppLaunch(uint32_t now_ms)
   {
-    return Storage::backend_.TryConsumeAppLaunch(now_ms);
+    return Storage::storage_backend_.TryConsumeAppLaunch(now_ms);
   }
-
-  bool HasPendingWork() const { return Storage::backend_.HasPendingWork(); }
-  bool HasValidImage() const { return Storage::backend_.HasValidImage(); }
-  size_t ImageSize() const { return Storage::backend_.ImageSize(); }
+  /// 是否有未完成的工作 / Whether work is pending
+  bool HasPendingWork() const { return Storage::storage_backend_.HasPendingWork(); }
+  /// 是否有校验过的镜像 / Whether a verified image exists
+  bool HasValidImage() const { return Storage::storage_backend_.HasValidImage(); }
+  /// 镜像字节数，没有为 0 / Image bytes, 0 without one
+  size_t ImageSize() const { return Storage::storage_backend_.ImageSize(); }
+  /// 镜像区起点 / Image region start
   size_t ImageBase() const { return Storage::image_base_; }
+  /// 镜像区字节数 / Image region bytes
   size_t ImageLimit() const { return Storage::image_limit_; }
+  /// seal 偏移 / Seal offset
   size_t SealOffset() const { return Storage::seal_offset_; }
 
  protected:
-  ErrorCode OnVendorRequest(bool, uint8_t bRequest, uint16_t wValue, uint16_t wLength,
-                            uint16_t,
-                            typename Base::ControlTransferResult& result) override
+  /**
+   * @brief 处理 RUN_APP，其他请求交给 DFU 前端 / Handle RUN_APP and pass every other
+   *        request to the DFU frontend
+   * @note RUN_APP 的 wLength、wValue 为 0；有工作时 BUSY，没有镜像时 FAILED。
+   *       RUN_APP has wLength and wValue 0; BUSY while work is pending, FAILED without
+   *       an image.
+   */
+  ErrorCode OnControlRequest(bool in_isr, const SetupPacket& setup,
+                             ConstRawData& in_data) override
   {
-    if (bRequest != VENDOR_REQUEST_RUN_APP)
+    if (!IsRunApp(setup))
     {
-      return ErrorCode::NOT_SUPPORT;
+      return Base::OnControlRequest(in_isr, setup, in_data);
     }
-    if (wLength != 0u || wValue != 0u)
+    if (setup.wLength != 0U || setup.wValue != 0U || setup.wIndex != this->interface_)
     {
       return ErrorCode::ARG_ERR;
     }
-    if (Storage::backend_.HasPendingWork())
+    if (Storage::storage_backend_.HasPendingWork())
     {
-      // 协议拥有的异步工作尚未完成时，不允许启动 app。
-      // Do not launch the app while protocol-owned async work is still pending.
       return ErrorCode::BUSY;
     }
-    if (!Storage::backend_.TryRequestRunApp())
+    if (!Storage::storage_backend_.HasValidImage())
     {
-      // RUN_APP 只在已知存在有效 seal 镜像时才会接受。
-      // RUN_APP is only accepted when a valid sealed image is known.
       return ErrorCode::FAILED;
     }
-    result.SendStatusInZLP() = true;
     return ErrorCode::OK;
+  }
+
+  /// RUN_APP 的状态阶段完成后登记启动 / Record the launch once the RUN_APP status
+  /// stage completed
+  void OnControlComplete(bool in_isr, const SetupPacket& setup) override
+  {
+    Base::OnControlComplete(in_isr, setup);
+    if (IsRunApp(setup))
+    {
+      (void)Storage::storage_backend_.TryRequestRunApp();
+    }
+  }
+
+ private:
+  static bool IsRunApp(const SetupPacket& setup)
+  {
+    return (setup.bmRequestType & REQ_TYPE_MASK) ==
+               static_cast<uint8_t>(RequestType::VENDOR) &&
+           setup.bRequest == VENDOR_REQUEST_RUN_APP;
   }
 };
 
-using DfuBootloaderClass = DfuBootloaderClassT<4096u>;
+/// 4096 字节传输的 bootloader DFU 类 / Bootloader DFU class with 4096-byte transfers
+using DfuBootloaderClass = DfuBootloaderClassT<4096U>;
 
 }  // namespace LibXR::USB

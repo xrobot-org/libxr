@@ -1,148 +1,127 @@
 #pragma once
-#include <cstring>
 
 #include "cdc_base.hpp"
+#include "libxr_mem.hpp"
 
 namespace LibXR::USB
 {
 
+/// 在 OUT 端点的每个空闲槽上挂一个包的接收，直到 BUSY；仅 owner / Arm one packet on
+/// every free slot of an OUT endpoint until BUSY; owner only
+inline void ArmReceives(Endpoint* out, bool in_isr)
+{
+  while (out->Receive(out->MaxPacketSize(), in_isr) == ErrorCode::OK)
+  {
+  }
+}
+
 /**
- * @brief USB CDC ACM 写测试类
- *        USB CDC ACM write test class
+ * @class CDCWriteTest
+ * @brief CDC 写测试：测设备到主机方向 / CDC write test: exercises device-to-host
  *
- * 用于测试设备向主机的数据发送通道。
- * - 忽略主机发来的 OUT 数据；
- * - 当 DTR 已置位时，不断通过 IN 端点回传数据，模拟持续写出场景。
- *
- * Used for testing the device-to-host (TX) path.
- * - Ignores host-to-device OUT data.
- * - If DTR is asserted, continuously transmits data via the IN endpoint.
+ * 主机每发来一个 OUT 包，数据丢弃、槽交回、重新挂接收；DTR 置位时在 IN 上发一个满包
+ * 零数据。每个空闲的 OUT 槽都挂着接收。
+ * For each OUT packet from the host the data is dropped, the slot handed back and the
+ * receive armed again; while DTR is set one full zero-filled packet goes out on IN. Every
+ * free OUT slot has a receive armed.
  */
 class CDCWriteTest : public CDCBase
 {
  public:
-  CDCWriteTest(
-      Endpoint::EPNumber data_in_ep_num, Endpoint::EPNumber data_out_ep_num,
-      Endpoint::EPNumber comm_ep_num,
-      const char* control_interface_string = CDCBase::DEFAULT_CONTROL_INTERFACE_STRING,
-      const char* data_interface_string = CDCBase::DEFAULT_DATA_INTERFACE_STRING)
-      : CDCBase(data_in_ep_num, data_out_ep_num, comm_ep_num, control_interface_string,
-                data_interface_string)
+  using CDCBase::CDCBase;
+
+ protected:
+  /// 基类绑定成功后在每个槽上挂接收 / Arm a receive on every slot after the base bind
+  /// succeeds
+  [[nodiscard]] ErrorCode BindEndpoints(EndpointPool& pool, uint8_t first_interface,
+                                        bool in_isr) override
   {
+    const ErrorCode result = CDCBase::BindEndpoints(pool, first_interface, in_isr);
+    if (result == ErrorCode::OK)
+    {
+      ArmReceives(GetDataOutEndpoint(), in_isr);
+    }
+    return result;
   }
 
-  void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num,
-                     bool in_isr) override
+  /// 交回槽、重新挂接收，DTR 置位时发一个满包 / Hand the slot back, arm again, send
+  /// one full packet while DTR is set
+  void OnDataOutComplete(bool in_isr, const Endpoint::Completion& completion) override
   {
-    CDCBase::BindEndpoints(endpoint_pool, start_itf_num, in_isr);
+    Endpoint* out = GetDataOutEndpoint();
+    if (completion.slot.Valid())
+    {
+      (void)out->ReleaseSlot(completion.slot);
+    }
+    ArmReceives(out, in_isr);
+    if (!IsDtrSet())
+    {
+      return;
+    }
+    Endpoint* in = GetDataInEndpoint();
+    Endpoint::Slot slot;
+    if (in->AcquireSlot(slot) != ErrorCode::OK)
+    {
+      // 没有空闲槽：跳过，下一个 OUT 包再试。
+      // No free slot: skip, the next OUT packet tries again.
+      return;
+    }
+    const size_t length = in->MaxPacketSize();
+    LibXR::Memory::FastSet(slot.data.addr_, 0, length);
+    (void)in->Submit(slot, length, false, in_isr);
   }
 
-  /**
-   * @brief OUT 端点完成回调（写测试无实际消费）
-   *        Data OUT complete callback (no-op for write test)
-   *
-   * 写测试场景下不关心主机->设备数据；若 DTR 置位，则继续安排下一次 IN 传输。
-   * In write test we ignore host-to-device payload; if DTR is asserted, arm next IN
-   * transfer.
-   */
-  void OnDataOutComplete(bool in_isr, ConstRawData& data) override
+  /// 不需要后续动作 / Nothing follows
+  void OnDataInComplete(bool in_isr, const Endpoint::Completion& completion) override
   {
     UNUSED(in_isr);
-    UNUSED(data);
-    if (IsDtrSet())
-    {
-      auto ep_data_in = GetDataInEndpoint();
-      ep_data_in->Transfer(ep_data_in->MaxTransferSize());
-    }
-  }
-
-  /**
-   * @brief IN 端点完成回调（写测试：再次触发发送）
-   *        Data IN complete callback (write test: trigger next send)
-   *
-   * 当 DTR 已置位时，直接安排下一次 IN 传输以维持持续发送。
-   * If DTR is asserted, immediately arm another IN transfer for continuous sending.
-   */
-  void OnDataInComplete(bool in_isr, ConstRawData& data) override
-  {
-    UNUSED(in_isr);
-    UNUSED(data);
-
-    if (IsDtrSet())
-    {
-      auto ep_data_in = GetDataInEndpoint();
-      ep_data_in->Transfer(ep_data_in->MaxTransferSize());
-    }
+    UNUSED(completion);
   }
 };
 
 /**
- * @brief USB CDC ACM 读测试类
- *        USB CDC ACM read test class
+ * @class CDCReadTest
+ * @brief CDC 读测试：测主机到设备方向 / CDC read test: exercises host-to-device
  *
- * 用于测试主机向设备的数据接收通道。
- * - 初始化时即预装 OUT 端点接收；
- * - 每次接收完成后立即重新启动，以实现持续读入。
- *
- * Used for testing the host-to-device (RX) path.
- * - Arms OUT endpoint at initialization.
- * - On each OUT completion, re-arms immediately for continuous receiving.
+ * 每个 OUT 包到达后立即交回槽并重新挂接收，持续读入；每个空闲的 OUT 槽都挂着接收。
+ * Each OUT packet's slot is handed back and the receive armed again at once, so reading
+ * never stops; every free OUT slot has a receive armed.
  */
 class CDCReadTest : public CDCBase
 {
  public:
-  CDCReadTest(
-      Endpoint::EPNumber data_in_ep_num, Endpoint::EPNumber data_out_ep_num,
-      Endpoint::EPNumber comm_ep_num,
-      const char* control_interface_string = CDCBase::DEFAULT_CONTROL_INTERFACE_STRING,
-      const char* data_interface_string = CDCBase::DEFAULT_DATA_INTERFACE_STRING)
-      : CDCBase(data_in_ep_num, data_out_ep_num, comm_ep_num, control_interface_string,
-                data_interface_string)
+  using CDCBase::CDCBase;
+
+ protected:
+  /// 基类绑定成功后在每个槽上挂接收 / Arm a receive on every slot after the base bind
+  /// succeeds
+  [[nodiscard]] ErrorCode BindEndpoints(EndpointPool& pool, uint8_t first_interface,
+                                        bool in_isr) override
   {
+    const ErrorCode result = CDCBase::BindEndpoints(pool, first_interface, in_isr);
+    if (result == ErrorCode::OK)
+    {
+      ArmReceives(GetDataOutEndpoint(), in_isr);
+    }
+    return result;
   }
 
-  /**
-   * @brief 初始化 CDC 读测试类：预装 OUT 端点接收
-   *        Initialize CDC read test: pre-arm OUT endpoint
-   *
-   * 在初始化时即调用一次 Transfer()，保证主机数据可以立刻被接收。
-   * Arms the OUT endpoint immediately so host data can be received right away.
-   */
-  void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num,
-                     bool in_isr) override
+  /// 交回槽并重新挂接收 / Hand the slot back and arm again
+  void OnDataOutComplete(bool in_isr, const Endpoint::Completion& completion) override
   {
-    CDCBase::BindEndpoints(endpoint_pool, start_itf_num, in_isr);
-    auto ep_data_out = GetDataOutEndpoint();
-    ep_data_out->Transfer(ep_data_out->MaxTransferSize());
+    Endpoint* out = GetDataOutEndpoint();
+    if (completion.slot.Valid())
+    {
+      (void)out->ReleaseSlot(completion.slot);
+    }
+    ArmReceives(out, in_isr);
   }
 
-  /**
-   * @brief OUT 端点完成回调（读测试：持续接收）
-   *        Data OUT complete callback (read test: continuous receive)
-   *
-   * 每次 OUT 完成后立即重新启动接收，以实现不间断的数据吞吐。
-   * Each OUT completion re-arms the transfer for continuous throughput.
-   */
-  void OnDataOutComplete(bool in_isr, ConstRawData& data) override
+  /// 读测试不发数据 / The read test sends nothing
+  void OnDataInComplete(bool in_isr, const Endpoint::Completion& completion) override
   {
     UNUSED(in_isr);
-    UNUSED(data);
-
-    auto ep_data_out = GetDataOutEndpoint();
-    ep_data_out->Transfer(ep_data_out->MaxTransferSize());
-  }
-
-  /**
-   * @brief IN 端点完成回调（读测试：无操作）
-   *        Data IN complete callback (read test: no-op)
-   *
-   * 读测试场景下不产生设备->主机数据，因此此处为空实现。
-   * In read test, no device-to-host data is generated; this is a no-op.
-   */
-  void OnDataInComplete(bool in_isr, ConstRawData& data) override
-  {
-    UNUSED(in_isr);
-    UNUSED(data);
+    UNUSED(completion);
   }
 };
 

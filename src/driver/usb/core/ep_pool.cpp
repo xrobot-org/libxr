@@ -2,8 +2,6 @@
 
 using namespace LibXR::USB;
 
-EndpointPool::EndpointPool(size_t endpoint_num) { ASSERT(endpoint_num >= 2); }
-
 LibXR::ErrorCode EndpointPool::Put(Endpoint* ep)
 {
   if (ep == nullptr)
@@ -161,4 +159,33 @@ void EndpointPool::SetEndpoint0(Endpoint* ep0_in, Endpoint* ep0_out)
 {
   ep0_in_ = ep0_in;
   ep0_out_ = ep0_out;
+}
+
+const Endpoint* EndpointPool::Registered(Endpoint::EPNumber ep_num,
+                                         Endpoint::Direction dir) const
+{
+  const auto num = static_cast<size_t>(ep_num);
+  if (num >= SLOT_COUNT || dir == Endpoint::Direction::BOTH)
+  {
+    return nullptr;
+  }
+  const bool in = dir == Endpoint::Direction::IN;
+  return (num == 0U) ? (in ? ep0_in_ : ep0_out_) : slots_[num][DirIndex(dir)];
+}
+
+uint16_t EndpointPool::PacketSizeFor(Endpoint::EPNumber ep_num,
+                                     const Endpoint::Config& cfg, Speed speed) const
+{
+  const Endpoint* ep = Registered(ep_num, cfg.direction);
+  // 与 Configure 同一个计算；它自己再核对方向是否可用。
+  // The computation Configure uses; it checks again that the direction is available.
+  return ep == nullptr ? uint16_t{0U} : ep->PacketSizeFor(cfg, speed);
+}
+
+uint8_t EndpointPool::PacketsPerIntervalFor(Endpoint::EPNumber ep_num,
+                                            const Endpoint::Config& cfg,
+                                            Speed speed) const
+{
+  const Endpoint* ep = Registered(ep_num, cfg.direction);
+  return ep == nullptr ? uint8_t{0U} : ep->PacketsPerIntervalFor(cfg, speed);
 }

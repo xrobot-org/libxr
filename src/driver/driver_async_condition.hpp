@@ -99,8 +99,65 @@ class DriverAsyncCondition
    * 不可重入；每个平台至多一个节拍源，没有使用者的平台不提供节拍。
    * Not reentrant; every platform has at most one tick source, and a platform without a
    * user provides none.
+   *
+   * @note 节拍源每个工程一个，由 LibXR 的系统层选（CMake 只编 system/${_xr_system}）：
+   *       - FreeRTOS（STM32、CH32、HPM）：system/freertos 链接时包装 xTaskIncrementTick，
+   *         包装调用 __real_xTaskIncrementTick() 后调用 OnTick(portTICK_PERIOD_MS)，
+   *         原样返回前者的结果（它请求上下文切换）。
+   *       - ESP-IDF：system/freertos 在 ESP_PLATFORM 下改用
+   *         esp_register_freertos_tick_hook_for_cpu(..., 0)，不包装。
+   *       - ThreadX：system/threadx 包装 _tx_timer_interrupt。
+   *       - 裸机 STM32（system/none）：driver/st 包装 HAL_IncTick。
+   *       - 裸机 CH32、HPM：板级工程每毫秒调用一次 OnTick()，并在此前调用一次
+   *         RegisterTickSource()。
+   *       - Linux、主机测试：没有节拍，测试自己调用。
+   *       The tick source is one per project, chosen by LibXR's system layer (CMake
+   *       builds only system/${_xr_system}):
+   *       - FreeRTOS (STM32, CH32, HPM): system/freertos wraps xTaskIncrementTick at link
+   *         time; the wrapper calls __real_xTaskIncrementTick(), then
+   *         OnTick(portTICK_PERIOD_MS), and returns the former's result unchanged (it
+   *         requests the context switch).
+   *       - ESP-IDF: under ESP_PLATFORM system/freertos uses
+   *         esp_register_freertos_tick_hook_for_cpu(..., 0) instead; no wrap.
+   *       - ThreadX: system/threadx wraps _tx_timer_interrupt.
+   *       - Bare-metal STM32 (system/none): driver/st wraps HAL_IncTick.
+   *       - Bare-metal CH32 and HPM: the board project calls OnTick() every
+   *         millisecond and calls RegisterTickSource() once before.
+   *       - Linux and host tests: no tick; tests call it themselves.
+   * @note 后果：节拍不是 1 kHz 时 elapsed_ms 是节拍周期，等待按整节拍计，只会变长，不会
+   *       变短（例如 100 Hz 时 5 ms 的断开实际 10~20 ms）。节拍周期须是整毫秒
+   *       （configTICK_RATE_HZ 整除 1000 且不大于 1000，静态断言）。tickless idle
+   *       跳过的节拍不经 OnTick，等待推迟到下一次唤醒。
+   *       Consequences: at a tick rate other than 1 kHz, elapsed_ms is the tick period
+   *       and waits count whole ticks, so they get longer, never shorter (at 100 Hz a
+   *       5 ms detach lasts 10 to 20 ms). The tick period must be whole milliseconds
+   *       (configTICK_RATE_HZ divides 1000 and is at most 1000, a static assertion).
+   *       Ticks that tickless idle skips do not pass OnTick; a wait then ends at the
+   *       next wake-up.
    */
   static void OnTick(uint32_t elapsed_ms = 1);
+
+  /**
+   * @brief 节拍源登记自己 / The tick source registers itself
+   * @note 每个工程一次，启动时（系统层的包装所在的目标文件的静态构造，或 PlatformInit；
+   *       裸机 CH32、HPM 由板级工程调用）。第二次登记是致命错误（REQUIRE），防止两个
+   *       节拍源同时计数，例如 HAL_IncTick 和 xTaskIncrementTick 都被接上。
+   *       Once per project, at start (static construction of the object file holding the
+   *       system layer's wrapper, or PlatformInit; on bare-metal CH32 and HPM the board
+   *       project calls it). A second registration is a fatal error (REQUIRE), so that
+   *       two sources never count at once, for instance HAL_IncTick and
+   *       xTaskIncrementTick both hooked.
+   */
+  static void RegisterTickSource();
+  /**
+   * @brief 已有节拍源登记 / A tick source has registered
+   * @note 需要节拍的 USB 后端在构造时 REQUIRE 它。
+   *       USB backends that need the tick REQUIRE it at construction.
+   */
+  static bool HasTickSource();
+  /// OnTick 调用的次数，回绕；任何上下文 / Number of OnTick calls, wrapping; any
+  /// context
+  static uint32_t TickCount();
 
  private:
   /// 一次等待所处的阶段 / Phase of one wait.

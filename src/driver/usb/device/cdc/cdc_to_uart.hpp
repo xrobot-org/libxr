@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+
 #include "cdc_uart.hpp"
 #include "libxr_cb.hpp"
 #include "libxr_rw.hpp"
@@ -9,156 +11,67 @@ namespace LibXR::USB
 {
 
 /**
- * @brief CDC 与 UART 双向桥接器（CDC<->UART） /
- *        Bidirectional bridge between USB CDC and UART
+ * @class CDCToUart
+ * @brief CDC 与一个 UART 之间的双向桥 / Bidirectional bridge between CDC and a UART
  *
- * @details 数据流 / Data flow:
- *          - CDC RX -> UART TX：CDC 收到数据后写入 UART
- *            CDC RX data is forwarded to UART TX.
- *          - UART RX -> CDC TX：UART 收到数据后写入 CDC
- *            UART RX data is forwarded to CDC TX.
- *
- *          触发方式 / Triggering model:
- *          - 通过回调链在每次写完成后启动下一次读，实现持续搬运
- *            Callbacks chain the next read after each write completes for continuous
- * pumping.
+ * CDC 收到的数据写进 UART，UART 收到的数据写进 CDC；两个方向各由一条回调链推进：读完成
+ * 后写，写完成后再读。主机的 SET_LINE_CODING 应用到 UART。
+ * CDC data goes to the UART and UART data goes to CDC; each direction runs on a callback
+ * chain: write after a read completes, read again after the write completes. The host's
+ * SET_LINE_CODING is applied to the UART.
  */
 class CDCToUart : public CDCUart
 {
  public:
   /**
-   * @brief 构造函数 / Constructor
-   *
-   * @param uart 被桥接的 UART 实例 / UART instance to bridge with CDC
-   * @param rx_buffer_size CDC->UART 方向临时缓存大小 / Temp buffer size for CDC->UART
-   * @param tx_buffer_size UART->CDC 方向临时缓存大小 / Temp buffer size for UART->CDC
-   * @param tx_queue_size CDC TX 队列深度 / CDC TX queue depth
-   * @param data_in_ep_num CDC Data IN 端点号 / CDC Data IN endpoint number
-   * @param data_out_ep_num CDC Data OUT 端点号 / CDC Data OUT endpoint number
-   * @param comm_ep_num CDC Comm 端点号 / CDC Comm endpoint number
-   *
-   * @note 本构造函数包含动态内存分配 / This constructor performs dynamic memory
-   * allocation
+   * @brief 构造并启动两条回调链 / Construct and start both callback chains
+   * @param data_in_ep_num 数据 IN 端点号 / Data IN endpoint number
+   * @param data_out_ep_num 数据 OUT 端点号 / Data OUT endpoint number
+   * @param comm_ep_num 通知端点号 / Notification endpoint number
+   * @param uart 被桥接的 UART / The bridged UART
+   * @param rx_buffer_size CDC 到 UART 的中转字节数 / CDC-to-UART staging bytes
+   * @param tx_buffer_size UART 到 CDC 的中转字节数 / UART-to-CDC staging bytes
+   * @param tx_queue_size CDC 发送请求个数 / CDC transmit request count
+   * @note 分配两块中转缓冲和四个回调，只在构造时分配。
+   *       Allocates two staging buffers and four callbacks, at construction only.
    */
   CDCToUart(Endpoint::EPNumber data_in_ep_num, Endpoint::EPNumber data_out_ep_num,
             Endpoint::EPNumber comm_ep_num, LibXR::UART& uart,
             size_t rx_buffer_size = 128, size_t tx_buffer_size = 128,
-            size_t tx_queue_size = 5)
-      : CDCUart(data_in_ep_num, data_out_ep_num, comm_ep_num, rx_buffer_size,
-                tx_buffer_size, tx_queue_size),
-        rx_buffer_(new uint8_t[rx_buffer_size], rx_buffer_size),
-        tx_buffer_(new uint8_t[tx_buffer_size], tx_buffer_size),
-        uart_(uart)
-  {
-    // CDC->UART：CDC RX 缓冲必须能写入 UART 的 data 队列。
-    // CDC->UART: the UART TX data queue must accept at least rx_buffer_size bytes.
-    ASSERT(uart_.write_port_->Capacity() >= rx_buffer_size);
+            size_t tx_queue_size = 5);
 
-    // 1) CDC 读完成回调：从 CDC 读一段数据并写入 UART。
-    // 1) CDC read callback: read one chunk from CDC and write it into UART.
-    // Guarded to flatten the bridge pump chain.
-    cb_read_cdc_ = Callback<ErrorCode>::CreateGuarded(
-        [](bool in_isr, CDCToUart* cdc_to_uart, ErrorCode)
-        {
-          auto size =
-              LibXR::min(cdc_to_uart->read_port_->Size(), cdc_to_uart->rx_buffer_.size_);
+ protected:
+  /**
+   * @brief 把线路编码应用到 UART / Apply the line coding to the UART
+   * @note 总是应答，不 STALL。UART 不接受时逐项放宽：先 1 位停止位，再无校验，再 8
+   *       数据位，最后回到上一次生效的配置；第一个被接受的就是生效值。都不接受时保留
+   *       上一次的线路编码。
+   *       Always acknowledged, never stalled. If the UART refuses, fields are relaxed
+   *       one at a time: 1 stop bit, then no parity, then 8 data bits, then the
+   *       previously applied configuration; the first accepted one is applied. If none
+   *       is accepted, the previous line coding stays.
+   */
+  void ApplyLineCoding(bool in_isr, CDCLineCoding& coding,
+                       UART::Configuration& config) override;
 
-          static ReadOperation op_read_cdc_noblock;
-          [[maybe_unused]] auto ans = cdc_to_uart->Read(
-              {cdc_to_uart->rx_buffer_.addr_, size}, op_read_cdc_noblock, in_isr);
-          DEV_ASSERT_FROM_CALLBACK(ans == ErrorCode::OK, in_isr);
+ private:
+  /// 两份配置的四个字段是否都相同 / Whether all four fields of two configurations match
+  static bool SameConfiguration(const UART::Configuration& a,
+                                const UART::Configuration& b);
 
-          ans = cdc_to_uart->uart_.Write({cdc_to_uart->rx_buffer_.addr_, size},
-                                         cdc_to_uart->op_write_uart_, in_isr);
-          DEV_ASSERT_FROM_CALLBACK(ans == ErrorCode::OK, in_isr);
-        },
-        this);
+  RawData rx_buffer_;  ///< CDC 到 UART 的中转 / CDC-to-UART staging
+  RawData tx_buffer_;  ///< UART 到 CDC 的中转 / UART-to-CDC staging
+  LibXR::UART& uart_;  ///< 被桥接的 UART / The bridged UART
 
-    op_read_cdc_ = ReadOperation(cb_read_cdc_);
+  Callback<ErrorCode> cb_read_cdc_;    ///< CDC 读完成 / CDC read done
+  Callback<ErrorCode> cb_uart_write_;  ///< UART 写完成 / UART write done
+  Callback<ErrorCode> cb_uart_read_;   ///< UART 读完成 / UART read done
+  Callback<ErrorCode> cb_cdc_write_;   ///< CDC 写完成 / CDC write done
 
-    // 2) UART 写完成回调：继续触发下一次 CDC 读。
-    // 2) UART write-complete callback: trigger the next CDC read.
-    // Guarded to flatten the bridge pump chain.
-    cb_uart_write_ = Callback<ErrorCode>::CreateGuarded(
-        [](bool in_isr, CDCToUart* cdc_to_uart, ErrorCode)
-        {
-          [[maybe_unused]] auto ans =
-              cdc_to_uart->Read({nullptr, 0}, cdc_to_uart->op_read_cdc_, in_isr);
-          DEV_ASSERT_FROM_CALLBACK(ans == ErrorCode::OK, in_isr);
-        },
-        this);
-
-    op_write_uart_ = WriteOperation(cb_uart_write_);
-
-    // 3) UART 读完成回调：从 UART 读一段数据并写入 CDC。
-    // 3) UART read callback: read one chunk from UART and write it into CDC.
-    // Guarded to flatten the bridge pump chain.
-    cb_uart_read_ = Callback<ErrorCode>::CreateGuarded(
-        [](bool in_isr, CDCToUart* cdc_to_uart, ErrorCode)
-        {
-          auto size = LibXR::min(cdc_to_uart->uart_.read_port_->Size(),
-                                 cdc_to_uart->tx_buffer_.size_);
-          static ReadOperation op_read_uart_noblock;
-
-          [[maybe_unused]] auto ans = cdc_to_uart->uart_.Read(
-              {cdc_to_uart->tx_buffer_.addr_, size}, op_read_uart_noblock, in_isr);
-          DEV_ASSERT_FROM_CALLBACK(ans == ErrorCode::OK, in_isr);
-
-          ans = cdc_to_uart->Write({cdc_to_uart->tx_buffer_.addr_, size},
-                                   cdc_to_uart->op_write_cdc_, in_isr);
-          DEV_ASSERT_FROM_CALLBACK(ans == ErrorCode::OK, in_isr);
-        },
-        this);
-
-    op_read_uart_ = ReadOperation(cb_uart_read_);
-
-    // 4) CDC 写完成回调：继续触发下一次 UART 读。
-    // 4) CDC write-complete callback: trigger the next UART read.
-    // Guarded to flatten the bridge pump chain.
-    cb_cdc_write_ = Callback<ErrorCode>::CreateGuarded(
-        [](bool in_isr, CDCToUart* cdc_to_uart, ErrorCode)
-        {
-          [[maybe_unused]] auto ans_uart_read =
-              cdc_to_uart->uart_.Read({nullptr, 0}, cdc_to_uart->op_read_uart_, in_isr);
-          DEV_ASSERT_FROM_CALLBACK(ans_uart_read == ErrorCode::OK, in_isr);
-        },
-        this);
-
-    op_write_cdc_ = WriteOperation(cb_cdc_write_);
-
-    // 5) LineCoding 回调：USB CDC 侧配置变化同步到 UART。
-    // 5) LineCoding callback: forward CDC line-coding changes to UART configuration.
-    set_line_coding_cb_ = LibXR::Callback<LibXR::UART::Configuration>::Create(
-        [](bool in_isr, CDCToUart* self, LibXR::UART::Configuration cfg)
-        { self->uart_.SetConfig(cfg, in_isr); }, this);
-
-    SetOnSetLineCodingCallback(set_line_coding_cb_);
-
-    // 启动搬运：挂起一次 CDC 读与 UART 读，以进入回调链。
-    // Kick the pump: schedule one CDC read and one UART read to enter the callback chain.
-    this->Read({nullptr, 0}, op_read_cdc_, false);
-    uart_.Read({nullptr, 0}, op_read_uart_, false);
-  }
-
-  RawData rx_buffer_;  ///< CDC->UART 临时缓存 / Temp buffer for CDC->UART
-  RawData tx_buffer_;  ///< UART->CDC 临时缓存 / Temp buffer for UART->CDC
-
-  LibXR::Callback<ErrorCode> cb_read_cdc_;  ///< CDC 读完成回调 / CDC read callback
-  LibXR::Callback<ErrorCode>
-      cb_uart_write_;  ///< UART 写完成回调 / UART write-complete callback
-  LibXR::Callback<ErrorCode> cb_uart_read_;  ///< UART 读完成回调 / UART read callback
-  LibXR::Callback<ErrorCode>
-      cb_cdc_write_;  ///< CDC 写完成回调 / CDC write-complete callback
-
-  LibXR::Callback<LibXR::UART::Configuration>
-      set_line_coding_cb_;  ///< LineCoding 同步回调 / Line coding sync callback
-
-  LibXR::WriteOperation op_write_cdc_;   ///< CDC 写操作句柄 / CDC write operation
-  LibXR::WriteOperation op_write_uart_;  ///< UART 写操作句柄 / UART write operation
-  LibXR::ReadOperation op_read_cdc_;     ///< CDC 读操作句柄 / CDC read operation
-  LibXR::ReadOperation op_read_uart_;    ///< UART 读操作句柄 / UART read operation
-
-  LibXR::UART& uart_;  ///< 被桥接的 UART 引用 / Bridged UART reference
+  WriteOperation op_write_cdc_;   ///< CDC 写 / CDC write
+  WriteOperation op_write_uart_;  ///< UART 写 / UART write
+  ReadOperation op_read_cdc_;     ///< CDC 读 / CDC read
+  ReadOperation op_read_uart_;    ///< UART 读 / UART read
 };
 
 }  // namespace LibXR::USB
