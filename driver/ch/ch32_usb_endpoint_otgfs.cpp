@@ -350,17 +350,14 @@ Endpoint::StopOutcome CH32EndpointOtgFs::StopHardware(bool in_isr)
       NVIC_SetPendingIRQ(USBFS_IRQn);
     }
   }
-  // 本函数返回前槽仍归这个请求：共享端点把收下的这一包拷进槽。
-  // Until this function returns the slot still belongs to the request: a shared
-  // endpoint copies the collected packet into it.
   const StopOutcome outcome =
-      SettleStop({mine, rx_len, (int_st & USBFS_UIS_TOG_OK) != 0U}, true);
+      SettleStop({mine, rx_len, (int_st & USBFS_UIS_TOG_OK) != 0U});
   EndPending();
   transfer_active_ = false;
   return outcome;
 }
 
-Endpoint::StopOutcome CH32EndpointOtgFs::SettleStop(const StopEvent& event, bool may_copy)
+Endpoint::StopOutcome CH32EndpointOtgFs::SettleStop(const StopEvent& event)
 {
   const bool mine = event.mine;
   const size_t size = event.size;
@@ -390,16 +387,13 @@ Endpoint::StopOutcome CH32EndpointOtgFs::SettleStop(const StopEvent& event, bool
   }
 
   // OUT：本端点的完成事件是已应答的整包（实测），必须计入；TOG_OK=0 是主机重发的旧包。
-  // 单向端点和 EP0 的包已由硬件写进槽；共享端点的包在后端的缓冲里，停止函数返回之后
-  // 不再拷进槽，只丢弃。
+  // 只计字节数：被停的 OUT 请求以 ABORTED 交付、不借出槽，共享端点的这一包不拷进槽。
   // OUT: a completion event of this endpoint is a whole acknowledged packet (measured)
-  // and must be counted; TOG_OK=0 is a resend of an old packet. A single-direction
-  // endpoint and EP0 have it in the slot already, written by the hardware; a shared
-  // endpoint has it in the backend's buffer, and once the stop function has returned it
-  // is no longer copied into the slot, only dropped.
-  const bool shared = !single_direction_ && !is_ep0;
+  // and must be counted; TOG_OK=0 is a resend of an old packet. Only the bytes are
+  // counted: a stopped OUT request is delivered ABORTED and lends no slot, so a shared
+  // endpoint's packet is not copied into the slot.
   bool done = false;
-  if (mine && (iso || tog_ok) && (!shared || may_copy))
+  if (mine && (iso || tog_ok))
   {
     if (is_ep0)
     {
@@ -407,10 +401,6 @@ Endpoint::StopOutcome CH32EndpointOtgFs::SettleStop(const StopEvent& event, bool
     }
     const size_t room = transfer_requested_ - transfer_accumulated_;
     const size_t taken = size > room ? room : size;
-    if (shared && taken != 0U)
-    {
-      std::memcpy(transfer_cursor_, block_dma_base_, taken);
-    }
     transfer_accumulated_ += taken;
     done = transfer_accumulated_ >= transfer_requested_ || size < mps ||
            !single_direction_ || is_ep0 || iso;
@@ -448,7 +438,7 @@ void CH32EndpointOtgFs::EndPending()
 
 void CH32EndpointOtgFs::FinishStop(bool in_isr, const StopEvent& event)
 {
-  const StopOutcome outcome = SettleStop(event, false);
+  const StopOutcome outcome = SettleStop(event);
   EndPending();
   transfer_active_ = false;
   OnHardwareComplete(in_isr, outcome.actual, outcome.result);

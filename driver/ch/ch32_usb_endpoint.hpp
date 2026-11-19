@@ -160,14 +160,13 @@ class CH32EndpointOtgFs : public USB::Endpoint
    *        request: count the last completion event, give the result and byte count
    * @param event 停止时的完成事件；没有时为 {} / The completion event at the stop; {}
    *        when there is none
-   * @param may_copy 共享端点的这一包还可以拷进槽（停止函数返回之前）/ A shared
-   *        endpoint may still copy this packet into the slot (before the stop function
-   *        has returned)
-   * @note 计入一个 OUT 包时：EP0 翻软件 toggle，共享端点把这一包拷进槽，累加已收字节。
-   *       Counting an OUT packet flips EP0's software toggle, copies the packet into
-   *       the slot for a shared endpoint and adds to the bytes received.
+   * @note 计入一个 OUT 包时：EP0 翻软件 toggle，累加已收字节。数据不拷：被停的 OUT 请求
+   *       以 ABORTED 交付、不借出槽。
+   *       Counting an OUT packet flips EP0's software toggle and adds to the bytes
+   *       received. No data is copied: a stopped OUT request is delivered ABORTED and
+   *       lends no slot.
    */
-  StopOutcome SettleStop(const StopEvent& event, bool may_copy);
+  StopOutcome SettleStop(const StopEvent& event);
   /// 停止转为未结束：计数，记下此刻是否已锁存着 SOF / The stop becomes pending: count
   /// it and note whether a SOF is latched already
   void BeginPending();
