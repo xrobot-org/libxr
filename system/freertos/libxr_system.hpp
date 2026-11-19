@@ -4,12 +4,6 @@
 #include "semphr.h"
 #include "task.h"
 
-// ESP Xtensa 头文件的宏会与 USB 端点类型名称冲突。
-// ESP Xtensa headers expose a macro that conflicts with the USB endpoint type.
-#if defined(ESP_PLATFORM) && defined(INTERRUPT)
-#undef INTERRUPT
-#endif
-
 namespace LibXR
 {
 typedef SemaphoreHandle_t libxr_mutex_handle;

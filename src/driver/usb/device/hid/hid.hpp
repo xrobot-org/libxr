@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstring>
 
 #include "dev_core.hpp"
@@ -15,6 +16,12 @@ namespace LibXR::USB
  * USB HID (Human Interface Device) base class with optional OUT endpoint and auto
  * descriptor generation, suitable for extension as keyboard, mouse, gamepad, etc.
  *
+ * 输入报告走槽模型：SendInputReport 在任何上下文取槽、拷贝、提交，同一时刻只有一条
+ * 报告在途；OUT 报告以租约交给类，默认策略是取走数据后归还租约继续接收。
+ * Input reports use the slot model: SendInputReport acquires a slot, copies and submits
+ * in any context, with one report in flight at a time. OUT reports arrive as leases;
+ * the default policy consumes the report and returns the lease to keep receiving.
+ *
  * @tparam REPORT_DESC_LEN 报告描述符长度 / Report descriptor length (bytes)
  * @tparam TX_REPORT_LEN Input Report 长度 / Input report length (bytes)
  * @tparam RX_REPORT_LEN Output Report 长度 / Output report length (bytes) [default: 0]
@@ -23,8 +30,8 @@ template <size_t REPORT_DESC_LEN, size_t TX_REPORT_LEN, size_t RX_REPORT_LEN = 0
 class HID : public DeviceClass
 {
  public:
-  // 暴露单接口的 HID 功能默认使用这个接口字符串。
-  // Default interface string for HID functions that expose one interface.
+  /// 暴露单接口的 HID 功能默认使用这个接口字符串。
+  /// Default interface string for HID functions that expose one interface.
   static constexpr const char* DEFAULT_INTERFACE_STRING = "XRUSB HID";
 
   /** @brief HID 描述符类型 / HID Descriptor Types */
@@ -127,6 +134,8 @@ class HID : public DeviceClass
   {
   }
 
+  /// 仅序号 0 有字符串（HID 只有一个接口），其余返回 nullptr / Only index 0 has a string
+  /// (HID has a single interface); others return nullptr
   const char* GetInterfaceString(size_t local_interface_index) const override
   {
     // HID 只暴露一个接口。
@@ -142,28 +151,41 @@ class HID : public DeviceClass
    * @param start_itf_num 接口号起始 / Starting interface number
    * @param in_isr 是否在中断上下文 / Whether in ISR
    */
-  void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num, bool) override
+  void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num,
+                     bool in_isr) override
   {
     inited_ = false;
     itf_num_ = start_itf_num;
     ep_in_ = nullptr;
     ep_out_ = nullptr;
 
-    // 获取IN端点
+    // 获取IN端点 / Get the IN endpoint
     auto ans = endpoint_pool.Get(ep_in_, Endpoint::Direction::IN, in_ep_num_);
     ASSERT(ans == ErrorCode::OK);
-    ep_in_->Configure(
-        {Endpoint::Direction::IN, Endpoint::Type::INTERRUPT, TX_REPORT_LEN});
+    // 包长显式：取报告长度与当前速度下中断端点合法包长的较小者；槽装不下一个包时
+    // Configure 返回 NO_BUFF，端点进入 ERROR，组合层会拒绝该配置。
+    // The packet size is explicit: the smaller of the report length and the largest
+    // legal interrupt packet at this speed. NO_BUFF means the slot cannot hold one
+    // packet; the endpoint enters ERROR and the composition rejects the configuration.
+    (void)ep_in_->Configure(
+        {Endpoint::Direction::IN, Endpoint::Type::INTR,
+         static_cast<uint16_t>(LibXR::min<size_t>(
+             TX_REPORT_LEN, ep_in_->LargestPacketSize(Endpoint::Type::INTR)))},
+        in_isr);
 
     if (enable_out_endpoint_)
     {
       ans = endpoint_pool.Get(ep_out_, Endpoint::Direction::OUT, out_ep_num_);
       ASSERT(ans == ErrorCode::OK);
-      ep_out_->Configure(
-          {Endpoint::Direction::OUT, Endpoint::Type::INTERRUPT, RX_REPORT_LEN});
+      const uint16_t packet = static_cast<uint16_t>(LibXR::min<size_t>(
+          RX_REPORT_LEN, ep_out_->LargestPacketSize(Endpoint::Type::INTR)));
+      // receive_size 与包长一致：每个租约恰是一条报告。
+      // receive_size equals one packet: one report per lease.
+      (void)ep_out_->Configure(
+          {Endpoint::Direction::OUT, Endpoint::Type::INTR, packet, packet}, in_isr);
     }
 
-    // 填充接口描述符
+    // 填充接口描述符 / Fill the interface descriptor
     desc_.intf = {
         9,                                                   // bLength
         static_cast<uint8_t>(DescriptorType::INTERFACE),     // bDescriptorType
@@ -172,11 +194,11 @@ class HID : public DeviceClass
         static_cast<uint8_t>(enable_out_endpoint_ ? 2 : 1),  // bNumEndpoints
         0x03,                                                // bInterfaceClass (HID)
         0x00,                                                // bInterfaceSubClass
-        0x00,                        // bInterfaceProtocol (可选键盘/鼠标设置1/2)
+        0x00,  // bInterfaceProtocol：键盘 1，鼠标 2 / keyboard 1, mouse 2
         GetInterfaceStringIndex(0u)  // iInterface
     };
 
-    // 填充HID描述符
+    // 填充HID描述符 / Fill the HID descriptor
     desc_.hid = {9,
                  HIDDescriptorType::HID,
                  0x0111,  // HID v1.11
@@ -185,28 +207,28 @@ class HID : public DeviceClass
                  HIDDescriptorType::REPORT,
                  REPORT_DESC_LEN};
 
-    // 填充IN端点描述符
+    // 填充IN端点描述符 / Fill the IN endpoint descriptor
     desc_.ep_in = {
         7,
         static_cast<uint8_t>(DescriptorType::ENDPOINT),
         ep_in_->GetAddress(),
-        static_cast<uint8_t>(Endpoint::Type::INTERRUPT),
-        TX_REPORT_LEN,
-        in_ep_interval_  // 轮询间隔ms
+        static_cast<uint8_t>(Endpoint::Type::INTR),
+        ep_in_->MaxPacketSize(),
+        in_ep_interval_  // 轮询间隔（ms）/ Polling interval in ms
     };
 
-    // 填充OUT端点描述符（如启用）
+    // 填充OUT端点描述符（如启用） / Fill the OUT endpoint descriptor (if enabled)
     if (enable_out_endpoint_)
     {
       desc_.ep_out = {7,
                       static_cast<uint8_t>(DescriptorType::ENDPOINT),
                       ep_out_->GetAddress(),
-                      static_cast<uint8_t>(Endpoint::Type::INTERRUPT),
-                      RX_REPORT_LEN,
+                      static_cast<uint8_t>(Endpoint::Type::INTR),
+                      ep_out_->MaxPacketSize(),
                       out_ep_interval_};
     }
 
-    // 设置最终数据指针
+    // 设置最终数据指针 / Set the final data pointer
     if (enable_out_endpoint_)
     {
       SetData(RawData{reinterpret_cast<uint8_t*>(&desc_), sizeof(HIDDescBlockINOUT)});
@@ -216,46 +238,18 @@ class HID : public DeviceClass
       SetData(RawData{reinterpret_cast<uint8_t*>(&desc_), sizeof(HIDDescBlockIN)});
     }
 
-    ep_in_->SetOnTransferCompleteCallback(on_data_in_complete_cb_);
+    ep_in_->SetOnComplete(on_data_in_complete_cb_);
 
     if (enable_out_endpoint_)
     {
-      ep_out_->SetOnTransferCompleteCallback(on_data_out_complete_cb_);
-      ep_out_->Transfer(RX_REPORT_LEN);
+      ep_out_->SetOnComplete(on_data_out_complete_cb_);
+      // 挂一个槽接收 OUT 报告；租约处理完归还时按 receive_size 重新挂接收。
+      // Arm one slot for OUT reports; returning a lease rearms it by receive_size.
+      (void)ep_out_->Receive(ep_out_->MaxPacketSize(), in_isr);
     }
 
     inited_ = true;
-  }
-
-  static void OnDataOutCompleteStatic(bool in_isr, HID* self, LibXR::ConstRawData& data)
-  {
-    if (self == nullptr || !self->inited_ || self->ep_out_ == nullptr)
-    {
-      return;
-    }
-    self->OnDataOutComplete(in_isr, data);
-    self->ep_out_->Transfer(RX_REPORT_LEN);
-  }
-
-  static void OnDataInCompleteStatic(bool in_isr, HID* self, LibXR::ConstRawData& data)
-  {
-    if (self == nullptr || !self->inited_ || self->ep_in_ == nullptr)
-    {
-      return;
-    }
-    self->OnDataInComplete(in_isr, data);
-  }
-
-  virtual void OnDataOutComplete(bool in_isr, LibXR::ConstRawData& data)
-  {
-    UNUSED(in_isr);
-    UNUSED(data);
-  }
-
-  virtual void OnDataInComplete(bool in_isr, LibXR::ConstRawData& data)
-  {
-    UNUSED(in_isr);
-    UNUSED(data);
+    in_ep_ref_.store(ep_in_, std::memory_order_release);
   }
 
   /**
@@ -264,18 +258,26 @@ class HID : public DeviceClass
    * @param endpoint_pool 端点池 / Endpoint pool
    * @param in_isr 是否在中断中 / Whether in ISR
    */
-  void UnbindEndpoints(EndpointPool& endpoint_pool, bool) override
+  void UnbindEndpoints(EndpointPool& endpoint_pool, bool in_isr) override
   {
     inited_ = false;
+    // 先摘掉引用再关闭：新的 SendInputReport 立刻得到 FAILED，不与新绑定竞争。
+    // Drop the reference before closing: a new SendInputReport fails at once and does
+    // not race the next binding.
+    in_ep_ref_.store(nullptr, std::memory_order_release);
+    // 结束这次绑定里的发送声明：还没提交的发送方随后会发现自己的声明已失效。
+    // End the send claim of this binding: a sender that has not submitted yet then finds
+    // its claim gone.
+    EndInputClaim();
     if (ep_in_)
     {
-      ep_in_->Close();
+      ep_in_->Close(in_isr);
       endpoint_pool.Release(ep_in_);
       ep_in_ = nullptr;
     }
     if (ep_out_)
     {
-      ep_out_->Close();
+      ep_out_->Close(in_isr);
       endpoint_pool.Release(ep_out_);
       ep_out_ = nullptr;
     }
@@ -297,6 +299,9 @@ class HID : public DeviceClass
    */
   bool HasIAD() override { return false; }
 
+  /// 端点地址是否属于本 HID（IN 端点，启用时还包括 OUT 端点）；未绑定时为 false / Whether
+  /// the endpoint address belongs to this HID (the IN endpoint, plus the OUT endpoint
+  /// when enabled); false before binding
   bool OwnsEndpoint(uint8_t ep_addr) const override
   {
     if (!inited_)
@@ -342,7 +347,7 @@ class HID : public DeviceClass
     {
       case static_cast<uint8_t>(HIDDescriptorType::HID):  // 0x21
       {
-        // 返回 HID 描述符
+        // 返回 HID 描述符 / Return the HID descriptor
         ConstRawData desc = GetHIDDesc();
         need_write.addr_ = desc.addr_;
         need_write.size_ = (wLength < desc.size_) ? wLength : desc.size_;
@@ -350,7 +355,7 @@ class HID : public DeviceClass
       }
       case static_cast<uint8_t>(HIDDescriptorType::REPORT):  // 0x22
       {
-        // 返回 Report Descriptor
+        // 返回 Report Descriptor / Return the Report Descriptor
         ConstRawData desc = GetReportDesc();
         need_write.addr_ = desc.addr_;
         need_write.size_ = (wLength < desc.size_) ? wLength : desc.size_;
@@ -358,6 +363,7 @@ class HID : public DeviceClass
       }
       case static_cast<uint8_t>(HIDDescriptorType::PHYSICAL):
         // 物理描述符（很少用，未实现）
+        // Physical descriptor (rarely used, not implemented)
       default:
         return ErrorCode::NOT_SUPPORT;
     }
@@ -371,6 +377,8 @@ class HID : public DeviceClass
    * @param bRequest 请求码 / Request code
    * @param wValue 请求值 / Request value
    * @param wLength 请求长度 / Request length
+   * @param wIndex 请求索引（接口号），当前未使用 / Request index (interface number);
+   * currently unused
    * @param result 返回结果 / Result
    * @return ErrorCode 错误码 / Error code
    */
@@ -392,12 +400,15 @@ class HID : public DeviceClass
         {
           case ReportType::INPUT:
             // 查找或生成 Input Report（按你的设备实际逻辑）
+            // Find or generate the Input Report (per the actual logic of the device)
             return OnGetInputReport(report_id, result);
           case ReportType::OUTPUT:
             // 查找或返回最近收到的 Output Report（通常很少实现GET Output）
+            // Find or return the most recently received Output Report (GET Output is
+            // rarely implemented)
             return OnGetLastOutputReport(report_id, result);
           case ReportType::FEATURE:
-            // 查找或生成 Feature Report
+            // 查找或生成 Feature Report / Find or generate the Feature Report
             return OnGetFeatureReport(report_id, result);
           default:
             return OnCustomClassRequest(in_isr, bRequest, wValue, wLength, result);
@@ -409,11 +420,13 @@ class HID : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
-        // 由OnClassData阶段接收
+        // OUT 数据阶段由核心接收，完整后经 OnClassData → OnSetReportData 交给类。
+        // The core receives the OUT data stage and hands it over via OnClassData →
+        // OnSetReportData once it is complete.
         return OnSetReport(report_id, result);
 
       case ClassRequest::GET_IDLE:
-        // 仅支持一个Idle rate
+        // 仅支持一个Idle rate / Only one Idle rate is supported
         if (wLength != 1 || report_id != 0)
         {
           return ErrorCode::ARG_ERR;
@@ -427,7 +440,6 @@ class HID : public DeviceClass
           return ErrorCode::ARG_ERR;
         }
         idle_rate_ = wValue >> 8;
-        result.write_zlp = true;
         return ErrorCode::OK;
 
       case ClassRequest::GET_PROTOCOL:
@@ -436,7 +448,6 @@ class HID : public DeviceClass
 
       case ClassRequest::SET_PROTOCOL:
         protocol_ = static_cast<Protocol>(wValue & 0xFF);
-        result.write_zlp = true;
         return ErrorCode::OK;
 
       default:
@@ -459,11 +470,15 @@ class HID : public DeviceClass
         // 通常为 Output Report 或 Feature Report
         // 你可以区分是 Output 还是 Feature，也可以统一交给
         // OnSetReportData（推荐如下写法）
+        // Usually an Output Report or a Feature Report. The two can be told apart,
+        // or both handed to OnSetReportData (the form below is recommended).
         auto ans = OnSetReportData(in_isr, data);
         if (ans == ErrorCode::OK)
         {
           // 可选：记录最近一次 report id（假定第一个字节是 report id，没有 report id
           // 就写0）
+          // Optional: record the most recent report id (assumes the first byte is the
+          // report id; write 0 if there is none).
           last_output_report_id_ =
               (data.size_ > 0) ? reinterpret_cast<const uint8_t*>(data.addr_)[0] : 0;
         }
@@ -557,6 +572,18 @@ class HID : public DeviceClass
     return ErrorCode::NOT_SUPPORT;
   }
 
+  /**
+   * @brief 处理自定义类请求的数据阶段（SET_REPORT 以外的请求码）
+   *        Handle the data stage of a custom class request (any code other than
+   *        SET_REPORT)
+   *
+   * 默认返回 NOT_SUPPORT。 / The default returns NOT_SUPPORT.
+   *
+   * @param in_isr 是否在中断中 / In ISR
+   * @param bRequest 请求码 / Request code
+   * @param data 数据阶段数据 / Data stage payload
+   * @return ErrorCode 错误码 / Error code
+   */
   virtual ErrorCode OnCustomClassData(bool in_isr, uint8_t bRequest, ConstRawData& data)
   {
     UNUSED(in_isr);
@@ -591,39 +618,139 @@ class HID : public DeviceClass
   }
 
   /**
-   * @brief 发送输入报告到主机
-   * Send Input Report to host
+   * @brief 发送输入报告到主机（任何上下文）
+   * Send Input Report to host (any context)
+   *
+   * 取槽 → 拷贝 → 提交，同一时刻只有一条报告在途；上一条报告完成前返回 BUSY。
+   * 取槽之后发生复位/解绑时 Submit 返回 ABORTED，本方法与未绑定时一样返回 FAILED：
+   * 报告未发布，不重试。调用期间发生解绑的发送同样返回 FAILED，即使端点已重新绑定。
+   * Acquire a slot, copy and submit, with one report in flight at a time; BUSY while the
+   * previous report is outstanding. A reset or unbind after the slot was acquired makes
+   * Submit return ABORTED; this returns FAILED, as for an unbound endpoint: the report
+   * was never published and is not retried. A send that an unbind interrupts returns
+   * FAILED as well, even when the endpoint is bound again by then.
    *
    * @param report 输入报告数据指针及长度 / Input report data and length
-   * @return ErrorCode 错误码 / Error code
+   * @param in_isr 是否在中断中 / Whether in ISR
+   * @return ErrorCode OK/BUSY/FAILED/ARG_ERR / Error code
    */
-  ErrorCode SendInputReport(ConstRawData report)
+  ErrorCode SendInputReport(ConstRawData report, bool in_isr = false)
   {
-    if (!inited_ || !ep_in_)
+    if (report.addr_ == nullptr || report.size_ == 0U || report.size_ > TX_REPORT_LEN)
+      return ErrorCode::ARG_ERR;
+    uint32_t claim;
+    if (!ClaimInput(claim)) return ErrorCode::BUSY;
+    return SendClaimedReport(claim, report, in_isr);
+  }
+
+  /**
+   * @brief 取得发送声明 / Take the send claim
+   *
+   * 声明字的 bit 0 表示已被占用，其余位是声明序号：每次声明结束序号加一，所以过期的声明
+   * 不会与后来的声明相等。
+   * Bit 0 of the claim word means claimed and the other bits are the claim serial: the
+   * serial advances each time a claim ends, so an old claim never equals a later one.
+   *
+   * @param claim 取到的声明 / The claim taken
+   * @return 是否取到；已有声明时为 false / Whether it was taken; false while one is held
+   */
+  bool ClaimInput(uint32_t& claim)
+  {
+    uint32_t cur = input_in_flight_.load(std::memory_order_acquire);
+    do
     {
+      if ((cur & INPUT_CLAIMED) != 0U) return false;
+      claim = cur | INPUT_CLAIMED;
+    } while (!input_in_flight_.compare_exchange_weak(
+        cur, claim, std::memory_order_acq_rel, std::memory_order_acquire));
+    return true;
+  }
+
+  /// 放弃自己的声明；它已经被解绑或完成事件结束时什么也不做 / Drop the caller's own
+  /// claim; does nothing when an unbind or a completion has already ended it
+  void DropInputClaim(uint32_t claim)
+  {
+    (void)input_in_flight_.compare_exchange_strong(claim, claim + 1U,
+                                                   std::memory_order_acq_rel);
+  }
+
+  /// 结束当前的声明（不论属于谁）并推进序号 / End the current claim, whoever holds it,
+  /// and advance the serial
+  void EndInputClaim()
+  {
+    uint32_t cur = input_in_flight_.load(std::memory_order_acquire);
+    while (!input_in_flight_.compare_exchange_weak(cur, (cur | INPUT_CLAIMED) + 1U,
+                                                   std::memory_order_acq_rel,
+                                                   std::memory_order_acquire))
+    {
+    }
+  }
+
+  /**
+   * @brief 用已取得的声明发送一条输入报告 / Send one input report under a claim already
+   * taken
+   *
+   * 失败时放弃这个声明；成功时声明保留到报告的完成事件。
+   * Drops the claim on failure; on success the claim lasts until the completion of the
+   * report.
+   *
+   * @param claim ClaimInput 取到的声明 / The claim from ClaimInput
+   * @param report 输入报告数据指针及长度 / Input report data and length
+   * @param in_isr 是否在中断中 / Whether in ISR
+   * @return ErrorCode OK/BUSY/FAILED/ARG_ERR / Error code
+   */
+  ErrorCode SendClaimedReport(uint32_t claim, ConstRawData report, bool in_isr)
+  {
+    Endpoint* ep = in_ep_ref_.load(std::memory_order_acquire);
+    if (ep == nullptr)
+    {
+      DropInputClaim(claim);
       return ErrorCode::FAILED;
     }
-    if (!report.addr_ || report.size_ == 0 || report.size_ > TX_REPORT_LEN)
+    Endpoint::Slot slot;
+    ErrorCode ans = ep->AcquireSlot(slot, in_isr);
+    if (ans != ErrorCode::OK)
     {
+      DropInputClaim(claim);
+      // 端点未绑定（STATE_ERR）时返回 FAILED。
+      // An unbound endpoint (STATE_ERR) returns FAILED.
+      return ans == ErrorCode::STATE_ERR ? ErrorCode::FAILED : ans;
+    }
+    // 声明在取槽之后复核。声明取得之后发生过解绑，它就已被结束：这个槽可能属于新的绑定，
+    // 而新绑定的在途标志不归这次调用所有。复核之后再解绑，槽会过期，Submit 返回 ABORTED。
+    // The claim is checked again after the slot is acquired. An unbind since the claim
+    // was taken has ended it: the slot may belong to the new binding, whose in-flight
+    // flag this call does not own. An unbind after this check makes the slot stale and
+    // Submit returns ABORTED.
+    if (input_in_flight_.load(std::memory_order_acquire) != claim)
+    {
+      ep->ReleaseSlot(slot, in_isr);
+      return ErrorCode::FAILED;
+    }
+    if (report.size_ > slot.data.size_)
+    {
+      ep->ReleaseSlot(slot, in_isr);
+      DropInputClaim(claim);
       return ErrorCode::ARG_ERR;
     }
+    Memory::FastCopy(slot.data.addr_, report.addr_, report.size_);
 
-    if (ep_in_->GetState() != Endpoint::State::IDLE)
+    ans = ep->Submit(slot, report.size_, false, in_isr);
+    if (ans != ErrorCode::OK)
     {
-      return ErrorCode::BUSY;
+      // ABORTED：槽在解绑/停止时已被核心收回，再 Release 是双重释放；其余失败
+      // （SIZE_ERR 等）槽仍在手里，正常归还。
+      // ABORTED: the core already reclaimed the slot on unbind/stop, so releasing
+      // again would be a double release; other failures (SIZE_ERR etc.) leave the
+      // slot in our hands and are returned normally.
+      if (ans != ErrorCode::ABORTED)
+      {
+        ep->ReleaseSlot(slot, in_isr);
+      }
+      DropInputClaim(claim);
+      return ErrorCode::FAILED;
     }
-
-    // 数据拷贝到端点缓冲区
-    auto buf = ep_in_->GetBuffer();
-    if (report.size_ > buf.size_)
-    {
-      return ErrorCode::NO_BUFF;
-    }
-
-    LibXR::Memory::FastCopy(buf.addr_, report.addr_, report.size_);
-
-    // 启动端点传输
-    return ep_in_->Transfer(report.size_);
+    return ErrorCode::OK;
   }
 
   /**
@@ -656,17 +783,105 @@ class HID : public DeviceClass
    */
   bool HasOutEndpoint() const { return enable_out_endpoint_; }
 
+ public:
+  /// 控制 OUT 数据阶段的接收容量：64 与最大报告长度中的较大者 / Control OUT data-stage
+  /// receive capacity: the larger of 64 and the biggest report length
+  size_t GetControlReceiveCapacity() const override
+  {
+    return LibXR::max<size_t>(64U, LibXR::max<size_t>(TX_REPORT_LEN, RX_REPORT_LEN));
+  }
+  /// OUT 端点从暂停恢复时重新挂一次接收 / Re-arm a receive when the OUT endpoint resumes
+  /// from a halt
+  void OnDeviceEvent(bool in_isr, DeviceEvent event, uint8_t endpoint) override
+  {
+    if (event != DeviceEvent::ENDPOINT_RESUMED || ep_out_ == nullptr) return;
+    if (endpoint == ep_out_->GetAddress())
+      (void)ep_out_->Receive(ep_out_->MaxPacketSize(), in_isr);
+  }
+
+ protected:
+  /**
+   * @brief OUT 端点传输完成（owner 上下文）。
+   * OUT endpoint completion (owner context).
+   *
+   * 默认 HID 策略：派生类经 OnOutReport 取走报告后归还租约继续接收；接收失败（非
+   * ABORTED）时重新挂接收。DAP 覆盖本函数以保留租约作背压。
+   * Default HID policy: the derived class consumes the report via OnOutReport, then the
+   * lease is returned to keep receiving; a failed receive (not ABORTED) is armed again.
+   * DAP overrides this to withhold the lease as backpressure.
+   */
+  virtual void OnDataOutComplete(bool in_isr, const Endpoint::Completion& completion)
+  {
+    if (completion.result == ErrorCode::OK && completion.slot.Valid())
+    {
+      OnOutReport(in_isr, completion);
+      if (ep_out_ != nullptr) (void)ep_out_->ReturnSlot(completion.slot, in_isr);
+    }
+    else if (completion.result != ErrorCode::ABORTED && ep_out_ != nullptr)
+    {
+      // 接收失败会释放槽；重新挂上保持接收。
+      // A failed receive frees its slot; arm it again.
+      (void)ep_out_->Receive(ep_out_->MaxPacketSize(), in_isr);
+    }
+  }
+
+  /**
+   * @brief 收到 OUT 报告（租约由基类归还）/ An OUT report arrived; the base returns the
+   * lease afterwards.
+   */
+  virtual void OnOutReport(bool, const Endpoint::Completion&) {}
+
+  /**
+   * @brief IN 端点传输完成（owner 上下文）：主机已取走输入报告。
+   * IN endpoint completion (owner context): the host took the input report.
+   */
+  virtual void OnDataInComplete(bool, const Endpoint::Completion&) {}
+
  private:
-  uint8_t in_ep_interval_;         ///< 输入端点间隔 / IN endpoint interval
-  uint8_t out_ep_interval_;        ///< 输出端点间隔 / OUT endpoint interval
-  HIDDescBlockINOUT desc_;         ///< HID 描述符块/ Descriptor block
-  Endpoint::EPNumber in_ep_num_;   ///< 输入端点号 / IN endpoint number
-  Endpoint::EPNumber out_ep_num_;  ///< 输出端点号 / OUT endpoint number
-  Endpoint* ep_in_ = nullptr;      ///< 输入端点指针 / IN endpoint pointer
-  Endpoint* ep_out_ = nullptr;     ///< 输出端点指针 / OUT endpoint pointer
-  bool enable_out_endpoint_;  ///< 是否启用 OUT 端点 / Whether OUT endpoint is enabled
-  bool inited_ = false;       ///< 初始化标志 / Initialization flag
-  size_t itf_num_;            ///< 接口号 / Interface number
+  static void OnDataOutCompleteStatic(bool in_isr, HID* self,
+                                      const Endpoint::Completion& completion)
+  {
+    if (!self->inited_ || self->ep_out_ == nullptr)
+    {
+      // 解绑期间交出的租约立即归还。
+      // A lease handed over while unbinding is returned at once.
+      if (completion.slot.Valid() && self->ep_out_ != nullptr)
+        self->ep_out_->ReleaseSlot(completion.slot, in_isr);
+      return;
+    }
+    self->OnDataOutComplete(in_isr, completion);
+  }
+
+  static void OnDataInCompleteStatic(bool in_isr, HID* self,
+                                     const Endpoint::Completion& completion)
+  {
+    // 单条在途：报告完成（无论结果）即结束它的发送声明。
+    // One report in flight: its completion (whatever the result) ends its send claim.
+    self->EndInputClaim();
+    if (!self->inited_ || self->ep_in_ == nullptr) return;
+    self->OnDataInComplete(in_isr, completion);
+  }
+
+  static constexpr uint32_t INPUT_CLAIMED = 1U;
+  /// 发送声明字：bit 0 已占用，[31:1] 声明序号 / Send claim word: bit 0 claimed, [31:1]
+  /// claim serial
+  std::atomic<uint32_t> input_in_flight_{0};
+  std::atomic<Endpoint*> in_ep_ref_{
+      nullptr};  ///< SendInputReport 的 IN 端点 / IN endpoint doorbell
+
+  uint8_t in_ep_interval_ = 0;   ///< 输入端点间隔 / IN endpoint interval
+  uint8_t out_ep_interval_ = 0;  ///< 输出端点间隔 / OUT endpoint interval
+  HIDDescBlockINOUT desc_;       ///< HID 描述符块/ Descriptor block
+  /// 输入端点号 / IN endpoint number
+  Endpoint::EPNumber in_ep_num_ = Endpoint::EPNumber::EP_INVALID;
+  /// 输出端点号 / OUT endpoint number
+  Endpoint::EPNumber out_ep_num_ = Endpoint::EPNumber::EP_INVALID;
+  Endpoint* ep_in_ = nullptr;   ///< 输入端点指针 / IN endpoint pointer
+  Endpoint* ep_out_ = nullptr;  ///< 输出端点指针 / OUT endpoint pointer
+  /// 是否启用 OUT 端点 / Whether OUT endpoint is enabled
+  bool enable_out_endpoint_ = false;
+  bool inited_ = false;                     ///< 初始化标志 / Initialization flag
+  size_t itf_num_ = 0;                      ///< 接口号 / Interface number
   const char* interface_string_ = nullptr;  ///< 接口字符串 / Interface string
 
   Protocol protocol_ = Protocol::REPORT;  ///< 当前协议类型 / Current protocol
@@ -674,11 +889,11 @@ class HID : public DeviceClass
   uint8_t last_output_report_id_ =
       0;  ///< 最近的 Output Report ID / Last Output Report ID
 
-  LibXR::Callback<LibXR::ConstRawData&> on_data_out_complete_cb_ =
-      LibXR::Callback<LibXR::ConstRawData&>::Create(OnDataOutCompleteStatic, this);
+  Callback<const Endpoint::Completion&> on_data_out_complete_cb_ =
+      Callback<const Endpoint::Completion&>::Create(OnDataOutCompleteStatic, this);
 
-  LibXR::Callback<LibXR::ConstRawData&> on_data_in_complete_cb_ =
-      LibXR::Callback<LibXR::ConstRawData&>::Create(OnDataInCompleteStatic, this);
+  Callback<const Endpoint::Completion&> on_data_in_complete_cb_ =
+      Callback<const Endpoint::Completion&>::Create(OnDataInCompleteStatic, this);
 };
 
 }  // namespace LibXR::USB

@@ -88,8 +88,8 @@ void CH32PWM::EnableGPIOClock(GPIO_TypeDef* gpio)
   else if (gpio == GPIOD)
   {
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOD, ENABLE);
-#if defined(GPIOE)
   }
+#if defined(GPIOE)
   else if (gpio == GPIOE)
   {
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOE, ENABLE);
@@ -430,7 +430,7 @@ void CH32PWM::EnableChannel(bool en)
       break;
   }
 #else
-    (void)en;
+  (void)en;
 #endif
 }
 

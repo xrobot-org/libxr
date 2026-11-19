@@ -12,27 +12,27 @@ uint32_t LibXR::ch32_get_gpio_periph(GPIO_TypeDef* port)
   else if (port == GPIOA)
   {
     return RCC_APB2Periph_GPIOA;
+  }
 #endif
 #if defined(GPIOB)
-  }
   else if (port == GPIOB)
   {
     return RCC_APB2Periph_GPIOB;
+  }
 #endif
 #if defined(GPIOC)
-  }
   else if (port == GPIOC)
   {
     return RCC_APB2Periph_GPIOC;
+  }
 #endif
 #if defined(GPIOD)
-  }
   else if (port == GPIOD)
   {
     return RCC_APB2Periph_GPIOD;
+  }
 #endif
 #if defined(GPIOE)
-  }
   else if (port == GPIOE)
   {
     return RCC_APB2Periph_GPIOE;

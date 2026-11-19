@@ -86,20 +86,21 @@ class HIDMouse : public HID<sizeof(HID_MOUSE_REPORT_DESC), 4, 0>
    * @param x X 轴移动量 / X-axis movement
    * @param y Y 轴移动量 / Y-axis movement
    * @param wheel 滚轮移动量 / Wheel movement
+   * @param in_isr 是否在中断中 / Whether in ISR
    */
-  void Move(uint8_t buttons, int8_t x, int8_t y, int8_t wheel = 0)
+  void Move(uint8_t buttons, int8_t x, int8_t y, int8_t wheel = 0, bool in_isr = false)
   {
     Report report = {buttons, x, y, wheel};
-    SendInputReport(ConstRawData{&report, sizeof(report)});
+    SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr);
   }
 
   /**
    * @brief 释放所有按钮 / Release all buttons
    */
-  void Release()
+  void Release(bool in_isr = false)
   {
     Report report = {0, 0, 0, 0};
-    SendInputReport(ConstRawData{&report, sizeof(report)});
+    SendInputReport(ConstRawData{&report, sizeof(report)}, in_isr);
   }
 
  protected:

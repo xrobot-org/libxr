@@ -118,6 +118,16 @@ template <typename OwnerType, typename MemberType>
                                       OffsetOf(member));
 }
 
+/**
+ * @brief 通过成员指针恢复其所属对象指针（const 版本）
+ *        Recover the owning object pointer from a member pointer (const overload)
+ * @tparam OwnerType 所属对象类型 / Owner object type
+ * @tparam MemberType 成员类型 / Member type
+ * @param ptr 指向所属对象内某个成员的指针 / Pointer to a member inside the owner object
+ * @param member 指向成员的成员指针，如 `&Type::member` / Member pointer such as
+ * `&Type::member`
+ * @return 所属对象指针 / Pointer to the owning object
+ */
 template <typename OwnerType, typename MemberType>
   requires MemberObjectPointer<OwnerType, MemberType>
 [[nodiscard]] inline const OwnerType* ContainerOf(const MemberType* ptr,
@@ -133,25 +143,26 @@ template <typename OwnerType, typename MemberType>
  */
 enum class ErrorCode : int8_t
 {
-  PENDING = 1,        ///< 等待中 / Pending
-  OK = 0,             ///< 操作成功 / Operation successful
-  FAILED = -1,        ///< 操作失败 / Operation failed
-  INIT_ERR = -2,      ///< 初始化错误 / Initialization error
-  ARG_ERR = -3,       ///< 参数错误 / Argument error
-  STATE_ERR = -4,     ///< 状态错误 / State error
-  SIZE_ERR = -5,      ///< 尺寸错误 / Size error
-  CHECK_ERR = -6,     ///< 校验错误 / Check error
-  NOT_SUPPORT = -7,   ///< 不支持 / Not supported
-  NOT_FOUND = -8,     ///< 未找到 / Not found
-  NO_RESPONSE = -9,   ///< 无响应 / No response
-  NO_MEM = -10,       ///< 内存不足 / Insufficient memory
-  NO_BUFF = -11,      ///< 缓冲区不足 / Insufficient buffer
-  TIMEOUT = -12,      ///< 超时 / Timeout
-  EMPTY = -13,        ///< 为空 / Empty
-  FULL = -14,         ///< 已满 / Full
-  BUSY = -15,         ///< 忙碌 / Busy
-  PTR_NULL = -16,     ///< 空指针 / Null pointer
-  OUT_OF_RANGE = -17  ///< 超出范围 / Out of range
+  PENDING = 1,         ///< 等待中 / Pending
+  OK = 0,              ///< 操作成功 / Operation successful
+  FAILED = -1,         ///< 操作失败 / Operation failed
+  INIT_ERR = -2,       ///< 初始化错误 / Initialization error
+  ARG_ERR = -3,        ///< 参数错误 / Argument error
+  STATE_ERR = -4,      ///< 状态错误 / State error
+  SIZE_ERR = -5,       ///< 尺寸错误 / Size error
+  CHECK_ERR = -6,      ///< 校验错误 / Check error
+  NOT_SUPPORT = -7,    ///< 不支持 / Not supported
+  NOT_FOUND = -8,      ///< 未找到 / Not found
+  NO_RESPONSE = -9,    ///< 无响应 / No response
+  NO_MEM = -10,        ///< 内存不足 / Insufficient memory
+  NO_BUFF = -11,       ///< 缓冲区不足 / Insufficient buffer
+  TIMEOUT = -12,       ///< 超时 / Timeout
+  EMPTY = -13,         ///< 为空 / Empty
+  FULL = -14,          ///< 已满 / Full
+  BUSY = -15,          ///< 忙碌 / Busy
+  PTR_NULL = -16,      ///< 空指针 / Null pointer
+  OUT_OF_RANGE = -17,  ///< 超出范围 / Out of range
+  ABORTED = -18        ///< 已取消 / Aborted
 };
 
 /**

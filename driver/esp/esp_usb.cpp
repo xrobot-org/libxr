@@ -116,15 +116,10 @@ uint16_t CalcRxFifoWords(uint16_t largest_packet_size, uint8_t ep_count)
                                2U * ep_count);
 }
 
-uint16_t CalcConfiguredRxFifoWords(uint16_t largest_packet_size, uint8_t ep_count,
-                                   bool dma_enabled)
+uint16_t CalcConfiguredRxFifoWords(uint16_t largest_packet_size, uint8_t ep_count)
 {
-  uint16_t words = CalcRxFifoWords(largest_packet_size, ep_count);
-  if (dma_enabled)
-  {
-    words = std::max<uint16_t>(words, ESP32_SX_FS_DMA_MIN_RX_FIFO_WORDS);
-  }
-  return words;
+  return std::max<uint16_t>(CalcRxFifoWords(largest_packet_size, ep_count),
+                            ESP32_SX_FS_DMA_MIN_RX_FIFO_WORDS);
 }
 
 uint16_t GetHardwareFifoDepthWords()
@@ -157,7 +152,7 @@ uint16_t ClampPacketSize(LibXR::USB::Endpoint::Type type, uint16_t requested)
       return static_cast<uint16_t>(std::min<uint16_t>(requested, 64U));
     case LibXR::USB::Endpoint::Type::BULK:
       return static_cast<uint16_t>(std::min<uint16_t>(requested, 64U));
-    case LibXR::USB::Endpoint::Type::INTERRUPT:
+    case LibXR::USB::Endpoint::Type::INTR:
       return static_cast<uint16_t>(std::min<uint16_t>(requested, 64U));
     case LibXR::USB::Endpoint::Type::ISOCHRONOUS:
       return static_cast<uint16_t>(std::min<uint16_t>(requested, 1023U));
@@ -166,42 +161,10 @@ uint16_t ClampPacketSize(LibXR::USB::Endpoint::Type type, uint16_t requested)
   }
 }
 
-uint16_t CalcTxFifoWords(uint16_t packet_size, bool dma_enabled)
+uint16_t CalcTxFifoWords(uint16_t packet_size)
 {
-  uint16_t words = static_cast<uint16_t>((packet_size + 3U) / 4U);
-  if (dma_enabled)
-  {
-    words = std::max<uint16_t>(words, ESP32_SX_FS_MIN_TX_FIFO_WORDS);
-  }
-  return words;
-}
-
-volatile uint32_t* GetEndpointFifo(usb_dwc_dev_t* dev, uint8_t ep_num)
-{
-  uintptr_t base = reinterpret_cast<uintptr_t>(dev);
-  return reinterpret_cast<volatile uint32_t*>(
-      base + FIFO_BASE_OFFSET + static_cast<uintptr_t>(ep_num) * FIFO_STRIDE);
-}
-
-void WriteFifoPacket(volatile uint32_t* fifo, const uint8_t* src, size_t size)
-{
-  for (size_t offset = 0; offset < size; offset += WORD_SIZE)
-  {
-    uint32_t word = 0U;
-    const size_t chunk = std::min(WORD_SIZE, size - offset);
-    std::memcpy(&word, src + offset, chunk);
-    fifo[0] = word;
-  }
-}
-
-void ReadFifoPacket(const volatile uint32_t* fifo, uint8_t* dst, size_t size)
-{
-  for (size_t offset = 0; offset < size; offset += WORD_SIZE)
-  {
-    const uint32_t word = fifo[0];
-    const size_t chunk = std::min(WORD_SIZE, size - offset);
-    std::memcpy(dst + offset, &word, chunk);
-  }
+  return std::max<uint16_t>(static_cast<uint16_t>((packet_size + 3U) / 4U),
+                            ESP32_SX_FS_MIN_TX_FIFO_WORDS);
 }
 
 uint16_t PacketCount(size_t size, uint16_t max_packet_size)
@@ -213,71 +176,11 @@ uint16_t PacketCount(size_t size, uint16_t max_packet_size)
   return static_cast<uint16_t>((size + max_packet_size - 1U) / max_packet_size);
 }
 
-void FlushTxFifo(usb_dwc_dev_t* dev, uint8_t fifo_num)
+bool FlushTxFifo(usb_dwc_dev_t* dev, uint8_t fifo_num)
 {
   dev->grstctl_reg.txfnum = fifo_num;
   dev->grstctl_reg.txfflsh = 1;
-  while (dev->grstctl_reg.txfflsh)
-  {
-  }
-}
-
-void DisableInEndpointAndWait(usb_dwc_dev_t* dev)
-{
-  auto& ctl = dev->diepctl0_reg;
-  auto& intr = dev->diepint0_reg;
-  if (!ctl.epena)
-  {
-    return;
-  }
-
-  ctl.snak = 1;
-  while (!intr.inepnakeff)
-  {
-  }
-
-  usb_dwc_diepint0_reg_t clear_nak = {};
-  clear_nak.inepnakeff = 1;
-  intr.val = clear_nak.val;
-
-  ctl.epdis = 1;
-  while (!intr.epdisbld)
-  {
-  }
-
-  usb_dwc_diepint0_reg_t clear_dis = {};
-  clear_dis.epdisbld = 1;
-  intr.val = clear_dis.val;
-  FlushTxFifo(dev, 0U);
-}
-
-void DisableInEndpointAndWait(usb_dwc_dev_t* dev, uint8_t ep_num)
-{
-  auto& ctl = dev->in_eps[ep_num - 1U].diepctl_reg;
-  auto& intr = dev->in_eps[ep_num - 1U].diepint_reg;
-  if (!ctl.epena)
-  {
-    return;
-  }
-
-  ctl.snak = 1;
-  while (!intr.inepnakeff)
-  {
-  }
-
-  usb_dwc_diepint_reg_t clear_nak = {};
-  clear_nak.inepnakeff = 1;
-  intr.val = clear_nak.val;
-
-  ctl.epdis = 1;
-  while (!intr.epdisbld)
-  {
-  }
-
-  usb_dwc_diepint_reg_t clear_dis = {};
-  clear_dis.epdisbld = 1;
-  intr.val = clear_dis.val;
-  FlushTxFifo(dev, ep_num);
+  return SpinUntil([dev]() { return !dev->grstctl_reg.txfflsh; });
 }
 
 }  // namespace LibXR::ESPUSBDetail
