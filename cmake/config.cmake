@@ -78,19 +78,45 @@ endif()
 
 if(NOT _xr_fastcopy_policy STREQUAL "SHIFTED_ODD" AND
    NOT _xr_fastcopy_policy STREQUAL "SHIFTED_ALL" AND
-   NOT _xr_fastcopy_policy STREQUAL "STD_MEMCPY" AND
+   NOT _xr_fastcopy_policy STREQUAL "STD_LIBC" AND
    NOT _xr_fastcopy_policy STREQUAL "UNALIGNED_WORD")
   message(
     FATAL_ERROR
       "Unsupported LIBXR_FASTCOPY_POLICY: ${LIBXR_FASTCOPY_POLICY} "
-      "(expected SHIFTED_ODD, SHIFTED_ALL, STD_MEMCPY, or UNALIGNED_WORD)."
+      "(expected SHIFTED_ODD, SHIFTED_ALL, STD_LIBC, or UNALIGNED_WORD)."
   )
 endif()
 
-message(STATUS "FastCopy policy: ${_xr_fastcopy_policy}")
+foreach(_xr_mem_key FASTMOVE FASTSET FASTCMP)
+  set(_xr_mem_var "LIBXR_${_xr_mem_key}_POLICY")
+  if(NOT DEFINED ${_xr_mem_var} OR "${${_xr_mem_var}}" STREQUAL "")
+    set(_xr_${_xr_mem_key}_policy "BUILTIN")
+  else()
+    string(TOUPPER "${${_xr_mem_var}}" _xr_${_xr_mem_key}_policy)
+  endif()
+
+  if(NOT _xr_${_xr_mem_key}_policy STREQUAL "BUILTIN" AND
+     NOT _xr_${_xr_mem_key}_policy STREQUAL "STD_LIBC")
+    message(
+      FATAL_ERROR
+        "Unsupported ${_xr_mem_var}: ${${_xr_mem_var}} "
+        "(expected BUILTIN or STD_LIBC)."
+    )
+  endif()
+endforeach()
+
+message(
+  STATUS
+    "Memory policies: copy=${_xr_fastcopy_policy}, move=${_xr_FASTMOVE_policy}, "
+    "set=${_xr_FASTSET_policy}, cmp=${_xr_FASTCMP_policy}"
+)
 target_compile_definitions(
   ${PROJECT_NAME}
-  PRIVATE LIBXR_FASTCOPY_POLICY=LIBXR_FASTCOPY_POLICY_${_xr_fastcopy_policy})
+  PRIVATE LIBXR_FASTCOPY_POLICY=LIBXR_FASTCOPY_POLICY_${_xr_fastcopy_policy}
+          LIBXR_FASTMOVE_POLICY=LIBXR_MEM_POLICY_${_xr_FASTMOVE_policy}
+          LIBXR_FASTSET_POLICY=LIBXR_MEM_POLICY_${_xr_FASTSET_policy}
+          LIBXR_FASTCMP_POLICY=LIBXR_MEM_POLICY_${_xr_FASTCMP_policy}
+)
 
 if(NOT DEFINED LIBXR_DEFAULT_SCALAR)
   set(LIBXR_DEFAULT_SCALAR double)

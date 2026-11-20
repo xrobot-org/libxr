@@ -29,6 +29,9 @@ pkg_check_modules(LIBUDEV REQUIRED libudev)
 target_include_directories(${PROJECT_NAME} SYSTEM PUBLIC ${LIBUDEV_INCLUDE_DIRS})
 target_link_libraries(${PROJECT_NAME} PUBLIC ${LIBUDEV_LIBRARIES})
 
-if(NOT DEFINED LIBXR_FASTCOPY_POLICY OR "${LIBXR_FASTCOPY_POLICY}" STREQUAL "")
-  set(LIBXR_FASTCOPY_POLICY STD_MEMCPY)
-endif()
+foreach(_xr_mem_var LIBXR_FASTCOPY_POLICY LIBXR_FASTMOVE_POLICY
+                    LIBXR_FASTSET_POLICY LIBXR_FASTCMP_POLICY)
+  if(NOT DEFINED ${_xr_mem_var} OR "${${_xr_mem_var}}" STREQUAL "")
+    set(${_xr_mem_var} STD_LIBC)
+  endif()
+endforeach()

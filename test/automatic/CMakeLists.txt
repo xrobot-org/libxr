@@ -38,34 +38,43 @@ foreach(debug RANGE 0 1)
 endforeach()
 
 set(_xr_mem_policy_matrix
-    "shifted_odd_32|LIBXR_FASTCOPY_POLICY_SHIFTED_ODD|4U"
-    "shifted_all_32|LIBXR_FASTCOPY_POLICY_SHIFTED_ALL|4U"
-    "shifted_odd_64|LIBXR_FASTCOPY_POLICY_SHIFTED_ODD|8U"
-    "shifted_all_64|LIBXR_FASTCOPY_POLICY_SHIFTED_ALL|8U"
-    "std_memcpy|LIBXR_FASTCOPY_POLICY_STD_MEMCPY|"
-    "unaligned_word|LIBXR_FASTCOPY_POLICY_UNALIGNED_WORD|"
+    "shifted_odd_32|LIBXR_FASTCOPY_POLICY_SHIFTED_ODD|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|4U"
+    "shifted_all_32|LIBXR_FASTCOPY_POLICY_SHIFTED_ALL|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|4U"
+    "shifted_odd_64|LIBXR_FASTCOPY_POLICY_SHIFTED_ODD|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|8U"
+    "shifted_all_64|LIBXR_FASTCOPY_POLICY_SHIFTED_ALL|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|8U"
+    "std_libc|LIBXR_FASTCOPY_POLICY_STD_LIBC|LIBXR_MEM_POLICY_STD_LIBC|LIBXR_MEM_POLICY_STD_LIBC|LIBXR_MEM_POLICY_STD_LIBC|DEFAULT"
+    "mixed_esp_xtensa|LIBXR_FASTCOPY_POLICY_STD_LIBC|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_STD_LIBC|LIBXR_MEM_POLICY_BUILTIN|4U"
+    "unaligned_word|LIBXR_FASTCOPY_POLICY_UNALIGNED_WORD|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|DEFAULT"
 )
 foreach(_xr_mem_case IN LISTS _xr_mem_policy_matrix)
   string(REPLACE "|" ";" _xr_mem_parts "${_xr_mem_case}")
   list(GET _xr_mem_parts 0 _xr_mem_name)
-  list(GET _xr_mem_parts 1 _xr_mem_policy)
-  list(GET _xr_mem_parts 2 _xr_mem_word_size)
+  list(GET _xr_mem_parts 1 _xr_copy_policy)
+  list(GET _xr_mem_parts 2 _xr_move_policy)
+  list(GET _xr_mem_parts 3 _xr_set_policy)
+  list(GET _xr_mem_parts 4 _xr_cmp_policy)
+  list(GET _xr_mem_parts 5 _xr_mem_word_size)
   set(_xr_mem_target "test_mem_policy_${_xr_mem_name}")
   add_executable(
     ${_xr_mem_target}
     core/libxr_mem/test_mem_policy.cpp
     ../../src/core/libxr_mem_o3.cpp
+    ../../src/core/libxr_mem_cmp.cpp
   )
   target_include_directories(
     ${_xr_mem_target} PRIVATE .. ../../src/core
   )
   target_compile_features(${_xr_mem_target} PRIVATE cxx_std_20)
   target_compile_definitions(
-    ${_xr_mem_target} PRIVATE LIBXR_FASTCOPY_POLICY=${_xr_mem_policy}
+    ${_xr_mem_target}
+    PRIVATE LIBXR_FASTCOPY_POLICY=${_xr_copy_policy}
+            LIBXR_FASTMOVE_POLICY=${_xr_move_policy}
+            LIBXR_FASTSET_POLICY=${_xr_set_policy}
+            LIBXR_FASTCMP_POLICY=${_xr_cmp_policy}
   )
-  if(NOT "${_xr_mem_word_size}" STREQUAL "")
+  if(NOT "${_xr_mem_word_size}" STREQUAL "DEFAULT")
     target_compile_definitions(
-      ${_xr_mem_target} PRIVATE LIBXR_FASTCOPY_WORD_SIZE=${_xr_mem_word_size}
+      ${_xr_mem_target} PRIVATE LIBXR_MEM_WORD_SIZE=${_xr_mem_word_size}
     )
   endif()
   target_compile_options(

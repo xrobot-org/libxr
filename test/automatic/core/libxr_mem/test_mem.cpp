@@ -33,6 +33,7 @@ void test_memory()
     // size = 0: 不应修改
     uint8_t guard = 0x5A;
     LibXR::Memory::FastSet(&guard, 0x00, 0);
+    LibXR::Memory::FastSet(nullptr, 0x00, 0);
     TEST_ASSERT(guard == 0x5A);
   }
   // FastCopy: 基础拷贝、size=0、自拷贝、非对齐地址、不同长度
@@ -62,7 +63,8 @@ void test_memory()
     LibXR::Memory::FastCopy(src, src, sizeof(src));
     TEST_ASSERT(std::memcmp(src, backup, sizeof(src)) == 0);
 
-    // 非重叠 FastMove 应与 FastCopy 行为一致
+    // 非重叠与零长度 FastMove 应与 FastCopy 行为一致
+    LibXR::Memory::FastMove(nullptr, nullptr, 0);
     LibXR::Memory::FastSet(dst, 0x00, sizeof(dst));
     LibXR::Memory::FastMove(dst + 3, src + 1, 61);
     TEST_ASSERT(std::memcmp(dst + 3, src + 1, 61) == 0);
@@ -177,6 +179,7 @@ void test_memory()
 
     // size = 0：应视为相等（对齐 memcmp 语义）
     TEST_ASSERT(LibXR::Memory::FastCmp(a, b, 0) == 0);
+    TEST_ASSERT(LibXR::Memory::FastCmp(nullptr, nullptr, 0) == 0);
 
     // 非对齐指针比较
     uint8_t c[128];
