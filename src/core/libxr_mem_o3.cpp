@@ -72,8 +72,9 @@ template <unsigned LEAD_BYTES>
   size += LEAD_BYTES;
 }
 
-// 按给定字宽做 8 路展开与单字突发拷贝，并回写前进后的指针与剩余长度。
-// Copy aligned words using an 8x unrolled burst loop and a 1x tail loop.
+// 按给定字宽先批量读入 8 个字再写回，避免编译器生成运行期别名降级分支并保持突发访存。
+// Copy aligned words by loading 8 words before storing them, preventing
+// runtime alias-check fallback loops while preserving burst transfers.
 template <typename WordT>
 [[maybe_unused]] LIBXR_ALWAYS_INLINE void CopyAlignedWords(uint8_t*& d, const uint8_t*& s,
                                                            size_t& size)
@@ -86,14 +87,22 @@ template <typename WordT>
 
   while (size >= BURST_BYTES)
   {
-    dw[0] = sw[0];
-    dw[1] = sw[1];
-    dw[2] = sw[2];
-    dw[3] = sw[3];
-    dw[4] = sw[4];
-    dw[5] = sw[5];
-    dw[6] = sw[6];
-    dw[7] = sw[7];
+    const WordT a0 = sw[0];
+    const WordT a1 = sw[1];
+    const WordT a2 = sw[2];
+    const WordT a3 = sw[3];
+    const WordT a4 = sw[4];
+    const WordT a5 = sw[5];
+    const WordT a6 = sw[6];
+    const WordT a7 = sw[7];
+    dw[0] = a0;
+    dw[1] = a1;
+    dw[2] = a2;
+    dw[3] = a3;
+    dw[4] = a4;
+    dw[5] = a5;
+    dw[6] = a6;
+    dw[7] = a7;
     dw += 8;
     sw += 8;
     size -= BURST_BYTES;
