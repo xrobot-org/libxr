@@ -1,214 +1,375 @@
+#include <bit>
+#include <cstring>
+
 #include "libxr_def.hpp"
 #include "libxr_mem.hpp"
 
-void LibXR::Memory::FastCopy(void* dst, const void* src, size_t size)
+#define LIBXR_FASTCOPY_POLICY_SHIFTED_ODD 0
+#define LIBXR_FASTCOPY_POLICY_SHIFTED_ALL 1
+#define LIBXR_FASTCOPY_POLICY_STD_MEMCPY 2
+#define LIBXR_FASTCOPY_POLICY_UNALIGNED_WORD 3
+
+#ifndef LIBXR_FASTCOPY_POLICY
+#define LIBXR_FASTCOPY_POLICY LIBXR_FASTCOPY_POLICY_SHIFTED_ODD
+#endif
+
+#ifndef LIBXR_FASTCOPY_WORD_SIZE
+#define LIBXR_FASTCOPY_WORD_SIZE LibXR::ALIGN_SIZE
+#endif
+
+namespace
 {
-  uint8_t* d = static_cast<uint8_t*>(dst);
-  const uint8_t* s = static_cast<const uint8_t*>(src);
+enum class FastCopyPolicy : uint8_t
+{
+  SHIFTED_ODD = LIBXR_FASTCOPY_POLICY_SHIFTED_ODD,
+  SHIFTED_ALL = LIBXR_FASTCOPY_POLICY_SHIFTED_ALL,
+  STD_MEMCPY = LIBXR_FASTCOPY_POLICY_STD_MEMCPY,
+  UNALIGNED_WORD = LIBXR_FASTCOPY_POLICY_UNALIGNED_WORD,
+};
 
-  uintptr_t d_offset = reinterpret_cast<uintptr_t>(d) & (LibXR::ALIGN_SIZE - 1);
-  uintptr_t s_offset = reinterpret_cast<uintptr_t>(s) & (LibXR::ALIGN_SIZE - 1);
+constexpr int ACTIVE_FASTCOPY_POLICY_RAW = (LIBXR_FASTCOPY_POLICY);
+static_assert(ACTIVE_FASTCOPY_POLICY_RAW == LIBXR_FASTCOPY_POLICY_SHIFTED_ODD ||
+                  ACTIVE_FASTCOPY_POLICY_RAW == LIBXR_FASTCOPY_POLICY_SHIFTED_ALL ||
+                  ACTIVE_FASTCOPY_POLICY_RAW == LIBXR_FASTCOPY_POLICY_STD_MEMCPY ||
+                  ACTIVE_FASTCOPY_POLICY_RAW == LIBXR_FASTCOPY_POLICY_UNALIGNED_WORD,
+              "Unsupported LIBXR_FASTCOPY_POLICY");
+constexpr FastCopyPolicy ACTIVE_FASTCOPY_POLICY =
+    static_cast<FastCopyPolicy>(ACTIVE_FASTCOPY_POLICY_RAW);
 
-  /**
-   * If source and destination have the same alignment offset,
-   * we can perform fast aligned copying after handling the leading bytes.
-   */
-  if (d_offset == s_offset)
+#if defined(__ARM_FEATURE_UNALIGNED) || defined(__x86_64__) || defined(__i386__) || \
+    defined(_M_X64) || defined(_M_IX86) || defined(__aarch64__) || defined(_M_ARM64)
+constexpr bool HAS_FAST_UNALIGNED_WORD = true;
+#else
+constexpr bool HAS_FAST_UNALIGNED_WORD = false;
+#endif
+
+// 按小端字节序前向预读源端错位字节并移位拼字后对齐写入 32 位目标字。
+// Forward-preload lead bytes from an unaligned source and emit aligned 32-bit
+// words by shifting and combining in little-endian order.
+template <unsigned LEAD_BYTES>
+[[maybe_unused]] LIBXR_ALWAYS_INLINE void CopyShiftedLittleEndian(uint8_t*& d,
+                                                                  const uint8_t*& s,
+                                                                  size_t& size)
+{
+  static_assert(LEAD_BYTES > 0U && LEAD_BYTES < sizeof(uint32_t));
+  constexpr unsigned SHIFT_L = LEAD_BYTES * 8U;
+  constexpr unsigned SHIFT_R = 32U - SHIFT_L;
+
+  uint32_t carry = 0U;
+  for (unsigned i = 0U; i < LEAD_BYTES; ++i)
   {
-    /// Handle unaligned head bytes before reaching alignment.
-    if (d_offset)
+    carry |= static_cast<uint32_t>(s[i]) << (i * 8U);
+  }
+  s += LEAD_BYTES;
+  size -= LEAD_BYTES;
+
+  auto* dw = reinterpret_cast<uint32_t*>(d);
+  const auto* sw = reinterpret_cast<const uint32_t*>(s);
+
+  while (size >= 16U)
+  {
+    uint32_t w = sw[0];
+    dw[0] = carry | (w << SHIFT_L);
+    carry = w >> SHIFT_R;
+    w = sw[1];
+    dw[1] = carry | (w << SHIFT_L);
+    carry = w >> SHIFT_R;
+    w = sw[2];
+    dw[2] = carry | (w << SHIFT_L);
+    carry = w >> SHIFT_R;
+    w = sw[3];
+    dw[3] = carry | (w << SHIFT_L);
+    carry = w >> SHIFT_R;
+    sw += 4;
+    dw += 4;
+    size -= 16U;
+  }
+
+  while (size >= 4U)
+  {
+    const uint32_t w = *sw++;
+    *dw++ = carry | (w << SHIFT_L);
+    carry = w >> SHIFT_R;
+    size -= 4U;
+  }
+
+  // carry 中仍保留未写出的 LEAD_BYTES 字节，退回指针和长度由尾部循环收尾。
+  // Return the unwritten LEAD_BYTES bytes still held in carry to the byte tail.
+  d = reinterpret_cast<uint8_t*>(dw);
+  s = reinterpret_cast<const uint8_t*>(sw) - LEAD_BYTES;
+  size += LEAD_BYTES;
+}
+
+// 按给定字宽做 8 路展开与单字突发拷贝，并回写前进后的指针与剩余长度。
+// Copy aligned words using an 8x unrolled burst loop and a 1x tail loop.
+template <typename WordT>
+[[maybe_unused]] LIBXR_ALWAYS_INLINE void CopyAlignedWords(uint8_t*& d, const uint8_t*& s,
+                                                           size_t& size)
+{
+  constexpr size_t WORD_BYTES = sizeof(WordT);
+  constexpr size_t BURST_BYTES = WORD_BYTES * 8U;
+
+  auto* dw = reinterpret_cast<WordT*>(d);
+  const auto* sw = reinterpret_cast<const WordT*>(s);
+
+  while (size >= BURST_BYTES)
+  {
+    dw[0] = sw[0];
+    dw[1] = sw[1];
+    dw[2] = sw[2];
+    dw[3] = sw[3];
+    dw[4] = sw[4];
+    dw[5] = sw[5];
+    dw[6] = sw[6];
+    dw[7] = sw[7];
+    dw += 8;
+    sw += 8;
+    size -= BURST_BYTES;
+  }
+
+  while (size >= WORD_BYTES)
+  {
+    *dw++ = *sw++;
+    size -= WORD_BYTES;
+  }
+
+  d = reinterpret_cast<uint8_t*>(dw);
+  s = reinterpret_cast<const uint8_t*>(sw);
+}
+
+// 偶地址差场景下的 16 位对齐拷贝辅助：先处理奇起始字节，再以 uint16_t 展开拷贝。
+// 16-bit aligned copy helper for even address differences: peel one odd byte if
+// needed, then burst-copy in uint16_t units.
+[[maybe_unused]] LIBXR_ALWAYS_INLINE void CopyAligned16(uint8_t*& d, const uint8_t*& s,
+                                                        size_t& size)
+{
+  if ((reinterpret_cast<uintptr_t>(d) & 1U) && (size > 0U))
+  {
+    *d++ = *s++;
+    --size;
+  }
+  CopyAlignedWords<uint16_t>(d, s, size);
+}
+
+// 32 位小端错位前向对齐目标指针后，按源端相位差分发移位拼字模板。
+// Align destination to 4 bytes on 32-bit little-endian targets, then dispatch the
+// shift-and-combine template for the remaining source phase.
+template <FastCopyPolicy POLICY>
+[[maybe_unused]] LIBXR_ALWAYS_INLINE void CopyMisalignedShifted32(uint8_t*& d,
+                                                                  const uint8_t*& s,
+                                                                  uintptr_t d_offset,
+                                                                  size_t& size)
+{
+  if (size < 8U)
+  {
+    return;
+  }
+
+  if (d_offset != 0U)
+  {
+    size_t head = 4U - d_offset;
+    while (head--)
     {
-      size_t head = LibXR::ALIGN_SIZE - d_offset;
-      if (head > size)
-      {
-        head = size;
-      }
-      while (head--)
-      {
-        *d++ = *s++;
-        --size;
-      }
+      *d++ = *s++;
+      --size;
     }
+  }
 
-    if constexpr (LibXR::ALIGN_SIZE == 8)
+  const unsigned lead_bytes =
+      static_cast<unsigned>(4U - (reinterpret_cast<uintptr_t>(s) & 3U));
+  if (size >= 4U + lead_bytes)
+  {
+    if (lead_bytes == 1U)
     {
-      /// Burst copy 8 bytes per cycle (64-bit), using 8x unrolled loop.
-      auto* dw = reinterpret_cast<uint64_t*>(d);
-      auto* sw = reinterpret_cast<const uint64_t*>(s);
-
-      while (size >= 64)
-      {
-        dw[0] = sw[0];
-        dw[1] = sw[1];
-        dw[2] = sw[2];
-        dw[3] = sw[3];
-        dw[4] = sw[4];
-        dw[5] = sw[5];
-        dw[6] = sw[6];
-        dw[7] = sw[7];
-        dw += 8;
-        sw += 8;
-        size -= 64;
-      }
-      while (size >= 8)
-      {
-        *dw++ = *sw++;
-        size -= 8;
-      }
-
-      d = reinterpret_cast<uint8_t*>(dw);
-      s = reinterpret_cast<const uint8_t*>(sw);
+      CopyShiftedLittleEndian<1U>(d, s, size);
+    }
+    else if constexpr (POLICY == FastCopyPolicy::SHIFTED_ODD)
+    {
+      CopyShiftedLittleEndian<3U>(d, s, size);
+    }
+    else if (lead_bytes == 2U)
+    {
+      CopyShiftedLittleEndian<2U>(d, s, size);
     }
     else
     {
-      /// Burst copy 4 bytes per cycle (32-bit), using 8x unrolled loop.
-      auto* dw = reinterpret_cast<uint32_t*>(d);
-      auto* sw = reinterpret_cast<const uint32_t*>(s);
-
-      while (size >= 32)
-      {
-        dw[0] = sw[0];
-        dw[1] = sw[1];
-        dw[2] = sw[2];
-        dw[3] = sw[3];
-        dw[4] = sw[4];
-        dw[5] = sw[5];
-        dw[6] = sw[6];
-        dw[7] = sw[7];
-        dw += 8;
-        sw += 8;
-        size -= 32;
-      }
-      while (size >= 4)
-      {
-        *dw++ = *sw++;
-        size -= 4;
-      }
-
-      d = reinterpret_cast<uint8_t*>(dw);
-      s = reinterpret_cast<const uint8_t*>(sw);
+      CopyShiftedLittleEndian<3U>(d, s, size);
     }
   }
-  /**
-   * If alignments are different, try to maximize word copy size
-   * based on address difference.
-   */
+}
+
+// 按编译期策略和字宽分发 FastCopy 实现；策略切换不引入运行时分支。
+// Compile-time FastCopy dispatch across word size and misalignment policy.
+template <size_t WORD_SIZE, FastCopyPolicy POLICY>
+LIBXR_ALWAYS_INLINE void FastCopyImpl(void* dst, const void* src, size_t size)
+{
+  static_assert(WORD_SIZE == 4U || WORD_SIZE == 8U);
+
+  if constexpr (POLICY == FastCopyPolicy::STD_MEMCPY)
+  {
+    // 保留零长度与自拷贝契约，避免直接转调 std::memcpy 触发未定义行为。
+    // Preserve zero-length and self-copy contracts before calling std::memcpy.
+    if ((size == 0U) || (dst == src))
+    {
+      return;
+    }
+    std::memcpy(dst, src, size);
+  }
+  else if constexpr (POLICY == FastCopyPolicy::UNALIGNED_WORD)
+  {
+    static_assert((POLICY != FastCopyPolicy::UNALIGNED_WORD) || HAS_FAST_UNALIGNED_WORD,
+                  "LIBXR_FASTCOPY_POLICY_UNALIGNED_WORD requires hardware unaligned "
+                  "word access");
+
+    // 仅在硬件支持非对齐字访存的架构下直接执行 4x 非对齐 32 位拷贝。
+    // Emit unaligned 32-bit loads/stores directly on targets with hardware support.
+    auto* d = static_cast<uint8_t*>(dst);
+    const auto* s = static_cast<const uint8_t*>(src);
+
+    while (size >= 16U)
+    {
+      uint32_t w0 = 0U;
+      uint32_t w1 = 0U;
+      uint32_t w2 = 0U;
+      uint32_t w3 = 0U;
+      std::memcpy(&w0, s, 4U);
+      std::memcpy(&w1, s + 4U, 4U);
+      std::memcpy(&w2, s + 8U, 4U);
+      std::memcpy(&w3, s + 12U, 4U);
+      std::memcpy(d, &w0, 4U);
+      std::memcpy(d + 4U, &w1, 4U);
+      std::memcpy(d + 8U, &w2, 4U);
+      std::memcpy(d + 12U, &w3, 4U);
+      d += 16U;
+      s += 16U;
+      size -= 16U;
+    }
+
+    while (size >= 4U)
+    {
+      uint32_t w = 0U;
+      std::memcpy(&w, s, 4U);
+      std::memcpy(d, &w, 4U);
+      d += 4U;
+      s += 4U;
+      size -= 4U;
+    }
+
+    while (size--)
+    {
+      *d++ = *s++;
+    }
+  }
   else
   {
-    uintptr_t addr_diff = reinterpret_cast<uintptr_t>(s) - reinterpret_cast<uintptr_t>(d);
+    uint8_t* d = static_cast<uint8_t*>(dst);
+    const uint8_t* s = static_cast<const uint8_t*>(src);
 
-    if constexpr (LibXR::ALIGN_SIZE == 8)
+    const uintptr_t d_offset = reinterpret_cast<uintptr_t>(d) & (WORD_SIZE - 1U);
+    const uintptr_t s_offset = reinterpret_cast<uintptr_t>(s) & (WORD_SIZE - 1U);
+
+    // 源与目的对齐偏移相同时，先补齐前导字节再做字宽突发拷贝。
+    // When source and destination share alignment offset, align then burst-copy.
+    if (d_offset == s_offset)
     {
-      /// If address difference is a multiple of 4, use 4-byte copying.
-      if ((addr_diff & 3) == 0 && size > 0)
+      if (d_offset != 0U)
       {
-        while ((reinterpret_cast<uintptr_t>(d) & 3) && size)
+        size_t head = WORD_SIZE - d_offset;
+        if (head > size)
+        {
+          head = size;
+        }
+        while (head--)
         {
           *d++ = *s++;
           --size;
         }
-        auto* d32 = reinterpret_cast<uint32_t*>(d);
-        auto* s32 = reinterpret_cast<const uint32_t*>(s);
-
-        while (size >= 32)
-        {
-          d32[0] = s32[0];
-          d32[1] = s32[1];
-          d32[2] = s32[2];
-          d32[3] = s32[3];
-          d32[4] = s32[4];
-          d32[5] = s32[5];
-          d32[6] = s32[6];
-          d32[7] = s32[7];
-          d32 += 8;
-          s32 += 8;
-          size -= 32;
-        }
-        while (size >= 4)
-        {
-          *d32++ = *s32++;
-          size -= 4;
-        }
-
-        d = reinterpret_cast<uint8_t*>(d32);
-        s = reinterpret_cast<const uint8_t*>(s32);
       }
-      /// If address difference is even, use 2-byte copying.
-      else if ((addr_diff & 1) == 0 && size > 0)
+
+      if constexpr (WORD_SIZE == 8U)
       {
-        if (reinterpret_cast<uintptr_t>(d) & 1)
-        {
-          *d++ = *s++;
-          --size;
-        }
-        auto* d16 = reinterpret_cast<uint16_t*>(d);
-        auto* s16 = reinterpret_cast<const uint16_t*>(s);
-
-        while (size >= 16)
-        {
-          d16[0] = s16[0];
-          d16[1] = s16[1];
-          d16[2] = s16[2];
-          d16[3] = s16[3];
-          d16[4] = s16[4];
-          d16[5] = s16[5];
-          d16[6] = s16[6];
-          d16[7] = s16[7];
-          d16 += 8;
-          s16 += 8;
-          size -= 16;
-        }
-        while (size >= 2)
-        {
-          *d16++ = *s16++;
-          size -= 2;
-        }
-
-        d = reinterpret_cast<uint8_t*>(d16);
-        s = reinterpret_cast<const uint8_t*>(s16);
+        CopyAlignedWords<uint64_t>(d, s, size);
+      }
+      else
+      {
+        CopyAlignedWords<uint32_t>(d, s, size);
       }
     }
-    else if ((addr_diff & 1) == 0 && size > 0)
+    // 对齐偏移不同：64 位目标保持原有宽拷贝以保留编译器自动向量化，
+    // 32 位小端目标按策略选择仅奇相位或全相位 32 位移位拼字。
+    // Misaligned offsets: keep the 64-bit path for auto-vectorization, and select
+    // odd-only or all-phase 32-bit shift-and-combine on 32-bit little-endian.
+    else
     {
-      if (reinterpret_cast<uintptr_t>(d) & 1)
+      if constexpr (WORD_SIZE == 8U)
       {
-        *d++ = *s++;
-        --size;
-      }
-      auto* d16 = reinterpret_cast<uint16_t*>(d);
-      auto* s16 = reinterpret_cast<const uint16_t*>(s);
+        const uintptr_t addr_diff =
+            reinterpret_cast<uintptr_t>(s) - reinterpret_cast<uintptr_t>(d);
 
-      while (size >= 16)
-      {
-        d16[0] = s16[0];
-        d16[1] = s16[1];
-        d16[2] = s16[2];
-        d16[3] = s16[3];
-        d16[4] = s16[4];
-        d16[5] = s16[5];
-        d16[6] = s16[6];
-        d16[7] = s16[7];
-        d16 += 8;
-        s16 += 8;
-        size -= 16;
+        // 地址差为 4 的倍数时使用 32 位拷贝。
+        // If address difference is a multiple of 4, use 4-byte copying.
+        if ((addr_diff & 3U) == 0U && size > 0U)
+        {
+          while ((reinterpret_cast<uintptr_t>(d) & 3U) && (size > 0U))
+          {
+            *d++ = *s++;
+            --size;
+          }
+          CopyAlignedWords<uint32_t>(d, s, size);
+        }
+        // 地址差为偶数时使用 16 位拷贝。
+        // If address difference is even, use 2-byte copying.
+        else if ((addr_diff & 1U) == 0U && size > 0U)
+        {
+          CopyAligned16(d, s, size);
+        }
       }
-      while (size >= 2)
+      else if constexpr (WORD_SIZE == 4U && std::endian::native == std::endian::little)
       {
-        *d16++ = *s16++;
-        size -= 2;
+        if constexpr (POLICY == FastCopyPolicy::SHIFTED_ODD)
+        {
+          const uintptr_t addr_diff =
+              reinterpret_cast<uintptr_t>(s) - reinterpret_cast<uintptr_t>(d);
+          // 偶相位差保留 16 位对齐路径，仅奇相位差走移位拼字模板。
+          // Keep the 16-bit aligned path on even differences; shift-combine odd diffs.
+          if ((addr_diff & 1U) == 0U && size > 0U)
+          {
+            CopyAligned16(d, s, size);
+          }
+          else
+          {
+            CopyMisalignedShifted32<POLICY>(d, s, d_offset, size);
+          }
+        }
+        else
+        {
+          CopyMisalignedShifted32<POLICY>(d, s, d_offset, size);
+        }
       }
-
-      d = reinterpret_cast<uint8_t*>(d16);
-      s = reinterpret_cast<const uint8_t*>(s16);
+      else
+      {
+        const uintptr_t addr_diff =
+            reinterpret_cast<uintptr_t>(s) - reinterpret_cast<uintptr_t>(d);
+        if ((addr_diff & 1U) == 0U && size > 0U)
+        {
+          CopyAligned16(d, s, size);
+        }
+      }
     }
-    // Otherwise, fallback to byte-wise copying below.
-  }
 
-  /// Copy any remaining bytes (tail).
-  while (size--)
-  {
-    *d++ = *s++;
+    // 拷贝剩余尾部字节。
+    // Copy any remaining tail bytes.
+    while (size--)
+    {
+      *d++ = *s++;
+    }
   }
+}
+}  // namespace
+
+void LibXR::Memory::FastCopy(void* dst, const void* src, size_t size)
+{
+  FastCopyImpl<LIBXR_FASTCOPY_WORD_SIZE, ACTIVE_FASTCOPY_POLICY>(dst, src, size);
 }
 
 void LibXR::Memory::FastMove(void* dst, const void* src, size_t size)

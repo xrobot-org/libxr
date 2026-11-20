@@ -70,6 +70,28 @@ include(${CMAKE_CURRENT_LIST_DIR}/../system/${_xr_system}/CMakeLists.txt)
 
 message(STATUS "Platform: ${_xr_system}")
 
+if(NOT DEFINED LIBXR_FASTCOPY_POLICY OR "${LIBXR_FASTCOPY_POLICY}" STREQUAL "")
+  set(_xr_fastcopy_policy "SHIFTED_ODD")
+else()
+  string(TOUPPER "${LIBXR_FASTCOPY_POLICY}" _xr_fastcopy_policy)
+endif()
+
+if(NOT _xr_fastcopy_policy STREQUAL "SHIFTED_ODD" AND
+   NOT _xr_fastcopy_policy STREQUAL "SHIFTED_ALL" AND
+   NOT _xr_fastcopy_policy STREQUAL "STD_MEMCPY" AND
+   NOT _xr_fastcopy_policy STREQUAL "UNALIGNED_WORD")
+  message(
+    FATAL_ERROR
+      "Unsupported LIBXR_FASTCOPY_POLICY: ${LIBXR_FASTCOPY_POLICY} "
+      "(expected SHIFTED_ODD, SHIFTED_ALL, STD_MEMCPY, or UNALIGNED_WORD)."
+  )
+endif()
+
+message(STATUS "FastCopy policy: ${_xr_fastcopy_policy}")
+target_compile_definitions(
+  ${PROJECT_NAME}
+  PRIVATE LIBXR_FASTCOPY_POLICY=LIBXR_FASTCOPY_POLICY_${_xr_fastcopy_policy})
+
 if(NOT DEFINED LIBXR_DEFAULT_SCALAR)
   set(LIBXR_DEFAULT_SCALAR double)
 endif()
