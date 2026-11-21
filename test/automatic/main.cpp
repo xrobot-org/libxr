@@ -35,6 +35,7 @@ void test_flag();
 void test_inertia();
 void test_list();
 void test_lockfree_list();
+void test_lpfilter();
 void test_kinematic();
 void test_latest_snapshot();
 void test_mpmc_queue();
@@ -237,6 +238,7 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"utility_tests", {"cycle_value", &RunVoidEntry<test_cycle_value>, false}},
     {"utility_tests", {"print", &RunVoidEntry<test_print>, false}},
     {"utility_tests", {"flag", &RunVoidEntry<test_flag>, false}},
+    {"utility_tests", {"lpfilter", &RunVoidEntry<test_lpfilter>, false}},
 
     {"data_structure_tests", {"rbt", &RunVoidEntry<test_rbt>, false}},
     {"data_structure_tests", {"queue", &RunVoidEntry<test_queue>, false}},

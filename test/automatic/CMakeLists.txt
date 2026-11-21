@@ -163,6 +163,7 @@ add_executable(
   utils/float_encoder/test_encoder.cpp
   utils/inertia/test_inertia.cpp
   utils/kinematic/test_kinematic.cpp
+  utils/lpfilter/test_lpfilter.cpp
   utils/pid/test_pid.cpp
   utils/serialized_service/test_serialized_service.cpp
   utils/transform/test_transform.cpp
