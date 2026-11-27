@@ -57,6 +57,9 @@ constexpr size_t OTG_HS_FIFO = 4096;
 #endif
 
 #if !defined(USB_OTG_HS) && (defined(USB1_OTG_HS) || defined(USB2_OTG_HS))
+#if defined(USB_OTG_FS)
+#error "STM32 parts with both USB_OTG_FS and USB1/2_OTG_HS need a third device slot."
+#endif
 constexpr uint8_t OTG_HS1_INDEX = 0;
 constexpr uint8_t OTG_HS2_INDEX = 1;
 #if defined(USB_OTG_HS_MAX_IN_ENDPOINTS)
@@ -618,25 +621,41 @@ void STM32USBOtgDevice::Dispatch(USB_OTG_GlobalTypeDef* core)
 {
   uint8_t index = MAX_DEVICES;
 #if defined(USB_OTG_FS)
+#if defined(USB_OTG_FS_S) && defined(USB_OTG_FS_NS)
+  if (core == USB_OTG_FS_S || core == USB_OTG_FS_NS)
+#else
   if (core == USB_OTG_FS)
+#endif
   {
     index = OTG_FS_INDEX;
   }
 #endif
 #if defined(USB_OTG_HS)
+#if defined(USB_OTG_HS_S) && defined(USB_OTG_HS_NS)
+  if (core == USB_OTG_HS_S || core == USB_OTG_HS_NS)
+#else
   if (core == USB_OTG_HS)
+#endif
   {
     index = OTG_HS_INDEX;
   }
 #endif
 #if !defined(USB_OTG_HS) && defined(USB1_OTG_HS)
+#if defined(USB1_OTG_HS_S) && defined(USB1_OTG_HS_NS)
+  if (core == USB1_OTG_HS_S || core == USB1_OTG_HS_NS)
+#else
   if (core == USB1_OTG_HS)
+#endif
   {
     index = OTG_HS1_INDEX;
   }
 #endif
 #if !defined(USB_OTG_HS) && defined(USB2_OTG_HS)
+#if defined(USB2_OTG_HS_S) && defined(USB2_OTG_HS_NS)
+  if (core == USB2_OTG_HS_S || core == USB2_OTG_HS_NS)
+#else
   if (core == USB2_OTG_HS)
+#endif
   {
     index = OTG_HS2_INDEX;
   }

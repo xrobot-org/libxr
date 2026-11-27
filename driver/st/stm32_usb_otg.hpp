@@ -47,16 +47,24 @@ class STM32OtgController : public USB::EndpointPool
   {
     EMBEDDED_FS,  ///< 片内全速 PHY / Embedded full-speed PHY
     ULPI,         ///< 外部 ULPI 高速 PHY / External ULPI high-speed PHY
-    EMBEDDED_HS   ///< 片内高速 PHY（F723/F733 等）/ Embedded high-speed PHY (F723/F733)
+    /// 片内高速 PHY（F723/F733/U5A5/H7RS/WBA6x/N6 等）/ Embedded high-speed PHY
+    /// (F723/F733/U5A5/H7RS/WBA6x/N6)
+    EMBEDDED_HS
   };
 
   /// 控制器配置 / Controller configuration
   struct HardwareConfig
   {
+#if defined(USB_OTG_EMBEDDED_PHY) || defined(__DOXYGEN__)
     Phy phy = Phy::EMBEDDED_FS;  ///< PHY 接口 / PHY interface
-    bool dma = false;            ///< 使用 core 内部 DMA / Use the core's internal DMA
-    bool vbus_sensing = false;   ///< VBUS 检测 / VBUS sensing
-    bool high_speed = false;     ///< 以高速枚举（需高速 PHY）/ Enumerate at high speed
+#elif defined(USB_OTG_HS_EMBEDDED_PHY)
+    Phy phy = Phy::EMBEDDED_HS;  ///< PHY 接口 / PHY interface
+#else
+    Phy phy = Phy::ULPI;  ///< PHY 接口 / PHY interface
+#endif
+    bool dma = false;           ///< 使用 core 内部 DMA / Use the core's internal DMA
+    bool vbus_sensing = false;  ///< VBUS 检测 / VBUS sensing
+    bool high_speed = false;    ///< 以高速枚举（需高速 PHY）/ Enumerate at high speed
     /// DMA 时 EP0 OUT 的缓冲：≥ 64 B，32 字节对齐，DMA 可达 / EP0 OUT buffer with DMA:
     /// ≥ 64 B, 32-byte aligned, reachable by DMA
     RawData ep0_dma_buffer{nullptr, 0};
