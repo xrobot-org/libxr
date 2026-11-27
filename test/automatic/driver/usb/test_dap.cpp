@@ -15,15 +15,12 @@
  * packet and threads.
  */
 
-#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <deque>
 #include <functional>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -34,39 +31,17 @@
 #include "daplink_v2.hpp"
 #include "debug/jtag_general_gpio.hpp"
 #include "debug/swd.hpp"
-#include "dev_core.hpp"
-#include "ep.hpp"
-#include "ep_pool.hpp"
+#include "fake_usb.hpp"
 #include "test_assert.hpp"
-#include "usb_service.hpp"
 
 namespace
 {
-using LibXR::ErrorCode;
-using LibXR::RawData;
+using namespace FakeUsbTest;
 using LibXR::USB::DapLinkV1Class;
 using LibXR::USB::DapLinkV2Class;
-using LibXR::USB::DescriptorStrings;
-using LibXR::USB::DeviceClass;
-using LibXR::USB::DeviceCore;
-using LibXR::USB::DeviceDescriptor;
-using LibXR::USB::DeviceService;
-using LibXR::USB::Endpoint;
-using LibXR::USB::EndpointPool;
-using LibXR::USB::SetupPacket;
-using LibXR::USB::Speed;
-using LibXR::USB::USBSpec;
-using Direction = Endpoint::Direction;
-using EPNumber = Endpoint::EPNumber;
-using Bytes = std::vector<uint8_t>;
 using CommandId = LibXR::USB::DapLinkV2Def::CommandId;
 using InfoId = LibXR::USB::DapLinkV2Def::InfoId;
 using Port = LibXR::USB::DapLinkV2Def::Port;
-
-static_assert(LibXR::HW_CACHE_LINE_SIZE <= 64U, "test memory is aligned to 64 bytes");
-
-constexpr auto LANGUAGE = DescriptorStrings::MakeLanguagePack(
-    DescriptorStrings::Language::EN_US, "XRobot", "DAP", "0001");
 
 constexpr uint8_t INFO = static_cast<uint8_t>(CommandId::INFO);
 constexpr uint8_t CONNECT = static_cast<uint8_t>(CommandId::CONNECT);
@@ -82,12 +57,6 @@ constexpr uint8_t PACKET_COUNT_ID = static_cast<uint8_t>(InfoId::PACKET_COUNT);
 constexpr uint8_t VENDOR_ID = static_cast<uint8_t>(InfoId::VENDOR);
 constexpr uint8_t PRODUCT_ID = static_cast<uint8_t>(InfoId::PRODUCT);
 constexpr uint8_t SWD = static_cast<uint8_t>(Port::SWD);
-
-/// 端点内存 / Endpoint memory
-struct alignas(64) Memory
-{
-  uint8_t bytes[2048];
-};
 
 /// 最小的 SWD 探针：每次传输都成功，读到固定的字；记录每次调用所在的线程 / Minimal SWD
 /// probe: every transfer succeeds and reads a fixed word; records the thread of each call
@@ -167,321 +136,33 @@ class FakeSwd : public LibXR::Debug::Swd
   void Note() { callers.push_back(std::this_thread::get_id()); }
 };
 
-/// 记录启动、由测试完成的假端点 / Fake endpoint that records starts, completed by tests
-class FakeEp final : public Endpoint
-{
- public:
-  struct Start
-  {
-    size_t length;
-    uint8_t* data;
-  };
-
-  /// slots：槽数，0 为核心默认 / slots: slot count, 0 for the core default
-  FakeEp(EPNumber number, Direction direction, RawData memory, uint8_t slots = 0U)
-      : Endpoint(number, direction, memory, slots), one_slot(slots == 1U)
-  {
-  }
-
-  /// 硬件完成在途请求；只在 owner 中 / The hardware completes the in-flight request;
-  /// owner only
-  void Done(bool in_isr, size_t actual, ErrorCode result = ErrorCode::OK)
-  {
-    TEST_ASSERT(inflight);
-    inflight = false;
-    if (GetConfig().direction == Direction::IN && result == ErrorCode::OK)
-    {
-      const uint8_t* data = starts.back().data;
-      sent.emplace_back(data, data + actual);
-      sent_count.store(sent.size(), std::memory_order_release);
-    }
-    OnHardwareComplete(in_isr, actual, result);
-  }
-
-  /// 主机发来 OUT 数据；只在 owner 中 / The host sends OUT data; owner only
-  void HostSends(bool in_isr, const Bytes& bytes)
-  {
-    TEST_ASSERT(inflight && bytes.size() <= starts.back().length);
-    if (!bytes.empty())
-    {
-      std::memcpy(starts.back().data, bytes.data(), bytes.size());
-    }
-    Done(in_isr, bytes.size());
-  }
-
-  size_t LastLength() const { return starts.empty() ? SIZE_MAX : starts.back().length; }
-
-  /// 在途请求的字节 / Bytes of the request in flight
-  Bytes InFlight() const
-  {
-    TEST_ASSERT(inflight);
-    return Bytes(starts.back().data, starts.back().data + starts.back().length);
-  }
-
-  std::vector<Start> starts;
-  std::vector<std::thread::id> start_threads;  ///< 每次启动的线程 / Thread of each start
-  std::vector<Bytes> sent;  ///< 主机取走的每个 IN 请求 / Every IN request the host took
-  std::atomic<size_t> sent_count{0U};
-  bool inflight = false;
-  size_t configures = 0;
-  size_t closes = 0;
-  size_t stops = 0;
-  ErrorCode configure_result = ErrorCode::OK;
-  bool complete_in_start = false;  ///< IN 在 StartHardware 内完成 / IN completes inside
-  /// HardwareLimits 第几次调用之后报 32 字节包 / After this many HardwareLimits calls,
-  /// report 32-byte packets
-  int shrink_after = -1;
-  mutable int limit_calls = 0;
-  /// 只有一个槽：硬件不直接读写槽（核心对单槽的要求）/ One slot only: the hardware
-  /// does not access the slot directly (what the core requires of a single slot)
-  bool one_slot;
-
- protected:
-  ErrorCode CheckHardware(const Config&) const override { return configure_result; }
-
-  void ConfigureHardware(const Config&) override { ++configures; }
-
-  void CloseHardware(bool) override { ++closes; }
-
-  ErrorCode StartHardware(const HwRequest& request, bool in_isr) override
-  {
-    TEST_ASSERT(!inflight);
-    starts.push_back({request.length, request.data});
-    start_threads.push_back(std::this_thread::get_id());
-    inflight = true;
-    if (complete_in_start && GetConfig().direction == Direction::IN)
-    {
-      Done(in_isr, request.length);
-    }
-    return ErrorCode::OK;
-  }
-
-  StopOutcome StopHardware(bool) override
-  {
-    ++stops;
-    inflight = false;
-    return {ErrorCode::ABORTED, 0U};
-  }
-
-  ErrorCode StallHardware(bool) override { return ErrorCode::OK; }
-  ErrorCode ClearStallHardware(bool) override { return ErrorCode::OK; }
-
-  HwLimits HardwareLimits(Direction, Type) const override
-  {
-    ++limit_calls;
-    HwLimits limits{};
-    if (shrink_after >= 0 && limit_calls > shrink_after)
-    {
-      limits = {32U, SIZE_MAX, SIZE_MAX};
-    }
-    limits.direct_memory = !one_slot;
-    return limits;
-  }
-};
-
 /**
  * @brief 假端点和端点池：EP1 IN、EP2 OUT 给第一个 DAP，EP3 IN、EP4 OUT 给第二个 / Fake
  *        endpoints and the pool: EP1 IN and EP2 OUT for the first DAP, EP3 IN and EP4 OUT
  *        for a second one
  */
-struct Hw
+struct Hw : FakeHw
 {
   /// in_size：EP1 IN 的内存字节数；data_slots：数据端点的槽数，0 为核心默认 / in_size:
   /// bytes of EP1 IN memory; data_slots: slot count of the data endpoints, 0 for default
   explicit Hw(size_t in_size = 2048U, uint8_t data_slots = 0U)
-      : ep1_in_size(in_size), slots(data_slots)
+      : ep1_in{EPNumber::EP1, Direction::IN, {mem[0].bytes, in_size}, data_slots},
+        ep2_out{EPNumber::EP2, Direction::OUT, {mem[1].bytes, 2048U}, data_slots},
+        ep3_in{EPNumber::EP3, Direction::IN, {mem[2].bytes, 2048U}, data_slots},
+        ep4_out{EPNumber::EP4, Direction::OUT, {mem[3].bytes, 2048U}, data_slots}
   {
-    pool.SetEndpoint0(&in0, &out0);
-    for (FakeEp* ep : {&ep1_in, &ep2_out, &ep3_in, &ep4_out})
-    {
-      TEST_ASSERT(pool.Put(ep) == ErrorCode::OK);
-    }
+    Add(ep1_in);
+    Add(ep2_out);
+    Add(ep3_in);
+    Add(ep4_out);
   }
 
-  size_t ep1_in_size;
-  uint8_t slots;
-  Memory mem[6];
-  FakeEp in0{EPNumber::EP0, Direction::IN, {mem[0].bytes, 64U}};
-  FakeEp out0{EPNumber::EP0, Direction::OUT, {mem[1].bytes, 64U}};
-  FakeEp ep1_in{EPNumber::EP1, Direction::IN, {mem[2].bytes, ep1_in_size}, slots};
-  FakeEp ep2_out{EPNumber::EP2, Direction::OUT, {mem[3].bytes, 2048U}, slots};
-  FakeEp ep3_in{EPNumber::EP3, Direction::IN, {mem[4].bytes, 2048U}, slots};
-  FakeEp ep4_out{EPNumber::EP4, Direction::OUT, {mem[5].bytes, 2048U}, slots};
-  EndpointPool pool;
-
-  std::vector<FakeEp*> All()
-  {
-    return {&in0, &out0, &ep1_in, &ep2_out, &ep3_in, &ep4_out};
-  }
+  AlignedMemory<2048U> mem[4];
+  FakeEp ep1_in;
+  FakeEp ep2_out;
+  FakeEp ep3_in;
+  FakeEp ep4_out;
 };
-
-using Configs = std::initializer_list<const std::initializer_list<DeviceClass*>>;
-
-/// 假后端设备 / Fake backend device
-class FakeUsb final : public DeviceService, public DeviceCore
-{
- public:
-  FakeUsb(Hw& hw, const Configs& configs, Speed speed = Speed::FULL,
-          USBSpec spec = USBSpec::USB_2_0)
-      : DeviceCore(*this, hw.pool, spec, speed, DeviceDescriptor::PacketSize0::SIZE_64,
-                   0x1209U, 0x0001U, 0x0100U, {&LANGUAGE}, configs)
-  {
-    for (FakeEp* ep : hw.All())
-    {
-      TEST_ASSERT(Register(*ep) == ErrorCode::OK);
-    }
-  }
-
-  /// 排一个硬件事件并进入控制器中断 / Queue one hardware event and enter the
-  /// controller interrupt
-  void Irq(std::function<void(bool)> event)
-  {
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      events_.push_back(std::move(event));
-    }
-    OnControllerInterrupt();
-  }
-
-  void Setup(SetupPacket setup)
-  {
-    Irq([this, setup](bool isr) { OnSetup(isr, setup); });
-  }
-  /// 在 owner 中交出一个 SETUP（硬件事件处理的一部分）/ Hand a SETUP over inside the
-  /// owner (part of handling hardware events)
-  void SetupInOwner(bool isr, SetupPacket setup) { OnSetup(isr, setup); }
-  void Reset(Speed speed = Speed::FULL)
-  {
-    Irq([this, speed](bool isr) { OnBusReset(isr, speed); });
-  }
-
-  bool Inited() const { return IsInited(); }
-  void StartController(bool) override {}
-  void StopController(bool) override {}
-
-  size_t ready = 0;
-
- protected:
-  void ServiceHardware(bool in_isr) override
-  {
-    while (true)
-    {
-      std::function<void(bool)> event;
-      {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (events_.empty())
-        {
-          return;
-        }
-        event = std::move(events_.front());
-        events_.pop_front();
-      }
-      event(in_isr);
-    }
-  }
-
-  void MaskInterrupt() override {}
-  void UnmaskInterrupt() override {}
-  void SetAddress(uint8_t, AddressStage) override {}
-  void OnControlReady() override { ++ready; }
-  void ResetController(bool) override {}
-
- private:
-  std::mutex mutex_;
-  std::deque<std::function<void(bool)>> events_;
-};
-
-// ---- 主机一侧 / The host side ----
-
-SetupPacket Make(uint8_t type, uint8_t request, uint16_t value, uint16_t index,
-                 uint16_t length)
-{
-  return SetupPacket{type, request, value, index, length};
-}
-
-bool Stalled(Hw& hw) { return hw.in0.IsStalled() && hw.out0.IsStalled(); }
-
-/// 完成一个在途的 IN 请求 / Complete one in-flight IN request
-void InDone(FakeUsb& dev, FakeEp& ep)
-{
-  TEST_ASSERT(ep.inflight);
-  const size_t length = ep.LastLength();
-  dev.Irq([&ep, length](bool isr) { ep.Done(isr, length); });
-}
-
-/// 主机在 OUT 端点上发一个包 / The host sends one packet on an OUT endpoint
-void HostOut(FakeUsb& dev, FakeEp& ep, const Bytes& bytes)
-{
-  TEST_ASSERT(ep.inflight);
-  dev.Irq([&ep, bytes](bool isr) { ep.HostSends(isr, bytes); });
-}
-
-Bytes ControlIn(FakeUsb& dev, Hw& hw, SetupPacket setup)
-{
-  const size_t ready = dev.ready;
-  dev.Setup(setup);
-  TEST_ASSERT(!Stalled(hw));
-  Bytes got;
-  while (hw.in0.inflight)
-  {
-    const FakeEp::Start& start = hw.in0.starts.back();
-    got.insert(got.end(), start.data, start.data + start.length);
-    InDone(dev, hw.in0);
-  }
-  dev.Irq([&hw](bool isr) { hw.out0.HostSends(isr, {}); });
-  TEST_ASSERT(dev.ready == ready + 1U);
-  return got;
-}
-
-void ControlNone(FakeUsb& dev, Hw& hw, SetupPacket setup)
-{
-  const size_t ready = dev.ready;
-  dev.Setup(setup);
-  TEST_ASSERT(!Stalled(hw));
-  TEST_ASSERT(hw.in0.inflight && hw.in0.LastLength() == 0U);
-  InDone(dev, hw.in0);
-  TEST_ASSERT(dev.ready == ready + 1U);
-}
-
-void Refused(FakeUsb& dev, Hw& hw, SetupPacket setup)
-{
-  const size_t ready = dev.ready;
-  dev.Setup(setup);
-  TEST_ASSERT(Stalled(hw));
-  TEST_ASSERT(dev.ready == ready);
-}
-
-Bytes GetDescriptor(FakeUsb& dev, Hw& hw, uint8_t type, uint8_t index, uint16_t length,
-                    uint16_t lang = 0U)
-{
-  return ControlIn(
-      dev, hw, Make(0x80U, 6U, static_cast<uint16_t>(type << 8U | index), lang, length));
-}
-
-void SetConfiguration(FakeUsb& dev, Hw& hw, uint8_t value)
-{
-  ControlNone(dev, hw, Make(0x00U, 9U, value, 0U, 0U));
-}
-
-/// Init、复位、编址、配置 1 / Init, reset, address, configuration 1
-void Enumerate(FakeUsb& dev, Hw& hw, Speed speed = Speed::FULL)
-{
-  dev.Init(false);
-  dev.Reset(speed);
-  TEST_ASSERT(dev.Inited());
-  ControlNone(dev, hw, Make(0x00U, 5U, 7U, 0U, 0U));
-  SetConfiguration(dev, hw, 1U);
-}
-
-/// 让某个端点 HALT 再清除（标准请求）/ Halt an endpoint and clear it (standard requests)
-void HaltEndpoint(FakeUsb& dev, Hw& hw, uint8_t address)
-{
-  ControlNone(dev, hw, Make(0x02U, 3U, 0U, address, 0U));
-}
-void ClearHalt(FakeUsb& dev, Hw& hw, uint8_t address)
-{
-  ControlNone(dev, hw, Make(0x02U, 1U, 0U, address, 0U));
-}
 
 /// 等到条件成立，最多 seconds 秒 / Wait until the condition holds, seconds at most
 bool WaitUntil(const std::function<bool()>& condition, int seconds = 5)
@@ -513,7 +194,7 @@ void Run(Dap& dap)
 std::vector<Bytes> Responses(const FakeEp& ep)
 {
   std::vector<Bytes> out;
-  for (const Bytes& bytes : ep.sent)
+  for (const Bytes& bytes : ep.transfers)
   {
     if (!bytes.empty())
     {
@@ -596,7 +277,7 @@ struct V2Bench
 std::vector<size_t> SentLengths(const FakeEp& ep)
 {
   std::vector<size_t> lengths;
-  for (const Bytes& sent : ep.sent)
+  for (const Bytes& sent : ep.transfers)
   {
     lengths.push_back(sent.size());
   }
@@ -728,7 +409,7 @@ void TestV2Commands()
     {
       InDone(b.dev, b.hw.ep1_in);
     }
-    TEST_ASSERT(!b.hw.ep1_in.inflight && b.hw.ep1_in.sent.size() == 4U);
+    TEST_ASSERT(!b.hw.ep1_in.inflight && b.hw.ep1_in.transfers.size() == 4U);
     TEST_ASSERT(b.hw.ep2_out.inflight);
   }
 
@@ -1021,7 +702,7 @@ void TestV2Commands()
       queue.push_back(VENDOR_ID);
     }
     b.Send(Bytes(queue.begin(), queue.begin() + 64));
-    HaltEndpoint(b.dev, b.hw, 0x02U);
+    SetHalt(b.dev, b.hw, 0x02U);
     TEST_ASSERT(!b.hw.ep2_out.inflight && b.hw.ep2_out.IsStalled());
     ClearHalt(b.dev, b.hw, 0x02U);
     TEST_ASSERT(b.hw.ep2_out.inflight && b.hw.ep2_out.LastLength() == 64U);
@@ -1066,11 +747,11 @@ void TestV2ClosingZlp()
     // 暂存路径：两个 IN 槽占着，64 字节的响应暂存，由 owner 提交时也带零长度包。
     // Staged path: both IN slots busy, the 64-byte response is staged and the owner's
     // submission carries the zero-length packet too.
-    b.hw.ep1_in.sent.clear();
+    b.hw.ep1_in.transfers.clear();
     b.Send({INFO, PACKET_COUNT_ID});
     b.Send({INFO, PACKET_COUNT_ID});
     b.Send(Block(15U));
-    TEST_ASSERT(b.hw.ep1_in.inflight && b.hw.ep1_in.sent.empty());
+    TEST_ASSERT(b.hw.ep1_in.inflight && b.hw.ep1_in.transfers.empty());
     b.DrainIn();
     TEST_ASSERT(SentLengths(b.hw.ep1_in) == (std::vector<size_t>{3U, 3U, 64U, 0U}));
   }
@@ -1232,7 +913,7 @@ void TestV2UnbindInFlight()
     }
     TEST_ASSERT(b.hw.ep1_in.stops == 1U && b.hw.ep1_in.closes == 1U);
     TEST_ASSERT(b.hw.ep2_out.stops == 0U && b.hw.ep2_out.closes == 1U);
-    TEST_ASSERT(b.hw.ep1_in.sent.empty() && b.swd.closes == closes);
+    TEST_ASSERT(b.hw.ep1_in.transfers.empty() && b.swd.closes == closes);
     // 只有重新配置（how 2）之后端点还绑着 / The endpoints are bound again only after
     // the reconfiguration (how 2)
     TEST_ASSERT(b.dap.IsInited() == (how == 2));
@@ -1518,12 +1199,13 @@ void TestV2Threads()
             std::this_thread::sleep_for(std::chrono::microseconds(20));
           }
         });
-    TEST_ASSERT(WaitUntil([&] { return b.hw.ep1_in.sent_count.load() >= total; }, 120));
+    TEST_ASSERT(
+        WaitUntil([&] { return b.hw.ep1_in.transfer_count.load() >= total; }, 120));
     stop.store(true, std::memory_order_release);
     step.join();
     interrupt.join();
 
-    CheckStream(b.hw.ep1_in.sent, script);
+    CheckStream(b.hw.ep1_in.transfers, script);
     TEST_ASSERT(b.hw.ep2_out.inflight && !b.hw.ep1_in.inflight);
     for (const auto& id : b.swd.callers)
     {
@@ -1568,7 +1250,7 @@ void TestV2RebindRace()
     }
     if (steps % 37U == 0U && rebinds < 150U)
     {
-      b.dev.SetupInOwner(isr, Make(0x00U, 9U, 1U, 0U, 0U));
+      b.dev.HwSetup(isr, Make(0x00U, 9U, 1U, 0U, 0U));
       if (++rebinds == 150U)
       {
         rebinds_done.store(true, std::memory_order_release);
@@ -1784,8 +1466,8 @@ void TestV1Commands()
     TEST_ASSERT(b.hw.ep2_out.inflight && b.hw.ep2_out.starts.size() == 3U);
     Run(b.dap);
     b.DrainIn();
-    TEST_ASSERT(b.hw.ep1_in.sent.size() == 2U &&
-                IsInfoString(b.hw.ep1_in.sent[1], "DAPLinkV1"));
+    TEST_ASSERT(b.hw.ep1_in.transfers.size() == 2U &&
+                IsInfoString(b.hw.ep1_in.transfers[1], "DAPLinkV1"));
   }
 
   // 背压：Step 没跑时两个报告占住两个 OUT 槽，主机被 NAK；Step 跑完后恢复接收 /
@@ -1800,8 +1482,8 @@ void TestV1Commands()
     Run(b.dap);
     TEST_ASSERT(b.hw.ep2_out.inflight && b.hw.ep1_in.starts.size() == 1U);
     b.DrainIn();
-    TEST_ASSERT(IsInfoString(b.hw.ep1_in.sent[0], "XRobot") &&
-                IsInfoString(b.hw.ep1_in.sent[1], "DAPLinkV1"));
+    TEST_ASSERT(IsInfoString(b.hw.ep1_in.transfers[0], "XRobot") &&
+                IsInfoString(b.hw.ep1_in.transfers[1], "DAPLinkV1"));
   }
 
   // 连接、延时、未知命令 / Connect, delay, unknown command
@@ -1841,7 +1523,7 @@ void TestV1Commands()
     TEST_ASSERT(b.hw.ep1_in.starts.size() == 2U);
     Run(b.dap);
     b.DrainIn();
-    TEST_ASSERT(b.hw.ep1_in.sent.size() == 3U && b.hw.ep2_out.inflight);
+    TEST_ASSERT(b.hw.ep1_in.transfers.size() == 3U && b.hw.ep2_out.inflight);
   }
 
   // HALT 之后连发两个报告：两条都按到达顺序应答 / Two reports back to back after a
@@ -1849,16 +1531,16 @@ void TestV1Commands()
   {
     V1Bench b;
     Enumerate(b.dev, b.hw);
-    HaltEndpoint(b.dev, b.hw, 0x02U);
+    SetHalt(b.dev, b.hw, 0x02U);
     TEST_ASSERT(!b.hw.ep2_out.inflight);
     ClearHalt(b.dev, b.hw, 0x02U);
     HostOut(b.dev, b.hw.ep2_out, Report({INFO, VENDOR_ID}));
     HostOut(b.dev, b.hw.ep2_out, Report({INFO, PRODUCT_ID}));
     Run(b.dap);
     b.DrainIn();
-    TEST_ASSERT(b.hw.ep1_in.sent.size() == 2U);
-    TEST_ASSERT(IsInfoString(b.hw.ep1_in.sent[0], "XRobot") &&
-                IsInfoString(b.hw.ep1_in.sent[1], "DAPLinkV1"));
+    TEST_ASSERT(b.hw.ep1_in.transfers.size() == 2U);
+    TEST_ASSERT(IsInfoString(b.hw.ep1_in.transfers[0], "XRobot") &&
+                IsInfoString(b.hw.ep1_in.transfers[1], "DAPLinkV1"));
     TEST_ASSERT(b.hw.ep2_out.inflight);
     HostOut(b.dev, b.hw.ep2_out, Report({INFO, VENDOR_ID}));
     TEST_ASSERT(b.hw.ep2_out.inflight);
@@ -1988,15 +1670,15 @@ void TestV1UnbindInFlight()
       }
       SetConfiguration(b.dev, b.hw, 1U);
     }
-    TEST_ASSERT(b.hw.ep1_in.starts.size() == 1U && b.hw.ep1_in.sent.empty());
+    TEST_ASSERT(b.hw.ep1_in.starts.size() == 1U && b.hw.ep1_in.transfers.empty());
     TEST_ASSERT(b.hw.ep2_out.inflight);
     HostOut(b.dev, b.hw.ep2_out, Report({INFO, PRODUCT_ID}));
     TEST_ASSERT(b.hw.ep2_out.inflight);
     b.Send(Report({INFO, VENDOR_ID}));
     b.DrainIn();
-    TEST_ASSERT(b.hw.ep1_in.sent.size() == 2U);
-    TEST_ASSERT(IsInfoString(b.hw.ep1_in.sent[0], "DAPLinkV1") &&
-                IsInfoString(b.hw.ep1_in.sent[1], "XRobot"));
+    TEST_ASSERT(b.hw.ep1_in.transfers.size() == 2U);
+    TEST_ASSERT(IsInfoString(b.hw.ep1_in.transfers[0], "DAPLinkV1") &&
+                IsInfoString(b.hw.ep1_in.transfers[1], "XRobot"));
     BothInSlotsFree(b.hw.ep1_in);
   }
 
@@ -2091,7 +1773,7 @@ void TestV1Threads()
       }
       if (variant == 1 && steps % 23U == 0U && rebinds < 100U)
       {
-        b.dev.SetupInOwner(isr, Make(0x00U, 9U, 1U, 0U, 0U));
+        b.dev.HwSetup(isr, Make(0x00U, 9U, 1U, 0U, 0U));
         if (++rebinds == 100U)
         {
           done.store(true, std::memory_order_release);
@@ -2117,7 +1799,8 @@ void TestV1Threads()
         });
     if (variant == 0)
     {
-      TEST_ASSERT(WaitUntil([&] { return b.hw.ep1_in.sent_count.load() >= COUNT; }, 120));
+      TEST_ASSERT(
+          WaitUntil([&] { return b.hw.ep1_in.transfer_count.load() >= COUNT; }, 120));
     }
     else
     {
@@ -2135,10 +1818,10 @@ void TestV1Threads()
 
     if (variant == 0)
     {
-      TEST_ASSERT(b.hw.ep1_in.sent.size() == COUNT);
+      TEST_ASSERT(b.hw.ep1_in.transfers.size() == COUNT);
       for (size_t i = 0; i < COUNT; ++i)
       {
-        const Bytes& response = b.hw.ep1_in.sent[i];
+        const Bytes& response = b.hw.ep1_in.transfers[i];
         TEST_ASSERT(i % 3U == 0U   ? IsInfoString(response, "XRobot")
                     : i % 3U == 1U ? IsInfoString(response, "DAPLinkV1")
                                    : response[0] == DELAY && response[1] == 0U);
@@ -2146,13 +1829,13 @@ void TestV1Threads()
     }
     else
     {
-      for (const Bytes& response : b.hw.ep1_in.sent)
+      for (const Bytes& response : b.hw.ep1_in.transfers)
       {
         TEST_ASSERT(IsInfoString(response, "XRobot") ||
                     IsInfoString(response, "DAPLinkV1") ||
                     (response[0] == DELAY && response[1] == 0U));
       }
-      TEST_ASSERT(b.hw.ep1_in.sent.size() > 100U);
+      TEST_ASSERT(b.hw.ep1_in.transfers.size() > 100U);
     }
     BothInSlotsFree(b.hw.ep1_in);
     TEST_ASSERT(b.hw.ep2_out.inflight);
@@ -2162,17 +1845,6 @@ void TestV1Threads()
     TEST_ASSERT(IsInfoString(b.hw.ep1_in.InFlight(), "XRobot"));
   }
 }
-
-/// 后端可能给的槽数：核心默认（两个）、1、3、8 / Slot counts a backend may give: the core
-/// default (two), 1, 3 and 8
-constexpr uint8_t SLOT_COUNTS[] = {0U, 1U, 3U, 8U};
-
-/// 数据端点的实际槽数 / The actual slot count of the data endpoints
-size_t SlotsOf(uint8_t slots) { return slots == 0U ? 2U : slots; }
-
-/// 每个空闲的 OUT 槽都挂着接收：再挂一个得 BUSY / Every free OUT slot is receiving:
-/// one more receive gets BUSY
-bool AllReceiving(FakeEp& ep) { return ep.Receive(64U, false) == ErrorCode::BUSY; }
 
 /**
  * @brief DAP v2 在默认、1、3、8 个槽下的命令池满反压 / DAP v2 backpressure with the
@@ -2222,12 +1894,12 @@ void TestV2SlotCounts()
         TEST_ASSERT(responses[i].size() == expected[i]);
       }
       TEST_ASSERT(AllReceiving(b.hw.ep2_out));
-      b.hw.ep1_in.sent.clear();
+      b.hw.ep1_in.transfers.clear();
 
       // 主机 HALT 数据 OUT：每个接收以 ABORTED 结束并在回调里重挂，清除后全部在收。
       // The host halts data OUT: every receive ends ABORTED and is armed again in the
       // callback; after the clear all of them receive.
-      HaltEndpoint(b.dev, b.hw, 0x02U);
+      SetHalt(b.dev, b.hw, 0x02U);
       ClearHalt(b.dev, b.hw, 0x02U);
       TEST_ASSERT(AllReceiving(b.hw.ep2_out));
     }
@@ -2260,15 +1932,15 @@ void TestV1SlotCounts()
     TEST_ASSERT(reports == SlotsOf(slots));
     Run(b.dap);
     b.DrainIn();
-    TEST_ASSERT(b.hw.ep1_in.sent.size() == reports);
+    TEST_ASSERT(b.hw.ep1_in.transfers.size() == reports);
     for (size_t i = 0; i < reports; ++i)
     {
       TEST_ASSERT(
-          IsInfoString(b.hw.ep1_in.sent[i], i % 2U == 0U ? "XRobot" : "DAPLinkV1"));
+          IsInfoString(b.hw.ep1_in.transfers[i], i % 2U == 0U ? "XRobot" : "DAPLinkV1"));
     }
     TEST_ASSERT(AllReceiving(b.hw.ep2_out));
     // HALT 再清除：所有槽仍在收 / A halt and its clear: every slot still receives
-    HaltEndpoint(b.dev, b.hw, 0x02U);
+    SetHalt(b.dev, b.hw, 0x02U);
     ClearHalt(b.dev, b.hw, 0x02U);
     TEST_ASSERT(AllReceiving(b.hw.ep2_out));
   }

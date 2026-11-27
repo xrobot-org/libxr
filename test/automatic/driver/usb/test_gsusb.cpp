@@ -16,381 +16,53 @@
  * unbind with requests in flight, multi-packet receive and threads.
  */
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <deque>
-#include <functional>
-#include <mutex>
 #include <thread>
-#include <utility>
 #include <vector>
 
-#include "dev_core.hpp"
-#include "ep.hpp"
-#include "ep_pool.hpp"
+#include "fake_usb.hpp"
 #include "flash.hpp"
 #include "gs_usb.hpp"
 #include "lockfree_list.hpp"
 #include "raw_sequential.hpp"
 #include "test_assert.hpp"
 #include "timer.hpp"
-#include "usb_service.hpp"
 
 namespace
 {
+using namespace FakeUsbTest;
 using LibXR::ConstRawData;
-using LibXR::ErrorCode;
-using LibXR::RawData;
-using LibXR::USB::DescriptorStrings;
-using LibXR::USB::DeviceClass;
-using LibXR::USB::DeviceCore;
-using LibXR::USB::DeviceDescriptor;
-using LibXR::USB::DeviceService;
-using LibXR::USB::Endpoint;
-using LibXR::USB::EndpointPool;
 using LibXR::USB::GsUsbClass;
-using LibXR::USB::SetupPacket;
-using LibXR::USB::Speed;
-using LibXR::USB::USBSpec;
-using Direction = Endpoint::Direction;
-using EPNumber = Endpoint::EPNumber;
-using Bytes = std::vector<uint8_t>;
 namespace Gs = LibXR::USB::GsUsb;
-
-static_assert(LibXR::HW_CACHE_LINE_SIZE <= 64U, "test memory is aligned to 64 bytes");
-
-constexpr auto LANGUAGE = DescriptorStrings::MakeLanguagePack(
-    DescriptorStrings::Language::EN_US, "XRobot", "GSUSB", "0001");
-
-/// 端点内存 / Endpoint memory
-struct alignas(64) Memory
-{
-  uint8_t bytes[1024];
-};
-
-/// 记录启动、由测试完成的假端点 / Fake endpoint that records starts, completed by tests
-class FakeEp final : public Endpoint
-{
- public:
-  /// 一次 StartHardware / One StartHardware
-  struct Start
-  {
-    size_t length;
-    uint8_t* data;
-  };
-
-  /// slots：槽数，0 为核心默认 / slots: slot count, 0 for the core default
-  FakeEp(EPNumber number, Direction direction, RawData memory, uint8_t slots = 0U)
-      : Endpoint(number, direction, memory, slots)
-  {
-    // 只有一个槽时硬件不直接读写槽（核心对单槽的要求）。
-    // With one slot the hardware does not access the slot directly (what the core
-    // requires of a single slot).
-    limits.direct_memory = slots != 1U;
-  }
-
-  /// 硬件完成在途请求；只在 owner 中 / The hardware completes the in-flight request;
-  /// owner only
-  void Done(bool in_isr, size_t actual, ErrorCode result = ErrorCode::OK)
-  {
-    TEST_ASSERT(inflight);
-    inflight = false;
-    if (GetConfig().direction == Direction::IN && result == ErrorCode::OK)
-    {
-      const uint8_t* data = starts.back().data;
-      transfers.emplace_back(data, data + actual);
-      transfer_count.store(transfers.size(), std::memory_order_release);
-    }
-    OnHardwareComplete(in_isr, actual, result);
-  }
-
-  /// 主机发来一次 OUT 传输；只在 owner 中 / The host sends one OUT transfer; owner only
-  void HostSends(bool in_isr, const Bytes& bytes)
-  {
-    TEST_ASSERT(inflight && bytes.size() <= starts.back().length);
-    if (!bytes.empty())
-    {
-      std::memcpy(starts.back().data, bytes.data(), bytes.size());
-    }
-    Done(in_isr, bytes.size());
-  }
-
-  size_t LastLength() const { return starts.empty() ? SIZE_MAX : starts.back().length; }
-
-  std::vector<Start> starts;
-  std::vector<Bytes> transfers;  ///< 主机取走的 IN 传输 / IN transfers the host took
-  std::atomic<size_t> transfer_count{0U};
-  bool inflight = false;
-  size_t configures = 0;
-  size_t closes = 0;
-  size_t stops = 0;
-  ErrorCode configure_result = ErrorCode::OK;
-  HwLimits limits{};  ///< HardwareLimits 的返回值 / What HardwareLimits returns
-  /// HardwareLimits 第几次调用之后报 32 字节包 / After this many HardwareLimits calls,
-  /// report 32-byte packets
-  int shrink_after = -1;
-  mutable int limit_calls = 0;
-
- protected:
-  ErrorCode CheckHardware(const Config&) const override { return configure_result; }
-
-  void ConfigureHardware(const Config&) override { ++configures; }
-
-  void CloseHardware(bool) override { ++closes; }
-
-  ErrorCode StartHardware(const HwRequest& request, bool) override
-  {
-    TEST_ASSERT(!inflight);
-    starts.push_back({request.length, request.data});
-    inflight = true;
-    return ErrorCode::OK;
-  }
-
-  StopOutcome StopHardware(bool) override
-  {
-    ++stops;
-    inflight = false;
-    return {ErrorCode::ABORTED, 0U};
-  }
-
-  ErrorCode StallHardware(bool) override { return ErrorCode::OK; }
-  ErrorCode ClearStallHardware(bool) override { return ErrorCode::OK; }
-
-  HwLimits HardwareLimits(Direction, Type) const override
-  {
-    ++limit_calls;
-    if (shrink_after >= 0 && limit_calls > shrink_after)
-    {
-      return {32U, SIZE_MAX, SIZE_MAX};
-    }
-    return limits;
-  }
-};
 
 /// 假端点和端点池：EP1 IN 数据，EP2 OUT 数据 / Fake endpoints and the pool: EP1 IN data,
 /// EP2 OUT data
-struct Hw
+struct Hw : FakeHw
 {
   /// data_slots：数据端点的槽数，0 为核心默认 / data_slots: slot count of the data
   /// endpoints, 0 for the core default
   explicit Hw(size_t data_memory = 1024U, uint8_t data_slots = 0U)
-      : ep1_in(EPNumber::EP1, Direction::IN, {mem[2].bytes, data_memory}, data_slots),
-        ep2_out(EPNumber::EP2, Direction::OUT, {mem[3].bytes, data_memory}, data_slots)
+      : ep1_in(EPNumber::EP1, Direction::IN, {mem[0].bytes, data_memory}, data_slots),
+        ep2_out(EPNumber::EP2, Direction::OUT, {mem[1].bytes, data_memory}, data_slots)
   {
-    pool.SetEndpoint0(&in0, &out0);
-    TEST_ASSERT(pool.Put(&ep1_in) == ErrorCode::OK);
-    TEST_ASSERT(pool.Put(&ep2_out) == ErrorCode::OK);
+    Add(ep1_in);
+    Add(ep2_out);
   }
 
-  Memory mem[4];
-  FakeEp in0{EPNumber::EP0, Direction::IN, {mem[0].bytes, 64U}};
-  FakeEp out0{EPNumber::EP0, Direction::OUT, {mem[1].bytes, 64U}};
+  AlignedMemory<1024U> mem[2];
   FakeEp ep1_in;
   FakeEp ep2_out;
-  EndpointPool pool;
-
-  std::vector<FakeEp*> All() { return {&in0, &out0, &ep1_in, &ep2_out}; }
 };
 
-using Configs = std::initializer_list<const std::initializer_list<DeviceClass*>>;
-
-/// 假后端设备 / Fake backend device
-class FakeUsb final : public DeviceService, public DeviceCore
+inline void DataRefused(FakeUsb& dev, Hw& hw, SetupPacket setup, const Bytes& data)
 {
- public:
-  FakeUsb(Hw& hw, const Configs& configs, Speed speed = Speed::FULL)
-      : DeviceCore(*this, hw.pool, USBSpec::USB_2_0, speed,
-                   DeviceDescriptor::PacketSize0::SIZE_64, 0x1209U, 0x0001U, 0x0100U,
-                   {&LANGUAGE}, configs)
-  {
-    for (FakeEp* ep : hw.All())
-    {
-      TEST_ASSERT(Register(*ep) == ErrorCode::OK);
-    }
-  }
-
-  /// 排一个硬件事件并进入控制器中断 / Queue one hardware event and enter the
-  /// controller interrupt
-  void Irq(std::function<void(bool)> event)
-  {
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      events_.push_back(std::move(event));
-    }
-    OnControllerInterrupt();
-  }
-
-  void Setup(SetupPacket setup)
-  {
-    Irq([this, setup](bool isr) { OnSetup(isr, setup); });
-  }
-  void Reset(Speed speed = Speed::FULL)
-  {
-    Irq([this, speed](bool isr) { OnBusReset(isr, speed); });
-  }
-
-  void StartController(bool) override {}
-  void StopController(bool) override {}
-
-  size_t ready = 0;
-  std::atomic<bool> masked{false};
-
- protected:
-  void ServiceHardware(bool in_isr) override
-  {
-    while (true)
-    {
-      std::function<void(bool)> event;
-      {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (events_.empty())
-        {
-          return;
-        }
-        event = std::move(events_.front());
-        events_.pop_front();
-      }
-      event(in_isr);
-    }
-  }
-
-  void MaskInterrupt() override { masked.store(true, std::memory_order_release); }
-  void UnmaskInterrupt() override { masked.store(false, std::memory_order_release); }
-  void SetAddress(uint8_t, AddressStage) override {}
-  void OnControlReady() override { ++ready; }
-  void ResetController(bool) override {}
-
- private:
-  std::mutex mutex_;
-  std::deque<std::function<void(bool)>> events_;
-};
-
-// ---- 主机一侧 / The host side ----
-
-SetupPacket Make(uint8_t type, uint8_t request, uint16_t value, uint16_t index,
-                 uint16_t length)
-{
-  return SetupPacket{type, request, value, index, length};
+  RefusedData(dev, hw, setup, data);
 }
-
-bool Stalled(Hw& hw) { return hw.in0.IsStalled() && hw.out0.IsStalled(); }
-
-/// 完成一个在途的 IN 请求 / Complete one in-flight IN request
-void InDone(FakeUsb& dev, FakeEp& ep)
-{
-  TEST_ASSERT(ep.inflight);
-  const size_t length = ep.LastLength();
-  dev.Irq([&ep, length](bool isr) { ep.Done(isr, length); });
-}
-
-/// 完成 IN 端点上的全部请求 / Complete every request on an IN endpoint
-void Drain(FakeUsb& dev, FakeEp& ep)
-{
-  for (size_t guard = 0; ep.inflight; ++guard)
-  {
-    TEST_ASSERT(guard < 100000U);
-    InDone(dev, ep);
-  }
-}
-
-/// 主机在 OUT 端点上发一次传输 / The host sends one transfer on an OUT endpoint
-void HostOut(FakeUsb& dev, FakeEp& ep, const Bytes& bytes)
-{
-  TEST_ASSERT(ep.inflight);
-  dev.Irq([&ep, bytes](bool isr) { ep.HostSends(isr, bytes); });
-}
-
-Bytes ControlIn(FakeUsb& dev, Hw& hw, SetupPacket setup)
-{
-  const size_t ready = dev.ready;
-  dev.Setup(setup);
-  TEST_ASSERT(!Stalled(hw));
-  Bytes got;
-  while (hw.in0.inflight)
-  {
-    const FakeEp::Start& start = hw.in0.starts.back();
-    got.insert(got.end(), start.data, start.data + start.length);
-    InDone(dev, hw.in0);
-  }
-  dev.Irq([&hw](bool isr) { hw.out0.HostSends(isr, {}); });
-  TEST_ASSERT(dev.ready == ready + 1U);
-  return got;
-}
-
-void ControlOut(FakeUsb& dev, Hw& hw, SetupPacket setup, const Bytes& data)
-{
-  const size_t ready = dev.ready;
-  dev.Setup(setup);
-  TEST_ASSERT(!Stalled(hw));
-  TEST_ASSERT(data.size() <= 64U);
-  HostOut(dev, hw.out0, data);
-  TEST_ASSERT(hw.in0.inflight && hw.in0.LastLength() == 0U);
-  InDone(dev, hw.in0);
-  TEST_ASSERT(dev.ready == ready + 1U);
-}
-
-void ControlNone(FakeUsb& dev, Hw& hw, SetupPacket setup)
-{
-  const size_t ready = dev.ready;
-  dev.Setup(setup);
-  TEST_ASSERT(!Stalled(hw));
-  TEST_ASSERT(hw.in0.inflight && hw.in0.LastLength() == 0U);
-  InDone(dev, hw.in0);
-  TEST_ASSERT(dev.ready == ready + 1U);
-}
-
-/// SETUP 阶段就被拒 / Refused at the SETUP stage
-void Refused(FakeUsb& dev, Hw& hw, SetupPacket setup)
-{
-  const size_t ready = dev.ready;
-  dev.Setup(setup);
-  TEST_ASSERT(Stalled(hw));
-  TEST_ASSERT(dev.ready == ready);
-}
-
-/// SETUP 被接受，数据阶段之后被拒 / SETUP accepted, refused after the data stage
-void DataRefused(FakeUsb& dev, Hw& hw, SetupPacket setup, const Bytes& data)
-{
-  const size_t ready = dev.ready;
-  dev.Setup(setup);
-  TEST_ASSERT(!Stalled(hw));
-  HostOut(dev, hw.out0, data);
-  TEST_ASSERT(Stalled(hw));
-  TEST_ASSERT(dev.ready == ready);
-}
-
-Bytes GetDescriptor(FakeUsb& dev, Hw& hw, uint8_t type, uint8_t index, uint16_t length,
-                    uint16_t lang = 0U)
-{
-  return ControlIn(
-      dev, hw, Make(0x80U, 6U, static_cast<uint16_t>(type << 8U | index), lang, length));
-}
-
-void SetConfiguration(FakeUsb& dev, Hw& hw, uint8_t value)
-{
-  ControlNone(dev, hw, Make(0x00U, 9U, value, 0U, 0U));
-}
-
-void SetAddress(FakeUsb& dev, Hw& hw)
-{
-  ControlNone(dev, hw, Make(0x00U, 5U, 7U, 0U, 0U));
-}
-
-/// Init、复位、编址、配置 1 / Init, reset, address, configuration 1
-void Enumerate(FakeUsb& dev, Hw& hw, Speed speed = Speed::FULL)
-{
-  dev.Init(false);
-  dev.Reset(speed);
-  SetAddress(dev, hw);
-  SetConfiguration(dev, hw, 1U);
-}
-
-// ---- gs_usb 请求 / gs_usb requests ----
 
 constexpr uint8_t OUT_VENDOR = 0x41U;  ///< OUT、厂商、接口 / OUT, vendor, interface
 constexpr uint8_t IN_VENDOR = 0xC1U;   ///< IN、厂商、接口 / IN, vendor, interface
@@ -1702,8 +1374,7 @@ void TestThreads()
 }
 
 /// 后端可能给的槽数：核心默认（两个）、1、3、8 / Slot counts a backend may give: the core
-/// default (two), 1, 3 and 8
-constexpr uint8_t SLOT_COUNTS[] = {0U, 1U, 3U, 8U};
+// ---- 默认（两个）、1、3 和 8 个槽 / Default (two), 1, 3 and 8 slots ----
 
 /**
  * @brief 默认、1、3、8 个槽下发往主机的帧和回显队列满的反压 / Frames to the host and

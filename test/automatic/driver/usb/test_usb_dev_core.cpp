@@ -22,23 +22,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
-#include <deque>
-#include <functional>
-#include <mutex>
 #include <new>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
-#include "dev_core.hpp"
-#include "device_class.hpp"
-#include "device_composition.hpp"
-#include "ep.hpp"
-#include "ep_pool.hpp"
+#include "fake_usb.hpp"
 #include "test_assert.hpp"
-#include "usb_service.hpp"
 
 // 分配计数：只在 g_counting 为真的线程上计数；假后端和测试类的记账用 NoCount 关掉它。
 // Allocation count: only on a thread whose g_counting is set; the fake backend's and
@@ -71,230 +62,27 @@ void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 namespace
 {
+using namespace FakeUsbTest;
 using LibXR::Callback;
 using LibXR::ConstRawData;
-using LibXR::ErrorCode;
-using LibXR::RawData;
-using LibXR::USB::DescriptorStrings;
-using LibXR::USB::DeviceClass;
-using LibXR::USB::DeviceCore;
-using LibXR::USB::DeviceDescriptor;
-using LibXR::USB::DeviceService;
-using LibXR::USB::Endpoint;
-using LibXR::USB::EndpointPool;
-using LibXR::USB::SetupPacket;
-using LibXR::USB::Speed;
-using LibXR::USB::USBSpec;
-using Completion = Endpoint::Completion;
-using Direction = Endpoint::Direction;
-using EPNumber = Endpoint::EPNumber;
-using Type = Endpoint::Type;
-using Bytes = std::vector<uint8_t>;
-
-static_assert(LibXR::HW_CACHE_LINE_SIZE <= 64U, "test memory is aligned to 64 bytes");
-
-/// 记账期间不计分配 / No allocation counting during bookkeeping
-struct NoCount
-{
-  NoCount() : saved(g_counting) { g_counting = false; }
-  ~NoCount() { g_counting = saved; }
-  NoCount(const NoCount&) = delete;
-  NoCount& operator=(const NoCount&) = delete;
-  bool saved;
-};
-
-constexpr auto LANGUAGE = DescriptorStrings::MakeLanguagePack(
-    DescriptorStrings::Language::EN_US, "XRobot", "Core", "0001");
-
-/// 端点内存 / Endpoint memory
-struct alignas(64) Memory
-{
-  uint8_t bytes[1024];
-};
-
-/// 记录后端调用的假端点 / Fake endpoint that records backend calls
-class FakeEp final : public Endpoint
-{
- public:
-  using Endpoint::StopOutcome;
-
-  /// 一次 StartHardware / One StartHardware
-  struct Start
-  {
-    size_t length;
-    uint8_t* data;
-    Bytes bytes;  ///< IN 时启动那一刻的内容 / IN content at the start
-  };
-
-  FakeEp(EPNumber number, Direction direction, RawData memory)
-      : Endpoint(number, direction, memory)
-  {
-  }
-
-  /// 硬件完成在途请求；只在 ServiceHardware 里调用 / The hardware completes the
-  /// in-flight request; call from ServiceHardware only
-  void Done(bool in_isr, size_t actual, ErrorCode result = ErrorCode::OK)
-  {
-    TEST_ASSERT(inflight);
-    inflight = false;
-    OnHardwareComplete(in_isr, actual, result);
-  }
-
-  /// 主机发来 OUT 数据 / The host sends OUT data
-  void HostSends(bool in_isr, const Bytes& bytes)
-  {
-    TEST_ASSERT(inflight && bytes.size() <= starts.back().length);
-    if (!bytes.empty())
-    {
-      std::memcpy(starts.back().data, bytes.data(), bytes.size());
-    }
-    Done(in_isr, bytes.size());
-  }
-
-  /// 后端报告挂起的停止超时，硬件仍卡住；只在 ServiceHardware 里调用 / The backend
-  /// reports the pending stop as timed out, the hardware still stuck; call from
-  /// ServiceHardware only
-  void TimedOut(bool in_isr) { OnHardwareComplete(in_isr, 0U, ErrorCode::TIMEOUT); }
-
-  size_t LastLength() const { return starts.empty() ? SIZE_MAX : starts.back().length; }
-
-  std::vector<Start> starts;
-  bool inflight = false;
-  size_t configures = 0;
-  size_t closes = 0;
-  size_t stops = 0;
-  size_t stalls = 0;
-  size_t clears = 0;
-  /// StopHardware 依次返回；空时 ABORTED / Returned by StopHardware in turn; ABORTED
-  /// when empty
-  std::deque<StopOutcome> stop_outcomes;
-  /// 控制器复位前停止都挂起 / Stops stay pending until a controller reset
-  bool stuck = false;
-  /// 硬件不直接读写槽 / The hardware never accesses the slot itself
-  bool indirect = false;
-  /// 控制器锁存了一个尚未报告的 SETUP / The controller latched a SETUP not yet
-  /// reported
-  bool setup_latched = false;
-  /// 撤回要等线上一包：装入当作挂起的停止 / The retract waits for a packet on the
-  /// wire: the load counts as a pending stop
-  bool retract_on_wire = false;
-  bool retracting = false;  ///< 挂起的撤回 / A retract is pending
-  size_t retracts = 0;      ///< 撤回的装入 / Loads retracted
-  bool reset = false;       ///< 控制器已复位 / The controller has been reset
-
- protected:
-  void ConfigureHardware(const Config&) override
-  {
-    NoCount quiet;
-    ++configures;
-  }
-
-  void CloseHardware(bool) override
-  {
-    NoCount quiet;
-    ++closes;
-  }
-
-  ErrorCode StartHardware(const HwRequest& request, bool) override
-  {
-    NoCount quiet;
-    TEST_ASSERT(!inflight);
-    if (GetConfig().type == Type::CONTROL && setup_latched)
-    {
-      // 先装入、再复读：有未报告的 SETUP 就撤回，这次装入不上线 / Load, then re-read:
-      // with an unreported SETUP the load is retracted and never goes on the wire
-      ++retracts;
-      if (retract_on_wire)
-      {
-        retracting = true;
-        inflight = true;
-        return ErrorCode::OK;
-      }
-      return ErrorCode::FAILED;
-    }
-    Bytes bytes;
-    if (GetConfig().direction == Direction::IN && request.length != 0U)
-    {
-      bytes.assign(request.data, request.data + request.length);
-    }
-    starts.push_back({request.length, request.data, std::move(bytes)});
-    inflight = true;
-    return ErrorCode::OK;
-  }
-
-  StopOutcome StopHardware(bool) override
-  {
-    NoCount quiet;
-    ++stops;
-    StopOutcome outcome{ErrorCode::ABORTED, 0U};
-    if (reset)
-    {
-      inflight = false;
-      return outcome;
-    }
-    if (stuck)
-    {
-      return {ErrorCode::PENDING, 0U};
-    }
-    if (!stop_outcomes.empty())
-    {
-      outcome = stop_outcomes.front();
-      stop_outcomes.pop_front();
-    }
-    if (outcome.result != ErrorCode::PENDING)
-    {
-      inflight = false;
-    }
-    return outcome;
-  }
-
-  HwLimits HardwareLimits(Direction, Type) const override
-  {
-    HwLimits limits;
-    limits.direct_memory = !indirect;
-    return limits;
-  }
-
-  ErrorCode StallHardware(bool) override
-  {
-    NoCount quiet;
-    ++stalls;
-    return ErrorCode::OK;
-  }
-
-  ErrorCode ClearStallHardware(bool) override
-  {
-    NoCount quiet;
-    ++clears;
-    return ErrorCode::OK;
-  }
-};
+using NoCount = ScopedNoAllocCount;
 
 /// 全部假端点和端点池 / All fake endpoints and the pool
-struct Hw
+struct Hw : FakeHw
 {
   Hw()
   {
-    pool.SetEndpoint0(&in0, &out0);
-    TEST_ASSERT(pool.Put(&ep1_in) == ErrorCode::OK);
-    TEST_ASSERT(pool.Put(&ep2_out) == ErrorCode::OK);
-    TEST_ASSERT(pool.Put(&ep3_in) == ErrorCode::OK);
-    TEST_ASSERT(pool.Put(&ep4_out) == ErrorCode::OK);
+    Add(ep1_in);
+    Add(ep2_out);
+    Add(ep3_in);
+    Add(ep4_out);
   }
 
-  Memory mem[6];
-  FakeEp in0{EPNumber::EP0, Direction::IN, {mem[0].bytes, 64U}};
-  FakeEp out0{EPNumber::EP0, Direction::OUT, {mem[1].bytes, 64U}};
-  FakeEp ep1_in{EPNumber::EP1, Direction::IN, {mem[2].bytes, 1024U}};
-  FakeEp ep2_out{EPNumber::EP2, Direction::OUT, {mem[3].bytes, 1024U}};
-  FakeEp ep3_in{EPNumber::EP3, Direction::IN, {mem[4].bytes, 1024U}};
-  FakeEp ep4_out{EPNumber::EP4, Direction::OUT, {mem[5].bytes, 1024U}};
-  EndpointPool pool;
-
-  std::vector<FakeEp*> All()
-  {
-    return {&in0, &out0, &ep1_in, &ep2_out, &ep3_in, &ep4_out};
-  }
+  AlignedMemory<1024U> mem[4];
+  FakeEp ep1_in{EPNumber::EP1, Direction::IN, {mem[0].bytes, 1024U}};
+  FakeEp ep2_out{EPNumber::EP2, Direction::OUT, {mem[1].bytes, 1024U}};
+  FakeEp ep3_in{EPNumber::EP3, Direction::IN, {mem[2].bytes, 1024U}};
+  FakeEp ep4_out{EPNumber::EP4, Direction::OUT, {mem[3].bytes, 1024U}};
 };
 
 /// 共享的事件记录，检查先后 / Shared event log for ordering checks
@@ -621,265 +409,22 @@ class TestClass final : public DeviceClass
 
 using Configs = std::initializer_list<const std::initializer_list<DeviceClass*>>;
 
-/// 假后端设备 / Fake backend device
-class FakeUsb final : public DeviceService, public DeviceCore
+/// 带操作日志的假后端设备 / Fake backend device with shared event logging
+class DevCoreUsb final : public FakeUsbTest::FakeUsb
 {
  public:
-  FakeUsb(Hw& hw, const Configs& configs, Speed speed = Speed::FULL,
-          DeviceDescriptor::PacketSize0 ep0 = DeviceDescriptor::PacketSize0::SIZE_64,
-          USBSpec spec = USBSpec::USB_2_0)
-      : DeviceCore(*this, hw.pool, spec, speed, ep0, 0x1209U, 0x0001U, 0x0100U,
-                   {&LANGUAGE}, configs),
-        hw_(hw)
+  DevCoreUsb(Hw& hw, const Configs& configs, Speed speed = Speed::FULL,
+             DeviceDescriptor::PacketSize0 ep0 = DeviceDescriptor::PacketSize0::SIZE_64,
+             USBSpec spec = USBSpec::USB_2_0)
+      : FakeUsbTest::FakeUsb(hw, configs, speed, ep0, spec)
   {
-    for (FakeEp* ep : hw.All())
-    {
-      TEST_ASSERT(Register(*ep) == ErrorCode::OK);
-    }
+    on_log = [](const char* entry) { Log(entry); };
   }
-
-  /// 排一个硬件事件并进入控制器中断 / Queue one hardware event and enter the
-  /// controller interrupt
-  template <typename Event>
-  void Irq(Event&& event)
-  {
-    {
-      NoCount quiet;
-      std::lock_guard<std::mutex> lock(mutex_);
-      events_.emplace_back(std::forward<Event>(event));
-    }
-    OnControllerInterrupt();
-  }
-
-  void Setup(SetupPacket setup)
-  {
-    Irq([this, setup](bool isr) { HwSetup(isr, setup); });
-  }
-  void Reset(Speed speed = Speed::FULL)
-  {
-    Irq([this, speed](bool isr) { OnBusReset(isr, speed); });
-  }
-  void Suspend()
-  {
-    Irq([this](bool isr) { OnSuspend(isr); });
-  }
-  void Resume()
-  {
-    Irq([this](bool isr) { OnResume(isr); });
-  }
-  void Disconnect()
-  {
-    Irq([this](bool isr) { OnDisconnect(isr); });
-  }
-  void Sof(uint16_t frame)
-  {
-    Irq([this, frame](bool isr) { OnStartOfFrame(isr, frame); });
-  }
-
-  /// 在 ServiceHardware 里报告 SETUP / Report a SETUP from ServiceHardware
-  void HwSetup(bool in_isr, const SetupPacket& setup)
-  {
-    Log("setup");
-    OnSetup(in_isr, setup);
-  }
-
-  bool Inited() const { return IsInited(); }
-
-  /**
-   * @brief 硬件在本轮读过状态之后锁存一个事件 / The hardware latches an event after
-   *        this pass read its status
-   * @note 中断线由 owner 屏蔽着，中断在当前 owner 返回之后才进入（Fire），下一次
-   *       ServiceHardware 才读到它。
-   *       The owner keeps the line masked, so the interrupt is taken only after the
-   *       current owner returns (Fire), and the next ServiceHardware reads it.
-   */
-  void Latch(std::function<void(bool)> event)
-  {
-    NoCount quiet;
-    std::lock_guard<std::mutex> lock(mutex_);
-    next_.push_back(std::move(event));
-  }
-
-  /// 进入控制器中断，不带新事件 / Enter the controller interrupt without a new event
-  void Fire() { OnControllerInterrupt(); }
-
-  void StartController(bool) override {}
-  void StopController(bool) override {}
-
-  std::vector<std::pair<uint8_t, AddressStage>> addresses;
-  size_t ready = 0;
-  size_t resets = 0;
-  std::atomic<bool> masked{false};
-
- protected:
-  void ServiceHardware(bool in_isr) override
-  {
-    {
-      NoCount quiet;
-      std::lock_guard<std::mutex> lock(mutex_);
-      while (!next_.empty())
-      {
-        events_.push_back(std::move(next_.front()));
-        next_.pop_front();
-      }
-    }
-    while (true)
-    {
-      std::function<void(bool)> event;
-      {
-        NoCount quiet;
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (events_.empty())
-        {
-          return;
-        }
-        event = std::move(events_.front());
-        events_.pop_front();
-      }
-      event(in_isr);
-      NoCount quiet;
-      event = nullptr;
-    }
-  }
-
-  void MaskInterrupt() override { masked.store(true, std::memory_order_release); }
-  void UnmaskInterrupt() override { masked.store(false, std::memory_order_release); }
-
-  void SetAddress(uint8_t address, AddressStage stage) override
-  {
-    NoCount quiet;
-    addresses.emplace_back(address, stage);
-    Log(stage == AddressStage::BEFORE_STATUS ? "address-before" : "address-after");
-  }
-
-  void OnControlReady() override
-  {
-    ++ready;
-    Log("ready");
-  }
-
-  void ResetController(bool) override
-  {
-    NoCount quiet;
-    ++resets;
-    for (FakeEp* ep : hw_.All())
-    {
-      ep->reset = true;
-    }
-    Log("controller-reset");
-  }
-
- private:
-  Hw& hw_;
-  std::mutex mutex_;
-  std::deque<std::function<void(bool)>> events_;
-  std::deque<std::function<void(bool)>> next_;  ///< 下一轮才读到 / Read next pass
 };
 
+using FakeUsb = DevCoreUsb;
+
 // ---- 主机一侧 / The host side ----
-
-SetupPacket Make(uint8_t type, uint8_t request, uint16_t value, uint16_t index,
-                 uint16_t length)
-{
-  return SetupPacket{type, request, value, index, length};
-}
-
-/// EP0 两个方向都 STALL 了 / Both EP0 directions are halted
-bool Stalled(Hw& hw) { return hw.in0.IsStalled() && hw.out0.IsStalled(); }
-
-/// 完成在途的 EP0 IN 包 / Complete the in-flight EP0 IN packet
-void InDone(FakeUsb& dev, Hw& hw)
-{
-  const size_t length = hw.in0.LastLength();
-  dev.Irq([&hw, length](bool isr) { hw.in0.Done(isr, length); });
-}
-
-/// 主机发状态 OUT / The host sends the status OUT
-void StatusOut(FakeUsb& dev, Hw& hw)
-{
-  dev.Irq([&hw](bool isr) { hw.out0.HostSends(isr, {}); });
-}
-
-/// 收完 IN 数据阶段（含结尾零长度包），返回收到的字节 / Take the whole IN data stage
-/// (closing zero-length packet included) and return the bytes
-Bytes TakeIn(FakeUsb& dev, Hw& hw, std::vector<size_t>* lengths = nullptr)
-{
-  Bytes got;
-  while (hw.in0.inflight)
-  {
-    const FakeEp::Start& start = hw.in0.starts.back();
-    got.insert(got.end(), start.bytes.begin(), start.bytes.end());
-    if (lengths != nullptr)
-    {
-      lengths->push_back(start.length);
-    }
-    InDone(dev, hw);
-  }
-  return got;
-}
-
-/// 一个完整的 IN 控制传输 / One complete IN control transfer
-Bytes ControlIn(FakeUsb& dev, Hw& hw, SetupPacket setup,
-                std::vector<size_t>* lengths = nullptr)
-{
-  const size_t ready = dev.ready;
-  dev.Setup(setup);
-  TEST_ASSERT(!Stalled(hw));
-  TEST_ASSERT(hw.out0.inflight && hw.out0.LastLength() == 0U);
-  Bytes got = TakeIn(dev, hw, lengths);
-  TEST_ASSERT(dev.ready == ready);
-  StatusOut(dev, hw);
-  TEST_ASSERT(dev.ready == ready + 1U);
-  return got;
-}
-
-/// 一个完整的 OUT 控制传输 / One complete OUT control transfer
-void ControlOut(FakeUsb& dev, Hw& hw, SetupPacket setup, const Bytes& data)
-{
-  const size_t ready = dev.ready;
-  dev.Setup(setup);
-  TEST_ASSERT(!Stalled(hw));
-  const size_t packet = hw.out0.MaxPacketSize();
-  for (size_t offset = 0; offset < data.size(); offset += packet)
-  {
-    TEST_ASSERT(hw.out0.inflight && hw.out0.LastLength() == packet);
-    const size_t n = (data.size() - offset < packet) ? data.size() - offset : packet;
-    const Bytes chunk(data.begin() + static_cast<std::ptrdiff_t>(offset),
-                      data.begin() + static_cast<std::ptrdiff_t>(offset + n));
-    dev.Irq([&hw, chunk](bool isr) { hw.out0.HostSends(isr, chunk); });
-  }
-  TEST_ASSERT(hw.in0.inflight && hw.in0.LastLength() == 0U);
-  InDone(dev, hw);
-  TEST_ASSERT(dev.ready == ready + 1U);
-}
-
-/// 一个完整的无数据控制传输 / One complete no-data control transfer
-void ControlNone(FakeUsb& dev, Hw& hw, SetupPacket setup)
-{
-  const size_t ready = dev.ready;
-  dev.Setup(setup);
-  TEST_ASSERT(!Stalled(hw));
-  TEST_ASSERT(hw.in0.inflight && hw.in0.LastLength() == 0U);
-  InDone(dev, hw);
-  TEST_ASSERT(dev.ready == ready + 1U);
-}
-
-/// 请求被拒绝：EP0 两个方向 STALL，不调用 OnControlReady / The request is refused:
-/// both EP0 directions stall and OnControlReady is not called
-void Refused(FakeUsb& dev, Hw& hw, SetupPacket setup)
-{
-  const size_t ready = dev.ready;
-  dev.Setup(setup);
-  TEST_ASSERT(Stalled(hw));
-  TEST_ASSERT(dev.ready == ready);
-}
-
-Bytes GetDescriptor(FakeUsb& dev, Hw& hw, uint8_t type, uint8_t index, uint16_t length,
-                    uint16_t lang = 0U)
-{
-  return ControlIn(
-      dev, hw, Make(0x80U, 6U, static_cast<uint16_t>(type << 8U | index), lang, length));
-}
 
 /// 复位、编址、设为配置 1 / Reset, address and set configuration 1
 void Enumerate(FakeUsb& dev, Hw& hw, Speed speed = Speed::FULL)
@@ -891,12 +436,7 @@ void Enumerate(FakeUsb& dev, Hw& hw, Speed speed = Speed::FULL)
   ControlNone(dev, hw, Make(0x00U, 9U, 1U, 0U, 0U));
 }
 
-uint8_t Configuration(FakeUsb& dev, Hw& hw)
-{
-  const Bytes got = ControlIn(dev, hw, Make(0x80U, 8U, 0U, 0U, 1U));
-  TEST_ASSERT(got.size() == 1U);
-  return got[0];
-}
+uint8_t Configuration(FakeUsb& dev, Hw& hw) { return GetConfiguration(dev, hw); }
 
 size_t Count(const std::string& entry)
 {
@@ -991,6 +531,23 @@ void TestEnumeration()
   ControlNone(dev, hw, Make(0x00U, 9U, 0U, 0U, 0U));
   TEST_ASSERT(cls.unbinds == 2U && Configuration(dev, hw) == 0U);
   TEST_ASSERT(hw.ep1_in.GetState() == Endpoint::State::DISABLED);
+
+  // 复合配置中既有有名称类也有无名称类，验证接口字符串索引只分配给前者。
+  // Composite config with both named and unnamed classes assigns string index only to the
+  // named one.
+  {
+    Hw comp_hw;
+    TestClass named(EPNumber::EP1, EPNumber::EP2, Type::BULK, "Named");
+    TestClass unnamed(EPNumber::EP3, EPNumber::EP4, Type::BULK, nullptr);
+    FakeUsb comp_dev(comp_hw, {{&named, &unnamed}});
+    comp_dev.Init(false);
+    comp_dev.Reset();
+    const Bytes comp_cfg = GetDescriptor(comp_dev, comp_hw, 2U, 0U, 255U);
+    TEST_ASSERT(comp_cfg.size() == 55U);
+    TEST_ASSERT(comp_cfg[17] == 4U && comp_cfg[40] == 0U);
+    const Bytes comp_itf = GetDescriptor(comp_dev, comp_hw, 3U, 4U, 255U, 0x0409U);
+    TEST_ASSERT(comp_itf.size() == 12U && comp_itf[2] == 'N');
+  }
 }
 
 /// 每个标准请求 / Every standard request
@@ -1799,6 +1356,7 @@ void TestNoAllocation()
   TestClass bad(EPNumber::EP5, EPNumber::EP4);  // EP5 没有登记 / EP5 is not registered
   FakeUsb dev(hw, {{&good}, {&bad}});
   const size_t before = g_allocations.load();
+  FakeUsbTest::g_alloc_counting_flag = &g_counting;
   g_counting = true;
   dev.Init(false);
   dev.Reset();
@@ -1820,6 +1378,7 @@ void TestNoAllocation()
   dev.Init(false);
   good.RequestService(false);
   g_counting = false;
+  FakeUsbTest::g_alloc_counting_flag = nullptr;
   TEST_ASSERT(g_allocations.load() == before);
   TEST_ASSERT(dev.Inited() && good.binds == 1U && bad.binds == 0U && good.unbinds == 1U);
 }
@@ -1890,7 +1449,7 @@ void TestSetupLatchedBeforeStart(bool wire)
 void TestEp0IndirectNewReply()
 {
   Hw hw;
-  hw.in0.indirect = true;
+  hw.in0.limits.direct_memory = false;
   TestClass cls;
   FakeUsb dev(hw, {{&cls}});
   dev.Init(false);
