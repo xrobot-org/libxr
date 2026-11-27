@@ -186,14 +186,16 @@ LIBXR_ALWAYS_INLINE void FastCopyImpl(void* dst, const void* src, size_t size)
 {
   static_assert(WORD_BYTES == 4U || WORD_BYTES == 8U);
 
+  // 所有策略统一保留零长度与自拷贝早退契约，避免 std::memcpy UB 或只读区原地写回。
+  // Enforce zero-length and self-copy early return across all policies to avoid
+  // std::memcpy UB and prevent read-modify-write faults on read-only memory.
+  if ((size == 0U) || (dst == src))
+  {
+    return;
+  }
+
   if constexpr (POLICY == FastCopyPolicy::STD_LIBC)
   {
-    // 保留零长度与自拷贝契约，避免直接转调 std::memcpy 触发未定义行为。
-    // Preserve zero-length and self-copy contracts before calling std::memcpy.
-    if ((size == 0U) || (dst == src))
-    {
-      return;
-    }
     std::memcpy(dst, src, size);
   }
   else if constexpr (POLICY == FastCopyPolicy::UNALIGNED_WORD)
@@ -276,10 +278,13 @@ LIBXR_ALWAYS_INLINE void FastCopyImpl(void* dst, const void* src, size_t size)
         CopyAlignedWords<uint32_t>(d, s, size);
       }
     }
-    // 对齐偏移不同：64 位目标保持原有宽拷贝以保留编译器自动向量化，
-    // 32 位小端目标按策略选择仅奇相位或全相位 32 位移位拼字。
-    // Misaligned offsets: keep the 64-bit path for auto-vectorization, and select
-    // odd-only or all-phase 32-bit shift-and-combine on 32-bit little-endian.
+    // 对齐偏移不同：64 位目标在 4 字节对齐差保留 32 位拷，其余小端错位场景按策略
+    // 选择 16 位对齐拷或 32 位移位拼字，避免奇相位差退化为逐字节循环；32 位小端同样
+    // 按策略选择仅奇相位或全相位 32 位移位拼字。
+    // Misaligned offsets: on 64-bit targets keep 32-bit word copy for 4-byte phase
+    // differences and apply 16-bit aligned or 32-bit shift-and-combine on little-endian
+    // targets so odd phase diffs avoid byte loops; 32-bit little-endian uses the same
+    // policy-selected shifted path.
     else
     {
       if constexpr (WORD_BYTES == 8U)
@@ -289,7 +294,7 @@ LIBXR_ALWAYS_INLINE void FastCopyImpl(void* dst, const void* src, size_t size)
 
         // 地址差为 4 的倍数时使用 32 位拷贝。
         // If address difference is a multiple of 4, use 4-byte copying.
-        if ((addr_diff & 3U) == 0U && size > 0U)
+        if ((addr_diff & 3U) == 0U)
         {
           while ((reinterpret_cast<uintptr_t>(d) & 3U) && (size > 0U))
           {
@@ -298,11 +303,22 @@ LIBXR_ALWAYS_INLINE void FastCopyImpl(void* dst, const void* src, size_t size)
           }
           CopyAlignedWords<uint32_t>(d, s, size);
         }
+        else if constexpr (POLICY == FastCopyPolicy::SHIFTED_ALL &&
+                           std::endian::native == std::endian::little)
+        {
+          CopyMisalignedShifted32<POLICY>(d, s, reinterpret_cast<uintptr_t>(d) & 3U,
+                                          size);
+        }
         // 地址差为偶数时使用 16 位拷贝。
         // If address difference is even, use 2-byte copying.
-        else if ((addr_diff & 1U) == 0U && size > 0U)
+        else if ((addr_diff & 1U) == 0U)
         {
           CopyAligned16(d, s, size);
+        }
+        else if constexpr (std::endian::native == std::endian::little)
+        {
+          CopyMisalignedShifted32<FastCopyPolicy::SHIFTED_ODD>(
+              d, s, reinterpret_cast<uintptr_t>(d) & 3U, size);
         }
       }
       else if constexpr (WORD_BYTES == 4U && std::endian::native == std::endian::little)

@@ -83,8 +83,9 @@ static_assert(ACTIVE_FASTCMP_POLICY_RAW == LIBXR_MEM_POLICY_BUILTIN ||
 [[maybe_unused]] inline constexpr BasicPolicy ACTIVE_FASTCMP_POLICY =
     static_cast<BasicPolicy>(ACTIVE_FASTCMP_POLICY_RAW);
 
-#if defined(__ARM_FEATURE_UNALIGNED) || defined(__x86_64__) || defined(__i386__) || \
-    defined(_M_X64) || defined(_M_IX86) || defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__ARM_FEATURE_UNALIGNED) || defined(__x86_64__) || defined(__i386__) ||     \
+    defined(_M_X64) || defined(_M_IX86) || defined(__aarch64__) || defined(_M_ARM64) || \
+    defined(__riscv_misaligned_fast)
 [[maybe_unused]] inline constexpr bool HAS_FAST_UNALIGNED_WORD = true;
 #else
 [[maybe_unused]] inline constexpr bool HAS_FAST_UNALIGNED_WORD = false;

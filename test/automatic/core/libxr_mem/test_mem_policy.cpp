@@ -5,10 +5,12 @@
  */
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 
+#include "libxr_def.hpp"
 #include "libxr_mem.hpp"
 #include "test_assert.hpp"
 
@@ -85,6 +87,27 @@ void TestZeroLengthAndSelfArgs()
 
       TEST_ASSERT(LibXR::Memory::FastCmp(buf.data() + GUARD_BYTES + off,
                                          buf.data() + GUARD_BYTES + off, len) == 0);
+    }
+  }
+
+  static constexpr std::array<uint8_t, 128U> RO_BUF = []()
+  {
+    std::array<uint8_t, 128U> data{};
+    for (size_t i = 0U; i < data.size(); ++i)
+    {
+      data[i] = static_cast<uint8_t>((i * 29U + 7U) & 0xFFU);
+    }
+    return data;
+  }();
+
+  for (size_t off = 0U; off < MAX_ALIGN_OFF; ++off)
+  {
+    for (size_t len = 0U; len <= 65U; ++len)
+    {
+      auto* ro_ptr = const_cast<uint8_t*>(RO_BUF.data() + GUARD_BYTES + off);
+      LibXR::Memory::FastCopy(ro_ptr, ro_ptr, len);
+      LibXR::Memory::FastMove(ro_ptr, ro_ptr, len);
+      TEST_ASSERT(LibXR::Memory::FastCmp(ro_ptr, ro_ptr, len) == 0);
     }
   }
 }
@@ -247,6 +270,97 @@ void TestFastCmpMatrix()
     }
   }
 }
+struct TypedBlock
+{
+  uint32_t tag;
+  float vals[4];
+  double ts;
+};
+
+LIBXR_NOINLINE float OverwriteFloatCopy(float* dst, const float* src)
+{
+  *dst = 123.0f;
+  LibXR::Memory::FastCopy(dst, src, sizeof(float));
+  return *dst;
+}
+
+LIBXR_NOINLINE double OverwriteDoubleCopy(double* dst, const double* src)
+{
+  *dst = 456.0;
+  LibXR::Memory::FastCopy(dst, src, sizeof(double));
+  return *dst;
+}
+
+LIBXR_NOINLINE uint32_t OverwriteStructCopy(TypedBlock* dst, const TypedBlock* src)
+{
+  dst->tag = 0xDEAD0001U;
+  dst->vals[0] = -99.0f;
+  dst->ts = -1.0;
+  LibXR::Memory::FastCopy(dst, src, sizeof(TypedBlock));
+  return dst->tag ^ std::bit_cast<uint32_t>(dst->vals[0]) ^
+         static_cast<uint32_t>(std::bit_cast<uint64_t>(dst->ts) >> 32U);
+}
+
+void TestTypedAliasing()
+{
+  float f_src = 3.5f;
+  float f_dst = 0.0f;
+  TEST_ASSERT(std::bit_cast<uint32_t>(OverwriteFloatCopy(&f_dst, &f_src)) ==
+              std::bit_cast<uint32_t>(f_src));
+  TEST_ASSERT(LibXR::Memory::FastCmp(&f_dst, &f_src, sizeof(float)) == 0);
+
+  double d_src = -27.125;
+  double d_dst = 0.0;
+  TEST_ASSERT(std::bit_cast<uint64_t>(OverwriteDoubleCopy(&d_dst, &d_src)) ==
+              std::bit_cast<uint64_t>(d_src));
+  TEST_ASSERT(LibXR::Memory::FastCmp(&d_dst, &d_src, sizeof(double)) == 0);
+
+  TypedBlock blk_src{0x12345678U, {1.25f, -2.5f, 3.75f, 4.5f}, 12.625};
+  TypedBlock blk_dst{};
+  const uint32_t expected_sig =
+      blk_src.tag ^ std::bit_cast<uint32_t>(blk_src.vals[0]) ^
+      static_cast<uint32_t>(std::bit_cast<uint64_t>(blk_src.ts) >> 32U);
+  TEST_ASSERT(OverwriteStructCopy(&blk_dst, &blk_src) == expected_sig);
+  TEST_ASSERT(LibXR::Memory::FastCmp(&blk_dst, &blk_src, sizeof(TypedBlock)) == 0);
+
+  alignas(16) std::array<float, 16U> f_arr_src{};
+  alignas(16) std::array<float, 16U> f_arr_dst{};
+  for (size_t i = 0U; i < f_arr_src.size(); ++i)
+  {
+    f_arr_src[i] = static_cast<float>(i) * 1.25f - 4.0f;
+    f_arr_dst[i] = 999.0f;
+  }
+  LibXR::Memory::FastCopy(f_arr_dst.data(), f_arr_src.data(),
+                          f_arr_src.size() * sizeof(float));
+  for (size_t i = 0U; i < f_arr_dst.size(); ++i)
+  {
+    TEST_ASSERT(std::bit_cast<uint32_t>(f_arr_dst[i]) ==
+                std::bit_cast<uint32_t>(f_arr_src[i]));
+  }
+
+  alignas(16) std::array<double, 8U> d_arr_src{};
+  alignas(16) std::array<double, 8U> d_arr_dst{};
+  for (size_t i = 0U; i < d_arr_src.size(); ++i)
+  {
+    d_arr_src[i] = static_cast<double>(i) * 0.375 + 1.0;
+    d_arr_dst[i] = -888.0;
+  }
+  LibXR::Memory::FastMove(d_arr_dst.data(), d_arr_src.data(),
+                          d_arr_src.size() * sizeof(double));
+  for (size_t i = 0U; i < d_arr_dst.size(); ++i)
+  {
+    TEST_ASSERT(std::bit_cast<uint64_t>(d_arr_dst[i]) ==
+                std::bit_cast<uint64_t>(d_arr_src[i]));
+  }
+  TEST_ASSERT(LibXR::Memory::FastCmp(d_arr_dst.data(), d_arr_src.data(),
+                                     d_arr_src.size() * sizeof(double)) == 0);
+
+  LibXR::Memory::FastSet(f_arr_dst.data(), 0U, f_arr_dst.size() * sizeof(float));
+  for (const float v : f_arr_dst)
+  {
+    TEST_ASSERT(std::bit_cast<uint32_t>(v) == 0U);
+  }
+}
 }  // namespace
 
 int main()
@@ -256,5 +370,6 @@ int main()
   TestOverlapFastMove();
   TestFastSetMatrix();
   TestFastCmpMatrix();
+  TestTypedAliasing();
   return 0;
 }

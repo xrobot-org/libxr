@@ -37,6 +37,38 @@ foreach(debug RANGE 0 1)
   endforeach()
 endforeach()
 
+include(CheckCXXSourceCompiles)
+
+string(
+  CONCAT _xr_unaligned_probe_src
+         "#if defined(__ARM_FEATURE_UNALIGNED) || defined(__x86_64__) || "
+         "defined(__i386__) || defined(_M_X64) || defined(_M_IX86) || "
+         "defined(__aarch64__) || defined(_M_ARM64) || "
+         "defined(__riscv_misaligned_fast)\n"
+         "int main() { return 0; }\n"
+         "#else\n"
+         "#error no_fast_unaligned_word\n"
+         "#endif\n"
+)
+check_cxx_source_compiles("${_xr_unaligned_probe_src}" _xr_has_fast_unaligned_word)
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
+   CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
+   CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+  set_property(
+    SOURCE ../../src/core/libxr_mem_o3.cpp ../../src/core/libxr_mem_cmp.cpp
+    APPEND
+    PROPERTY COMPILE_OPTIONS "-fno-strict-aliasing"
+  )
+
+  set(_xr_saved_required_flags "${CMAKE_REQUIRED_FLAGS}")
+  set(CMAKE_REQUIRED_FLAGS "-O3 -flto")
+  check_cxx_source_compiles("int main() { return 0; }" _xr_mem_supports_lto)
+  set(CMAKE_REQUIRED_FLAGS "${_xr_saved_required_flags}")
+else()
+  set(_xr_mem_supports_lto FALSE)
+endif()
+
 set(_xr_mem_policy_matrix
     "shifted_odd_32|LIBXR_FASTCOPY_POLICY_SHIFTED_ODD|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|4U"
     "shifted_all_32|LIBXR_FASTCOPY_POLICY_SHIFTED_ALL|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|4U"
@@ -44,8 +76,14 @@ set(_xr_mem_policy_matrix
     "shifted_all_64|LIBXR_FASTCOPY_POLICY_SHIFTED_ALL|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|8U"
     "std_libc|LIBXR_FASTCOPY_POLICY_STD_LIBC|LIBXR_MEM_POLICY_STD_LIBC|LIBXR_MEM_POLICY_STD_LIBC|LIBXR_MEM_POLICY_STD_LIBC|DEFAULT"
     "mixed_esp_xtensa|LIBXR_FASTCOPY_POLICY_STD_LIBC|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_STD_LIBC|LIBXR_MEM_POLICY_BUILTIN|4U"
-    "unaligned_word|LIBXR_FASTCOPY_POLICY_UNALIGNED_WORD|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|DEFAULT"
 )
+if(_xr_has_fast_unaligned_word)
+  list(
+    APPEND
+      _xr_mem_policy_matrix
+      "unaligned_word|LIBXR_FASTCOPY_POLICY_UNALIGNED_WORD|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|DEFAULT"
+  )
+endif()
 foreach(_xr_mem_case IN LISTS _xr_mem_policy_matrix)
   string(REPLACE "|" ";" _xr_mem_parts "${_xr_mem_case}")
   list(GET _xr_mem_parts 0 _xr_mem_name)
@@ -83,6 +121,41 @@ foreach(_xr_mem_case IN LISTS _xr_mem_policy_matrix)
   add_test(NAME ${_xr_mem_target} COMMAND ${_xr_mem_target})
   set_tests_properties(${_xr_mem_target} PROPERTIES TIMEOUT 10)
 endforeach()
+
+if(_xr_mem_supports_lto)
+  foreach(_xr_mem_lto_bits IN ITEMS 32 64)
+    if(_xr_mem_lto_bits EQUAL 32)
+      set(_xr_mem_lto_word_size "4U")
+    else()
+      set(_xr_mem_lto_word_size "8U")
+    endif()
+    set(_xr_mem_lto_target "test_mem_policy_lto_${_xr_mem_lto_bits}")
+    add_executable(
+      ${_xr_mem_lto_target}
+      core/libxr_mem/test_mem_policy.cpp
+      ../../src/core/libxr_mem_o3.cpp
+      ../../src/core/libxr_mem_cmp.cpp
+    )
+    target_include_directories(
+      ${_xr_mem_lto_target} PRIVATE .. ../../src/core
+    )
+    target_compile_features(${_xr_mem_lto_target} PRIVATE cxx_std_20)
+    target_compile_definitions(
+      ${_xr_mem_lto_target}
+      PRIVATE LIBXR_FASTCOPY_POLICY=LIBXR_FASTCOPY_POLICY_SHIFTED_ODD
+              LIBXR_FASTMOVE_POLICY=LIBXR_MEM_POLICY_BUILTIN
+              LIBXR_FASTSET_POLICY=LIBXR_MEM_POLICY_BUILTIN
+              LIBXR_FASTCMP_POLICY=LIBXR_MEM_POLICY_BUILTIN
+              LIBXR_MEM_WORD_SIZE=${_xr_mem_lto_word_size}
+    )
+    target_compile_options(
+      ${_xr_mem_lto_target} PRIVATE -O3 -flto -Wall -Wextra -Werror
+    )
+    target_link_options(${_xr_mem_lto_target} PRIVATE -flto)
+    add_test(NAME ${_xr_mem_lto_target} COMMAND ${_xr_mem_lto_target})
+    set_tests_properties(${_xr_mem_lto_target} PROPERTIES TIMEOUT 10)
+  endforeach()
+endif()
 
 # 用实际裸机后端验证协作式 ASync；时钟由测试控制，不链接 Linux xr 库。
 # Test cooperative ASync with the actual bare-metal backend and a controlled clock.
