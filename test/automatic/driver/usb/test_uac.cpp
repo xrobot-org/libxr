@@ -675,19 +675,26 @@ void TestUnbindInFlight()
       SetConfiguration(dev, hw, 1U);
     }
 
-    // 重新绑定后在 alt 0；alt 1 先发出队列里剩下的 32 字节，两个槽都可用。
-    // After the new bind at alt 0; alt 1 first sends the remaining 32 bytes, both slots
-    // are usable.
+    // 重新绑定后在 alt 0；切到 alt 1 开始推流时丢弃此前留下的 32 字节旧 PCM（首包补零），
+    // 开始后写入的新 PCM 通过两个可用槽正常发出。
+    // After the new bind at alt 0; selecting alt 1 drops the 32 stale PCM bytes left
+    // before streaming (first packet is zeros), and fresh PCM written afterwards uses
+    // both usable slots.
     TEST_ASSERT(GetInterface(dev, hw, 1U) == 0U);
     dev.Sof(3U);
     TEST_ASSERT(ep.starts.size() == 1U);
     ControlNone(dev, hw, SetInterface(1U, 1U));
-    TEST_ASSERT(ep.inflight && ep.starts.size() == 2U);
+    TEST_ASSERT(ep.inflight && ep.starts.size() == 2U && mic.QueueSize() == 0U);
+    InDone(dev, ep);
+    TEST_ASSERT(ep.transfers.back() == Zeros(32U) && !ep.inflight);
+    const Bytes fresh = Pattern(32U, 17U);
+    TEST_ASSERT(mic.WritePcm(fresh.data(), fresh.size()) == ErrorCode::OK);
     dev.Sof(4U);
     dev.Sof(5U);
+    dev.Sof(6U);
     TEST_ASSERT(mic.DroppedFrameCount() == 1U);
     InDone(dev, ep);
-    TEST_ASSERT(ep.transfers.back() == Bytes(pcm.begin() + 32, pcm.end()));
+    TEST_ASSERT(ep.transfers.back() == fresh);
     InDone(dev, ep);
     TEST_ASSERT(ep.transfers.back() == Zeros(32U) && !ep.inflight);
   }
@@ -953,12 +960,56 @@ void TestSlotCounts()
   }
 }
 
+/// 开始推流时丢弃此前积压的旧 PCM；失败恢复保留队列 / Starting the stream drops stale
+/// PCM written earlier; recovery after a failed iso transfer keeps queued PCM
+void TestStartDropsStalePcm()
+{
+  Hw hw;
+  Mic mic(EPNumber::EP1, 16000U);
+  FakeUsb dev(hw, {{&mic}});
+  Enumerate(dev, hw);
+  FakeEp& ep = hw.ep1_in;
+
+  const Bytes stale(200U, 0xAAU);
+  TEST_ASSERT(mic.WritePcm(stale.data(), stale.size()) == ErrorCode::OK);
+  TEST_ASSERT(mic.QueueSize() == 200U);
+
+  ControlNone(dev, hw, SetInterface(1U, 1U));
+  TEST_ASSERT(mic.QueueSize() == 0U);
+  InDone(dev, ep);
+  TEST_ASSERT(ep.transfers.back() == Zeros(32U));
+
+  const Bytes fresh = Pattern(32U, 1U);
+  TEST_ASSERT(mic.WritePcm(fresh.data(), fresh.size()) == ErrorCode::OK);
+  dev.Sof(1U);
+  InDone(dev, ep);
+  TEST_ASSERT(ep.transfers.back() == fresh);
+
+  dev.Sof(2U);
+  InEnds(dev, ep, ErrorCode::FAILED);
+  const Bytes kept(32U, 0x77U);
+  TEST_ASSERT(mic.WritePcm(kept.data(), kept.size()) == ErrorCode::OK);
+  dev.Sof(3U);
+  InDone(dev, ep);
+  TEST_ASSERT(ep.transfers.back() == kept);
+
+  const Bytes stale2(64U, 0xBBU);
+  TEST_ASSERT(mic.WritePcm(stale2.data(), stale2.size()) == ErrorCode::OK);
+  ControlNone(dev, hw, SetInterface(1U, 0U));
+  TEST_ASSERT(mic.QueueSize() == 64U);
+  ControlNone(dev, hw, SetInterface(1U, 1U));
+  TEST_ASSERT(mic.QueueSize() == 0U);
+  InDone(dev, ep);
+  TEST_ASSERT(ep.transfers.back() == Zeros(32U));
+}
+
 }  // namespace
 
 void test_usb_uac()
 {
   TestEnumeration();
   TestStream();
+  TestStartDropsStalePcm();
   TestRequests();
   TestPacing();
   TestBindFailure();

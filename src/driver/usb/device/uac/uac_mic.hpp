@@ -475,6 +475,12 @@ class UAC1MicrophoneQ : public DeviceClass
   /// interval: borrow a slot, take whole audio frames, zero-fill, submit
   void KickOneFrame(bool in_isr);
 
+  /**
+   * @brief 开始推流时丢弃开始前写入的旧 PCM（消费者一侧出队）/ Drop PCM queued before
+   *        streaming starts (dequeued on the consumer side)
+   */
+  void DropStalePcm();
+
   /// 等时 IN 的完成回调入口 / Completion entry of the isochronous IN endpoint
   static void OnInCompleteStatic(bool in_isr, UAC1MicrophoneQ* self,
                                  const Endpoint::Completion& completion);
@@ -1071,9 +1077,25 @@ ErrorCode UAC1MicrophoneQ<CHANNELS, BITS_PER_SAMPLE>::StartStreaming(bool in_isr
   acc_rem_ = 0U;
   micro_debt_ = 0U;
   last_frame_ = NO_FRAME;
+  DropStalePcm();
   streaming_ = true;
   KickOneFrame(in_isr);
   return ErrorCode::OK;
+}
+
+template <uint8_t CHANNELS, uint8_t BITS_PER_SAMPLE>
+void UAC1MicrophoneQ<CHANNELS, BITS_PER_SAMPLE>::DropStalePcm()
+{
+  uint8_t scratch[64];
+  for (size_t left = pcm_queue_.Size(); left != 0U;)
+  {
+    const size_t n = LibXR::min(left, sizeof(scratch));
+    if (pcm_queue_.PopBatch(scratch, n) != ErrorCode::OK)
+    {
+      break;
+    }
+    left -= n;
+  }
 }
 
 template <uint8_t CHANNELS, uint8_t BITS_PER_SAMPLE>
