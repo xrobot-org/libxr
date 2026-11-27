@@ -10,7 +10,7 @@ BUILD=$(realpath "${1:?build dir}")
 PYOCD=${2:-}
 PROBERS=${3:-}
 cd "$(dirname "$0")"
-. ../../usb/sim/usbip_lib.sh
+. ../usb/usbip_lib.sh
 usbsim_lock
 usbsim_modules
 WORK=$(mktemp -d)

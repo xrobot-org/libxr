@@ -4464,6 +4464,19 @@ void CheckAheadOrder()
               r.rec.At(2).actual == 30U);
   TEST_ASSERT(!r.ep.busy && r.ep.ahead == 0);
 
+  // 带 ZLP 标记但非整数包长提前提交，AheadAt 校验 owed=false / Ahead ZLP flag with
+  // non-packet-multiple length exercises AheadAt owed=false
+  r.ep.calls.clear();
+  r.rec.seen.clear();
+  r.Send(10U, true);
+  r.Send(20U, true);
+  TEST_ASSERT(r.ep.CallsAre({Hw::START, Hw::START}));
+  r.Complete(10U);
+  r.Complete(20U);
+  TEST_ASSERT(r.rec.seen.size() == 2U && r.rec.At(0).actual == 10U &&
+              r.rec.At(1).actual == 20U);
+  TEST_ASSERT(!r.ep.busy && r.ep.ahead == 0);
+
   // 控制端点即使有两个槽、后端报 2：仍然一次一个
   // A control endpoint, even with two slots and a backend limit of 2: still one at a
   // time
