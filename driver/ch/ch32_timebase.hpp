@@ -20,6 +20,15 @@ namespace LibXR
  *       Microseconds and milliseconds are derived from the hardware counter without
  *       a software interrupt count. Reads are allowed from tasks or interrupts after
  *       initialization; the BSP manages compare deadlines and tick interrupts.
+ * @note 裸机（system/none）时 DriverAsyncCondition 的节拍由板级工程给：启动时调用一次
+ *       DriverAsyncCondition::RegisterTickSource()，之后每毫秒调用一次
+ *       DriverAsyncCondition::OnTick()（间隔固定，elapsed_ms 不变）。本类不提供节拍。
+ *       FreeRTOS、ThreadX 下节拍来自系统层，板级工程不调用。
+ * @note Bare-metal (system/none), the board project provides DriverAsyncCondition's tick:
+ *       it calls DriverAsyncCondition::RegisterTickSource() once at start and then
+ *       DriverAsyncCondition::OnTick() every millisecond (a fixed interval, elapsed_ms
+ *       unchanged). This class provides no tick. Under FreeRTOS or ThreadX the tick
+ *       comes from the system layer and the board project does not call it.
  */
 class CH32Timebase : public Timebase
 {

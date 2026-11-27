@@ -11,12 +11,12 @@ namespace LibXR::CH32UsbCanShared
  */
 using IrqFn = void (*)();
 
-inline std::atomic_bool usb_inited{false};
-inline std::atomic_bool can1_inited{false};
-inline std::atomic_bool can2_inited{false};
+inline std::atomic<uint32_t> usb_inited{0U};
+inline std::atomic<uint32_t> can1_inited{0U};
+inline std::atomic<uint32_t> can2_inited{0U};
 // 端点对象在 Stop/Start 后仍保留 PMA 地址；分配后不能再增加 CAN 占用。
 // Endpoint objects retain their PMA addresses across Stop/Start.
-inline std::atomic_bool usb_pma_configured{false};
+inline std::atomic<uint32_t> usb_pma_configured{0U};
 
 static constexpr uint16_t USBD_PMA_BYTES_SOLO = 512;
 static constexpr uint16_t USBD_PMA_BYTES_WITHCAN = 384;
@@ -64,22 +64,35 @@ inline uint16_t usb_pma_limit_bytes()
   // CAN2 uses the upper filter banks, including when no CAN1 object was created.
   if constexpr (K_HAS_CAN2)
   {
-    if (can2_inited.load(std::memory_order_acquire))
+    if (can2_inited.load(std::memory_order_acquire) != 0U)
     {
       return USBD_PMA_BYTES_WITHCAN2;
     }
   }
-  return can1_inited.load(std::memory_order_acquire) ? USBD_PMA_BYTES_WITHCAN
-                                                     : USBD_PMA_BYTES_SOLO;
+  return can1_inited.load(std::memory_order_acquire) != 0U ? USBD_PMA_BYTES_WITHCAN
+                                                           : USBD_PMA_BYTES_SOLO;
 }
 
 inline std::atomic<IrqFn> usb_irq_cb{nullptr};
+// 只在低优先级向量里调用的 USB 入口：USBD 设备只从这一条线进入。
+// USB entry called from the low-priority vector only: the USBD device is entered
+// from this line alone.
+inline std::atomic<IrqFn> usb_lp_irq_cb{nullptr};
+// 只在高优先级向量里调用的 USB 入口：USBD 的等时完成只报在这条线上（CH32V203 实测，见
+// CH32USBDeviceFS）。两条线优先级相同，USBD 设备仍是一次只从一条线进入。
+// USB entry called from the high-priority vector only: USBD reports isochronous
+// completions on this line only (measured on a CH32V203, see CH32USBDeviceFS). Both
+// lines have the same priority, so the USBD device is still entered from one line at a
+// time.
+inline std::atomic<IrqFn> usb_hp_irq_cb{nullptr};
 inline std::atomic<IrqFn> can1_rx0_cb{nullptr};
 inline std::atomic<IrqFn> can1_tx_cb{nullptr};
 
 // 非内联注册使静态库链接必须带入共享 ISR 所在的目标文件。
 // Out-of-line registration retains the shared ISR object when linking libxr.a.
 void register_usb_irq(IrqFn fn);
+void register_usb_lp_irq(IrqFn fn);
+void register_usb_hp_irq(IrqFn fn);
 void register_can1_rx0(IrqFn fn);
 void register_can1_tx(IrqFn fn);
 

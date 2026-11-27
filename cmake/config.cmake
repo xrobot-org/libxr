@@ -1,3 +1,5 @@
+include(${CMAKE_CURRENT_LIST_DIR}/keep_out_of_lto.cmake)
+
 # Detect system
 # Preserve user-provided cache variables and normalize them only for internal use.
 set(_xr_system "")

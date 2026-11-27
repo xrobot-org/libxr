@@ -1,35 +1,97 @@
 #include "device_composition.hpp"
 
-#include <cstddef>
-#include <cstdint>
+#include "libxr_mem.hpp"
+#include "winusb_msos20.hpp"
+
+using namespace LibXR::USB;
+using LibXR::ConstRawData;
+using LibXR::ErrorCode;
+using LibXR::RawData;
+using LibXR::USB::BosCapability;
+using LibXR::USB::BosManager;
+using LibXR::USB::CFG_SELF_POWERED;
+using LibXR::USB::DescriptorStrings;
+using LibXR::USB::DeviceDescriptor;
+using LibXR::USB::Speed;
+namespace WinUsb = LibXR::USB::WinUsbMsOs20;
 
 namespace
 {
-using LibXR::USB::BOS_HEADER_SIZE;
-using LibXR::USB::BosCapability;
-using LibXR::USB::CFG_REMOTE_WAKEUP;
-using LibXR::USB::CFG_SELF_POWERED;
-using LibXR::USB::ConfigDescriptorItem;
-using LibXR::USB::DESCRIPTOR_TYPE_DEVICE_CAPABILITY;
-using LibXR::USB::DescriptorStrings;
-using LibXR::USB::DEV_CAPABILITY_TYPE_USB20EXT;
-using LibXR::USB::DeviceClass;
 
-struct InterfaceStringLayout
-{
-  size_t count = 0;
-  size_t max_len = 0;
-};
+using ConfigList = std::initializer_list<const std::initializer_list<DeviceClass*>>;
 
-// 在 class 去重前，先统计原始配置项数量。
-// Count the raw number of config items before unique-class deduplication.
-static size_t calc_total_item_num(
-    const std::initializer_list<const std::initializer_list<ConfigDescriptorItem*>>&
-        configs)
+/// 接口字符串号从序列号之后开始 / Interface string indices start after the serial number
+constexpr uint8_t FIRST_INTERFACE_STRING =
+    static_cast<uint8_t>(DescriptorStrings::Index::SERIAL_NUMBER_STRING) + 1U;
+
+/// UTF-8 字符串转成 UTF-16LE 后的字节数（只支持 BMP）/ Bytes of a UTF-8 string as
+/// UTF-16LE (BMP only)
+size_t Utf16Length(const char* text)
 {
-  // 这里先统计原始 item 数量；最终唯一 class 表会在构造函数里去重。
-  // Count raw items first; the final unique-class table is deduplicated in the
-  // constructor.
+  size_t length = 0;
+  for (size_t i = 0; text[i] != '\0';)
+  {
+    const auto c = static_cast<unsigned char>(text[i]);
+    if (c < 0x80U)
+    {
+      i += 1U;
+    }
+    else if ((c & 0xE0U) == 0xC0U)
+    {
+      i += 2U;
+    }
+    else if ((c & 0xF0U) == 0xE0U)
+    {
+      i += 3U;
+    }
+    else
+    {
+      // BMP 之外的码点跳过，不占字节。
+      // Code points outside the BMP are skipped and take no bytes.
+      i += 4U;
+      continue;
+    }
+    length += 2U;
+  }
+  return length;
+}
+
+/// 把 UTF-8 写成 UTF-16LE，规则同 Utf16Length / Write UTF-8 as UTF-16LE, same rules as
+/// Utf16Length
+void ToUtf16(const char* text, uint8_t* out)
+{
+  const auto* s = reinterpret_cast<const unsigned char*>(text);
+  while (*s != 0U)
+  {
+    uint32_t code = 0U;
+    if (*s < 0x80U)
+    {
+      code = *s++;
+    }
+    else if ((*s & 0xE0U) == 0xC0U)
+    {
+      code = (s[0] & 0x1FU) << 6U | (s[1] & 0x3FU);
+      s += 2;
+    }
+    else if ((*s & 0xF0U) == 0xE0U)
+    {
+      code = (s[0] & 0x0FU) << 12U | (s[1] & 0x3FU) << 6U | (s[2] & 0x3FU);
+      s += 3;
+    }
+    else
+    {
+      s += 4;
+      continue;
+    }
+    *out++ = static_cast<uint8_t>(code);
+    *out++ = static_cast<uint8_t>(code >> 8U);
+  }
+}
+
+/// 所有配置中的类指针总数（去重前）/ Number of class pointers over all configurations
+/// (before deduplication)
+size_t ClassSlots(const ConfigList& configs)
+{
   size_t total = 0;
   for (const auto& group : configs)
   {
@@ -38,722 +100,507 @@ static size_t calc_total_item_num(
   return total;
 }
 
-// 构造期唯一 class 表很小，线性查重已经足够。
-// The constructor-time unique-class table is tiny, so a linear contains check is
-// sufficient.
-static bool contains_class(DeviceClass* const* list, size_t count,
-                           const DeviceClass* item)
+/// 一个要 WinUSB 的功能 / One function that wants WinUSB
+struct WinUsbFunction
 {
+  uint8_t configuration_index;  ///< 从 0 起的配置序号 / Zero-based configuration index
+  uint8_t first_interface;      ///< 第一个接口号 / First interface number
+  const char* guid;             ///< 接口 GUID / Interface GUID
+};
+
+/**
+ * @brief 由各功能写出 MS OS 2.0 描述符集 / Write the MS OS 2.0 descriptor set of the
+ *        functions
+ * @note 只有一个功能且不是复合设备时用设备级形式，否则每个配置一个配置子集、每个功能一个
+ *       功能子集。内存只分配这一次。
+ *       A single function on a non-composite device gets the device-level form;
+ *       otherwise one configuration subset per configuration and one function subset
+ *       per function. The memory is allocated this once.
+ */
+ConstRawData BuildWinUsbSet(const WinUsbFunction* functions, size_t count,
+                            bool device_level)
+{
+  using Property =
+      WinUsb::DeviceInterfaceGuidsRegProperty<WinUsb::GUID_MULTI_SZ_UTF16_BYTES>;
+  constexpr size_t FEATURES =
+      sizeof(WinUsb::MsOs20FeatureCompatibleId) + sizeof(Property);
+  using ConfigHeader = WinUsb::MsOs20SubsetHeaderConfiguration;
+  using FunctionHeader = WinUsb::MsOs20SubsetHeaderFunction;
+
+  size_t total = sizeof(WinUsb::MsOs20SetHeader);
   for (size_t i = 0; i < count; ++i)
   {
-    if (list[i] == item)
-    {
-      return true;
-    }
-  }
-  return false;
-}
-
-// 计算 UTF-8 接口字符串转换成 UTF-16LE 后的有效载荷长度。
-// Compute the UTF-16LE payload size produced from a UTF-8 interface string.
-static size_t calc_utf16le_len_runtime(const char* input)
-{
-  if (input == nullptr)
-  {
-    return 0;
+    const bool new_config = i == 0U || functions[i].configuration_index !=
+                                           functions[i - 1U].configuration_index;
+    total += device_level ? FEATURES
+                          : (new_config ? sizeof(ConfigHeader) : 0U) +
+                                sizeof(FunctionHeader) + FEATURES;
   }
 
-  size_t len = 0;
-  for (size_t i = 0; input[i];)
+  auto* out = new uint8_t[total];
+  size_t offset = 0;
+  auto put = [&](const void* source, size_t length)
   {
-    unsigned char c = static_cast<unsigned char>(input[i]);
-    if (c < 0x80)
-    {
-      len += 2;
-      i += 1;
-    }
-    else if ((c & 0xE0) == 0xC0)
-    {
-      len += 2;
-      i += 2;
-    }
-    else if ((c & 0xF0) == 0xE0)
-    {
-      len += 2;
-      i += 3;
-    }
-    else
-    {
-      i += 4;
-    }
-  }
-  return len;
-}
-
-// 把 UTF-8 接口字符串转换成 USB 字符串描述符使用的 UTF-16LE；
-// 不支持的码点保持原先的保守跳过策略。
-// Convert a UTF-8 interface string into UTF-16LE for USB string descriptors.
-// Unsupported code points are skipped in the same conservative way as before.
-static void to_utf16le(const char* str, uint8_t* buffer)
-{
-  size_t len = 0;
-  const unsigned char* s = reinterpret_cast<const unsigned char*>(str);
-
-  while (*s)
+    LibXR::Memory::FastCopy(out + offset, source, length);
+    offset += length;
+  };
+  // 子集头的最后两个字节是它到集尾（或下一个同级子集）的长度。
+  // The last two bytes of a subset header are its length up to the next sibling.
+  auto close = [&](size_t header_offset, size_t header_size)
   {
-    uint32_t codepoint = 0;
+    const auto length = static_cast<uint16_t>(offset - header_offset);
+    LibXR::Memory::FastCopy(out + header_offset + header_size - sizeof(length), &length,
+                            sizeof(length));
+  };
 
-    if (*s < 0x80)
+  WinUsb::MsOs20SetHeader set;
+  set.wTotalLength = static_cast<uint16_t>(total);
+  put(&set, sizeof(set));
+  WinUsb::MsOs20FeatureCompatibleId compat;
+  Property property;
+  size_t config_offset = 0;
+  for (size_t i = 0; i < count; ++i)
+  {
+    property.Init(functions[i].guid);
+    if (device_level)
     {
-      codepoint = *s++;
-    }
-    else if ((*s & 0xE0) == 0xC0)
-    {
-      codepoint = (*s & 0x1F) << 6;
-      s++;
-      codepoint |= (*s & 0x3F);
-      s++;
-    }
-    else if ((*s & 0xF0) == 0xE0)
-    {
-      codepoint = (*s & 0x0F) << 12;
-      s++;
-      codepoint |= (*s & 0x3F) << 6;
-      s++;
-      codepoint |= (*s & 0x3F);
-      s++;
-    }
-    else if ((*s & 0xF8) == 0xF0)
-    {
-      s++;
-      if (*s)
-      {
-        s++;
-      }
-      if (*s)
-      {
-        s++;
-      }
-      if (*s)
-      {
-        s++;
-      }
+      put(&compat, sizeof(compat));
+      put(&property, sizeof(property));
       continue;
     }
-    else
+    if (i == 0U ||
+        functions[i].configuration_index != functions[i - 1U].configuration_index)
     {
-      s++;
-      continue;
-    }
-
-    buffer[len++] = codepoint & 0xFF;
-    buffer[len++] = (codepoint >> 8) & 0xFF;
-  }
-}
-
-// 预先算出接口字符串总数，以及运行时生成描述符所需的最大缓冲区。
-// Pre-compute the interface-string count and the largest runtime descriptor
-// buffer needed.
-static InterfaceStringLayout calc_interface_string_layout(DeviceClass* const* classes,
-                                                          size_t class_count)
-{
-  // 接口字符串描述符在运行时生成，但其源字符串指针和最大 UTF-16LE
-  // 空间可在构造期一次算清。
-  // Interface strings are generated at runtime, but their source pointers and
-  // maximum UTF-16LE descriptor size can be fixed up front during construction.
-  InterfaceStringLayout layout{};
-  for (size_t class_index = 0; class_index < class_count; ++class_index)
-  {
-    auto* device_class = classes[class_index];
-    if (device_class == nullptr)
-    {
-      continue;
-    }
-
-    const size_t interface_num = device_class->GetInterfaceCount();
-    for (size_t i = 0; i < interface_num; ++i)
-    {
-      const char* str = device_class->GetInterfaceString(i);
-      if (str == nullptr || str[0] == '\0')
+      if (i != 0U)
       {
-        continue;
+        close(config_offset, sizeof(ConfigHeader));
       }
-
-      ++layout.count;
-      const size_t utf16_len = calc_utf16le_len_runtime(str);
-      if (utf16_len > layout.max_len)
-      {
-        layout.max_len = utf16_len;
-      }
+      config_offset = offset;
+      ConfigHeader config;
+      config.bConfigurationValue = functions[i].configuration_index;
+      put(&config, sizeof(config));
     }
+    const size_t function_offset = offset;
+    FunctionHeader function;
+    function.bFirstInterface = functions[i].first_interface;
+    put(&function, sizeof(function));
+    put(&compat, sizeof(compat));
+    put(&property, sizeof(property));
+    close(function_offset, sizeof(FunctionHeader));
   }
-  return layout;
-}
-
-// 一个 configuration 只要有多个 item，或包含任意 IAD，就按复合设备处理。
-// A configuration is treated as composite if it exposes multiple items or any IAD.
-static bool config_contains_iad(const std::initializer_list<ConfigDescriptorItem*>& group)
-{
-  for (auto* item : group)
+  if (!device_level && count != 0U)
   {
-    if (item != nullptr && item->HasIAD())
-    {
-      return true;
-    }
+    close(config_offset, sizeof(ConfigHeader));
   }
-  return false;
-}
-
-static bool is_composite_config(const std::initializer_list<ConfigDescriptorItem*>& group)
-{
-  return (group.size() > 1) || config_contains_iad(group);
-}
-
-// 只有“单 class、单接口、无 IAD”的简单形态，
-// 才允许覆盖 device descriptor 的类字段。
-// Device-descriptor override is only valid for the simple
-// "single class, single interface, no IAD" shape.
-static bool is_device_descriptor_override_eligible(ConfigDescriptorItem* const* items,
-                                                   size_t item_num)
-{
-  if (item_num != 1)
-  {
-    return false;
-  }
-
-  auto* item = items[0];
-  if (item == nullptr)
-  {
-    return false;
-  }
-
-  if (item->HasIAD())
-  {
-    return false;
-  }
-
-  return (item->GetInterfaceCount() == 1);
-}
-
-static bool is_composite_device(
-    const std::initializer_list<const std::initializer_list<ConfigDescriptorItem*>>&
-        configs)
-{
-  for (const auto& group : configs)
-  {
-    if (is_composite_config(group))
-    {
-      return true;
-    }
-  }
-  return false;
-}
-
-// 统计所有 configuration 中 BOS capability 数量的最大值，
-// 这样 BosManager 的暂存空间只需分配一次。
-// Count the worst-case BOS capability count among all configurations so the
-// BosManager scratch storage can be allocated once.
-static size_t calc_bos_capability_num_max(
-    const std::initializer_list<const std::initializer_list<ConfigDescriptorItem*>>&
-        configs)
-{
-  size_t max_num = 0;
-  for (const auto& group : configs)
-  {
-    size_t num = 0;
-    for (auto* item : group)
-    {
-      if (item == nullptr)
-      {
-        continue;
-      }
-      num += item->GetBosCapabilityCount();
-    }
-    if (num > max_num)
-    {
-      max_num = num;
-    }
-  }
-  return max_num;
-}
-
-// 统计所有 configuration 中 BOS 描述符尺寸的最大值；
-// 若没有类提供 USB 2.0 Extension capability，则为自动补上的那项预留空间。
-// Count the worst-case BOS descriptor size among all configurations.
-// If no class provides a USB 2.0 Extension capability, reserve space for the
-// auto-added one.
-static size_t calc_bos_descriptor_size_max(
-    const std::initializer_list<const std::initializer_list<ConfigDescriptorItem*>>&
-        configs)
-{
-  static constexpr size_t usb2_ext_size = 7;
-
-  size_t max_total = BOS_HEADER_SIZE;
-  for (const auto& group : configs)
-  {
-    size_t cap_bytes = 0;
-    bool has_usb2_ext = false;
-
-    for (auto* item : group)
-    {
-      if (item == nullptr)
-      {
-        continue;
-      }
-
-      const size_t capability_num = item->GetBosCapabilityCount();
-      for (size_t i = 0; i < capability_num; ++i)
-      {
-        BosCapability* cap = item->GetBosCapability(i);
-        if (cap == nullptr)
-        {
-          continue;
-        }
-
-        auto blk = cap->GetCapabilityDescriptor();
-        ASSERT(blk.addr_ != nullptr);
-        ASSERT(blk.size_ >= 3);
-
-        cap_bytes += blk.size_;
-
-        const uint8_t* p = reinterpret_cast<const uint8_t*>(blk.addr_);
-        if (p[1] == DESCRIPTOR_TYPE_DEVICE_CAPABILITY &&
-            p[2] == DEV_CAPABILITY_TYPE_USB20EXT)
-        {
-          has_usb2_ext = true;
-        }
-      }
-    }
-
-    const size_t total = BOS_HEADER_SIZE + cap_bytes + (has_usb2_ext ? 0 : usb2_ext_size);
-    if (total > max_total)
-    {
-      max_total = total;
-    }
-  }
-
-  ASSERT(max_total <= 0xFFFF);
-  return max_total;
+  ASSERT(offset == total);
+  return {out, total};
 }
 
 }  // namespace
 
-using namespace LibXR::USB;
-using LibXR::ConstRawData;
-using LibXR::RawData;
-
 DeviceComposition::DeviceComposition(
-    EndpointPool& endpoint_pool,
-    const std::initializer_list<const DescriptorStrings::LanguagePack*>& lang_list,
-    const std::initializer_list<const std::initializer_list<ConfigDescriptorItem*>>&
-        configs,
-    ConstRawData uid, uint8_t bmAttributes, uint8_t bMaxPower)
-    : endpoint_pool_(endpoint_pool),
-      bm_attributes_(bmAttributes),
-      composite_(is_composite_device(configs)),
-      config_num_(configs.size()),
-      items_(new ConfigItems[config_num_]),
-      classes_(new DeviceClass*[calc_total_item_num(configs)]),
-      strings_(lang_list, reinterpret_cast<const uint8_t*>(uid.addr_), uid.size_),
-      bos_(calc_bos_descriptor_size_max(configs), calc_bos_capability_num_max(configs)),
-      config_desc_(ConfigDescriptor::CalcMaxConfigSize(configs), bmAttributes, bMaxPower)
+    EndpointPool& pool, DeviceService& service,
+    const std::initializer_list<const DescriptorStrings::LanguagePack*>& languages,
+    const std::initializer_list<const std::initializer_list<DeviceClass*>>& configs,
+    ConstRawData uid, uint8_t bm_attributes, uint8_t max_power)
+    : pool_(pool),
+      configs_(new Config[configs.size()]),
+      config_count_(static_cast<uint8_t>(configs.size())),
+      classes_(new DeviceClass*[ClassSlots(configs)]),
+      bm_attributes_(bm_attributes),
+      max_power_(max_power),
+      strings_(languages, static_cast<const uint8_t*>(uid.addr_), uid.size_),
+      // BOS 的容量按全部类的能力加一个 WinUSB 能力算；在构造体之前算，所以就地遍历。
+      // The BOS is sized for every class's capabilities plus one WinUSB capability;
+      // computed before the body, hence the walk in place.
+      bos_(
+          [&configs]
+          {
+            size_t bytes = LibXR::USB::BOS_HEADER_SIZE + LibXR::USB::USB2_EXT_CAP_SIZE +
+                           sizeof(WinUsb::MsOs20PlatformCapability);
+            for (const auto& group : configs)
+            {
+              for (DeviceClass* item : group)
+              {
+                for (size_t i = 0; i < item->GetBosCapabilityCount(); ++i)
+                {
+                  BosCapability* cap = item->GetBosCapability(i);
+                  bytes += (cap != nullptr) ? cap->GetCapabilityDescriptor().size_ : 0U;
+                }
+              }
+            }
+            return bytes;
+          }(),
+          [&configs]
+          {
+            size_t count = 1U;
+            for (const auto& group : configs)
+            {
+              for (DeviceClass* item : group)
+              {
+                count += item->GetBosCapabilityCount();
+              }
+            }
+            return count;
+          }())
 {
-  ASSERT(config_num_ > 0);
+  ASSERT(config_count_ > 0U && configs.size() <= UINT8_MAX);
 
-  // 将所有配置项整理成：
-  // 1) 每个 configuration 自己的 item 表
-  // 2) 一份用于字符串注册的唯一 class 表
-  // Flatten every configuration item into:
-  // 1) per-config item tables for descriptor building / binding
-  // 2) one unique class table for string registration
+  // 整理配置表和去重的类表；给每个类写入服务指针。
+  // Build the configuration tables and the deduplicated class table; give every class
+  // its service pointer.
+  size_t largest = 0;
   size_t config_index = 0;
-  for (const auto& cfg_group : configs)
+  for (const auto& group : configs)
   {
-    items_[config_index].item_num = cfg_group.size();
-    items_[config_index].items = new ConfigDescriptorItem*[cfg_group.size()];
-
-    size_t item_index = 0;
-    for (auto* item : cfg_group)
+    Config& config = configs_[config_index++];
+    config.classes = new DeviceClass*[group.size()];
+    config.count = group.size();
+    composite_ = composite_ || group.size() > 1U;
+    size_t size = sizeof(DeviceClass::Header);
+    size_t n = 0;
+    for (DeviceClass* item : group)
     {
-      items_[config_index].items[item_index++] = item;
-      auto* device_class = static_cast<DeviceClass*>(item);
-      if (device_class != nullptr &&
-          !contains_class(classes_, class_count_, device_class))
+      ASSERT(item != nullptr);
+      config.classes[n++] = item;
+      size += item->GetMaxConfigSize();
+      composite_ = composite_ || item->HasIAD();
+      bool known = false;
+      for (size_t i = 0; i < class_count_; ++i)
       {
-        classes_[class_count_++] = device_class;
+        known = known || classes_[i] == item;
+      }
+      if (!known)
+      {
+        item->service_ = &service;
+        classes_[class_count_++] = item;
       }
     }
-
-    ++config_index;
+    largest = (size > largest) ? size : largest;
   }
-
-  // 初始化阶段一次性算出接口字符串容量和最大描述符空间。
-  // Pre-compute interface-string storage once during initialization.
-  const auto interface_string_layout =
-      calc_interface_string_layout(classes_, class_count_);
-  interface_string_count_ = interface_string_layout.count;
-  if (interface_string_count_ > 0)
-  {
-    interface_strings_ = new const char*[interface_string_count_];
-    interface_string_buffer_.addr_ = new uint8_t[interface_string_layout.max_len + 2];
-    interface_string_buffer_.size_ = interface_string_layout.max_len + 2;
-  }
+  config_buffer_ = {new uint8_t[largest], largest};
 
   RegisterInterfaceStrings();
-}
 
-const DeviceComposition::ConfigItems& DeviceComposition::CurrentConfigItems() const
-{
-  DEV_ASSERT(config_num_ > 0);
-  DEV_ASSERT(current_cfg_ < config_num_);
-  return items_[current_cfg_];
-}
-
-void DeviceComposition::Init(bool in_isr)
-{
-  // Init 先绑定端点，再按当前激活配置重建 BOS 视图。
-  // Init binds endpoints first, then rebuilds the BOS view for the active configuration.
-  configured_ = false;
-  BindEndpoints(in_isr);
-  RebuildBosCache();
-}
-
-void DeviceComposition::Deinit(bool in_isr)
-{
-  UnbindEndpoints(in_isr);
-  configured_ = false;
-  current_cfg_ = 0;
-}
-
-LibXR::ErrorCode DeviceComposition::SwitchConfig(size_t index, bool in_isr)
-{
-  if (index > config_num_)
+  // WinUSB：接口号按配置内累加，与 SetConfiguration 给类的一致。
+  // WinUSB: interface numbers accumulate within a configuration, as SetConfiguration
+  // gives them to the classes.
+  size_t functions = 0;
+  for (size_t c = 0; c < config_count_; ++c)
   {
-    return LibXR::ErrorCode::NOT_FOUND;
-  }
-
-  if (index == 0)
-  {
-    UnbindEndpoints(in_isr);
-    configured_ = false;
-    current_cfg_ = 0;
-    RebuildBosCache();
-    return LibXR::ErrorCode::OK;
-  }
-
-  // USB configuration value 从 1 开始，而 current_cfg_ 内部保存的是从 0 开始的槽位。
-  // USB configuration values are 1-based, while current_cfg_ stores a 0-based slot index.
-  UnbindEndpoints(in_isr);
-  current_cfg_ = static_cast<uint8_t>(index - 1);
-  configured_ = true;
-  BindEndpoints(in_isr);
-  RebuildBosCache();
-  return LibXR::ErrorCode::OK;
-}
-
-LibXR::ErrorCode DeviceComposition::BuildConfigDescriptor()
-{
-  // ConfigDescriptor 只构建当前激活的 configuration；
-  // current_cfg_ 同时决定 item 表和对外可见的 bConfigurationValue。
-  // ConfigDescriptor builds the active configuration only;
-  // current_cfg_ supplies both the item table and the externally visible
-  // bConfigurationValue.
-  const auto& config = CurrentConfigItems();
-  return config_desc_.BuildConfigDescriptor(config.items, config.item_num,
-                                            static_cast<uint8_t>(current_cfg_ + 1),
-                                            i_configuration_);
-}
-
-RawData DeviceComposition::GetConfigDescriptor() const { return config_desc_.GetData(); }
-
-ConstRawData DeviceComposition::GetBosDescriptor() { return bos_.GetBosDescriptor(); }
-
-LibXR::ErrorCode DeviceComposition::ProcessBosVendorRequest(bool in_isr,
-                                                            const SetupPacket* setup,
-                                                            BosVendorResult& result)
-{
-  return bos_.ProcessVendorRequest(in_isr, setup, result);
-}
-
-LibXR::ErrorCode DeviceComposition::GetStringDescriptor(uint8_t string_index,
-                                                        uint16_t lang, ConstRawData& data)
-{
-  if (string_index == 0)
-  {
-    data = ConstRawData(strings_.GetLangIDData());
-    return LibXR::ErrorCode::OK;
-  }
-
-  if (string_index > static_cast<uint8_t>(DescriptorStrings::Index::SERIAL_NUMBER_STRING))
-  {
-    // 接口字符串与内建字符串集合共用同一套语言号校验。
-    // Interface strings share the same language gate as the built-in string set.
-    if (!strings_.HasLanguage(lang))
+    for (size_t i = 0; i < configs_[c].count; ++i)
     {
-      return LibXR::ErrorCode::NOT_FOUND;
-    }
-    return GenerateInterfaceString(string_index, data);
-  }
-
-  auto ec =
-      strings_.GenerateString(static_cast<DescriptorStrings::Index>(string_index), lang);
-  if (ec != LibXR::ErrorCode::OK)
-  {
-    return ec;
-  }
-
-  data = ConstRawData(strings_.GetData());
-  return LibXR::ErrorCode::OK;
-}
-
-bool DeviceComposition::IsComposite() const { return composite_; }
-
-LibXR::ErrorCode DeviceComposition::TryOverrideDeviceDescriptor(
-    DeviceDescriptor& descriptor)
-{
-  if (config_num_ != 1)
-  {
-    return LibXR::ErrorCode::NOT_SUPPORT;
-  }
-
-  const auto config = items_[0];
-  if (!is_device_descriptor_override_eligible(config.items, config.item_num))
-  {
-    return LibXR::ErrorCode::NOT_SUPPORT;
-  }
-
-  return config.items[0]->WriteDeviceDescriptor(descriptor);
-}
-
-size_t DeviceComposition::GetConfigNum() const { return config_num_; }
-
-size_t DeviceComposition::GetCurrentConfig() const
-{
-  return configured_ ? static_cast<size_t>(current_cfg_ + 1u) : 0u;
-}
-
-uint16_t DeviceComposition::GetDeviceStatus() const
-{
-  return ((bm_attributes_ & CFG_SELF_POWERED) ? 0x01 : 0x00) |
-         ((bm_attributes_ & CFG_REMOTE_WAKEUP) ? 0x02 : 0x00);
-}
-
-DeviceClass* DeviceComposition::FindClassByInterfaceNumber(size_t index) const
-{
-  if (!configured_)
-  {
-    return nullptr;
-  }
-
-  const auto& config = CurrentConfigItems();
-
-  // 每个 item 都声明自己占用的接口数量；
-  // 沿扁平表前进，直到目标接口落入某个 item 的区间。
-  // Each item reports how many interfaces it occupies; walk the flattened list
-  // until the requested interface falls into one item's local range.
-  int interface_index = -1;
-  for (size_t i = 0; i < config.item_num; ++i)
-  {
-    auto* item = config.items[i];
-    if (item == nullptr)
-    {
-      continue;
-    }
-
-    interface_index += static_cast<int>(item->GetInterfaceCount());
-    if (interface_index >= static_cast<int>(index))
-    {
-      return static_cast<DeviceClass*>(item);
+      functions +=
+          (configs_[c].classes[i]->GetWinUsbInterfaceGuid() != nullptr) ? 1U : 0U;
     }
   }
-
-  return nullptr;
-}
-
-DeviceClass* DeviceComposition::FindClassByEndpointAddress(uint8_t addr) const
-{
-  if (!configured_)
+  if (functions != 0U)
   {
-    return nullptr;
-  }
-
-  const auto& config = CurrentConfigItems();
-
-  for (size_t i = 0; i < config.item_num; ++i)
-  {
-    auto* item = config.items[i];
-    if (item == nullptr)
+    auto* info = new WinUsbFunction[functions];
+    size_t n = 0;
+    for (size_t c = 0; c < config_count_; ++c)
     {
-      continue;
+      size_t first_interface = 0;
+      for (size_t i = 0; i < configs_[c].count; ++i)
+      {
+        DeviceClass* item = configs_[c].classes[i];
+        if (const char* guid = item->GetWinUsbInterfaceGuid())
+        {
+          info[n++] = {static_cast<uint8_t>(c), static_cast<uint8_t>(first_interface),
+                       guid};
+        }
+        first_interface += item->GetInterfaceCount();
+      }
     }
-
-    if (item->OwnsEndpoint(addr))
-    {
-      return static_cast<DeviceClass*>(item);
-    }
+    winusb_cap_ = new WinUsb::MsOs20BosCapability(BuildWinUsbSet(
+        info, functions, !composite_ && config_count_ == 1U && functions == 1U));
+    delete[] info;
+    bos_.AddCapability(winusb_cap_);
   }
-
-  return nullptr;
-}
-
-void DeviceComposition::BindEndpoints(bool in_isr)
-{
-  if (ep_assigned_)
+  for (size_t i = 0; i < class_count_; ++i)
   {
-    return;
-  }
-  ep_assigned_ = true;
-
-  const auto& config = CurrentConfigItems();
-
-  // start_itf 记录 configuration 级别的全局接口号分配游标。
-  // start_itf tracks the configuration-global interface number assigned to each class.
-  size_t start_itf = 0;
-  for (size_t i = 0; i < config.item_num; ++i)
-  {
-    auto* item = config.items[i];
-    if (item == nullptr)
+    for (size_t j = 0; j < classes_[i]->GetBosCapabilityCount(); ++j)
     {
-      continue;
-    }
-
-    item->BindEndpoints(endpoint_pool_, static_cast<uint8_t>(start_itf), in_isr);
-    start_itf += item->GetInterfaceCount();
-  }
-}
-
-void DeviceComposition::UnbindEndpoints(bool in_isr)
-{
-  if (!ep_assigned_)
-  {
-    return;
-  }
-  ep_assigned_ = false;
-
-  // Unbind 走的仍是当前激活 item 表，但这里不再需要重新分配接口号。
-  // Unbind walks the same active item table, but no interface renumbering is needed here.
-  const auto& config = CurrentConfigItems();
-  for (size_t i = 0; i < config.item_num; ++i)
-  {
-    auto* item = config.items[i];
-    if (item == nullptr)
-    {
-      continue;
-    }
-
-    item->UnbindEndpoints(endpoint_pool_, in_isr);
-  }
-}
-
-void DeviceComposition::RebuildBosCache()
-{
-  // BOS capability 只从当前激活的 configuration 收集。
-  // BOS capabilities are collected from the active configuration only.
-  bos_.ClearCapabilities();
-  const auto& config = CurrentConfigItems();
-  for (size_t i = 0; i < config.item_num; ++i)
-  {
-    auto* item = config.items[i];
-    if (item == nullptr)
-    {
-      continue;
-    }
-
-    const size_t capability_num = item->GetBosCapabilityCount();
-    for (size_t j = 0; j < capability_num; ++j)
-    {
-      auto* cap = item->GetBosCapability(j);
-      if (cap != nullptr)
+      if (BosCapability* cap = classes_[i]->GetBosCapability(j))
       {
         bos_.AddCapability(cap);
       }
     }
   }
-
-  (void)bos_.GetBosDescriptor();
 }
 
-LibXR::ErrorCode DeviceComposition::GenerateInterfaceString(uint8_t string_index,
-                                                            ConstRawData& data)
+ErrorCode DeviceComposition::SetConfiguration(uint8_t value, Speed speed, bool in_isr)
 {
-  // 接口字符串位于内建 manufacturer/product/serial 之后的索引区间。
-  // Interface strings live after the built-in manufacturer/product/serial range.
-  const size_t base_index =
-      static_cast<uint8_t>(DescriptorStrings::Index::SERIAL_NUMBER_STRING);
-  if (string_index <= base_index)
+  if (value > config_count_)
   {
-    return LibXR::ErrorCode::NOT_FOUND;
+    return ErrorCode::ARG_ERR;
   }
-
-  const size_t extra_index = static_cast<size_t>(string_index - base_index - 1u);
-  if (extra_index >= interface_string_count_ || interface_string_buffer_.addr_ == nullptr)
+  Unbind(in_isr);
+  if (value == 0U)
   {
-    return LibXR::ErrorCode::NOT_FOUND;
+    return ErrorCode::OK;
   }
+  const Config& config = configs_[value - 1U];
+  uint8_t first_interface = 0;
+  size_t bound = 0;
+  ErrorCode result = ErrorCode::OK;
+  for (size_t i = 0; i < config.count && result == ErrorCode::OK; ++i)
+  {
+    DeviceClass* item = config.classes[i];
+    ConstRawData block{nullptr, 0};
+    result = item->WriteDescriptors(pool_, speed, first_interface, block);
+    if (result != ErrorCode::OK)
+    {
+      break;
+    }
+    result = item->BindEndpoints(pool_, first_interface, in_isr);
+    bound = i + 1U;
+    first_interface = static_cast<uint8_t>(first_interface + item->GetInterfaceCount());
+  }
+  if (result != ErrorCode::OK)
+  {
+    // 失败的类也解绑：它的 Unbind 撤销自己做了一半的绑定。
+    // The failing class is unbound too: its Unbind undoes its half-done bind.
+    for (size_t i = 0; i < bound; ++i)
+    {
+      config.classes[i]->UnbindEndpoints(pool_, in_isr);
+    }
+    return result;
+  }
+  configuration_ = value;
+  return ErrorCode::OK;
+}
 
-  uint8_t* buffer = reinterpret_cast<uint8_t*>(interface_string_buffer_.addr_);
-  const char* str = interface_strings_[extra_index];
-  const size_t utf16_len = calc_utf16le_len_runtime(str);
-  ASSERT(utf16_len + 2 <= 255);
+ErrorCode DeviceComposition::WriteConfigDescriptor(uint8_t index, Speed speed,
+                                                   RawData& data)
+{
+  if (index >= config_count_)
+  {
+    return ErrorCode::ARG_ERR;
+  }
+  const Config& config = configs_[index];
+  auto* buffer = static_cast<uint8_t*>(config_buffer_.addr_);
+  size_t offset = sizeof(DeviceClass::Header);
+  uint8_t first_interface = 0;
+  for (size_t i = 0; i < config.count; ++i)
+  {
+    DeviceClass* item = config.classes[i];
+    ConstRawData block{nullptr, 0};
+    const ErrorCode result = item->WriteDescriptors(pool_, speed, first_interface, block);
+    if (result != ErrorCode::OK)
+    {
+      return result;
+    }
+    ASSERT(block.size_ <= item->GetMaxConfigSize());
+    ASSERT(offset + block.size_ <= config_buffer_.size_);
+    LibXR::Memory::FastCopy(buffer + offset, block.addr_, block.size_);
+    offset += block.size_;
+    first_interface = static_cast<uint8_t>(first_interface + item->GetInterfaceCount());
+  }
+  ASSERT(offset <= UINT16_MAX);
+  DeviceClass::Header header{};
+  header.bLength = sizeof(DeviceClass::Header);
+  header.bDescriptorType =
+      static_cast<uint8_t>(LibXR::USB::DescriptorType::CONFIGURATION);
+  header.wTotalLength = static_cast<uint16_t>(offset);
+  header.bNumInterfaces = first_interface;
+  header.bConfigurationValue = static_cast<uint8_t>(index + 1U);
+  header.iConfiguration = 0U;
+  header.bmAttributes = bm_attributes_;
+  header.bMaxPower = max_power_;
+  LibXR::Memory::FastCopy(buffer, &header, sizeof(header));
+  data = {buffer, offset};
+  return ErrorCode::OK;
+}
 
-  // USB 字符串描述符格式：[bLength][bDescriptorType=0x03][UTF-16LE payload...]
-  // USB string descriptor layout: [bLength][bDescriptorType=0x03][UTF-16LE payload...]
-  buffer[1] = 0x03;
-  buffer[0] = static_cast<uint8_t>(utf16_len + 2);
-  to_utf16le(str, buffer + 2);
-  data = ConstRawData(interface_string_buffer_.addr_, buffer[0]);
-  return LibXR::ErrorCode::OK;
+ErrorCode DeviceComposition::GetStringDescriptor(uint8_t index, uint16_t lang,
+                                                 ConstRawData& data)
+{
+  if (index == 0U)
+  {
+    data = strings_.GetLangIDData();
+    return ErrorCode::OK;
+  }
+  if (index >= FIRST_INTERFACE_STRING)
+  {
+    // 接口字符串与内建字符串用同一个语言检查。
+    // Interface strings pass the same language check as the built-in ones.
+    if (!strings_.HasLanguage(lang))
+    {
+      return ErrorCode::NOT_FOUND;
+    }
+    return GenerateInterfaceString(index, data);
+  }
+  const ErrorCode result =
+      strings_.GenerateString(static_cast<DescriptorStrings::Index>(index), lang);
+  if (result != ErrorCode::OK)
+  {
+    return result;
+  }
+  data = strings_.GetData();
+  return ErrorCode::OK;
+}
+
+DeviceClass* DeviceComposition::FindClassByInterface(uint8_t itf) const
+{
+  if (configuration_ == 0U)
+  {
+    return nullptr;
+  }
+  const Config& config = configs_[configuration_ - 1U];
+  size_t first = 0;
+  for (size_t i = 0; i < config.count; ++i)
+  {
+    first += config.classes[i]->GetInterfaceCount();
+    if (itf < first)
+    {
+      return config.classes[i];
+    }
+  }
+  return nullptr;
+}
+
+DeviceClass* DeviceComposition::FindClassByEndpoint(uint8_t ep_addr) const
+{
+  if (configuration_ == 0U)
+  {
+    return nullptr;
+  }
+  const Config& config = configs_[configuration_ - 1U];
+  for (size_t i = 0; i < config.count; ++i)
+  {
+    if (config.classes[i]->OwnsEndpoint(ep_addr))
+    {
+      return config.classes[i];
+    }
+  }
+  return nullptr;
+}
+
+uint16_t DeviceComposition::DeviceStatus() const
+{
+  return ((bm_attributes_ & CFG_SELF_POWERED) != 0U) ? 1U : 0U;
+}
+
+size_t DeviceComposition::ControlReceiveCapacity() const
+{
+  size_t capacity = 64U;
+  for (size_t i = 0; i < class_count_; ++i)
+  {
+    const size_t wanted = classes_[i]->GetControlReceiveCapacity();
+    capacity = (wanted > capacity) ? wanted : capacity;
+  }
+  return capacity;
+}
+
+ErrorCode DeviceComposition::WriteDeviceDescriptor(DeviceDescriptor& descriptor)
+{
+  // 只有一个配置、一个类、一个接口、没有 IAD 的设备才由类改写。
+  // Only a device with one configuration, one class, one interface and no IAD lets
+  // its class rewrite the descriptor.
+  if (config_count_ != 1U || composite_ ||
+      configs_[0].classes[0]->GetInterfaceCount() != 1U)
+  {
+    return ErrorCode::NOT_SUPPORT;
+  }
+  return configs_[0].classes[0]->WriteDeviceDescriptor(descriptor);
+}
+
+void DeviceComposition::ServiceClasses(bool in_isr)
+{
+  for (size_t i = 0; i < class_count_; ++i)
+  {
+    if (classes_[i]->service_pending_.exchange(0U, std::memory_order_acq_rel) != 0U)
+    {
+      classes_[i]->OnService(in_isr);
+    }
+  }
+}
+
+void DeviceComposition::StartOfFrame(bool in_isr, uint16_t frame, uint8_t microframe)
+{
+  if (configuration_ == 0U)
+  {
+    return;
+  }
+  const Config& config = configs_[configuration_ - 1U];
+  for (size_t i = 0; i < config.count; ++i)
+  {
+    config.classes[i]->OnStartOfFrame(in_isr, frame, microframe);
+  }
+}
+
+void DeviceComposition::Unbind(bool in_isr)
+{
+  if (configuration_ == 0U)
+  {
+    return;
+  }
+  const Config& config = configs_[configuration_ - 1U];
+  // 先记为未配置：解绑期间的回调看到的已是未配置。
+  // Record unconfigured first: callbacks during the unbind already see it.
+  configuration_ = 0U;
+  for (size_t i = 0; i < config.count; ++i)
+  {
+    config.classes[i]->UnbindEndpoints(pool_, in_isr);
+  }
 }
 
 void DeviceComposition::RegisterInterfaceStrings()
 {
-  if (interface_string_count_ == 0)
+  size_t longest = 0;
+  for (size_t c = 0; c < class_count_; ++c)
+  {
+    for (size_t i = 0; i < classes_[c]->GetInterfaceCount(); ++i)
+    {
+      if (const char* text = classes_[c]->GetInterfaceString(i))
+      {
+        ++interface_string_count_;
+        const size_t length = Utf16Length(text);
+        longest = (length > longest) ? length : longest;
+      }
+    }
+  }
+  if (interface_string_count_ == 0U)
   {
     return;
   }
+  ASSERT(FIRST_INTERFACE_STRING + interface_string_count_ <= 256U &&
+         longest + 2U <= 255U);
+  interface_strings_ = new const char*[interface_string_count_];
+  string_buffer_ = {new uint8_t[longest + 2U], longest + 2U};
 
-  // USB 字符串索引 1..3 保留给厂商/产品/序列号。
-  // USB string indices 1..3 are reserved for manufacturer/product/serial.
-  uint8_t next_index =
-      static_cast<uint8_t>(DescriptorStrings::Index::SERIAL_NUMBER_STRING) + 1u;
-  size_t registered_count = 0u;
-
-  for (size_t class_index = 0; class_index < class_count_; ++class_index)
+  size_t n = 0;
+  for (size_t c = 0; c < class_count_; ++c)
   {
-    auto* device_class = classes_[class_index];
-    if (device_class == nullptr)
+    DeviceClass* item = classes_[c];
+    for (size_t i = 0; i < item->GetInterfaceCount(); ++i)
     {
-      continue;
-    }
-
-    const size_t interface_num = device_class->GetInterfaceCount();
-    device_class->SetInterfaceStringBaseIndex(0u);
-    bool class_has_string = false;
-
-    for (size_t i = 0; i < interface_num; ++i)
-    {
-      const char* str = device_class->GetInterfaceString(i);
-      if (str == nullptr || str[0] == '\0')
+      if (const char* text = item->GetInterfaceString(i))
       {
-        continue;
+        if (item->interface_string_base_ == 0U)
+        {
+          item->interface_string_base_ = static_cast<uint8_t>(FIRST_INTERFACE_STRING + n);
+        }
+        interface_strings_[n++] = text;
       }
-
-      // 这里保留一张扁平源字符串表，
-      // 这样 DeviceCore 之后按索引取接口字符串时，不必再重新遍历全部 class。
-      // 保留一张扁平源字符串表，
-      // 这样 DeviceCore 之后可以按索引重新生成任意接口字符串，而不必重扫全部 class。
-      // Keep a flat source-string table so DeviceCore can later regenerate any
-      // interface string by index without re-scanning all classes.
-      DEV_ASSERT(registered_count < interface_string_count_);
-      if (!class_has_string)
-      {
-        device_class->SetInterfaceStringBaseIndex(next_index);
-        class_has_string = true;
-      }
-      interface_strings_[registered_count++] = str;
-      ++next_index;
     }
   }
+}
 
-  DEV_ASSERT(registered_count == interface_string_count_);
+ErrorCode DeviceComposition::GenerateInterfaceString(uint8_t index, ConstRawData& data)
+{
+  const size_t n = static_cast<size_t>(index - FIRST_INTERFACE_STRING);
+  if (n >= interface_string_count_)
+  {
+    return ErrorCode::NOT_FOUND;
+  }
+  auto* buffer = static_cast<uint8_t*>(string_buffer_.addr_);
+  const char* text = interface_strings_[n];
+  const size_t length = Utf16Length(text) + 2U;
+  buffer[0] = static_cast<uint8_t>(length);
+  buffer[1] = static_cast<uint8_t>(LibXR::USB::DescriptorType::STRING);
+  ToUtf16(text, buffer + 2);
+  data = {buffer, length};
+  return ErrorCode::OK;
 }

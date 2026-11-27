@@ -1,10 +1,13 @@
 #pragma once
 
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+
 #include "cdc_base.hpp"
-#include "ep.hpp"
 #include "libxr_def.hpp"
 #include "libxr_rw.hpp"
-#include "serialized_service.hpp"
+#include "uart.hpp"
 
 namespace LibXR::USB
 {
@@ -12,36 +15,46 @@ namespace LibXR::USB
 class CDCUart;
 
 /**
- * @brief USB CDC 接收端口 / USB CDC receive port
+ * @brief CDC UART 的读端口：读者腾出空间时通知 CDC / Read port of the CDC UART: tells
+ *        the CDC when the reader frees space
  */
 class CDCUartReadPort : public ReadPort
 {
  public:
-  /**
-   * @brief 构造接收端口 / Construct the receive port
-   * @param size 接收缓冲区大小 / Receive buffer size
-   * @param owner 所属 CDC UART / Owning CDC UART
-   */
-  explicit CDCUartReadPort(uint32_t size, CDCUart& owner) : ReadPort(size), owner_(owner)
-  {
-  }
+  /// 构造；size 为接收队列字节数 / Construct; size is the receive queue in bytes
+  CDCUartReadPort(size_t size, CDCUart& owner) : ReadPort(size), owner_(owner) {}
 
  protected:
-  /**
-   * @brief 在接收队列腾出空间后恢复接收 / Resume reception when queue space is available
-   * @param in_isr 是否在中断中调用 / Whether called in an ISR
-   */
+  /// 读者取走数据后调用（读者的上下文）/ Called after the reader took data (in the
+  /// reader's context)
   void OnReadQueueSpaceAvailable(bool in_isr) override;
 
- public:
-  CDCUart& owner_;           ///< 所属 CDC UART / Owning CDC UART
-  bool recv_pause_ = false;  ///< 接收暂停标志 / Receive pause flag
-  ConstRawData pending_data_{nullptr,
-                             0};  ///< 待入队的端点数据 / Endpoint data awaiting enqueue
+ private:
+  CDCUart& owner_;  ///< 所属 CDC UART / Owning CDC UART
 };
 
 /**
- * @brief USB CDC-ACM UART 适配器 / USB CDC-ACM UART adapter
+ * @class CDCUart
+ * @brief USB CDC ACM 虚拟串口 / USB CDC ACM virtual serial port
+ *
+ * 发送：写端口里的数据由 owner 拷进借来的 IN 槽并提交，一个槽可以装多次写入；提交时写
+ * 端口已空，就要求结尾零长度包（Submit 的 zlp），否则后面还有数据，不需要。接收：每个
+ * OUT 请求一个包；收到的槽留在本类，数据搬进读端口后交回并重新挂接收；读端口满时不交回，
+ * 主机因此被 NAK。复位或换配置时写端口里还没取走的数据留到下一次绑定后发送；已提交但没
+ * 发完的槽随端点关闭丢弃。
+ * Transmit: the owner copies write-port data into a borrowed IN slot and submits it; one
+ * slot may carry several writes. When the write port is empty at the submit, the closing
+ * zero-length packet is requested (Submit's zlp); otherwise more data follows and none is
+ * needed. Receive: one packet per OUT request; a received slot stays with this class
+ * until its bytes are in the read port, then it is handed back and armed again; while
+ * the read port is full it is kept, so the host is NAKed. Across a reset or a
+ * configuration change, data still in the write port is sent after the next bind; a
+ * submitted slot not yet sent is dropped when the endpoint closes.
+ *
+ * @note 应用在任何上下文 Read、Write；收发的推进只在 owner 中（OnService、端点完成、
+ *       BindEndpoints）。
+ *       The application reads and writes in any context; transfers advance in the owner
+ *       only (OnService, endpoint completions, BindEndpoints).
  */
 class CDCUart : public CDCBase, public LibXR::UART
 {
@@ -52,259 +65,105 @@ class CDCUart : public CDCBase, public LibXR::UART
   using LibXR::UART::write_port_;
 
   /**
-   * @brief 构造 CDC UART / Construct the CDC UART
+   * @brief 构造 / Construct
    * @param data_in_ep_num 数据 IN 端点号 / Data IN endpoint number
    * @param data_out_ep_num 数据 OUT 端点号 / Data OUT endpoint number
-   * @param comm_ep_num 通信端点号 / Communication endpoint number
-   * @param rx_buffer_size 接收队列容量 / Receive queue capacity
-   * @param tx_buffer_size 发送数据队列容量 / Transmit data queue capacity
-   * @param tx_queue_size 发送请求队列容量 / Transmit request queue capacity
-   * @param control_interface_string 控制接口名称 / Control interface name
-   * @param data_interface_string 数据接口名称 / Data interface name
+   * @param comm_ep_num 通知端点号 / Notification endpoint number
+   * @param rx_buffer_size 接收队列字节数 / Receive queue bytes
+   * @param tx_buffer_size 发送队列字节数 / Transmit queue bytes
+   * @param tx_queue_size 发送请求个数 / Transmit request count
+   * @param control_interface_string 通信接口字符串 / Communication interface string
+   * @param data_interface_string 数据接口字符串 / Data interface string
    */
-  CDCUart(
-      Endpoint::EPNumber data_in_ep_num, Endpoint::EPNumber data_out_ep_num,
-      Endpoint::EPNumber comm_ep_num, size_t rx_buffer_size = 128,
-      size_t tx_buffer_size = 128, size_t tx_queue_size = 5,
-      const char* control_interface_string = CDCBase::DEFAULT_CONTROL_INTERFACE_STRING,
-      const char* data_interface_string = CDCBase::DEFAULT_DATA_INTERFACE_STRING)
-      : CDCBase(data_in_ep_num, data_out_ep_num, comm_ep_num, control_interface_string,
-                data_interface_string),
-        LibXR::UART(&read_port_cdc_, &write_port_cdc_),
-        read_port_cdc_(rx_buffer_size, *this),
-        write_port_cdc_(tx_queue_size, tx_buffer_size)
-  {
-    write_port_cdc_ = WriteFun;  // NOLINT
-  }
+  CDCUart(Endpoint::EPNumber data_in_ep_num, Endpoint::EPNumber data_out_ep_num,
+          Endpoint::EPNumber comm_ep_num, size_t rx_buffer_size = 128,
+          size_t tx_buffer_size = 128, size_t tx_queue_size = 5,
+          const char* control_interface_string = DEFAULT_CONTROL_INTERFACE_STRING,
+          const char* data_interface_string = DEFAULT_DATA_INTERFACE_STRING);
 
   /**
-   * @brief 设置 CDC 线路编码 / Set CDC line coding
-   * @param cfg UART 配置 / UART configuration
-   * @param in_isr 是否在中断中调用，本实现不使用 / ISR context, unused by this
-   * implementation
-   * @return 配置结果 / Configuration result
+   * @brief 由设备一侧改线路编码 / Change the line coding from the device side
+   * @return OK；ARG_ERR：取值不是 CDC 能表示的。
+   *         OK; ARG_ERR: a value CDC cannot express.
+   * @note 经单写者序号锁交给 owner，owner 在 OnService 中更新线路编码并发 SERIAL_STATE。
+   *       只能由一个上下文调用：不能两个线程同时，也不能线程与中断同时。
+   *       Handed to the owner through a single-writer sequence lock; the owner updates
+   *       the line coding in OnService and sends SERIAL_STATE. One context only: never
+   *       two threads at once, nor a thread and an interrupt.
    */
-  ErrorCode SetConfig(UART::Configuration cfg, bool in_isr = false) override
-  {
-    UNUSED(in_isr);
-    auto& line_coding = GetLineCoding();
-
-    switch (cfg.stop_bits)
-    {
-      case 1:
-        line_coding.bCharFormat = 0;
-        break;
-      case 2:
-        line_coding.bCharFormat = 2;
-        break;
-      default:
-        return ErrorCode::ARG_ERR;
-    }
-
-    switch (cfg.parity)
-    {
-      case UART::Parity::NO_PARITY:
-        line_coding.bParityType = 0;
-        break;
-      case UART::Parity::ODD:
-        line_coding.bParityType = 1;
-        break;
-      case UART::Parity::EVEN:
-        line_coding.bParityType = 2;
-        break;
-      default:
-        return ErrorCode::ARG_ERR;
-    }
-
-    switch (cfg.data_bits)
-    {
-      case 5:
-      case 6:
-      case 7:
-      case 8:
-      case 16:
-        line_coding.bDataBits = static_cast<uint8_t>(cfg.data_bits);
-        break;
-      default:
-        return ErrorCode::ARG_ERR;
-    }
-
-    line_coding.dwDTERate = cfg.baudrate;
-    SendSerialState();
-    return ErrorCode::OK;
-  }
-
-  /**
-   * @brief 回填暂存数据并重新启动 OUT 接收 / Enqueue saved data and restart OUT reception
-   * @param in_isr 是否在中断中调用 / Whether called in an ISR
-   * @return 是否成功启动接收 / Whether reception was started
-   */
-  bool TryRearmOut(bool in_isr)
-  {
-    auto* ep = GetDataOutEndpoint();
-    if (ep == nullptr || ep->MaxPacketSize() == 0U || !read_port_cdc_.Readable())
-    {
-      return false;
-    }
-
-    if (read_port_cdc_.recv_pause_ && read_port_cdc_.pending_data_.size_ != 0U)
-    {
-      auto queue = read_port_cdc_.GetReadQueue(in_isr);
-      if (queue.EmptySize() < read_port_cdc_.pending_data_.size_)
-      {
-        queue.Publish();
-        return false;
-      }
-
-      [[maybe_unused]] const auto ans =
-          queue.PushBatch(static_cast<const uint8_t*>(read_port_cdc_.pending_data_.addr_),
-                          read_port_cdc_.pending_data_.size_);
-      DEV_ASSERT_FROM_CALLBACK(ans == ErrorCode::OK, in_isr);
-      read_port_cdc_.pending_data_ = {nullptr, 0};
-      queue.Publish();
-    }
-
-    if (ep->GetState() != Endpoint::State::IDLE)
-    {
-      return false;
-    }
-
-    [[maybe_unused]] const auto ans = ep->Transfer(ep->MaxPacketSize());
-    if (ans == ErrorCode::OK)
-    {
-      read_port_cdc_.recv_pause_ = false;
-      return true;
-    }
-    return false;
-  }
+  ErrorCode SetConfig(UART::Configuration cfg, bool in_isr = false) override;
 
  protected:
-  /**
-   * @brief 绑定端点并恢复配置前已排队的发送 / Bind endpoints and resume queued writes
-   * @param endpoint_pool 端点池 / Endpoint pool
-   * @param start_itf_num 起始接口号 / Starting interface number
-   * @param in_isr 是否在中断中调用 / Whether called in an ISR
-   * @note 未配置时写入只入队，WriteFun 不启动传输；队列满后写入返回 FULL，
-   *       不再触发 WriteFun，所以必须在绑定后重新请求发送。发送推进统一经
-   *       RequestTx 进入，避免与完成中断路径交错。
-   *       Writes before configuration are only queued and WriteFun starts no
-   *       transfer; once the queue is full, writes return FULL without calling
-   *       WriteFun, so transmission must be re-requested after binding. TX progress
-   *       enters through RequestTx so it cannot interleave with the completion
-   *       interrupt path.
-   */
-  void BindEndpoints(EndpointPool& endpoint_pool, uint8_t start_itf_num,
-                     bool in_isr) override;
-
-  /**
-   * @brief 解绑端点并清理接收暂存状态 / Unbind endpoints and clear saved receive state
-   * @param endpoint_pool 端点池 / Endpoint pool
-   * @param in_isr 是否在中断中调用 / Whether called in an ISR
-   */
-  void UnbindEndpoints(EndpointPool& endpoint_pool, bool in_isr) override
-  {
-    CDCBase::UnbindEndpoints(endpoint_pool, in_isr);
-    need_write_zlp_ = false;
-    read_port_cdc_.recv_pause_ = false;
-    read_port_cdc_.pending_data_ = {nullptr, 0};
-  }
-
-  /**
-   * @brief 发送队列写入门铃 / Transmit queue write doorbell
-   * @param port 写端口 / Write port
-   * @param in_isr 是否在中断中调用 / Whether called in an ISR
-   */
-  static void WriteFun(WritePort& port, bool in_isr);
-
-  /**
-   * @brief 将 OUT 数据放入接收队列 / Enqueue completed OUT data
-   * @param in_isr 是否在中断中调用 / Whether called in an ISR
-   * @param data 收到的端点数据 / Received endpoint data
-   */
-  void OnDataOutComplete(bool in_isr, ConstRawData& data) override
-  {
-    if (data.size_ != 0U)
-    {
-      auto queue = read_port_cdc_.GetReadQueue(in_isr);
-      if (queue.EmptySize() < data.size_)
-      {
-        read_port_cdc_.recv_pause_ = true;
-        read_port_cdc_.pending_data_ = data;
-        queue.Publish();
-        return;
-      }
-
-      [[maybe_unused]] const auto ans =
-          queue.PushBatch(static_cast<const uint8_t*>(data.addr_), data.size_);
-      DEV_ASSERT_FROM_CALLBACK(ans == ErrorCode::OK, in_isr);
-      queue.Publish();
-    }
-    (void)TryRearmOut(in_isr);
-  }
-
-  /**
-   * @brief 在 IN 完成后请求推进发送 / Request TX progress after IN completion
-   * @param in_isr 是否在中断中调用 / Whether called in an ISR
-   * @param data 已发送的端点数据，本实现不使用 / Sent endpoint data, unused here
-   */
-  void OnDataInComplete(bool in_isr, ConstRawData& data) override;
+  /// 基类绑定成功后挂接收并发送写端口里的数据 / After the base bind succeeds, arm the
+  /// receives and send what the write port holds
+  [[nodiscard]] ErrorCode BindEndpoints(EndpointPool& pool, uint8_t first_interface,
+                                        bool in_isr) override;
+  /// 解绑，再交回留在本类的接收槽 / Unbind, then hand back the receive slots kept here
+  void UnbindEndpoints(EndpointPool& pool, bool in_isr) override;
+  /// 应用 SetConfig，发通知，推进发送和接收 / Apply SetConfig, notify, advance both
+  /// directions
+  void OnService(bool in_isr) override;
+  /// 留下收到的槽并搬数据；其他结果重新挂接收 / Keep the received slot and move its
+  /// bytes; any other result arms again
+  void OnDataOutComplete(bool in_isr, const Endpoint::Completion& completion) override;
+  /// 继续发送 / Keep sending
+  void OnDataInComplete(bool in_isr, const Endpoint::Completion& completion) override;
 
  private:
+  friend class CDCUartReadPort;
+
+  /// 写端口的通知：请 owner 发送 / Write-port notification: ask the owner to send
+  static void WriteFun(WritePort& port, bool in_isr);
+
+  /// owner：写端口有数据且有空闲槽时装满一个槽并提交，直到没有 / Owner: while the
+  /// write port has data and a slot is free, fill one slot and submit it
+  void PumpTx(bool in_isr);
+  /// owner：为每个空闲的 OUT 槽挂一个包的接收 / Owner: arm one packet on every free
+  /// OUT slot
+  void ArmRx(bool in_isr);
+  /// owner：按到达顺序把收到的数据搬进读端口 / Owner: move received bytes into the read
+  /// port in arrival order
+  void DrainRx(bool in_isr);
+  /// owner：应用 SetConfig 交来的新配置 / Owner: apply the configuration from SetConfig
+  void ApplyPendingConfig(bool in_isr);
+  /// 读者腾出空间：有被挡住的接收槽时请 owner / The reader freed space: ask the owner if
+  /// a received slot is held back
+  void OnReceiveSpace(bool in_isr);
+
+  CDCUartReadPort read_port_cdc_;    ///< 读端口 / Read port
+  LibXR::WritePort write_port_cdc_;  ///< 写端口 / Write port
+
+  /// @name 单写者序号锁：SetConfig 写，owner 读 / Single-writer sequence lock: written
+  ///       by SetConfig, read by the owner
+  /// @{
+  std::atomic<uint32_t> config_sequence_{0U};   ///< 奇数表示写入中 / Odd while writing
+  std::atomic<uint32_t> config_baud_{115200U};  ///< 波特率 / Baud rate
+  /// 停止位、校验、数据位各一字节 / Stop bits, parity, data bits, one byte each
+  std::atomic<uint32_t> config_format_{8U << 16U};
+  /// @}
+
+  /// @name 仅 owner / Owner only
+  /// @{
+  uint32_t applied_config_sequence_ = 0U;  ///< 已应用的序号 / Sequence applied
   /**
-   * @brief 发布发送推进请求并尝试取得执行权 / Publish a TX progress request and try to
-   * claim execution
-   * @param in_isr 当前调用上下文 / Context of this call
-   * @note 重入或并发调用只发布事件，由当前消费者在自己的上下文中继续推进；取得执行权
-   *       的一方以自己的上下文执行 ServiceTx，完成回调的 in_isr 与之一致。
-   *       Reentrant or concurrent calls only publish events; the current consumer
-   *       continues in its own context. The claimer runs ServiceTx with its own
-   *       context, so completion callbacks observe the same in_isr.
+   * @brief 收到未搬完的槽，按到达顺序的环 / Received slots not yet moved, a ring in
+   *        arrival order
+   * @note 槽数由后端定，最多 MAX_SLOTS。
+   *       The backend sets the count, MAX_SLOTS at most.
    */
-  void RequestTx(bool in_isr);
+  Endpoint::Slot rx_slots_[Endpoint::MAX_SLOTS];
+  uint8_t rx_head_ = 0U;   ///< 最早收到的槽 / Oldest received slot
+  uint8_t rx_count_ = 0U;  ///< 留在本类的槽数 / Slots kept here
+  size_t rx_offset_ = 0U;  ///< 最早的槽已搬走的字节 / Bytes moved from the oldest
+  /// @}
 
   /**
-   * @brief 在唯一消费者中处理待发 ZLP 与续发 / Handle the pending ZLP and further
-   * progress in the sole consumer
-   * @param in_isr 取得执行权的上下文 / Context of the claimer
+   * @brief 有接收槽因读端口满而留着 / A received slot is held because the read port is
+   *        full
+   * @note owner 置位，读者一侧清除并请 owner。
+   *       Set by the owner, cleared by the reader side, which then asks the owner.
    */
-  void ServiceTx(bool in_isr);
-
-  /**
-   * @brief 启动已填充的 IN 缓冲区 / Start the filled IN buffer
-   * @param ep 数据 IN 端点 / Data IN endpoint
-   * @param in_isr 是否在中断中调用 / Whether called in an ISR
-   */
-  void StartTxBuffer(Endpoint& ep, [[maybe_unused]] bool in_isr);
-
-  /**
-   * @brief 将队首数据复制到 IN 缓冲区 / Copy the front request into the IN buffer
-   * @param ep 数据 IN 端点 / Data IN endpoint
-   * @param in_isr 是否在中断中调用 / Whether called in an ISR
-   * @note 完成回调前先发布缓冲区长度和传输状态。
-   *       Publish buffer length and transfer state before the completion callback.
-   */
-  void FillTxBuffer(Endpoint& ep, bool in_isr);
-
-  /**
-   * @brief 续发已填充的数据并预填下一缓冲区 / Send prepared data and prefill the next
-   * buffer
-   * @param in_isr 是否在中断中调用 / Whether called in an ISR
-   */
-  void ProgressTx(bool in_isr);
-
-  CDCUartReadPort read_port_cdc_;    ///< CDC 接收端口 / CDC receive port
-  LibXR::WritePort write_port_cdc_;  ///< CDC 发送端口 / CDC transmit port
-  SerializedService tx_service_;     ///< 发送消费者与唤醒合并 / TX consumer and wakeup
-                                     ///< coalescing
-  bool need_write_zlp_ = false;      ///< 待发送零长度包 / Pending zero-length packet
+  std::atomic<uint32_t> rx_waiting_{0U};
 };
-
-inline void CDCUartReadPort::OnReadQueueSpaceAvailable(bool in_isr)
-{
-  if (recv_pause_)
-  {
-    (void)owner_.TryRearmOut(in_isr);
-  }
-}
 
 }  // namespace LibXR::USB

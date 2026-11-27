@@ -212,6 +212,10 @@ if(_xr_driver STREQUAL "linux")
   set_tests_properties(test_linux_can_error PROPERTIES TIMEOUT 10)
 endif()
 
+# USB 仿真后端和 DAP 仿真（driver/usb/sim/usb_sim.cmake）。
+# The USB simulation backend and the DAP simulation (driver/usb/sim/usb_sim.cmake).
+include(driver/usb/sim/usb_sim.cmake)
+
 add_executable(
   libxr_test
   main.cpp
@@ -233,12 +237,25 @@ add_executable(
   core/rw/stdio/test_linux_stdio_print.cpp
   core/rw/write_port/test_write_port.cpp
   core/rw/write_stream/test_write_stream.cpp
+  driver/debug/jtag_general_gpio/test_jtag_general_gpio.cpp
+  driver/debug/jtag_protocol/test_jtag_protocol.cpp
   driver/debug/swd_general_gpio/test_swd_general_gpio.cpp
   driver/debug/swd_protocol/test_swd_protocol.cpp
   driver/driver_async_condition/test_driver_async_condition.cpp
   driver/power/test_power.cpp
   driver/uart/test_uart.cpp
-  driver/usb/test_cdc_uart.cpp
+  driver/usb/test_usb_ep_slots.cpp
+  driver/usb/test_usb_ep.cpp
+  driver/usb/test_usb_ep_pool.cpp
+  driver/usb/test_usb_dev_core.cpp
+  driver/usb/test_cdc.cpp
+  driver/usb/test_uac.cpp
+  driver/usb/test_hid.cpp
+  driver/usb/test_dfu.cpp
+  driver/usb/test_gsusb.cpp
+  driver/usb/test_dap.cpp
+  driver/usb/test_usb_detach_timer.cpp
+  driver/usb/test_usb_fsdev.cpp
   driver/timebase/test_timebase.cpp
   middleware/database/database/test_database.cpp
   middleware/database/raw/raw/test_linux_database_raw.cpp
@@ -315,7 +332,7 @@ set_tests_properties(
 # the static_assert message.
 add_library(
   test_stack_insert_nontrivial OBJECT EXCLUDE_FROM_ALL
-  structure/stack/stack_insert_nontrivial.cpp
+                                      structure/stack/stack_insert_nontrivial.cpp
 )
 target_link_libraries(test_stack_insert_nontrivial PRIVATE xr)
 add_test(NAME stack_insert_nontrivial
@@ -323,8 +340,9 @@ add_test(NAME stack_insert_nontrivial
                  --target test_stack_insert_nontrivial
 )
 set_tests_properties(
-  stack_insert_nontrivial PROPERTIES PASS_REGULAR_EXPRESSION
-                                     "requires a trivially copyable element type" TIMEOUT 120
+  stack_insert_nontrivial
+  PROPERTIES PASS_REGULAR_EXPRESSION "requires a trivially copyable element type" TIMEOUT
+             120
 )
 
 add_library(
