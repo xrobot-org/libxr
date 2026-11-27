@@ -1,28 +1,38 @@
 /**
  * @file usb_sim_classes.cpp
- * @brief 仿真设备经 USB/IP 交给内核：HID、gs_usb、DFU、UAC / The simulated device handed
- *        to the kernel over USB/IP: HID, gs_usb, DFU, UAC
+ * @brief 仿真设备经 USB/IP 交给内核 / Simulated USB classes handed to the kernel over
+ *        USB/IP
  *
- * 用法 / Usage: usb_sim_classes <hid|gsusb|dfu|uac> [port]，然后
+ * 用法 / Usage: usb_sim_classes
+ * <cdc_read|cdc_write|cdc_to_uart|hid|hid_std|gsusb|dfu|dfu_runtime|uac> [port]，然后
  * `sudo usbip --tcp-port <port> attach -r 127.0.0.1 -b 1-1`。
+ * - cdc_read：CDCReadTest 连续丢弃主机发来的 OUT 流。
+ *   cdc_read: CDCReadTest draining host-to-device OUT traffic.
+ * - cdc_write：CDCWriteTest 在 DTR 置位后持续回传全零 IN 流。
+ *   cdc_write: CDCWriteTest streaming zero-filled IN data while DTR is asserted.
+ * - cdc_to_uart：CDCToUart 接线程安全的回环 UART（含线路编码配置回调）。
+ *   cdc_to_uart: CDCToUart bridged to a thread-safe loopback UART with line coding.
  * - hid：厂商自定义用法页，8 字节输入/输出报告；主机写入的输出报告按位取反后作为输入
  *   报告回传（hidraw）。不用键盘、鼠标，免得往主机注入真实输入。
  *   hid: vendor-defined usage page, 8-byte input/output reports; an output report from
- *   the host comes back bitwise inverted as an input report (hidraw). No keyboard or
- *   mouse, so nothing is injected into the host's input.
- * - gsusb：一个 CAN 通道，VID:PID 1D50:606F（内核 gs_usb 驱动绑定）。设备发出的每一帧
- *   在另一个线程里以 ID+1 收回来，模拟总线上另一个节点的应答。
- *   gsusb: one CAN channel, VID:PID 1D50:606F (bound by the kernel gs_usb driver).
- *   Every frame the device sends comes back from another thread with ID+1, standing in
- *   for another node on the bus.
- * - dfu：DFU bootloader，128 KiB 镜像区（含 seal）在 RAM 里（dfu-util 下载、上传）。
- *   dfu: DFU bootloader, a 128 KiB image area in RAM (dfu-util download, upload).
- * - uac：48 kHz 单声道 16 bit 麦克风，应用线程按实时速率写入锯齿波。
- *   uac: a 48 kHz mono 16-bit microphone; the application thread writes a sawtooth at
- *   the real-time rate.
+ *   the host comes back bitwise inverted as an input report (hidraw).
+ * - hid_std：HIDKeyboard + HIDMouse + HIDGamepad + HIDGamepadBipolar 四接口复合设备，
+ *   由键盘 CapsLock LED OUT 报告触发发送。
+ *   hid_std: 4-interface composite (Keyboard + Mouse + Gamepad + GamepadBipolar),
+ *   triggered only after CapsLock LED OUT report.
+ * - gsusb：一个 CAN 通道，VID:PID 1D50:606F（内核 gs_usb 驱动绑定）。
+ *   gsusb: one CAN channel, VID:PID 1D50:606F (bound by kernel gs_usb driver).
+ * - dfu：DFU bootloader，128 KiB 镜像区在 RAM 里。
+ *   dfu: DFU bootloader with a 128 KiB image area in RAM.
+ * - dfu_runtime：DfuRuntimeClass（带 WebUSB 落地页与 WinUSB MS OS 2.0）。
+ *   dfu_runtime: DfuRuntimeClass with WebUSB landing page and WinUSB MS OS 2.0.
+ * - uac：48 kHz 单声道 16 bit 麦克风。
+ *   uac: 48 kHz mono 16-bit microphone.
  */
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -35,11 +45,19 @@
 #include <vector>
 
 #include "can.hpp"
+#include "cdc_test.hpp"
+#include "cdc_to_uart.hpp"
 #include "dfu_bootloader.hpp"
+#include "dfu_runtime.hpp"
 #include "flash.hpp"
 #include "gs_usb.hpp"
 #include "hid.hpp"
+#include "hid_gamepad.hpp"
+#include "hid_keyboard.hpp"
+#include "hid_mouse.hpp"
+#include "libxr_pipe.hpp"
 #include "uac_mic.hpp"
+#include "uart.hpp"
 #include "usbip_server.hpp"
 
 using namespace LibXR;
@@ -179,20 +197,107 @@ class RamFlash : public Flash
   RawData area_;
 };
 
-void JumpToApp(void*) { std::printf("dfu: jump to application requested\n"); }
+// ---------------------------------------------------------------------------
+// CDC-to-UART loopback
+// ---------------------------------------------------------------------------
+
+/// 线程安全回环 UART：接受 8 数据位 1 停止位，后台线程将 TX 字节环回至 RX /
+/// Thread-safe loopback UART accepting 8 data bits and 1 stop bit
+class LoopbackUart : public UART
+{
+ public:
+  LoopbackUart()
+      : UART(static_cast<LibXR::ReadPort*>(nullptr),
+             static_cast<LibXR::WritePort*>(nullptr)),
+        rx_(65536),
+        tx_pipe_(131072)
+  {
+    read_port_ = &rx_;
+    write_port_ = &tx_pipe_.GetWritePort();
+    std::thread(
+        [this]
+        {
+          uint8_t buf[512];
+          LibXR::ReadPort& pipe_out = tx_pipe_.GetReadPort();
+          while (true)
+          {
+            const size_t n = std::min(pipe_out.Size(), sizeof(buf));
+            if (n == 0)
+            {
+              std::this_thread::sleep_for(std::chrono::microseconds(100));
+              continue;
+            }
+            ReadOperation rop;
+            if (pipe_out({buf, n}, rop) != ErrorCode::OK)
+            {
+              continue;
+            }
+            size_t pushed = 0;
+            while (pushed < n)
+            {
+              auto q = rx_.GetReadQueue(false);
+              const size_t chunk = std::min(q.EmptySize(), n - pushed);
+              if (chunk != 0)
+              {
+                (void)q.PushBatch(buf + pushed, chunk);
+                q.Publish();
+                pushed += chunk;
+              }
+              else
+              {
+                q.Publish();
+                std::this_thread::sleep_for(std::chrono::microseconds(100));
+              }
+            }
+          }
+        })
+        .detach();
+  }
+
+  ErrorCode SetConfig(Configuration config, bool = false) override
+  {
+    if (config.baudrate < 300u || config.baudrate > 3000000u || config.data_bits != 8u ||
+        config.stop_bits != 1u)
+    {
+      return ErrorCode::NOT_SUPPORT;
+    }
+    std::printf(
+        "cdc_to_uart: line coding baud=%u parity=%u data=%u stop=%u\n",
+        static_cast<unsigned>(config.baudrate), static_cast<unsigned>(config.parity),
+        static_cast<unsigned>(config.data_bits), static_cast<unsigned>(config.stop_bits));
+    std::fflush(stdout);
+    return ErrorCode::OK;
+  }
+
+ private:
+  LibXR::ReadPort rx_;
+  LibXR::Pipe tx_pipe_;
+};
+
+void JumpToApp(void*)
+{
+  std::printf("dfu: jump to application requested\n");
+  std::fflush(stdout);
+}
 
 constexpr auto LANGUAGE = DescriptorStrings::MakeLanguagePack(
     DescriptorStrings::Language::EN_US, "LibXR", "USB sim device", "0004");
 
-int Serve(DeviceClass& klass, uint16_t vid, uint16_t pid, uint16_t port,
-          Sim::Profile profile)
+int ServeList(std::initializer_list<DeviceClass*> classes, uint16_t vid, uint16_t pid,
+              uint16_t port, Sim::Profile profile)
 {
   Sim::ApplyStopModeFromEnv(profile);
   static Sim::SimDevice device(profile, DeviceDescriptor::PacketSize0::SIZE_64, vid, pid,
-                               0x0100, {&LANGUAGE}, {{&klass}});
+                               0x0100, {&LANGUAGE}, {classes});
   Sim::UsbIpServer server(device, port);
   server.Run();
   return 0;
+}
+
+int Serve(DeviceClass& klass, uint16_t vid, uint16_t pid, uint16_t port,
+          Sim::Profile profile)
+{
+  return ServeList({&klass}, vid, pid, port, profile);
 }
 }  // namespace
 
@@ -201,12 +306,85 @@ int main(int argc, char** argv)
   const std::string kind = argc > 1 ? argv[1] : "";
   const uint16_t port = argc > 2 ? static_cast<uint16_t>(std::atoi(argv[2])) : 3240;
 
+  if (kind == "cdc_read")
+  {
+    static CDCReadTest cdc(Endpoint::EPNumber::EP1, Endpoint::EPNumber::EP1,
+                           Endpoint::EPNumber::EP2);
+    return Serve(cdc, 0x1209, 0x0008, port, Sim::Profile{});
+  }
+  if (kind == "cdc_write")
+  {
+    static CDCWriteTest cdc(Endpoint::EPNumber::EP1, Endpoint::EPNumber::EP1,
+                            Endpoint::EPNumber::EP2);
+    return Serve(cdc, 0x1209, 0x0009, port, Sim::Profile{});
+  }
+  if (kind == "cdc_to_uart")
+  {
+    static LoopbackUart uart;
+    static CDCToUart cdc(Endpoint::EPNumber::EP1, Endpoint::EPNumber::EP1,
+                         Endpoint::EPNumber::EP2, uart, 512, 512, 8);
+    return Serve(cdc, 0x1209, 0x000A, port, Sim::Profile{});
+  }
   if (kind == "hid")
   {
     static VendorHid hid;
     Sim::Profile profile;
     profile.endpoints = {{1, Endpoint::Direction::BOTH, 256, 0, 0, 1}};
     return Serve(hid, 0x1209, 0x0004, port, profile);
+  }
+  if (kind == "hid_std")
+  {
+    static HIDKeyboard kbd(Endpoint::EPNumber::EP1, Endpoint::EPNumber::EP1, true);
+    static HIDMouse mouse(Endpoint::EPNumber::EP2);
+    static HIDGamepad pad(Endpoint::EPNumber::EP3);
+    static HIDGamepadBipolar pad_bi(Endpoint::EPNumber::EP4);
+    static std::atomic<uint32_t> trigger_seq{0};
+    static bool prev_caps = false;
+
+    kbd.SetOnLedChangeCallback(Callback<bool, bool, bool>::Create(
+        [](bool, std::atomic<uint32_t>* seq, bool, bool caps, bool)
+        {
+          if (caps && !prev_caps)
+          {
+            seq->fetch_add(1u, std::memory_order_release);
+          }
+          prev_caps = caps;
+        },
+        &trigger_seq));
+
+    std::thread(
+        []
+        {
+          uint32_t handled = 0u;
+          while (true)
+          {
+            const uint32_t seq = trigger_seq.load(std::memory_order_acquire);
+            if (seq == handled)
+            {
+              std::this_thread::sleep_for(std::chrono::milliseconds(5));
+              continue;
+            }
+            handled = seq;
+            std::this_thread::sleep_for(std::chrono::milliseconds(15));
+            (void)kbd.PressKey({HIDKeyboard::KeyCode::A});
+            (void)mouse.Move(HIDMouse::Button::LEFT, 12, -7, 2);
+            (void)pad.Send(100, 1900, 500, 1500, HIDGamepad::BTN1 | HIDGamepad::BTN3);
+            (void)pad_bi.Send(-1500, 1500, -500, 500, HIDGamepadBipolar::BTN2);
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            (void)kbd.ReleaseAll();
+            (void)mouse.Release();
+            (void)pad.Send(1023, 1023, 1023, 1023, 0);
+            (void)pad_bi.Send(0, 0, 0, 0, 0);
+          }
+        })
+        .detach();
+
+    Sim::Profile profile;
+    profile.endpoints = {{1, Endpoint::Direction::BOTH, 256, 0, 0, 1},
+                         {2, Endpoint::Direction::IN, 256, 0, 0, 1},
+                         {3, Endpoint::Direction::IN, 256, 0, 0, 1},
+                         {4, Endpoint::Direction::IN, 256, 0, 0, 1}};
+    return ServeList({&kbd, &mouse, &pad, &pad_bi}, 0x1209, 0x000C, port, profile);
   }
   if (kind == "gsusb")
   {
@@ -242,6 +420,25 @@ int main(int argc, char** argv)
     profile.endpoints = {};
     return Serve(dfu, 0x1209, 0x0005, port, profile);
   }
+  if (kind == "dfu_runtime")
+  {
+    static DfuRuntimeClass dfu_rt(&JumpToApp, nullptr, 50U,
+                                  DfuRuntimeClass::DEFAULT_INTERFACE_STRING,
+                                  "https://example.com/dfu");
+    std::thread(
+        []
+        {
+          while (true)
+          {
+            dfu_rt.Process();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+          }
+        })
+        .detach();
+    Sim::Profile profile;
+    profile.endpoints = {};
+    return Serve(dfu_rt, 0x1209, 0x000B, port, profile);
+  }
   if (kind == "uac")
   {
     static UAC1MicrophoneQ<1, 16> mic(Endpoint::EPNumber::EP1, 48000);
@@ -270,6 +467,9 @@ int main(int argc, char** argv)
     profile.endpoints = {{1, Endpoint::Direction::IN, 512, 0, 0, 1}};
     return Serve(mic, 0x1209, 0x0006, port, profile);
   }
-  std::fprintf(stderr, "usage: usb_sim_classes <hid|gsusb|dfu|uac> [port]\n");
+  std::fprintf(stderr,
+               "usage: usb_sim_classes "
+               "<cdc_read|cdc_write|cdc_to_uart|hid|hid_std|gsusb|dfu|dfu_runtime|uac> "
+               "[port]\n");
   return 2;
 }

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# classes_e2e.sh <build-dir>: CDC, HID, gs_usb, DFU and UAC device classes through the
-# kernel drivers. Starts usb_sim_usbip (CDC) or usb_sim_classes for each class, attaches
-# it through vhci and checks it from the host side (ttyACM loopback, hidraw, SocketCAN,
-# dfu-util, arecord). USBSIM_STOP / USBSIM_PEND pick the stop mode and PendInterrupt
-# (see usbip_server.hpp); USBSIM_ONLY="dfu uac" runs only those classes. Needs sudo,
-# vhci-hcd, usbip, dfu-util and arecord.
+# classes_e2e.sh <build-dir>: CDC, CDCReadTest, CDCWriteTest, CDCToUart, HID, composite
+# standard HID, gs_usb, DFU, DfuRuntimeClass and UAC device classes through the kernel
+# drivers. Starts usb_sim_usbip (CDC) or usb_sim_classes for each class, attaches it
+# through vhci and checks it from the host side. USBSIM_STOP / USBSIM_PEND pick the stop
+# mode and PendInterrupt (see usbip_server.hpp); USBSIM_ONLY="dfu uac" runs only those
+# classes. Needs sudo, vhci-hcd, usbip, dfu-util, python3-usb and arecord.
 set -u
 BUILD=$(realpath "${1:?build dir}")
 cd "$(dirname "$0")"
@@ -21,7 +21,7 @@ stop_server() {
 }
 start() {
   stop_server
-  "$@" "$USBSIM_PORT" > "$WORK/server.log" 2>&1 &
+  "$@" "$USBSIM_PORT" 9>&- > "$WORK/server.log" 2>&1 &
   server=$!
   sleep 1
   usbsim_attach || { echo "FAIL $*: attach"; fail=1; return 1; }
@@ -32,7 +32,7 @@ result() {
     echo "FAIL $1"; fail=1; tail -5 "$WORK/server.log" | sed "s/^/    /"
   fi
 }
-want() { case " ${USBSIM_ONLY:-cdc hid gsusb dfu uac} " in *" $1 "*) return 0 ;; esac; return 1; }
+want() { case " ${USBSIM_ONLY:-cdc cdc_read cdc_write cdc_to_uart hid hid_std gsusb dfu dfu_runtime uac} " in *" $1 "*) return 0 ;; esac; return 1; }
 find_acm() {
   for d in /sys/class/tty/ttyACM*; do
     readlink -f "$d/device" | grep -q vhci && basename "$d" && return 0
@@ -53,9 +53,28 @@ if want cdc && start "$BUILD/test/usb_sim_usbip"; then
   fi
 fi
 
+want cdc_read && start "$BUILD/test/usb_sim_classes" cdc_read && {
+  sudo python3 class_checks.py cdc_read 262144
+  result "cdc_read (CDCReadTest, 256 KiB OUT)" $?
+}
+want cdc_write && start "$BUILD/test/usb_sim_classes" cdc_write && {
+  sudo python3 class_checks.py cdc_write 2048
+  result "cdc_write (CDCWriteTest, DTR stream + stop)" $?
+}
+want cdc_to_uart && start "$BUILD/test/usb_sim_classes" cdc_to_uart && {
+  sudo python3 class_checks.py cdc_to_uart 1000 &&
+    grep -q "cdc_to_uart: line coding baud=57600" "$WORK/server.log" &&
+    grep -q "cdc_to_uart: line coding baud=115200" "$WORK/server.log"
+  result "cdc_to_uart (CDCToUart loopback + line coding)" $?
+}
+
 want hid && start "$BUILD/test/usb_sim_classes" hid && {
   sudo python3 class_checks.py hid 1000
   result "hid (hidraw, 1000 reports)" $?
+}
+want hid_std && start "$BUILD/test/usb_sim_classes" hid_std && {
+  sudo python3 class_checks.py hid_std 1
+  result "hid_std (composite Keyboard+Mouse+Gamepad+Bipolar)" $?
 }
 want gsusb && start "$BUILD/test/usb_sim_classes" gsusb && {
   sudo python3 class_checks.py gsusb 1000
@@ -75,6 +94,27 @@ if want dfu && start "$BUILD/test/usb_sim_classes" dfu; then
   [ $rc -eq 0 ] || tail -25 "$WORK/dfu.log" | sed "s/^/    /"
   grep -c "bus reset" "$WORK/server.log" | sed "s/^/    server bus resets: /"
   result "dfu (dfu-util download and upload, 100000 bytes)" $rc
+fi
+
+if want dfu_runtime && start "$BUILD/test/usb_sim_classes" dfu_runtime; then
+  sudo python3 class_checks.py dfu_runtime 1 > "$WORK/dfu_rt.log" 2>&1
+  rc=$?
+  if [ $rc -eq 0 ]; then
+    sudo timeout 30 dfu-util -d 1209:000b -e >> "$WORK/dfu_rt.log" 2>&1
+    rc=$?
+  fi
+  if [ $rc -eq 0 ]; then
+    rc=1
+    for _ in $(seq 1 30); do
+      if grep -q "dfu: jump to application requested" "$WORK/server.log"; then
+        rc=0
+        break
+      fi
+      sleep 0.1
+    done
+  fi
+  sed "s/^/    /" "$WORK/dfu_rt.log"
+  result "dfu_runtime (BOS+WebUSB+WinUSB & dfu-util -e)" $rc
 fi
 
 if want uac && start "$BUILD/test/usb_sim_classes" uac; then
