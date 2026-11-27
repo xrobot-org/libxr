@@ -4,12 +4,12 @@
  *        tools.
  *
  * `replay/` 下每个文件是一次真实会话（OpenOCD、pyOCD、probe-rs 经内核 CMSIS-DAP 驱动
- * 连 `dap_sim_usbip`，用 `USBIP_RECORD` 录下）：按完成顺序记录的每个 URB。这里用同样的
+ * 与 USB/IP 仿真器录下）：按完成顺序记录的每个 URB。这里用同样的
  * 组合（DAP v2 + SwdGeneralGPIO + 仿真目标）在仿真后端上重放：OUT 原样送出，IN 读到短
  * 包为止并与录制逐字节比较。录制时的回应来自当时的实现，所以这是回归基准：命令层、
  * 流水线或 SWD 引擎的行为一变，回应就对不上。
- * Each file under `replay/` is one real session (OpenOCD, pyOCD and probe-rs through the
- * kernel CMSIS-DAP driver to `dap_sim_usbip`, recorded with `USBIP_RECORD`): every URB
+ * Each file under `replay/` is one real session recorded from OpenOCD, pyOCD, or probe-rs
+ * through the Linux kernel CMSIS-DAP driver over USB/IP: every URB
  * in completion order. The same composition (DAP v2 + SwdGeneralGPIO + simulated target)
  * replays it on the simulation backend: OUT data goes out as recorded, IN is read up to
  * a short packet and compared byte for byte. The recorded responses came from the
@@ -91,7 +91,7 @@ size_t Replay(const std::filesystem::path& path)
   Debug::Sim::SimSwdioPin swdio(target.wire);
   Engine engine(swclk, swdio, 0u, Debug::SwdGpioTiming{});
   DapLinkV2Class<Engine> dap(Endpoint::EPNumber::EP1, Endpoint::EPNumber::EP2, engine);
-  // 与 dap_sim_usbip 相同 / Same as dap_sim_usbip
+  // 与录制时的端点配置一致 / Match the endpoint configuration used when recording
   Profile profile;
   profile.endpoints = {{1, Endpoint::Direction::IN, 2048, 0, 0, 1},
                        {2, Endpoint::Direction::OUT, 2048, 0, 0, 1}};
