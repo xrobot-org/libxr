@@ -34,8 +34,19 @@ struct SourceAnalysisScratch
       0;  ///< 调用点至少需要的参数个数 / minimum call-site argument count
   Error error = Error::None;  ///< 首个解析错误 / first parse error
 
+  /**
+   * @brief 访问字面文本片段（仅统计分析阶段为空操作） / Visit a literal text span
+   *        (no-op during source analysis)
+   * @return 始终返回 `Error::None` / Always returns `Error::None`
+   */
   [[nodiscard]] consteval Error Text(size_t, size_t) const { return Error::None; }
 
+  /**
+   * @brief 记录一个已解析字段的参数引用顺序 / Record the argument reference order of a
+   *        parsed field
+   * @param field 已解析的格式字段 / Parsed format field
+   * @return 始终返回 `Error::None` / Always returns `Error::None`
+   */
   [[nodiscard]] consteval Error Field(const ParsedField& field)
   {
     order[field_count++] = field.arg_index;

@@ -108,9 +108,19 @@ class Printf
                            ///< referenced text size no longer fits in uint16_t
   };
 
+  /**
+   * @brief 单个 printf 格式串的编译期后端前端适配器（前置声明）
+   *        / Compile-time frontend adapter for one printf format string
+   * @tparam Source printf 风格格式串字面量 / Printf-style format literal
+   */
   template <Text Source>
   class Compiler;
 
+  /**
+   * @brief 编译期校验并降级后的 printf 格式对象（前置声明）
+   *        / Compile-time validated and lowered printf format object
+   * @tparam Source printf 风格格式串字面量 / Printf-style format literal
+   */
   template <Text Source>
   struct Compiled;
 
@@ -145,6 +155,11 @@ class Printf
 #include "printf/printf_frontend_detail.hpp"
 namespace LibXR::Print
 {
+/**
+ * @brief 编译期校验并降级后的 printf 格式对象 / Compile-time validated and lowered printf
+ *        format object
+ * @tparam Source printf 风格格式串字面量 / Printf-style format literal
+ */
 template <Text Source>
 struct Printf::Compiled
 {

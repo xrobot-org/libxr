@@ -25,36 +25,48 @@ namespace LibXR::Print::Detail::FormatArgument
 template <typename T>
 struct TypeTraits
 {
-  using Decayed = std::remove_cvref_t<T>;
+  using Decayed = std::remove_cvref_t<T>;  ///< 退化后类型 / Decayed argument type.
+  /// 枚举归一到底层整数后的类型 / Normalized type mapping enums to underlying integers.
   using Normalized =
       typename std::conditional_t<std::is_enum_v<Decayed>, std::underlying_type<Decayed>,
                                   std::type_identity<Decayed>>::type;
 
+  /// 是否为有符号整数 / Whether `Normalized` is a signed integer type.
   static constexpr bool is_signed_integer = std::is_integral_v<Normalized> &&
                                             !std::is_same_v<Normalized, bool> &&
                                             std::is_signed_v<Normalized>;
+  /// 是否为无符号整数 / Whether `Normalized` is an unsigned integer type.
   static constexpr bool is_unsigned_integer = std::is_integral_v<Normalized> &&
                                               !std::is_same_v<Normalized, bool> &&
                                               std::is_unsigned_v<Normalized>;
+  /// 是否可按默认 `int` 宽度打包 / Whether representable within signed `int` width.
   static constexpr bool is_default_signed_integer =
       is_signed_integer && sizeof(Normalized) <= sizeof(int);
+  /// 是否可按默认 `unsigned int` 宽度打包 / Whether representable within `unsigned int`.
   static constexpr bool is_default_unsigned_integer =
       is_unsigned_integer && sizeof(Normalized) <= sizeof(unsigned int);
+  /// 是否为 `char` 数组 / Whether `Decayed` is a character array.
   static constexpr bool is_char_array =
       std::is_array_v<Decayed> &&
       std::is_same_v<std::remove_cv_t<std::remove_extent_t<Decayed>>, char>;
+  /// 是否为 C 字符串类型 / Whether `Decayed` is a C-string pointer or char array.
   static constexpr bool is_c_string = std::is_same_v<Decayed, const char*> ||
                                       std::is_same_v<Decayed, char*> || is_char_array;
+  /// 是否为字符串视图可接收类型 / Whether compatible with `std::string_view` packing.
   static constexpr bool is_string_like = is_c_string ||
                                          std::is_same_v<Decayed, std::string_view> ||
                                          std::is_same_v<Decayed, std::string>;
+  /// 是否为指针或空指针类型 / Whether `Decayed` is a data pointer or `std::nullptr_t`.
   static constexpr bool is_pointer_like =
       (std::is_pointer_v<Decayed> &&
        !std::is_function_v<std::remove_pointer_t<Decayed>>) ||
       std::is_same_v<Decayed, std::nullptr_t>;
+  /// 是否可作字符格式输出 / Whether `Normalized` is integral and character-compatible.
   static constexpr bool is_character_like = std::is_integral_v<Normalized>;
+  /// 是否为 `float` 或 `double` / Whether `Decayed` is `float` or `double`.
   static constexpr bool is_float =
       std::is_same_v<Decayed, float> || std::is_same_v<Decayed, double>;
+  /// 是否为 `long double` / Whether `Decayed` is `long double`.
   static constexpr bool is_long_double = std::is_same_v<Decayed, long double>;
 
   /**

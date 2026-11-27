@@ -5,6 +5,7 @@
 
 using namespace LibXR;
 
+#ifndef __DOXYGEN__
 void Topic::PackedDataHeader::SetDataLen(uint32_t len)
 {
   data_len_raw[0] = static_cast<uint8_t>(len);
@@ -38,6 +39,7 @@ MicrosecondTimestamp Topic::PackedDataHeader::GetTimestamp() const
   }
   return MicrosecondTimestamp(value);
 }
+#endif
 
 void Topic::PackBytes(uint32_t topic_name_crc32, RawData buffer,
                       MicrosecondTimestamp timestamp, ConstRawData data)

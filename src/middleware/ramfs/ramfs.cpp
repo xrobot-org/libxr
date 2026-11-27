@@ -5,7 +5,6 @@ using namespace LibXR;
 /**
  * @brief 构造 RamFS，并挂接根目录下的 `bin` 目录
  *        Construct RamFS and attach the `bin` directory under the root
- * @param name 根目录名称 / Root directory name
  */
 RamFS::RamFS(const char* name) : root_(name), bin_("bin") { root_.Add(bin_); }
 
@@ -44,7 +43,6 @@ RamFS::FsNode::FsNode(FsNodeType node_type) : type_(node_type), tree_node_(this)
 /**
  * @brief 拷贝构造 FsNode 基类部分
  *        Copy-construct the FsNode base part
- * @param other 被拷贝的节点 / Node to copy from
  */
 RamFS::FsNode::FsNode(const FsNode& other)
     : name_(other.name_), type_(other.type_), parent_(nullptr), tree_node_(this)
@@ -87,9 +85,6 @@ RamFS::Custom::Custom() : FsNode(FsNodeType::CUSTOM) {}
 /**
  * @brief 构造一个具名自定义节点
  *        Construct one named custom node
- * @param name 节点名称 / Node name
- * @param kind 用户定义类型 / User-defined kind
- * @param context 用户上下文指针 / User context pointer
  */
 RamFS::Custom::Custom(const char* name, uint32_t kind, void* context) : Custom()
 {
@@ -127,7 +122,6 @@ void RamFS::Dir::AddNode(FsNode& node)
 /**
  * @brief 在当前目录查找直属子节点
  *        Find one direct child node in the current directory
- * @param name 节点名称 / Node name
  * @return 找到的节点；未找到返回 nullptr
  *         Matching node, or nullptr if not found
  */
@@ -208,7 +202,6 @@ RamFS::FsNode* RamFS::Dir::FindNodeRevByType(const char* name, FsNodeType type)
 /**
  * @brief 查找直属文件节点
  *        Find one direct child file node
- * @param name 文件名 / File name
  * @return 文件节点；未找到返回 nullptr
  *         File node, or nullptr if not found
  */
@@ -220,7 +213,6 @@ RamFS::File* RamFS::Dir::FindFile(const char* name)
 /**
  * @brief 递归查找文件节点
  *        Find one file node recursively
- * @param name 文件名 / File name
  * @return 文件节点；未找到返回 nullptr
  *         File node, or nullptr if not found
  */
@@ -232,7 +224,6 @@ RamFS::File* RamFS::Dir::FindFileRev(const char* name)
 /**
  * @brief 查找直属目录节点，支持 "." 和 ".."
  *        Find one direct child directory node, supporting "." and ".."
- * @param name 目录名称 / Directory name
  * @return 目录节点；未找到返回 nullptr
  *         Directory node, or nullptr if not found
  */
@@ -259,7 +250,6 @@ RamFS::Dir* RamFS::Dir::FindDir(const char* name)
 /**
  * @brief 递归查找目录节点，支持 "." 和 ".."
  *        Find one directory node recursively, supporting "." and ".."
- * @param name 目录名称 / Directory name
  * @return 目录节点；未找到返回 nullptr
  *         Directory node, or nullptr if not found
  */
@@ -286,7 +276,6 @@ RamFS::Dir* RamFS::Dir::FindDirRev(const char* name)
 /**
  * @brief 查找直属自定义节点
  *        Find one direct child custom node
- * @param name 节点名称 / Node name
  * @return 自定义节点；未找到返回 nullptr
  *         Custom node, or nullptr if not found
  */
@@ -298,7 +287,6 @@ RamFS::Custom* RamFS::Dir::FindCustom(const char* name)
 /**
  * @brief 递归查找自定义节点
  *        Find one custom node recursively
- * @param name 节点名称 / Node name
  * @return 自定义节点；未找到返回 nullptr
  *         Custom node, or nullptr if not found
  */

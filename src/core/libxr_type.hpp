@@ -286,6 +286,12 @@ class ConstRawData
   {
   }
 
+  /**
+   * @brief 从常量字符数组构造 `ConstRawData`（自动去除末尾空字符） / Construct
+   * `ConstRawData` from a const character array (trimming trailing NUL bytes)
+   * @tparam N 字符数组长度 / Character array length
+   * @param data 常量字符数组 / Const character array
+   */
   template <size_t N>
   ConstRawData(const char (&data)[N])
       : addr_(reinterpret_cast<const void*>(data)),
@@ -314,7 +320,8 @@ class ConstRawData
 class TypeID
 {
  public:
-  using ID = const void*;
+  using ID = const void*;  ///< 类型唯一标识符指针类型 / Type alias for the unique type ID
+                           ///< pointer.
 
   /**
    * @brief 获取类型的唯一标识符 / Get a unique identifier for type `T`

@@ -17,7 +17,6 @@ struct IndexingState
 /**
  * @brief 判断一个源字节是否为 ASCII 十进制数字 / Return whether one source byte is an
  * ASCII decimal digit
- * @param ch 待检查的源字节 / Source byte to test
  * @return 若是 ASCII 十进制数字则返回 `true`，否则返回 `false` / Returns `true` for an
  * ASCII decimal digit, otherwise `false`
  */
@@ -26,7 +25,6 @@ struct IndexingState
 /**
  * @brief 判断源字符串在结尾终止字节之前是否包含嵌入式 NUL / Return whether the source
  * contains an embedded NUL byte before the terminator
- * @param source 待检查的源字符串 / Source string to inspect
  * @return 若终止前包含嵌入式 NUL 则返回 `true`，否则返回 `false` / Returns `true` when an
  * embedded NUL exists before the terminator, otherwise `false`
  */

@@ -129,8 +129,6 @@ class Writer
    * ordered by emitted fields
    * @tparam Args 调用点实参类型列表 / Call-site argument types
    * @param sink 输出端 / Destination sink
-   * @param format 编译格式对象，仅用于约束与类型推导 / Compiled format object, used only
-   * for constraints and type deduction
    * @param args 调用点实参 / Call-site arguments
    *
    * 这条路径用于 `{1} {0}` 这种格式：字段仍然按源串顺序执行，

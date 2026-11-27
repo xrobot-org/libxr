@@ -17,7 +17,8 @@ namespace LibXR
 class Event
 {
  public:
-  using Callback = LibXR::Callback<uint32_t>;
+  using Callback =
+      LibXR::Callback<uint32_t>;  ///< 事件触发回调类型 / Event-trigger callback type.
 
   /**
    * @brief 回调链表指针类型，用于事件触发时从 ISR 中安全调用。

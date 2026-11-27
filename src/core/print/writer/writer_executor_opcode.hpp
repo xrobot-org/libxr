@@ -8,10 +8,6 @@
 /**
  * @brief 将一个输出端、码流和参数字节块绑定到当前执行器 / Bind one sink, code stream, and
  * packed-argument blob to this executor
- * @param sink 输出端 / Destination sink
- * @param codes 指向编译字节流的指针 / Pointer to the compiled byte stream
- * @param args 指向已打包参数字节块的指针；无参数时可为空 / Pointer to the packed argument
- * blob, or null when no arguments exist
  */
 template <OutputSink Sink>
 Writer::Executor<Sink>::Executor(Sink& sink, const uint8_t* codes, const uint8_t* args)

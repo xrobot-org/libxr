@@ -24,7 +24,8 @@ template <typename Args>
 class Operation
 {
  public:
-  using Callback = LibXR::Callback<Args>;
+  using Callback =
+      LibXR::Callback<Args>;  ///< 操作完成回调类型 / Operation completion callback type.
 
   /// 完成通知方式 / Completion notification mode.
   enum class OperationType : uint8_t

@@ -22,7 +22,7 @@ LIBXR_PACKED_BEGIN
 template <size_t BlockSize>
 struct BlockBoolData
 {
-  uint8_t data[BlockSize];
+  uint8_t data[BlockSize];  ///< 对齐布尔位图字节数组 / Aligned boolean flag bitmap bytes.
 };
 LIBXR_PACKED_END
 

@@ -49,7 +49,6 @@ MPMCQueueBase::~MPMCQueueBase()
 
 /**
  * @brief 按字节入队一个 payload / Enqueue one payload by bytes
- * @param value 指向待入队 payload 的指针 / Pointer to the payload to enqueue
  */
 ErrorCode MPMCQueueBase::PushBytes(const void* value)
 {
@@ -89,9 +88,6 @@ ErrorCode MPMCQueueBase::PushBytes(const void* value)
 
 /**
  * @brief 按字节出队一个 payload / Dequeue one payload by bytes
- * @param value 用于接收 payload 的缓冲区；传 `nullptr` 时仅丢弃队头元素
- *        / Buffer that receives the payload; pass `nullptr` to discard the
- *        front element only
  */
 ErrorCode MPMCQueueBase::PopBytes(void* value)
 {

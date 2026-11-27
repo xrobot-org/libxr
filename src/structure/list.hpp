@@ -100,12 +100,29 @@ class List
     }
 
     /**
-     * @brief 操作符重载，提供数据访问接口。
-     *        Operator overloads providing access to the data.
+     * @brief 成员访问操作符，返回数据指针 / Member access operator returning data
+     * pointer
+     * @return 数据指针 / Pointer to stored data
      */
     Data* operator->() noexcept { return &data_; }
+
+    /**
+     * @brief 常量成员访问操作符，返回常量数据指针 / Const member access operator
+     * returning const data pointer
+     * @return 常量数据指针 / Const pointer to stored data
+     */
     const Data* operator->() const noexcept { return &data_; }
+
+    /**
+     * @brief 解引用操作符，返回数据引用 / Dereference operator returning data reference
+     * @return 数据引用 / Reference to stored data
+     */
     Data& operator*() noexcept { return data_; }
+
+    /**
+     * @brief 类型转换操作符，隐式转换为数据引用 / Conversion operator to data reference
+     * @return 数据引用 / Reference to stored data
+     */
     operator Data&() noexcept { return data_; }
 
     Data data_;  ///< 存储的数据 / The stored data.

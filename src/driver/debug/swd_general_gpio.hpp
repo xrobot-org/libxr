@@ -342,6 +342,12 @@ class SwdGeneralGPIO final : public Swd
     }
   }
 
+  /**
+   * @brief 在 SWDIO 上按 LSB-first 输出位序列 / Write bit sequence LSB-first on SWDIO.
+   * @param cycles 输出位数 / Number of bit cycles.
+   * @param data_lsb_first 待输出数据（LSB-first） / Input data buffer (LSB-first).
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   ErrorCode SeqWriteBits(uint32_t cycles, const uint8_t* data_lsb_first) override
   {
     if (cycles == 0u)
@@ -365,6 +371,12 @@ class SwdGeneralGPIO final : public Swd
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief 从 SWDIO 按 LSB-first 读取位序列 / Read bit sequence LSB-first from SWDIO.
+   * @param cycles 读取位数 / Number of bit cycles.
+   * @param out_lsb_first 输出缓冲区（LSB-first） / Output buffer (LSB-first).
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   ErrorCode SeqReadBits(uint32_t cycles, uint8_t* out_lsb_first) override
   {
     if (cycles == 0u)
