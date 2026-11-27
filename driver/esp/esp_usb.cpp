@@ -1232,7 +1232,7 @@ ErrorCode ESP32USBEndpoint::StartHardware(const HwRequest& request, bool in_isr)
     // One packet at a time into the controller's EP0 OUT buffer; length 0 (status
     // stage) also programs a full packet.
     hw_programmed_ = packet;
-    regs->tsiz = (SETUP_COUNT << TSIZ_SUPCNT_POS) | (1UL << TSIZ_PKTCNT_POS) | packet;
+    regs->tsiz = (SETUP_COUNT << TSIZ0_SUPCNT_POS) | (1UL << TSIZ_PKTCNT_POS) | packet;
     regs->dma = Address(controller_.ep0_out_buffer_);
     ep0_armed_ = Ep0Armed::DATA;
   }

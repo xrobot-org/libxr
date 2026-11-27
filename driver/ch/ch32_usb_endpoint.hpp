@@ -286,7 +286,7 @@ class CH32EndpointOtgFs : public USB::Endpoint
 
 #endif  // defined(USBFSD) || defined(__DOXYGEN__)
 
-#if defined(USBHSD) || defined(__DOXYGEN__)
+#if LIBXR_CH32_HAS_USBHS || defined(__DOXYGEN__)
 
 /**
  * @class CH32EndpointOtgHs
@@ -675,6 +675,6 @@ class CH32EndpointOtgHs : public USB::Endpoint
   void* const dma_base_;
 };
 
-#endif  // defined(USBHSD) || defined(__DOXYGEN__)
+#endif  // LIBXR_CH32_HAS_USBHS || defined(__DOXYGEN__)
 
 }  // namespace LibXR

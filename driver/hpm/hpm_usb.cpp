@@ -9,6 +9,10 @@
 #include "hpm_usb_drv.h"
 #include "timebase.hpp"
 
+static_assert(LibXR::HPMUSBController::MAX_ENDPOINTS <=
+                  sizeof(USB_Type::ENDPTCTRL) / sizeof(USB_Type::ENDPTCTRL[0]),
+              "MAX_ENDPOINTS exceeds ENDPTCTRL register count");
+
 using namespace LibXR;
 using LibXR::USB::Endpoint;
 

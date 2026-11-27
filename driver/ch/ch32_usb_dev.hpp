@@ -155,7 +155,7 @@ class CH32USBOtgFS : public USB::DeviceService,
 
 #endif  // defined(USBFSD) || defined(__DOXYGEN__)
 
-#if defined(USBHSD) || defined(__DOXYGEN__)
+#if LIBXR_CH32_HAS_USBHS || defined(__DOXYGEN__)
 
 /**
  * @class CH32USBOtgHS
@@ -352,6 +352,6 @@ class CH32USBOtgHS : public USB::DeviceService,
   bool setup_since_reset_ = false;
 };
 
-#endif  // defined(USBHSD) || defined(__DOXYGEN__)
+#endif  // LIBXR_CH32_HAS_USBHS || defined(__DOXYGEN__)
 
 }  // namespace LibXR

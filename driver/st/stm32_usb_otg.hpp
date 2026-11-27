@@ -10,7 +10,8 @@
 #include "usb/core/usb_service.hpp"
 #include "usb/device/dev_core.hpp"
 
-#if defined(HAL_PCD_MODULE_ENABLED) && (defined(USB_OTG_FS) || defined(USB_OTG_HS))
+#if defined(HAL_PCD_MODULE_ENABLED) && (defined(USB_OTG_FS) || defined(USB_OTG_HS) || \
+                                        defined(USB1_OTG_HS) || defined(USB2_OTG_HS))
 
 namespace LibXR
 {
@@ -632,6 +633,42 @@ class STM32USBDeviceOtgHS : public STM32USBOtgDevice
  public:
   /// 参数见 STM32USBOtgDevice / Parameters as for STM32USBOtgDevice
   STM32USBDeviceOtgHS(
+      const HardwareConfig& hw, size_t rx_fifo_size,
+      const std::initializer_list<RawData> RX_EP_CFGS,
+      const std::initializer_list<EPInConfig> TX_EP_CFGS,
+      USB::DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid,
+      uint16_t bcd,
+      const std::initializer_list<const USB::DescriptorStrings::LanguagePack*> LANG_LIST,
+      const std::initializer_list<const std::initializer_list<USB::DeviceClass*>> CONFIGS,
+      ConstRawData uid = {nullptr, 0});
+};
+#endif
+
+#if !defined(USB_OTG_HS) && defined(USB1_OTG_HS)
+/// STM32 OTG HS1 设备 / STM32 OTG HS1 device
+class STM32USBDeviceOtgHS1 : public STM32USBOtgDevice
+{
+ public:
+  /// 参数见 STM32USBOtgDevice / Parameters as for STM32USBOtgDevice
+  STM32USBDeviceOtgHS1(
+      const HardwareConfig& hw, size_t rx_fifo_size,
+      const std::initializer_list<RawData> RX_EP_CFGS,
+      const std::initializer_list<EPInConfig> TX_EP_CFGS,
+      USB::DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid,
+      uint16_t bcd,
+      const std::initializer_list<const USB::DescriptorStrings::LanguagePack*> LANG_LIST,
+      const std::initializer_list<const std::initializer_list<USB::DeviceClass*>> CONFIGS,
+      ConstRawData uid = {nullptr, 0});
+};
+#endif
+
+#if !defined(USB_OTG_HS) && defined(USB2_OTG_HS)
+/// STM32 OTG HS2 设备 / STM32 OTG HS2 device
+class STM32USBDeviceOtgHS2 : public STM32USBOtgDevice
+{
+ public:
+  /// 参数见 STM32USBOtgDevice / Parameters as for STM32USBOtgDevice
+  STM32USBDeviceOtgHS2(
       const HardwareConfig& hw, size_t rx_fifo_size,
       const std::initializer_list<RawData> RX_EP_CFGS,
       const std::initializer_list<EPInConfig> TX_EP_CFGS,
