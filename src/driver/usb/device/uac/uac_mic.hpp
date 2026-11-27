@@ -137,7 +137,11 @@ class UAC1MicrophoneQ : public DeviceClass
    *       Emptying is a consumer-side operation: call it only while not streaming
    *       (unconfigured or alt 0).
    */
-  void ResetQueue() { pcm_queue_.Reset(); }
+  void ResetQueue()
+  {
+    pcm_queue_.Reset();
+    discard_left_ = 0U;
+  }
 
  protected:
   /// @name DeviceClass 的实现 / DeviceClass implementation
@@ -475,6 +479,12 @@ class UAC1MicrophoneQ : public DeviceClass
   /// interval: borrow a slot, take whole audio frames, zero-fill, submit
   void KickOneFrame(bool in_isr);
 
+  /**
+   * @brief 开始推流时丢弃开始前写入的旧 PCM（消费者一侧出队）/ Drop PCM queued before
+   *        streaming starts (dequeued on the consumer side)
+   */
+  void DropStalePcm();
+
   /// 等时 IN 的完成回调入口 / Completion entry of the isochronous IN endpoint
   static void OnInCompleteStatic(bool in_isr, UAC1MicrophoneQ* self,
                                  const Endpoint::Completion& completion);
@@ -512,6 +522,10 @@ class UAC1MicrophoneQ : public DeviceClass
    *       Written by SetAltSetting and UnbindEndpoints, read by SOF and GET_INTERFACE.
    */
   bool streaming_ = false;
+  /// 跨开流边界拆散音频帧后，下一次写新流前还需补齐丢弃的尾字节数（0..FRAME_BYTES-1）/
+  /// Remaining bytes of a split pre-stream audio frame to discard before streaming
+  /// resumes (0..FRAME_BYTES-1)
+  size_t discard_left_ = 0U;
   /// 绑定时的分帧；BindEndpoints 写 / Framing at the bind; written by BindEndpoints
   Timing timing_{};
   /// Bresenham 余数，0..denominator-1；KickOneFrame 写 / Bresenham remainder,
@@ -1071,9 +1085,37 @@ ErrorCode UAC1MicrophoneQ<CHANNELS, BITS_PER_SAMPLE>::StartStreaming(bool in_isr
   acc_rem_ = 0U;
   micro_debt_ = 0U;
   last_frame_ = NO_FRAME;
+  DropStalePcm();
   streaming_ = true;
   KickOneFrame(in_isr);
   return ErrorCode::OK;
+}
+
+template <uint8_t CHANNELS, uint8_t BITS_PER_SAMPLE>
+void UAC1MicrophoneQ<CHANNELS, BITS_PER_SAMPLE>::DropStalePcm()
+{
+  uint8_t scratch[64];
+  size_t dropped = 0U;
+  for (size_t left = pcm_queue_.Size(); left != 0U;)
+  {
+    const size_t n = LibXR::min(left, sizeof(scratch));
+    if (pcm_queue_.PopBatch(scratch, n) != ErrorCode::OK)
+    {
+      break;
+    }
+    dropped += n;
+    left -= n;
+  }
+  if constexpr (FRAME_BYTES > 1U)
+  {
+    // 保持跨流边界累计丢弃字节对齐
+    // FRAME_BYTES，防止生产者分片写入半帧导致后续采样/声道错位。 Keep discarded bytes
+    // aligned to FRAME_BYTES across stream starts so a split sample does not misalign
+    // subsequent audio frames or channels.
+    const size_t phase = (FRAME_BYTES - discard_left_) % FRAME_BYTES;
+    const size_t rem = (phase + dropped) % FRAME_BYTES;
+    discard_left_ = (rem == 0U) ? 0U : (FRAME_BYTES - rem);
+  }
 }
 
 template <uint8_t CHANNELS, uint8_t BITS_PER_SAMPLE>
@@ -1101,13 +1143,32 @@ void UAC1MicrophoneQ<CHANNELS, BITS_PER_SAMPLE>::KickOneFrame(bool in_isr)
   }
   ASSERT(amount <= timing_.packet && slot.data.size_ >= amount);
   auto* out = static_cast<uint8_t*>(slot.data.addr_);
-  size_t available = LibXR::min(pcm_queue_.Size(), amount);
-  available -= available % FRAME_BYTES;
-  if (available != 0U && pcm_queue_.PopBatch(out, available) != ErrorCode::OK)
+  if constexpr (FRAME_BYTES > 1U)
   {
-    // 单一消费者时不会发生；按整包补零处理。
-    // Cannot happen with a single consumer; treated as a packet of zeros.
-    available = 0U;
+    if (discard_left_ != 0U)
+    {
+      const size_t skip = LibXR::min(pcm_queue_.Size(), discard_left_);
+      if (skip != 0U)
+      {
+        uint8_t discard[FRAME_BYTES];
+        if (pcm_queue_.PopBatch(discard, skip) == ErrorCode::OK)
+        {
+          discard_left_ -= skip;
+        }
+      }
+    }
+  }
+  size_t available = 0U;
+  if (discard_left_ == 0U)
+  {
+    available = LibXR::min(pcm_queue_.Size(), amount);
+    available -= available % FRAME_BYTES;
+    if (available != 0U && pcm_queue_.PopBatch(out, available) != ErrorCode::OK)
+    {
+      // 单一消费者时不会发生；按整包补零处理。
+      // Cannot happen with a single consumer; treated as a packet of zeros.
+      available = 0U;
+    }
   }
   if (available < amount)
   {

@@ -39,14 +39,31 @@ namespace LibXR::USB
  *
  * 发往主机：每个通道一个接收队列和一个错误帧队列（生产者是 CAN 回调），一个回显队列
  * （生产者是 OUT 完成）。生产者只入队并 RequestService；owner 借 IN 槽、选帧、打包、
- * 提交。回显总是优先，其余按通道轮流。接收队列满时丢帧并按通道计数，溢出标志随该通道
- * 下一帧上报。
+ * 提交。回显与接收帧在两者都有待发时轮流发送，只有一类时直接发送，接收帧在通道间轮流。
+ * 接收队列满时丢帧并按通道计数，溢出标志随该通道下一帧上报。
  * To the host: per channel one receive queue and one error-frame queue (filled by the
  * CAN callbacks), and one echo queue (filled by the OUT completion). Producers only
  * enqueue and call RequestService; the owner borrows an IN slot, picks a frame, packs
- * and submits it. Echoes always go first, the rest round-robin over the channels. A
- * full receive queue drops the frame and counts it per channel, and the overflow flag
- * rides on that channel's next frame.
+ * and submits it. Echoes and received frames alternate while both are pending and go out
+ * directly when only one kind is, with received frames drained round-robin over the
+ * channels. A full receive queue drops the frame and counts it per channel, and the
+ * overflow flag rides on that channel's next frame.
+ *
+ * 会话边界与发送暂存：通道复位（MODE RESET）或启动（MODE START）时丢弃该通道上一次
+ * 会话留下的接收帧、错误帧、回显、被回显队列压住的回显以及暂存的主机帧；没有启动的
+ * 通道的帧不再交给 IN 端点；最后一个启动通道复位时 Flush 共享 IN 端点。CAN 发送队列
+ * 满（AddMessage 返回 FULL）时将主机帧暂存进该通道自己的暂存队列，不回 echo、不占用
+ * OUT 槽，后续由服务与 SOF 按顺序重试，驱动接受后再回 echo；若暂存队列满，则按原策略
+ * 丢弃并照常回 echo。
+ * Session boundaries and transmit staging: a channel reset (MODE RESET) or start
+ * (MODE START) drops that channel's queued receive frames, error frames, echoes, any
+ * echo held by echo-queue back-pressure and staged host frames; frames of an unstarted
+ * channel are never handed to IN, and resetting the last started channel flushes the
+ * shared IN endpoint. When a CAN transmit queue is full (AddMessage returns FULL), the
+ * host frame is staged in that channel's own staging queue without holding the OUT slot
+ * or sending an echo yet; service and SOF retry in order and emit the echo once the
+ * driver accepts the frame (if the staging queue overflows, the excess frame is dropped
+ * and echoed immediately).
  *
  * 来自主机：任何时刻只有一个 OUT 接收在途，长度为 MaxTransferSize()（多个包），主机的
  * 短包结束请求，所以一次完成恰好是一帧。帧先交给 CAN，再把回显入队；回显队列满时留着
@@ -80,6 +97,9 @@ class GsUsbClass : public DeviceClass
   static constexpr uint32_t USER_ID_WRITE_PERIOD_MS = 100U;
   /// 每通道错误帧队列容量 / Error-frame queue capacity per channel
   static constexpr size_t ERR_QUEUE_SIZE = 8U;
+  /// 每通道发送暂存队列默认容量（Linux gs_usb 驱动每通道最多 10 帧在途）/
+  /// Default per-channel TX staging capacity (Linux gs_usb in-flight limit per channel)
+  static constexpr size_t DEFAULT_TX_STAGE_SIZE = 10U;
 
   /**
    * @brief 构造：经典 CAN / Construct: classic CAN
@@ -94,6 +114,8 @@ class GsUsbClass : public DeviceClass
    *        Per-channel termination GPIOs: empty or CAN_CH_NUM entries (null allowed)
    * @param database 保存 USER_ID 的数据库，可为空 / Database keeping USER_ID, may be null
    * @param interface_string 接口字符串 / Interface string
+   * @param tx_stage_size 每通道发送暂存队列容量（至少 1）/ Per-channel TX staging queue
+   *        capacity (at least 1)
    * @note 在 CAN 上登记接收回调、分配队列；有数据库时建 USER_ID 键并启动写回定时任务。
    *       只在构造时分配内存。
    *       Registers the receive callbacks on the CANs and allocates the queues; with a
@@ -105,7 +127,8 @@ class GsUsbClass : public DeviceClass
              size_t echo_queue_size = 32U, LibXR::GPIO* identify_gpio = nullptr,
              std::initializer_list<LibXR::GPIO*> termination_gpios = {},
              LibXR::Database* database = nullptr,
-             const char* interface_string = DEFAULT_INTERFACE_STRING)
+             const char* interface_string = DEFAULT_INTERFACE_STRING,
+             size_t tx_stage_size = DEFAULT_TX_STAGE_SIZE)
       : data_in_num_(data_in_ep_num),
         data_out_num_(data_out_ep_num),
         interface_string_(interface_string),
@@ -119,7 +142,7 @@ class GsUsbClass : public DeviceClass
       ASSERT(can != nullptr);
       cans_[i++] = can;
     }
-    Init(rx_queue_size, termination_gpios, database);
+    Init(rx_queue_size, termination_gpios, database, tx_stage_size);
   }
 
   /**
@@ -135,6 +158,8 @@ class GsUsbClass : public DeviceClass
    *        Per-channel termination GPIOs: empty or CAN_CH_NUM entries (null allowed)
    * @param database 保存 USER_ID 的数据库，可为空 / Database keeping USER_ID, may be null
    * @param interface_string 接口字符串 / Interface string
+   * @param tx_stage_size 每通道发送暂存队列容量（至少 1）/ Per-channel TX staging queue
+   *        capacity (at least 1)
    * @note 行为同经典 CAN 的构造；另声明 FD 能力、登记 FD 接收回调。
    *       The behaviour is that of the classic constructor; it also announces the FD
    *       features and registers the FD receive callbacks.
@@ -144,7 +169,8 @@ class GsUsbClass : public DeviceClass
              size_t echo_queue_size = 32U, LibXR::GPIO* identify_gpio = nullptr,
              std::initializer_list<LibXR::GPIO*> termination_gpios = {},
              LibXR::Database* database = nullptr,
-             const char* interface_string = DEFAULT_INTERFACE_STRING)
+             const char* interface_string = DEFAULT_INTERFACE_STRING,
+             size_t tx_stage_size = DEFAULT_TX_STAGE_SIZE)
       : fd_supported_(true),
         data_in_num_(data_in_ep_num),
         data_out_num_(data_out_ep_num),
@@ -161,7 +187,7 @@ class GsUsbClass : public DeviceClass
       cans_[i] = can;
       ++i;
     }
-    Init(rx_queue_size, termination_gpios, database);
+    Init(rx_queue_size, termination_gpios, database, tx_stage_size);
   }
 
   /// 主机是否已用小端标记协商字节序；任何上下文 / Whether the host negotiated the byte
@@ -277,10 +303,14 @@ class GsUsbClass : public DeviceClass
     host_format_ok_.store(0U, std::memory_order_release);
     for (uint8_t ch = 0U; ch < CAN_CH_NUM; ++ch)
     {
-      can_enabled_[ch].store(0U, std::memory_order_relaxed);
-      fd_enabled_[ch].store(0U, std::memory_order_relaxed);
-      berr_enabled_[ch].store(0U, std::memory_order_relaxed);
-      timestamps_enabled_[ch].store(0U, std::memory_order_relaxed);
+      can_enabled_[ch].store(0U, std::memory_order_release);
+      fd_enabled_[ch].store(0U, std::memory_order_release);
+      berr_enabled_[ch].store(0U, std::memory_order_release);
+      timestamps_enabled_[ch].store(0U, std::memory_order_release);
+    }
+    for (uint8_t ch = 0U; ch < CAN_CH_NUM; ++ch)
+    {
+      DropStagedFrames(ch);
     }
     Endpoint* out = data_out_;
     UnbindEndpoint(pool, data_in_, in_isr);
@@ -418,7 +448,6 @@ class GsUsbClass : public DeviceClass
   ErrorCode OnControlData(bool in_isr, const SetupPacket& setup,
                           ConstRawData data) override
   {
-    UNUSED(in_isr);
     const auto ch = static_cast<uint8_t>(setup.wValue);
     switch (static_cast<GsUsb::BReq>(setup.bRequest))
     {
@@ -449,7 +478,7 @@ class GsUsbClass : public DeviceClass
       case GsUsb::BReq::MODE:
       {
         GsUsb::DeviceMode mode{};
-        return Load(data, mode) ? HandleMode(ch, mode) : ErrorCode::ARG_ERR;
+        return Load(data, mode) ? HandleMode(in_isr, ch, mode) : ErrorCode::ARG_ERR;
       }
 
       case GsUsb::BReq::BERR:
@@ -459,7 +488,7 @@ class GsUsbClass : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
-        berr_enabled_[ch].store(on != 0U ? 1U : 0U, std::memory_order_relaxed);
+        berr_enabled_[ch].store(on != 0U ? 1U : 0U, std::memory_order_release);
         return ErrorCode::OK;
       }
 
@@ -517,6 +546,17 @@ class GsUsbClass : public DeviceClass
   /// 补推被压住的回显，再把排队的帧发往主机 / Push a held-back echo, then send queued
   /// frames to the host
   void OnService(bool in_isr) override { Pump(in_isr); }
+
+  /// SOF 节拍：仅在有发送暂存帧时重试 / SOF tick: retry only while frames are staged
+  void OnStartOfFrame(bool in_isr, uint16_t frame, uint8_t microframe) override
+  {
+    UNUSED(frame);
+    UNUSED(microframe);
+    if (stage_pending_)
+    {
+      Pump(in_isr);
+    }
+  }
 
   /// @}
 
@@ -609,8 +649,9 @@ class GsUsbClass : public DeviceClass
   /// 构造的共同部分：GPIO、队列、能力、CAN 回调、USER_ID / Common part of the
   /// constructors: GPIOs, queues, features, CAN callbacks, USER_ID
   void Init(size_t rx_queue_size, std::initializer_list<LibXR::GPIO*> termination_gpios,
-            LibXR::Database* database)
+            LibXR::Database* database, size_t tx_stage_size)
   {
+    ASSERT(tx_stage_size >= 1U);
     ASSERT(termination_gpios.size() == 0U || termination_gpios.size() == CAN_CH_NUM);
     size_t i = 0U;
     for (LibXR::GPIO* gpio : termination_gpios)
@@ -621,6 +662,7 @@ class GsUsbClass : public DeviceClass
     {
       rx_queues_[ch] = new LibXR::SPSCQueue<QueueItem>(rx_queue_size);
       err_queues_[ch] = new LibXR::SPSCQueue<QueueItem>(ERR_QUEUE_SIZE);
+      stage_queues_[ch] = new LibXR::SPSCQueue<QueueItem>(tx_stage_size);
     }
     InitFeatures();
     RegisterCanCallbacks();
@@ -836,7 +878,7 @@ class GsUsbClass : public DeviceClass
 
   /// MODE：启动或复位通道，并设模式标志 / MODE: start or reset the channel and set the
   /// mode flags
-  ErrorCode HandleMode(uint8_t ch, const GsUsb::DeviceMode& mode)
+  ErrorCode HandleMode(bool in_isr, uint8_t ch, const GsUsb::DeviceMode& mode)
   {
     if (!IsHostFormatOK())
     {
@@ -856,11 +898,14 @@ class GsUsbClass : public DeviceClass
     const bool fd = fd_supported_ && (mode.flags & GsUsb::GSCAN_MODE_FD) != 0U;
     const uint32_t prev_can_enabled = can_enabled_[ch].load(std::memory_order_relaxed);
     const uint32_t prev_fd_enabled = fd_enabled_[ch].load(std::memory_order_relaxed);
-    if (!start)
-    {
-      can_enabled_[ch].store(0U, std::memory_order_relaxed);
-      fd_enabled_[ch].store(0U, std::memory_order_relaxed);
-    }
+    const uint32_t prev_berr_enabled = berr_enabled_[ch].load(std::memory_order_relaxed);
+    // RESET 和重复 START 都先停收再 SetConfig/清队列，防止配置与清理间隙 CAN
+    // 回调继续入旧帧。 Stop callbacks before SetConfig and queue drop on both RESET and
+    // repeated START so CAN ISRs cannot enqueue stale-config frames during the
+    // transition.
+    can_enabled_[ch].store(0U, std::memory_order_release);
+    fd_enabled_[ch].store(0U, std::memory_order_release);
+    berr_enabled_[ch].store(0U, std::memory_order_release);
 
     LibXR::CAN::Configuration cfg = config_[ch];
     cfg.mode.loopback = (mode.flags & GsUsb::GSCAN_MODE_LOOP_BACK) != 0U;
@@ -871,8 +916,9 @@ class GsUsbClass : public DeviceClass
     ErrorCode result = cans_[ch]->SetConfig(cfg);
     if (result != ErrorCode::OK)
     {
-      can_enabled_[ch].store(prev_can_enabled, std::memory_order_relaxed);
-      fd_enabled_[ch].store(prev_fd_enabled, std::memory_order_relaxed);
+      berr_enabled_[ch].store(prev_berr_enabled, std::memory_order_release);
+      fd_enabled_[ch].store(prev_fd_enabled, std::memory_order_release);
+      can_enabled_[ch].store(prev_can_enabled, std::memory_order_release);
       return result;
     }
     if (fd_supported_)
@@ -884,24 +930,31 @@ class GsUsbClass : public DeviceClass
       if (result != ErrorCode::OK)
       {
         (void)cans_[ch]->SetConfig(config_[ch]);
-        can_enabled_[ch].store(prev_can_enabled, std::memory_order_relaxed);
-        fd_enabled_[ch].store(prev_fd_enabled, std::memory_order_relaxed);
+        berr_enabled_[ch].store(prev_berr_enabled, std::memory_order_release);
+        fd_enabled_[ch].store(prev_fd_enabled, std::memory_order_release);
+        can_enabled_[ch].store(prev_can_enabled, std::memory_order_release);
         return result;
       }
       fd_config_[ch] = fd_cfg;
     }
     config_[ch] = cfg;
-    if (start)
-    {
-      can_enabled_[ch].store(1U, std::memory_order_relaxed);
-      fd_enabled_[ch].store(fd ? 1U : 0U, std::memory_order_relaxed);
-    }
+    DropStagedFrames(ch);
+    DropChannelFrames(in_isr, ch);
     timestamps_enabled_[ch].store(
         (mode.flags & GsUsb::GSCAN_MODE_HW_TIMESTAMP) != 0U ? 1U : 0U,
-        std::memory_order_relaxed);
-    berr_enabled_[ch].store(
-        (mode.flags & GsUsb::GSCAN_MODE_BERR_REPORTING) != 0U ? 1U : 0U,
-        std::memory_order_relaxed);
+        std::memory_order_release);
+    if (start)
+    {
+      berr_enabled_[ch].store(
+          (mode.flags & GsUsb::GSCAN_MODE_BERR_REPORTING) != 0U ? 1U : 0U,
+          std::memory_order_release);
+      fd_enabled_[ch].store(fd ? 1U : 0U, std::memory_order_release);
+      can_enabled_[ch].store(1U, std::memory_order_release);
+    }
+    else if (!AnyChannelStarted())
+    {
+      FlushInEndpoint(in_isr);
+    }
     return ErrorCode::OK;
   }
 
@@ -941,7 +994,7 @@ class GsUsbClass : public DeviceClass
       }
       return;
     }
-    if (can_enabled_[ch].load(std::memory_order_relaxed) == 0U)
+    if (can_enabled_[ch].load(std::memory_order_acquire) == 0U)
     {
       return;
     }
@@ -972,7 +1025,7 @@ class GsUsbClass : public DeviceClass
   /// 收到 FD 帧：入本通道的队列 / An FD frame arrived: queue it on its channel
   void OnFdCanRx(bool in_isr, uint8_t ch, const LibXR::FDCAN::FDPack& pack)
   {
-    if (fd_enabled_[ch].load(std::memory_order_relaxed) == 0U)
+    if (fd_enabled_[ch].load(std::memory_order_acquire) == 0U)
     {
       return;
     }
@@ -1016,7 +1069,7 @@ class GsUsbClass : public DeviceClass
    */
   bool MakeErrorFrame(uint8_t ch, const LibXR::CAN::ClassicPack& pack, QueueItem& item)
   {
-    if (berr_enabled_[ch].load(std::memory_order_relaxed) == 0U ||
+    if (berr_enabled_[ch].load(std::memory_order_acquire) == 0U ||
         !LibXR::CAN::IsErrorId(pack.id))
     {
       return false;
@@ -1109,15 +1162,28 @@ class GsUsbClass : public DeviceClass
     return true;
   }
 
-  /// 补推被压住的回显，再发帧 / Push a held-back echo, then send frames
+  /// 补推被压住的回显，重试暂存的主机帧，再发帧 / Push a held-back echo, retry
+  /// staged host frames, then send frames
   void Pump(bool in_isr)
   {
-    if (held_slot_.Valid() && echo_queue_.Push(held_echo_) == ErrorCode::OK)
+    if (held_slot_.Valid())
     {
-      const Endpoint::Slot slot = held_slot_;
-      held_slot_ = Endpoint::Slot{};
-      ReleaseOut(in_isr, slot);
+      const uint8_t hold_ch = held_echo_.hdr.channel;
+      if (hold_ch >= CAN_CH_NUM ||
+          can_enabled_[hold_ch].load(std::memory_order_relaxed) == 0U)
+      {
+        const Endpoint::Slot slot = held_slot_;
+        held_slot_ = Endpoint::Slot{};
+        ReleaseOut(in_isr, slot);
+      }
+      else if (echo_queue_.Push(held_echo_) == ErrorCode::OK)
+      {
+        const Endpoint::Slot slot = held_slot_;
+        held_slot_ = Endpoint::Slot{};
+        ReleaseOut(in_isr, slot);
+      }
     }
+    ServiceStagedFrames();
     SendFrames(in_isr);
   }
 
@@ -1164,23 +1230,71 @@ class GsUsbClass : public DeviceClass
     }
   }
 
-  /// 选下一帧：回显优先，通道间轮流，通道内先错误帧后接收帧 / Pick the next frame:
-  /// echo first, channels round-robin, error frames before received ones within one
+  /// 选下一帧：回显与接收帧都有待发时轮流，只有一类时直接发；接收帧通道间轮流，通道内
+  /// 先错误帧后接收帧 / Pick the next frame: echoes and received frames alternate while
+  /// both are pending and go out directly when only one kind is; received frames go round
+  /// robin across channels, error frames before received ones within one
   bool PickFrame(QueueItem& item)
   {
-    if (echo_queue_.Pop(item) == ErrorCode::OK)
+    if (rx_turn_)
+    {
+      if (PickReceived(item))
+      {
+        rx_turn_ = false;
+        ApplyOverflowFlag(item);
+        return true;
+      }
+      if (PickEcho(item))
+      {
+        ApplyOverflowFlag(item);
+        return true;
+      }
+      return false;
+    }
+    if (PickEcho(item))
+    {
+      rx_turn_ = true;
+      ApplyOverflowFlag(item);
+      return true;
+    }
+    if (PickReceived(item))
     {
       ApplyOverflowFlag(item);
       return true;
     }
+    return false;
+  }
+
+  /// 取下一个回显；未启动通道的回显丢弃 / Take the next echo; echoes of unstarted
+  /// channels are discarded
+  bool PickEcho(QueueItem& item)
+  {
+    while (echo_queue_.Pop(item) == ErrorCode::OK)
+    {
+      if (item.hdr.channel < CAN_CH_NUM &&
+          can_enabled_[item.hdr.channel].load(std::memory_order_relaxed) != 0U)
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// 通道间轮流取一帧接收帧或错误帧；跳过未启动通道 / Take one received or error frame
+  /// round-robin across started channels
+  bool PickReceived(QueueItem& item)
+  {
     for (uint8_t k = 0U; k < CAN_CH_NUM; ++k)
     {
       const auto ch = static_cast<uint8_t>((rr_ + k) % CAN_CH_NUM);
+      if (can_enabled_[ch].load(std::memory_order_relaxed) == 0U)
+      {
+        continue;
+      }
       if (err_queues_[ch]->Pop(item) == ErrorCode::OK ||
           rx_queues_[ch]->Pop(item) == ErrorCode::OK)
       {
         rr_ = static_cast<uint8_t>((ch + 1U) % CAN_CH_NUM);
-        ApplyOverflowFlag(item);
         return true;
       }
     }
@@ -1244,8 +1358,180 @@ class GsUsbClass : public DeviceClass
       {
       }
       rx_drop_reported_[ch] = rx_drop_[ch].load(std::memory_order_relaxed);
+      DropStagedFrames(ch);
     }
     rr_ = 0U;
+    rx_turn_ = false;
+  }
+
+  /// 丢弃单通道未提交到端点的接收帧、错误帧、回显及被压住的回显 / Drop one
+  /// channel's queued receive frames, error frames, echoes and held-back echo
+  void DropChannelFrames(bool in_isr, uint8_t ch)
+  {
+    while (rx_queues_[ch]->Pop() == ErrorCode::OK)
+    {
+    }
+    while (err_queues_[ch]->Pop() == ErrorCode::OK)
+    {
+    }
+    rx_drop_reported_[ch] = rx_drop_[ch].load(std::memory_order_relaxed);
+    QueueItem item;
+    for (size_t n = echo_queue_.Size(); n != 0U; --n)
+    {
+      if (echo_queue_.Pop(item) != ErrorCode::OK)
+      {
+        break;
+      }
+      if (item.hdr.channel != ch)
+      {
+        (void)echo_queue_.Push(item);
+      }
+    }
+    if (held_slot_.Valid() && held_echo_.hdr.channel == ch)
+    {
+      const Endpoint::Slot slot = held_slot_;
+      held_slot_ = Endpoint::Slot{};
+      if (data_out_ != nullptr)
+      {
+        ReleaseOut(in_isr, slot);
+      }
+    }
+  }
+
+  /// 有没有仍在运行的通道 / Whether any channel is started
+  bool AnyChannelStarted() const
+  {
+    for (uint8_t ch = 0U; ch < CAN_CH_NUM; ++ch)
+    {
+      if (can_enabled_[ch].load(std::memory_order_relaxed) != 0U)
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// 最后一个通道复位：清空全通道残留并 Flush 共享 IN 端点 / Last channel reset: clear
+  /// remaining queues and flush the shared IN endpoint
+  void FlushInEndpoint(bool in_isr)
+  {
+    for (uint8_t ch = 0U; ch < CAN_CH_NUM; ++ch)
+    {
+      DropChannelFrames(in_isr, ch);
+    }
+    rr_ = 0U;
+    rx_turn_ = false;
+    if (data_in_ != nullptr)
+    {
+      data_in_->Flush(in_isr);
+    }
+  }
+
+  /// 任一通道暂存队列非空 / Whether any channel staging queue has frames
+  bool AnyStaged() const
+  {
+    for (uint8_t ch = 0U; ch < CAN_CH_NUM; ++ch)
+    {
+      if (stage_queues_[ch]->Size() != 0U)
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// 丢弃单通道暂存的主机帧 / Drop host frames staged for one channel
+  void DropStagedFrames(uint8_t ch)
+  {
+    while (stage_queues_[ch]->Pop() == ErrorCode::OK)
+    {
+    }
+    stage_accepted_[ch] = false;
+    stage_pending_ = AnyStaged();
+  }
+
+  /// 把一帧提交到 CAN 驱动 / Submit one host frame to the CAN driver
+  ErrorCode SubmitToCan(uint8_t ch, const WireHeader& hdr, const uint8_t* payload)
+  {
+    const bool fd = (hdr.flags & GsUsb::CAN_FLAG_FD) != 0U;
+    const bool eff = (hdr.can_id & GsUsb::CAN_EFF_FLAG) != 0U;
+    const bool rtr = (hdr.can_id & GsUsb::CAN_RTR_FLAG) != 0U;
+    const uint32_t id = hdr.can_id & (eff ? GsUsb::CAN_EFF_MASK : GsUsb::CAN_SFF_MASK);
+    LibXR::CAN::Type type = eff ? LibXR::CAN::Type::EXTENDED : LibXR::CAN::Type::STANDARD;
+    if (rtr)
+    {
+      type = eff ? LibXR::CAN::Type::REMOTE_EXTENDED : LibXR::CAN::Type::REMOTE_STANDARD;
+    }
+    if (fd)
+    {
+      LibXR::FDCAN::FDPack pack;
+      pack.id = id;
+      pack.type = type;
+      pack.len = DlcToLen(hdr.can_dlc);
+      LibXR::Memory::FastCopy(pack.data, payload, pack.len);
+      return fdcans_[ch]->AddMessage(pack);
+    }
+    LibXR::CAN::ClassicPack pack;
+    pack.id = id;
+    pack.type = type;
+    pack.dlc = hdr.can_dlc <= 8U ? hdr.can_dlc : 8U;
+    std::memcpy(pack.data, payload, pack.dlc);
+    return cans_[ch]->AddMessage(pack);
+  }
+
+  /// CAN 驱动队列暂满或外设忙，需暂存等待重试 / CAN driver queue full or peripheral
+  /// busy: stage and retry later
+  static bool IsCanTxBusy(ErrorCode result)
+  {
+    return result == ErrorCode::FULL || result == ErrorCode::BUSY;
+  }
+
+  /// 按通道顺序重试暂存主机帧，接受后才入 echo 队列 / Retry staged host frames in
+  /// order per channel, queueing the echo only once accepted
+  void ServiceStagedFrames()
+  {
+    if (!stage_pending_)
+    {
+      return;
+    }
+    for (uint8_t ch = 0U; ch < CAN_CH_NUM; ++ch)
+    {
+      QueueItem item;
+      while (stage_queues_[ch]->PeekBatch(&item, 1U) == ErrorCode::OK)
+      {
+        const bool fd = (item.hdr.flags & GsUsb::CAN_FLAG_FD) != 0U;
+        if (!stage_accepted_[ch])
+        {
+          if (can_enabled_[ch].load(std::memory_order_relaxed) == 0U ||
+              (fd && fd_enabled_[ch].load(std::memory_order_relaxed) == 0U))
+          {
+            DropStagedFrames(ch);
+            break;
+          }
+          // FULL/BUSY 保留队头等待下一次排空；OK
+          // 或其他错误消费该帧并按原语义回显以归还主机 tx_context。 FULL/BUSY keeps the
+          // head for retry; OK or other driver errors consume it and emit the echo as
+          // before so the host reclaims its tx_context.
+          if (IsCanTxBusy(SubmitToCan(ch, item.hdr, item.data)))
+          {
+            break;
+          }
+          stage_accepted_[ch] = true;
+          stage_ts_[ch] = MakeTimestampUs(ch);
+        }
+        if (item.hdr.echo_id != ECHO_ID_RX)
+        {
+          item.timestamp_us = stage_ts_[ch];
+          if (echo_queue_.Push(item) != ErrorCode::OK)
+          {
+            break;
+          }
+        }
+        stage_accepted_[ch] = false;
+        (void)stage_queues_[ch]->Pop();
+      }
+    }
+    stage_pending_ = AnyStaged();
   }
 
   /// @}
@@ -1309,16 +1595,13 @@ class GsUsbClass : public DeviceClass
   }
 
   /**
-   * @brief 把主机的一帧交给 CAN，并做出它的回显 / Hand one host frame to CAN and make
-   *        its echo
+   * @brief 把主机的一帧交给 CAN（队满时暂存），并做出它的回显 / Hand one host frame to
+   *        CAN (staging if full) and make its echo
    * @param frame 收到的字节 / The bytes received
    * @param echo 输出：回显 / Output: the echo
-   * @return true：已交给 CAN 且要回显；false：丢弃（未协商、太短、通道未启动）或主机
-   *         不要回显。
-   *         true: handed to CAN and to be echoed; false: dropped (not negotiated, too
-   *         short, channel not started) or no echo wanted by the host.
-   * @note CAN 的 AddMessage 只调用一次；回显被压住时不再调用。
-   *       The CAN's AddMessage runs exactly once; a held-back echo does not repeat it.
+   * @return true：已立即接受或暂存满丢弃且要回显；false：已入暂存队列、丢弃或不要回显。
+   *         true: accepted now or dropped on full stage and to be echoed; false:
+   *         staged, dropped or no echo wanted.
    */
   bool ForwardHostFrame(ConstRawData frame, QueueItem& echo)
   {
@@ -1335,14 +1618,6 @@ class GsUsbClass : public DeviceClass
       return false;
     }
     const bool fd = (hdr.flags & GsUsb::CAN_FLAG_FD) != 0U;
-    const bool eff = (hdr.can_id & GsUsb::CAN_EFF_FLAG) != 0U;
-    const bool rtr = (hdr.can_id & GsUsb::CAN_RTR_FLAG) != 0U;
-    const uint32_t id = hdr.can_id & (eff ? GsUsb::CAN_EFF_MASK : GsUsb::CAN_SFF_MASK);
-    LibXR::CAN::Type type = eff ? LibXR::CAN::Type::EXTENDED : LibXR::CAN::Type::STANDARD;
-    if (rtr)
-    {
-      type = eff ? LibXR::CAN::Type::REMOTE_EXTENDED : LibXR::CAN::Type::REMOTE_STANDARD;
-    }
     if (fd)
     {
       if (fd_enabled_[ch].load(std::memory_order_relaxed) == 0U ||
@@ -1350,36 +1625,41 @@ class GsUsbClass : public DeviceClass
       {
         return false;
       }
-      LibXR::FDCAN::FDPack pack;
-      pack.id = id;
-      pack.type = type;
-      pack.len = DlcToLen(hdr.can_dlc);
-      LibXR::Memory::FastCopy(pack.data, payload, pack.len);
-      (void)fdcans_[ch]->AddMessage(pack);
     }
-    else
+    else if (can_enabled_[ch].load(std::memory_order_relaxed) == 0U)
     {
-      if (can_enabled_[ch].load(std::memory_order_relaxed) == 0U)
+      return false;
+    }
+
+    const size_t data_size = fd ? WIRE_FD_DATA_SIZE : WIRE_CLASSIC_DATA_SIZE;
+    echo.hdr = hdr;
+    LibXR::Memory::FastCopy(echo.data, payload, data_size);
+
+    // 若本通道有暂存帧，先尝试排空两个 SOF 之间硬件已消化的空位，再决定直接发送或暂存；
+    // 若暂存仍满（如超过每通道 tx_stage_size 上限），不阻塞共享 OUT 端点，丢弃并回发 echo
+    // 以便主机回收 tx_context。
+    // If this channel has staged frames, drain slots freed between SOFs first; only
+    // stage if traffic remains backed up. On full stage, drop and echo immediately so
+    // the shared OUT endpoint is never stalled and the host reclaims its tx_context.
+    if (stage_queues_[ch]->Size() != 0U)
+    {
+      ServiceStagedFrames();
+    }
+    if (stage_queues_[ch]->Size() != 0U || IsCanTxBusy(SubmitToCan(ch, hdr, payload)))
+    {
+      echo.timestamp_us = 0U;
+      if (stage_queues_[ch]->Push(echo) == ErrorCode::OK)
       {
+        stage_pending_ = true;
         return false;
       }
-      LibXR::CAN::ClassicPack pack;
-      pack.id = id;
-      pack.type = type;
-      pack.dlc = hdr.can_dlc <= 8U ? hdr.can_dlc : 8U;
-      std::memcpy(pack.data, payload, pack.dlc);
-      (void)cans_[ch]->AddMessage(pack);
     }
+
     if (hdr.echo_id == ECHO_ID_RX)
     {
       return false;
     }
-    // 主机用 echo_id 跟踪自己的发送缓冲，设备原样送回。
-    // The host tracks its send buffers by echo_id; the device sends it back as is.
-    echo.hdr = hdr;
     echo.timestamp_us = MakeTimestampUs(ch);
-    LibXR::Memory::FastCopy(echo.data, payload,
-                            fd ? WIRE_FD_DATA_SIZE : WIRE_CLASSIC_DATA_SIZE);
     return true;
   }
 
@@ -1415,7 +1695,7 @@ class GsUsbClass : public DeviceClass
   /// are on, else 0; any context
   uint32_t MakeTimestampUs(uint8_t ch) const
   {
-    if (timestamps_enabled_[ch].load(std::memory_order_relaxed) == 0U)
+    if (timestamps_enabled_[ch].load(std::memory_order_acquire) == 0U)
     {
       return 0U;
     }
@@ -1482,6 +1762,9 @@ class GsUsbClass : public DeviceClass
   /// 每通道错误帧队列，生产者是 CAN 错误回调 / Per-channel error-frame queue, filled by
   /// the CAN error callback
   LibXR::SPSCQueue<QueueItem>* err_queues_[CanChNum] = {};
+  /// 每通道发送暂存队列；只在 owner 上下文中读写 / Per-channel TX staging queue; owner
+  /// context only
+  LibXR::SPSCQueue<QueueItem>* stage_queues_[CanChNum] = {};
   /// @}
 
   /// @name 仅 owner / Owner only
@@ -1504,6 +1787,14 @@ class GsUsbClass : public DeviceClass
   /// state; written by SET_TERMINATION, read by GET_TERMINATION, kept over an unbind
   GsUsb::TerminationState term_state_[CanChNum] = {};
   uint8_t rr_ = 0U;  ///< 下一个先看的通道 / Channel looked at first next time
+  bool rx_turn_ =
+      false;  ///< 下一帧先尝试接收队列 / Next frame tries receive queues first
+  /// 暂存队列队头已被驱动接受、只等回显入队 / Staging queue head already accepted by
+  /// CAN driver, awaiting echo queue space
+  bool stage_accepted_[CanChNum] = {};
+  uint32_t stage_ts_[CanChNum] =
+      {};                       ///< 队头被接受时的时间戳 / Accept timestamp per channel
+  bool stage_pending_ = false;  ///< 至少一个暂存队列非空 / Some staging queue non-empty
   /// 回显队列满时留住的 OUT 槽；Valid() 表示有 / OUT slot kept while the echo queue is
   /// full; Valid() when there is one
   Endpoint::Slot held_slot_{};

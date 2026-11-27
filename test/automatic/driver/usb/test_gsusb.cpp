@@ -137,6 +137,28 @@ Bytes Pattern(size_t size, uint8_t seed)
   return bytes;
 }
 
+/// 可设容量的发送队列模型 / Bounded transmit queue model
+struct TxQueueModel
+{
+  size_t capacity = SIZE_MAX;
+  size_t queued = 0;
+  unsigned refused = 0;
+  ErrorCode full_error = ErrorCode::FULL;
+
+  bool Take()
+  {
+    if (queued >= capacity)
+    {
+      ++refused;
+      return false;
+    }
+    ++queued;
+    return true;
+  }
+
+  void Drain(size_t n) { queued -= std::min(n, queued); }
+};
+
 /// 记录发送、可注入接收的经典 CAN / Classic CAN that records sends and injects receives
 class StubCan : public LibXR::CAN
 {
@@ -154,6 +176,10 @@ class StubCan : public LibXR::CAN
   uint32_t GetClockFreq() const override { return 42000000U; }
   ErrorCode AddMessage(const ClassicPack& pack) override
   {
+    if (!queue.Take())
+    {
+      return queue.full_error;
+    }
     tx.push_back(pack);
     return ErrorCode::OK;
   }
@@ -184,6 +210,7 @@ class StubCan : public LibXR::CAN
   bool has_state = false;
   ErrorState error_state{};
   ErrorCode configure_result = ErrorCode::OK;
+  TxQueueModel queue;
 };
 
 /// 记录发送、可注入接收的 FDCAN / FDCAN that records sends and injects receives
@@ -209,11 +236,19 @@ class StubFdCan : public LibXR::FDCAN
   uint32_t GetClockFreq() const override { return 80000000U; }
   ErrorCode AddMessage(const ClassicPack& pack) override
   {
+    if (!queue.Take())
+    {
+      return queue.full_error;
+    }
     tx.push_back(pack);
     return ErrorCode::OK;
   }
   ErrorCode AddMessage(const FDPack& pack) override
   {
+    if (!queue.Take())
+    {
+      return queue.full_error;
+    }
     fd_tx.push_back(pack);
     return ErrorCode::OK;
   }
@@ -243,6 +278,7 @@ class StubFdCan : public LibXR::FDCAN
   size_t fd_configures = 0;
   std::vector<ClassicPack> tx;
   std::vector<FDPack> fd_tx;
+  TxQueueModel queue;
   ErrorCode fd_configure_result = ErrorCode::OK;
 };
 
@@ -271,10 +307,11 @@ using Gs2 = GsUsbClass<2>;
 struct Fixture
 {
   explicit Fixture(size_t rx_queue_size = 32U, size_t echo_queue_size = 32U,
-                   LibXR::Database* database = nullptr, uint8_t slots = 0U)
+                   LibXR::Database* database = nullptr, uint8_t slots = 0U,
+                   size_t tx_stage_size = Gs2::DEFAULT_TX_STAGE_SIZE)
       : hw(1024U, slots),
         gs(EPNumber::EP1, EPNumber::EP2, {&can0, &can1}, rx_queue_size, echo_queue_size,
-           nullptr, {}, database),
+           nullptr, {}, database, Gs2::DEFAULT_INTERFACE_STRING, tx_stage_size),
         dev(hw, {{&gs}})
   {
     Enumerate(dev, hw);
@@ -794,8 +831,8 @@ void TestToHost()
     {
       f.can0.Inject(0x100U + i, {static_cast<uint8_t>(i)});
     }
-    HostOut(f.dev, f.hw.ep2_out, Frame(0x10U, 0x301U, 1U, 1U, 0U, {0x11U}));
     HostOut(f.dev, f.hw.ep2_out, Frame(0x20U, 0x300U, 1U, 0U, 0U, {0x22U}));
+    HostOut(f.dev, f.hw.ep2_out, Frame(0x10U, 0x301U, 1U, 1U, 0U, {0x11U}));
     Drain(f.dev, f.hw.ep1_in);
     TEST_ASSERT(f.Sent().size() == 8U);
     size_t overflow = 0;
@@ -811,7 +848,8 @@ void TestToHost()
     TEST_ASSERT(overflow == 1U);
   }
 
-  // 回显先于排队的接收帧 / Echoes go before queued received frames
+  // 回显与接收帧在两者都有待发时轮流发送，各自保持顺序 /
+  // Echoes and received frames alternate while both are pending, each keeping order
   {
     Fixture f;
     f.Start(true, false);
@@ -832,12 +870,11 @@ void TestToHost()
     }
     for (unsigned i = 0; i < 3U; ++i)
     {
-      TEST_ASSERT(U32(f.Sent()[2 + i], 0) == 0x3000U + i);
+      TEST_ASSERT(U32(f.Sent()[2 + 2 * i], 0) == 0x3000U + i);
+      TEST_ASSERT(U32(f.Sent()[3 + 2 * i], 0) == 0xFFFFFFFFU &&
+                  f.Sent()[3 + 2 * i][12] == 2 + i);
     }
-    for (unsigned i = 0; i < 4U; ++i)
-    {
-      TEST_ASSERT(U32(f.Sent()[5 + i], 0) == 0xFFFFFFFFU && f.Sent()[5 + i][12] == 2 + i);
-    }
+    TEST_ASSERT(U32(f.Sent()[8], 0) == 0xFFFFFFFFU && f.Sent()[8][12] == 5U);
   }
 
   // 两个通道交替发送，各自保持顺序 / The two channels alternate, each in its own order
@@ -1545,6 +1582,417 @@ void TestBindHelperCount()
   }
 }
 
+/// 限速总线突发下回显与接收交替，无溢出且保序 / Burst alternation under rate-limited
+/// CAN vs bulk IN, zero drops and strict order
+void TestBurstAlternation()
+{
+  Fixture f(32U, 32U);
+  f.Start(true, true);
+
+  uint32_t echo_seq = 0U;
+  uint32_t rx_seq = 0U;
+  bool checked_alternation = false;
+  for (uint32_t ms = 0U; ms < 75U; ++ms)
+  {
+    f.Sent().clear();
+    for (uint32_t i = 0U; i < 8U; ++i)
+    {
+      const uint32_t id = echo_seq++;
+      HostOut(f.dev, f.hw.ep2_out,
+              Frame(id, 0x100U + id, 1U, 0U, 0U, {static_cast<uint8_t>(id)}));
+      const uint32_t rx_id = rx_seq++;
+      f.can0.Inject(0x200U + rx_id, {static_cast<uint8_t>(rx_id)});
+    }
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.Sent().size() == 16U);
+
+    uint32_t expect_echo = ms * 8U;
+    uint32_t expect_rx = ms * 8U;
+    for (size_t i = 0U; i < f.Sent().size(); ++i)
+    {
+      const Bytes& pkt = f.Sent()[i];
+      TEST_ASSERT((pkt[10] & Gs::CAN_FLAG_OVERFLOW) == 0U);
+      const uint32_t echo_id = U32(pkt, 0);
+      if (echo_id != 0xFFFFFFFFU)
+      {
+        TEST_ASSERT(echo_id == expect_echo && U32(pkt, 4) == 0x100U + expect_echo);
+        ++expect_echo;
+      }
+      else
+      {
+        TEST_ASSERT(U32(pkt, 4) == 0x200U + expect_rx);
+        ++expect_rx;
+      }
+    }
+    TEST_ASSERT(expect_echo == (ms + 1U) * 8U && expect_rx == (ms + 1U) * 8U);
+
+    // 首发帧已占槽，后续同时有待发回显与接收时，连续几帧必然交替出现。
+    // Once both queues hold pending frames behind the inflight slot, echoes and RX
+    // alternate.
+    if (!checked_alternation)
+    {
+      bool saw_echo_then_rx = false;
+      bool saw_rx_then_echo = false;
+      for (size_t i = 1U; i + 1U < f.Sent().size(); ++i)
+      {
+        const bool cur_rx = U32(f.Sent()[i], 0) == 0xFFFFFFFFU;
+        const bool next_rx = U32(f.Sent()[i + 1U], 0) == 0xFFFFFFFFU;
+        if (!cur_rx && next_rx)
+        {
+          saw_echo_then_rx = true;
+        }
+        if (cur_rx && !next_rx)
+        {
+          saw_rx_then_echo = true;
+        }
+      }
+      TEST_ASSERT(saw_echo_then_rx && saw_rx_then_echo);
+      checked_alternation = true;
+    }
+  }
+  TEST_ASSERT(echo_seq == 600U && rx_seq == 600U);
+}
+
+/// 会话切换清残留帧，最后通道复位 Flush 共享 IN 端点（含同步与异步停端）以及重绑定清旧帧
+/// / Session change drops stale frames, last channel reset flushes shared IN (sync and
+/// async stuck), and rebind clears stale queues
+void TestSessionDropAndFlush()
+{
+  // 1) RESET 单通道仅清该通道，且仅在最后一个通道 RESET 时 Flush IN
+  Fixture f(32U, 32U, nullptr, 1U);
+  f.Start(true, true, Gs::GSCAN_MODE_BERR_REPORTING);
+  // 先占住 IN 在途槽，使后续帧进入队列 / Occupy the IN slot so later frames wait queued
+  f.can1.Inject(0x111U, {1U});
+  TEST_ASSERT(f.hw.ep1_in.inflight && f.hw.ep1_in.stops == 0U);
+
+  f.can0.Inject(0x201U, {2U});
+  f.can0.Inject(0x202U, {}, LibXR::CAN::Type::ERROR);
+  HostOut(f.dev, f.hw.ep2_out, Frame(77U, 0x203U, 1U, 0U, 0U, {3U}));
+  f.can1.Inject(0x301U, {4U});
+  HostOut(f.dev, f.hw.ep2_out, Frame(88U, 0x302U, 1U, 1U, 0U, {5U}));
+
+  // 复位 ch0：ch1 仍在运行，不 Flush IN，只丢弃 ch0 排队帧
+  // Resetting ch0 while ch1 is active must not flush IN, only drop ch0's queued frames
+  Mode(f.dev, f.hw, 0U, Gs::CanMode::RESET);
+  TEST_ASSERT(f.hw.ep1_in.inflight && f.hw.ep1_in.stops == 0U);
+  f.Sent().clear();
+  Drain(f.dev, f.hw.ep1_in);
+  bool saw_ch1_rx = false;
+  bool saw_ch1_echo = false;
+  for (const Bytes& pkt : f.Sent())
+  {
+    TEST_ASSERT(pkt[9] == 1U);
+    if (U32(pkt, 0) == 0xFFFFFFFFU && U32(pkt, 4) == 0x301U)
+    {
+      saw_ch1_rx = true;
+    }
+    if (U32(pkt, 0) == 88U && U32(pkt, 4) == 0x302U)
+    {
+      saw_ch1_echo = true;
+    }
+  }
+  TEST_ASSERT(saw_ch1_rx && saw_ch1_echo);
+
+  // MODE START 也会清通道残留 / MODE START also drops any stale queued frames
+  f.can1.Inject(0x401U, {6U});
+  TEST_ASSERT(f.hw.ep1_in.inflight);
+  f.can1.Inject(0x402U, {7U});
+  Mode(f.dev, f.hw, 1U, Gs::CanMode::START);
+  f.Sent().clear();
+  Drain(f.dev, f.hw.ep1_in);
+  TEST_ASSERT(f.Sent().size() == 1U && U32(f.Sent()[0], 4) == 0x401U);
+
+  // 复位最后一个通道（ch1）：Flush IN（异步 stuck -> 完成后清 inflight）
+  // Resetting the last started channel flushes IN (covering async stuck abort)
+  f.can1.Inject(0x403U, {8U});
+  TEST_ASSERT(f.hw.ep1_in.inflight);
+  f.hw.ep1_in.stuck = true;
+  Mode(f.dev, f.hw, 1U, Gs::CanMode::RESET);
+  TEST_ASSERT(f.hw.ep1_in.stops == 1U && f.hw.ep1_in.inflight);
+  f.hw.ep1_in.stuck = false;
+  f.dev.Irq([&](bool isr) { f.hw.ep1_in.Done(isr, 0U, ErrorCode::ABORTED); });
+  TEST_ASSERT(!f.hw.ep1_in.inflight);
+
+  // 2) 解绑再重绑后 START 不得放出旧帧 / Rebind + START drops stale frames
+  f.Start(true, false);
+  f.can0.Inject(0x501U, {1U});
+  TEST_ASSERT(f.hw.ep1_in.inflight);
+  f.can0.Inject(0x502U, {2U});
+  SetConfiguration(f.dev, f.hw, 0U);
+  TEST_ASSERT(!f.hw.ep1_in.inflight);
+  SetConfiguration(f.dev, f.hw, 1U);
+  HostFormat(f.dev, f.hw);
+  f.Sent().clear();
+  Mode(f.dev, f.hw, 0U, Gs::CanMode::START);
+  f.can0.Inject(0x503U, {3U});
+  Drain(f.dev, f.hw.ep1_in);
+  TEST_ASSERT(f.Sent().size() == 1U && U32(f.Sent()[0], 4) == 0x503U);
+}
+
+/// CAN 发送队列满时逐通道暂存，不堵共享 OUT、不超前发回显、满暂存丢弃、模式复位/解绑清空
+/// / Per-channel CAN TX staging without holding OUT, ordering echoes, handling overflow &
+/// session/unbind drops
+void TestCanTxStaging()
+{
+  // 1) capacity = 3 + 100 帧突发（窗口 10）：不丢不重不乱序，OUT 不扣槽，回显不超前
+  {
+    Fixture f(32U, 32U, nullptr, 0U, 10U);
+    f.Start(true, true);
+    f.can0.queue.capacity = 3U;
+
+    for (uint32_t i = 0U; i < 10U; ++i)
+    {
+      HostOut(f.dev, f.hw.ep2_out,
+              Frame(i, 0x100U + i, 1U, 0U, 0U, {static_cast<uint8_t>(i)}));
+    }
+    TEST_ASSERT(f.hw.ep2_out.inflight);
+    TEST_ASSERT(f.can0.tx.size() == 3U && f.can0.queue.refused >= 1U);
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.Sent().size() == 3U);
+
+    // 排空 CAN 并通过 SOF 重试 / Drain CAN and retry via SOF
+    uint32_t sent = 10U;
+    uint16_t sof = 1U;
+    while (f.Sent().size() < 100U)
+    {
+      f.can0.queue.Drain(3U);
+      f.dev.Sof(sof++);
+      Drain(f.dev, f.hw.ep1_in);
+      TEST_ASSERT(f.Sent().size() <= f.can0.tx.size());
+      while (sent < 100U && (sent - f.Sent().size()) < 10U)
+      {
+        HostOut(f.dev, f.hw.ep2_out,
+                Frame(sent, 0x100U + sent, 1U, 0U, 0U, {static_cast<uint8_t>(sent)}));
+        ++sent;
+        Drain(f.dev, f.hw.ep1_in);
+        TEST_ASSERT(f.Sent().size() <= f.can0.tx.size());
+      }
+    }
+    TEST_ASSERT(f.can0.tx.size() == 100U && f.Sent().size() == 100U);
+    for (uint32_t i = 0U; i < 100U; ++i)
+    {
+      TEST_ASSERT(f.can0.tx[i].id == 0x100U + i);
+      TEST_ASSERT(U32(f.Sent()[i], 0) == i && U32(f.Sent()[i], 4) == 0x100U + i);
+    }
+  }
+
+  // 2) ch0 卡死期间 ch1 200 帧畅通；ch0 超过暂存深度后丢弃并回显，放行后仍排空前 10 帧
+  {
+    Fixture f(32U, 32U, nullptr, 0U, 10U);
+    f.Start(true, true);
+    f.can0.queue.capacity = 0U;
+
+    for (uint32_t i = 0U; i < 15U; ++i)
+    {
+      HostOut(f.dev, f.hw.ep2_out, Frame(i, 0x200U + i, 1U, 0U, 0U, {0U}));
+    }
+    TEST_ASSERT(f.can0.tx.empty());
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.Sent().size() == 5U);
+    for (uint32_t i = 0U; i < 5U; ++i)
+    {
+      TEST_ASSERT(U32(f.Sent()[i], 0) == 10U + i);
+    }
+
+    f.Sent().clear();
+    for (uint32_t i = 0U; i < 200U; ++i)
+    {
+      HostOut(f.dev, f.hw.ep2_out, Frame(1000U + i, 0x300U + i, 1U, 1U, 0U, {1U}));
+      if ((i % 8U) == 7U)
+      {
+        Drain(f.dev, f.hw.ep1_in);
+      }
+    }
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.can1.tx.size() == 200U && f.Sent().size() == 200U);
+
+    f.Sent().clear();
+    f.can0.queue.capacity = 20U;
+    f.dev.Sof(1U);
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.can0.tx.size() == 10U && f.Sent().size() == 10U);
+    for (uint32_t i = 0U; i < 10U; ++i)
+    {
+      TEST_ASSERT(U32(f.Sent()[i], 0) == i && f.can0.tx[i].id == 0x200U + i);
+    }
+  }
+
+  // 3) MODE RESET / MODE START / 解绑清空暂存帧（不发也不回显）
+  {
+    Fixture f(32U, 32U, nullptr, 0U, 4U);
+    f.Start(true, false);
+    f.can0.queue.capacity = 0U;
+    for (uint32_t i = 0U; i < 3U; ++i)
+    {
+      HostOut(f.dev, f.hw.ep2_out, Frame(i, 0x400U + i, 1U, 0U, 0U, {0U}));
+    }
+    Mode(f.dev, f.hw, 0U, Gs::CanMode::RESET);
+    f.can0.queue.capacity = 10U;
+    Mode(f.dev, f.hw, 0U, Gs::CanMode::START);
+    f.dev.Sof(1U);
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.can0.tx.empty() && f.Sent().empty());
+
+    // 运行中再次 MODE START 也清空暂存 / MODE START while active drops staged frames
+    f.can0.queue.capacity = 0U;
+    for (uint32_t i = 0U; i < 3U; ++i)
+    {
+      HostOut(f.dev, f.hw.ep2_out, Frame(10U + i, 0x410U + i, 1U, 0U, 0U, {0U}));
+    }
+    Mode(f.dev, f.hw, 0U, Gs::CanMode::START);
+    f.can0.queue.capacity = 10U;
+    f.dev.Sof(2U);
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.can0.tx.empty() && f.Sent().empty());
+
+    // 解绑也清空暂存 / Unbind clears staged frames
+    f.can0.queue.capacity = 0U;
+    HostOut(f.dev, f.hw.ep2_out, Frame(20U, 0x420U, 1U, 0U, 0U, {0U}));
+    SetConfiguration(f.dev, f.hw, 0U);
+    SetConfiguration(f.dev, f.hw, 1U);
+    HostFormat(f.dev, f.hw);
+    f.can0.queue.capacity = 10U;
+    Mode(f.dev, f.hw, 0U, Gs::CanMode::START);
+    f.dev.Sof(3U);
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.can0.tx.empty() && f.Sent().empty());
+  }
+
+  // 4) CAN 接受暂存头帧后 echo_queue_ 满：不能重复提交到 CAN
+  {
+    Fixture f(32U, 4U, nullptr, 1U, 4U);
+    f.Start(true, false);
+    // 用 RX 占住在途 IN 槽 / Occupy the IN slot with an RX frame
+    f.can0.Inject(0x600U, {9U});
+    TEST_ASSERT(f.hw.ep1_in.inflight);
+    // 填满 echo_queue_（容量 4）/ Fill echo_queue_ (capacity 4)
+    for (uint32_t i = 0U; i < 4U; ++i)
+    {
+      HostOut(f.dev, f.hw.ep2_out, Frame(i, 0x610U + i, 1U, 0U, 0U, {1U}));
+    }
+    TEST_ASSERT(f.can0.tx.size() == 4U);
+
+    // 暂存一帧（0x55）/ Stage one frame while CAN is full
+    f.can0.queue.capacity = 0U;
+    HostOut(f.dev, f.hw.ep2_out, Frame(0x55U, 0x620U, 1U, 0U, 0U, {2U}));
+    TEST_ASSERT(f.can0.tx.size() == 4U);
+
+    // CAN 有空但 echo_queue_ 仍满：SOF 只把 0x55 交给 CAN 一次，等空位后补推回显
+    // CAN opens while echo_queue_ is full: SOF submits 0x55 once, echoes once room opens
+    f.can0.queue.capacity = 10U;
+    f.dev.Sof(1U);
+    TEST_ASSERT(f.can0.tx.size() == 5U);
+    f.dev.Sof(2U);
+    TEST_ASSERT(f.can0.tx.size() == 5U);
+    InDone(f.dev, f.hw.ep1_in);  // 放走占位 RX，Pump 重试 ServiceStagedFrames 并推回显
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.can0.tx.size() == 5U);
+    bool saw_55 = false;
+    for (const Bytes& pkt : f.Sent())
+    {
+      if (U32(pkt, 0) == 0x55U && U32(pkt, 4) == 0x620U)
+      {
+        saw_55 = true;
+      }
+    }
+    TEST_ASSERT(saw_55);
+  }
+
+  // 5) FDCAN 与 ECHO_ID_RX 暂存帧 / CAN FD and ECHO_ID_RX staged frames
+  {
+    Hw hw;
+    StubFdCan fd0;
+    StubFdCan fd1;
+    Gs2 gs(EPNumber::EP1, EPNumber::EP2, std::initializer_list<LibXR::FDCAN*>{&fd0, &fd1},
+           32U, 32U, nullptr, {}, nullptr, Gs2::DEFAULT_INTERFACE_STRING, 4U);
+    FakeUsb dev(hw, {{&gs}});
+    Enumerate(dev, hw);
+    HostFormat(dev, hw);
+    Mode(dev, hw, 0U, Gs::CanMode::START, Gs::GSCAN_MODE_FD);
+
+    fd0.queue.capacity = 1U;
+    const Bytes payload(24U, 0xA5U);
+    HostOut(dev, hw.ep2_out,
+            Frame(11U, 0x701U, 12U, 0U, Gs::CAN_FLAG_FD | Gs::CAN_FLAG_BRS, payload));
+    HostOut(dev, hw.ep2_out,
+            Frame(0xFFFFFFFFU, 0x702U, 12U, 0U, Gs::CAN_FLAG_FD, payload));
+    HostOut(dev, hw.ep2_out, Frame(12U, 0x703U, 8U, 0U, 0U, {1U, 2U}));
+    TEST_ASSERT(fd0.fd_tx.size() == 1U && fd0.tx.empty());
+    Drain(dev, hw.ep1_in);
+    TEST_ASSERT(hw.ep1_in.transfers.size() == 1U &&
+                U32(hw.ep1_in.transfers[0], 0) == 11U);
+
+    hw.ep1_in.transfers.clear();
+    fd0.queue.capacity = 5U;
+    dev.Sof(1U);
+    Drain(dev, hw.ep1_in);
+    TEST_ASSERT(fd0.fd_tx.size() == 2U && fd0.tx.size() == 1U);
+    TEST_ASSERT(fd0.fd_tx[1].id == 0x702U && fd0.fd_tx[1].len == 24U);
+    TEST_ASSERT(fd0.tx[0].id == 0x703U);
+    // ECHO_ID_RX 暂存帧不回显，只有 id=12 的经典帧回显 / ECHO_ID_RX staged frame is not
+    // echoed
+    TEST_ASSERT(hw.ep1_in.transfers.size() == 1U &&
+                U32(hw.ep1_in.transfers[0], 0) == 12U);
+  }
+
+  // 6) 两个 SOF 之间释放 CAN 槽位并立即灌入新 OUT 帧：不等待下个 SOF 即先排空暂存、不误溢
+  // / CAN slots freed between SOFs drain staged frames on next OUT without premature drop
+  {
+    Fixture f(32U, 32U, nullptr, 0U, 4U);
+    f.Start(true, false);
+    f.can0.queue.capacity = 2U;
+
+    for (uint32_t i = 0U; i < 6U; ++i)
+    {
+      HostOut(f.dev, f.hw.ep2_out, Frame(i, 0x400U + i, 1U, 0U, 0U, {0U}));
+    }
+    // 2 帧进入 CAN，4 帧填满 stage_queues_[0] / 2 in CAN, 4 fill stage_queues_[0]
+    TEST_ASSERT(f.can0.tx.size() == 2U);
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.Sent().size() == 2U);
+
+    // 不发 SOF，释放 2 个 CAN 槽位并立刻灌入帧 6、7：第 6 帧到来时应先把帧 2、3 排进 CAN
+    // Without SOF, free 2 CAN slots and push frames 6, 7: frames 2, 3 drain into CAN
+    // first
+    f.can0.queue.Drain(2U);
+    HostOut(f.dev, f.hw.ep2_out, Frame(6U, 0x406U, 1U, 0U, 0U, {0U}));
+    HostOut(f.dev, f.hw.ep2_out, Frame(7U, 0x407U, 1U, 0U, 0U, {0U}));
+    TEST_ASSERT(f.can0.tx.size() == 4U);
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.Sent().size() == 4U);
+
+    f.can0.queue.capacity = 10U;
+    f.dev.Sof(1U);
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.can0.tx.size() == 8U && f.Sent().size() == 8U);
+    for (uint32_t i = 0U; i < 8U; ++i)
+    {
+      TEST_ASSERT(f.can0.tx[i].id == 0x400U + i && U32(f.Sent()[i], 0) == i);
+    }
+  }
+
+  // 7) AddMessage 返回 ErrorCode::BUSY 时同样进入暂存重试 / ErrorCode::BUSY stages for
+  // retry
+  {
+    Fixture f(32U, 32U, nullptr, 0U, 4U);
+    f.Start(true, false);
+    f.can0.queue.capacity = 0U;
+    f.can0.queue.full_error = ErrorCode::BUSY;
+
+    HostOut(f.dev, f.hw.ep2_out, Frame(10U, 0x410U, 1U, 0U, 0U, {1U}));
+    HostOut(f.dev, f.hw.ep2_out, Frame(11U, 0x411U, 1U, 0U, 0U, {2U}));
+    TEST_ASSERT(f.can0.tx.empty());
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.Sent().empty());
+
+    f.can0.queue.capacity = 4U;
+    f.dev.Sof(1U);
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.can0.tx.size() == 2U && f.Sent().size() == 2U);
+    TEST_ASSERT(U32(f.Sent()[0], 0) == 10U && U32(f.Sent()[1], 0) == 11U);
+  }
+}
+
 }  // namespace
 
 void test_usb_gsusb()
@@ -1554,6 +2002,9 @@ void test_usb_gsusb()
   TestHostFrames();
   TestMultiPacket();
   TestToHost();
+  TestBurstAlternation();
+  TestSessionDropAndFlush();
+  TestCanTxStaging();
   TestFrameEnd();
   TestBindFailure();
   TestBindHelperCount();

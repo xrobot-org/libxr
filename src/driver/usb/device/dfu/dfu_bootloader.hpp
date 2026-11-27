@@ -459,14 +459,15 @@ class DFUClass : public DfuInterfaceClassBase
   /**
    * @brief DFU 类请求的 SETUP 阶段 / SETUP stage of a DFU class request
    * @return 形状不对（见 CheckClassRequest）时 NOT_SUPPORT 或 ARG_ERR，不改状态。
-   *         DNBUSY、MANIFEST 中，主机等够 bwPollTimeout 之前的任何请求都被拒绝并进入
-   *         DFU_ERROR；等够之后转到对应的 SYNC 状态再处理。协议上不允许的请求进入
-   *         DFU_ERROR 并返回 ARG_ERR（核心 STALL）。
-   *         NOT_SUPPORT or ARG_ERR for a wrong shape (see CheckClassRequest), without a
-   *         state change. In DNBUSY and MANIFEST any request before the host has waited
-   *         bwPollTimeout is refused and enters DFU_ERROR; after it the state moves to
-   *         the matching SYNC state and the request is handled. A request the protocol
-   *         does not allow enters DFU_ERROR and returns ARG_ERR (the core stalls).
+   *         DNBUSY、MANIFEST 中只有 GETSTATUS 合法，其余请求 STALL 并进入 DFU_ERROR；
+   *         GETSTATUS 不因时间原因被
+   * STALL，已完成就前进，仍忙就继续报当前状态与剩余等待。 协议上不允许的请求进入
+   * DFU_ERROR 并返回 ARG_ERR（核心 STALL）。 NOT_SUPPORT or ARG_ERR for a wrong shape
+   * (see CheckClassRequest), without a state change. In DNBUSY and MANIFEST only
+   * GETSTATUS is valid and any other request stalls and enters DFU_ERROR; GETSTATUS is
+   * never stalled for timing, advances when the work is done, and otherwise repeats the
+   * busy state with the remaining timeout. A request the protocol does not allow enters
+   * DFU_ERROR and returns ARG_ERR (the core stalls).
    * @note in_data 指向 status_response_、state_response_ 或 transfer_buffer_，它们只在
    *       下一个同类请求时改写。
    *       in_data points to status_response_, state_response_ or transfer_buffer_, which
@@ -481,18 +482,21 @@ class DFUClass : public DfuInterfaceClassBase
     {
       return check;
     }
-    if (state_ == DFUState::DFU_DNBUSY || state_ == DFUState::DFU_MANIFEST)
+    const auto request = static_cast<DFURequest>(setup.bRequest);
+    if ((state_ == DFUState::DFU_DNBUSY || state_ == DFUState::DFU_MANIFEST) &&
+        request != DFURequest::GETSTATUS)
     {
-      const uint32_t now = static_cast<uint32_t>(Timebase::GetMilliseconds());
-      if (!poll_waiting_ || static_cast<int32_t>(now - poll_deadline_) < 0)
-      {
-        return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
-      }
-      state_ = (state_ == DFUState::DFU_DNBUSY) ? DFUState::DFU_DNLOAD_SYNC
-                                                : DFUState::DFU_MANIFEST_SYNC;
-      poll_waiting_ = false;
+      // DFU 1.1 A.2.5：设备忙时只有 GETSTATUS 有意义，其余请求 STALL。GETSTATUS 从不
+      // 因时间原因被 STALL：bwPollTimeout 只是主机至少要等多久，设备忙时靠 NAK 控制
+      // 流量；步骤是否完成由后端的忙状态决定（见 HandleGetStatus）。
+      // DFU 1.1 A.2.5: while the device is busy only GETSTATUS makes sense, other
+      // requests are stalled. GETSTATUS is never stalled for timing: bwPollTimeout is
+      // only the minimum host wait, and NAK is the flow control while memory is being
+      // updated. Whether the step is done is decided by the backend's busy state (see
+      // HandleGetStatus).
+      return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
     }
-    switch (static_cast<DFURequest>(setup.bRequest))
+    switch (request)
     {
       case DFURequest::DNLOAD:
         return HandleDnload(setup);
@@ -667,8 +671,12 @@ class DFUClass : public DfuInterfaceClassBase
     // after blocks were taken (DNLOAD-IDLE).
     if (state_ != DFUState::DFU_DNLOAD_IDLE)
     {
-      EnterErrorState(DFUStatusCode::ERR_NOTDONE);
-      return ErrorCode::OK;
+      // DFU 1.1 A.2.3：dfuIDLE 里只有 wLength > 0 的 DNLOAD 是合法转移；零长度 DNLOAD
+      // 没有可结束的下载，控制管道 STALL，进入 dfuERROR（errSTALLEDPKT）。
+      // DFU 1.1 A.2.3: in dfuIDLE only a DNLOAD with wLength > 0 is a valid transition;
+      // a zero-length DNLOAD has no download to end, so the control pipe is stalled and
+      // the device enters dfuERROR (errSTALLEDPKT).
+      return ProtocolStall(DFUStatusCode::ERR_STALLEDPKT);
     }
     state_ = DFUState::DFU_MANIFEST_SYNC;
     status_ = DFUStatusCode::OK;
@@ -714,19 +722,10 @@ class DFUClass : public DfuInterfaceClassBase
 
   ErrorCode HandleGetStatus(ConstRawData& in_data)
   {
+    // 在 DNBUSY / MANIFEST 中：步骤已完成则前进，否则仍答 busy 并给出剩余时间。
+    // In DNBUSY / MANIFEST: advance if the step is done, otherwise answer busy again with
+    // the time left.
     AdvanceStateForStatusRead();
-    if (state_ == DFUState::DFU_DNBUSY || state_ == DFUState::DFU_MANIFEST)
-    {
-      // 等待从交出应答时算起，少算 1 ms 抵消毫秒取整：按 bwPollTimeout 等待的主机不会
-      // 早到。状态阶段的完成可能因 Flash 擦写关中断而推迟，不能从那里算。
-      // The wait counts from handing over this answer, 1 ms short to absorb the
-      // millisecond rounding, so a host that waits bwPollTimeout never comes early. The
-      // status stage can complete late while flash work runs with interrupts off, so
-      // the wait must not count from there.
-      const uint32_t wait = (poll_timeout_ms_ > 0U) ? poll_timeout_ms_ - 1U : 0U;
-      poll_deadline_ = static_cast<uint32_t>(Timebase::GetMilliseconds()) + wait;
-      poll_waiting_ = true;
-    }
     status_response_.bStatus = static_cast<uint8_t>(status_);
     status_response_.SetPollTimeout(poll_timeout_ms_);
     status_response_.bState = static_cast<uint8_t>(state_);
@@ -851,7 +850,6 @@ class DFUClass : public DfuInterfaceClassBase
 
   void ClearErrorState()
   {
-    poll_waiting_ = false;
     manifest_started_ = false;
     status_ = DFUStatusCode::OK;
     state_ = DFUState::DFU_IDLE;
@@ -884,14 +882,6 @@ class DFUClass : public DfuInterfaceClassBase
   DFUStatusCode status_ = DFUStatusCode::OK;  ///< 锁存的状态码 / Latched status code
   /// 最近一次报告的 bwPollTimeout / Latest reported bwPollTimeout
   uint32_t poll_timeout_ms_ = 0U;
-  /**
-   * @brief DNBUSY、MANIFEST 的轮询期限 / Poll deadline of DNBUSY and MANIFEST
-   * @note HandleGetStatus 写，OnControlRequest 读。
-   *       Written by HandleGetStatus, read by OnControlRequest.
-   */
-  uint32_t poll_deadline_ = 0U;
-  /// poll_deadline_ 有效 / poll_deadline_ is valid
-  bool poll_waiting_ = false;
   /// MANIFEST-SYNC 是 manifest 之后的那一次（不再启动 manifest）/ This MANIFEST-SYNC
   /// follows manifestation (do not start it again)
   bool manifest_started_ = false;
