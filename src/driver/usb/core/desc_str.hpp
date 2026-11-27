@@ -34,8 +34,10 @@ class DescriptorStrings
     ZH_CN = 0x0804   ///< 简体中文 / Simplified Chinese
   };
 
-  typedef const char* StringData;
-  static constexpr size_t STRING_LIST_SIZE = 3;
+  typedef const char* StringData;  ///< 静态字符串指针类型 / Static string pointer alias.
+  static constexpr size_t STRING_LIST_SIZE =
+      3;  ///< 单语言固定字符串条目数（厂商/产品/序列号） / Strings per language pack
+          ///< (manufacturer/product/serial).
 
   /**
    * @brief 单语言描述符包（用于注册静态多语言字符串）

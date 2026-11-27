@@ -85,12 +85,24 @@ class STM32CANFD : public FDCAN
   {
   };
 
+  /**
+   * @brief 无 MessageRAMOffset 字段芯片上的空检查回退 / No-op check fallback when
+   *        `Init.MessageRAMOffset` is absent.
+   * @tparam T FDCAN 句柄指针类型 / FDCAN handle pointer type.
+   */
   template <typename T>
   typename std::enable_if<!HasMessageRAMOffset<T>::value, void>::type
   CheckMessageRAMOffset(T&, uint32_t = FDCAN_MESSAGE_RAM_WORDS_MAX)
   {
   }
 
+  /**
+   * @brief 校验 FDCAN Message RAM 分配未超出硬件字数上限 / Check that configured FDCAN
+   *        Message RAM allocation does not exceed hardware capacity.
+   * @tparam T FDCAN 句柄指针类型 / FDCAN handle pointer type.
+   * @param fdcan_handle STM32 HAL FDCAN 句柄 / STM32 HAL FDCAN handle.
+   * @param max_words 最大可用 Message RAM 字数 / Maximum available Message RAM words.
+   */
   template <typename T>
   typename std::enable_if<HasMessageRAMOffset<T>::value, void>::type
   CheckMessageRAMOffset(T& fdcan_handle, uint32_t max_words = FDCAN_MESSAGE_RAM_WORDS_MAX)
@@ -252,17 +264,36 @@ class STM32CANFD : public FDCAN
     return free;
   }
 
+  /**
+   * @brief 由 ClassicPack 构造 FDCAN HAL 发送帧头 / Build FDCAN HAL TX header from a
+   *        `ClassicPack`.
+   * @param p Classic CAN 帧结构 / Source `ClassicPack`.
+   * @param h 输出 FDCAN HAL 发送帧头 / Output FDCAN TX header.
+   */
   static inline void BuildTxHeader(const ClassicPack& p, FDCAN_TxHeaderTypeDef& h);
+
+  /**
+   * @brief 由 FDPack 构造 FDCAN HAL 发送帧头 / Build FDCAN HAL TX header from an
+   *        `FDPack`.
+   * @param p CAN FD 帧结构 / Source `FDPack`.
+   * @param h 输出 FDCAN HAL 发送帧头 / Output FDCAN TX header.
+   */
   static inline void BuildTxHeader(const FDPack& p, FDCAN_TxHeaderTypeDef& h);
 
+  /**
+   * @brief 从发送队列提取待发帧并提交到 HAL FDCAN FIFO / Drain TX queues into HAL FDCAN
+   *        TX FIFO.
+   */
   void TxService();
 
-  std::atomic<uint32_t> tx_lock_{0};
-  std::atomic<uint32_t> tx_pend_{0};
+  std::atomic<uint32_t> tx_lock_{
+      0};  ///< 发送服务并发互斥标志 / TX service concurrency lock.
+  std::atomic<uint32_t> tx_pend_{
+      0};  ///< 挂起重调度发送标记 / Pending TX reschedule flag.
 
-  FDCAN_HandleTypeDef* hcan_;
+  FDCAN_HandleTypeDef* hcan_;  ///< STM32 HAL FDCAN 句柄 / STM32 HAL FDCAN handle.
 
-  stm32_fdcan_id_t id_;
+  stm32_fdcan_id_t id_;  ///< FDCAN 实例 ID / FDCAN instance ID.
   /// Classic 发送槽池 / Classic TX slot pool.
   SlotPool<ClassicPack> tx_queue_;
   /// FD 发送槽池 / FD TX slot pool.
@@ -276,23 +307,29 @@ class STM32CANFD : public FDCAN
   /// 待重试 FD 帧 / Pending FD retry frame.
   FDPack tx_fd_retry_pack_{};
 
-  static STM32CANFD* map[STM32_FDCAN_NUMBER];  // NOLINT
+  static STM32CANFD* map[STM32_FDCAN_NUMBER];  ///< 按实例 ID 索引的驱动映射表 / Driver
+                                               ///< map indexed by FDCAN ID. NOLINT
 
+  /// 接收缓冲区（HAL 头与 Classic/FD 数据包） / Receive buffer (HAL header and Classic/FD
+  /// packets).
   struct
   {
-    FDCAN_RxHeaderTypeDef header;
-    ClassicPack pack;
-    FDPack pack_fd;
+    FDCAN_RxHeaderTypeDef header;  ///< HAL FDCAN 接收帧头 / HAL FDCAN RX header.
+    ClassicPack pack;              ///< Classic CAN 数据包 / Classic CAN packet.
+    FDPack pack_fd;                ///< CAN FD 数据包 / CAN FD packet.
   } rx_buff_;
 
+  /// 发送缓冲区（HAL 头与 Classic/FD 数据包） / Transmit buffer (HAL header and
+  /// Classic/FD packets).
   struct
   {
-    FDCAN_TxHeaderTypeDef header;
-    ClassicPack pack;
-    FDPack pack_fd;
+    FDCAN_TxHeaderTypeDef header;  ///< HAL FDCAN 发送帧头 / HAL FDCAN TX header.
+    ClassicPack pack;              ///< Classic CAN 数据包 / Classic CAN packet.
+    FDPack pack_fd;                ///< CAN FD 数据包 / CAN FD packet.
   } tx_buff_;
 
-  uint32_t txMailbox;
+  uint32_t
+      txMailbox;  ///< 最近提交的发送 FIFO 请求句柄 / Last submitted HAL TX buffer index.
 };
 }  // namespace LibXR
 

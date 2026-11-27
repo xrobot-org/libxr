@@ -142,6 +142,7 @@ class DfuBootloaderBackend
 
   /// @name 任何上下文 / Any context
   /// @{
+
   /// 请求启动应用；有未完成工作或没有镜像时拒绝 / Request a launch; refused while work
   /// is pending or no image exists
   bool TryRequestRunApp();

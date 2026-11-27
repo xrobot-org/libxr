@@ -36,13 +36,19 @@ struct RuntimeStringTypeList
 template <typename T, bool IsEnum = std::is_enum_v<T>>
 struct RuntimeStringNormalized
 {
-  using Type = T;
+  using Type = T;  ///< 归一化后的参数类型 / Normalized argument type.
 };
 
+/**
+ * @brief 枚举类型的参数归一化特化，映射到底层整数类型
+ *        Enum specialization mapping runtime-string arguments to their underlying
+ *        integer type
+ * @tparam T 枚举类型 / Enum type
+ */
 template <typename T>
 struct RuntimeStringNormalized<T, true>
 {
-  using Type = std::underlying_type_t<T>;
+  using Type = std::underlying_type_t<T>;  ///< 枚举底层类型 / Underlying integer type.
 };
 
 /**
@@ -147,17 +153,22 @@ template <typename Built>
 template <typename T>
 struct RuntimeStringArgumentTraits
 {
-  using Decayed = std::remove_cvref_t<T>;
-  using Normalized = typename RuntimeStringNormalized<Decayed>::Type;
+  using Decayed =
+      std::remove_cvref_t<T>;  ///< 去除引用与 cv 限定后的类型 / Decayed argument type.
+  using Normalized =
+      typename RuntimeStringNormalized<Decayed>::Type;  ///< 归一化类型 / Normalized type.
 
+  /// 是否为文本类型参数 / Whether the argument is a text-like type.
   static constexpr bool is_text =
       std::is_array_v<Decayed> || std::is_same_v<Decayed, char*> ||
       std::is_same_v<Decayed, const char*> || std::is_same_v<Decayed, std::string> ||
       std::is_same_v<Decayed, std::string_view>;
 
+  /// 是否为非函数指针类型 / Whether the argument is a non-function pointer.
   static constexpr bool is_pointer =
       std::is_pointer_v<Decayed> && !std::is_function_v<std::remove_pointer_t<Decayed>>;
 
+  /// 是否具备可静态界定的输出容量 / Whether output capacity can be statically bounded.
   static constexpr bool has_static_capacity =
       !is_text &&
       (std::is_same_v<Decayed, std::nullptr_t> || is_pointer ||
@@ -173,6 +184,7 @@ struct RuntimeStringArgumentTraits
 template <typename... Args>
 struct RuntimeStringArgumentTypes
 {
+  /// 参数类型是否与视图绑定列表一致 / Whether call arguments match the bound list.
   template <typename... CallArgs>
   static constexpr bool matches = std::is_same_v<
       RuntimeStringTypeList<typename RuntimeStringArgumentTraits<CallArgs>::Decayed...>,
@@ -185,8 +197,8 @@ struct RuntimeStringArgumentTypes
  */
 struct RuntimeStringTextPart
 {
-  std::string_view view = {};
-  ErrorCode status = ErrorCode::OK;
+  std::string_view view = {};        ///< 文本视图 / Text view.
+  ErrorCode status = ErrorCode::OK;  ///< 提取状态码 / Extraction status code.
 };
 
 template <typename T>
@@ -209,10 +221,17 @@ inline constexpr bool runtime_string_is_view_v =
  */
 struct RuntimeStringBufferSink
 {
-  char* data = nullptr;
-  size_t capacity = 0;
-  size_t size = 0;
+  char* data = nullptr;  ///< 目标字符缓冲区指针 / Destination character buffer pointer.
+  size_t capacity = 0;   ///< 缓冲区总容量（字节） / Total buffer capacity in bytes.
+  size_t size = 0;       ///< 当前已写入字节数 / Number of bytes written so far.
 
+  /**
+   * @brief 追加一段文本到目标缓冲区 / Append one text chunk to the destination buffer
+   * @param chunk 待写入文本切片 / Text slice to write
+   * @return 容量不足返回 `ErrorCode::OUT_OF_RANGE`，否则返回 `ErrorCode::OK` /
+   *         Returns `ErrorCode::OUT_OF_RANGE` on insufficient capacity, else
+   * `ErrorCode::OK`
+   */
   [[nodiscard]] ErrorCode Write(std::string_view chunk)
   {
     if (capacity - size < chunk.size())

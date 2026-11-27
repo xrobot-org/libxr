@@ -29,9 +29,13 @@ inline uint32_t STM32FlashBankOf(uint32_t addr)
   return (addr >= FLASH_BANK2_BASE) ? FLASH_BANK_2 : FLASH_BANK_1;
 }
 #elif defined(FLASH_BANK_1)
+/// 返回单 Bank STM32 的 Flash Bank 编号 / Return the flash bank identifier for
+/// single-bank STM32.
 // NOLINTNEXTLINE
 inline uint32_t STM32FlashBankOf(uint32_t) { return FLASH_BANK_1; }
 #else
+/// 返回默认 Flash Bank 编号（无 `FLASH_BANK_1` 定义时的回退） / Return default flash bank
+/// ID when `FLASH_BANK_1` is undefined.
 // NOLINTNEXTLINE
 inline uint32_t STM32FlashBankOf(uint32_t) { return 1; }
 #endif

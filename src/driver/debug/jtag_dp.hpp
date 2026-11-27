@@ -19,17 +19,36 @@ namespace LibXR::Debug
 class JtagDp final
 {
  public:
+  /**
+   * @brief 构造 JTAG-DP 访问器 / Construct JTAG-DP accessor.
+   * @param jtag 底层 JTAG 驱动引用 / Reference to underlying JTAG driver.
+   * @param chain 可选扫描链配置；为空按单设备链处理 / Optional scan-chain config;
+   *        nullptr assumes single-device chain.
+   */
   explicit JtagDp(Jtag& jtag, JtagProtocol::ChainConfig* chain = nullptr)
       : jtag_(jtag), chain_(chain)
   {
   }
 
+  /**
+   * @brief 更新扫描链配置并使 IR 缓存失效 / Update scan-chain config and invalidate IR
+   *        cache.
+   * @param chain 扫描链配置指针 / Pointer to scan-chain configuration.
+   */
   void SetChainConfig(JtagProtocol::ChainConfig* chain)
   {
     chain_ = chain;
     current_ir_valid_ = false;
   }
 
+  /**
+   * @brief 执行单次 DP 读操作（管线化，返回上一笔读结果） / Issue a single DP read
+   *        (pipelined; returns result of the previous read).
+   * @param addr2b 寄存器地址 `[3:2]` / 2-bit word address (`A[3:2]`).
+   * @param val 输出读取数据 / Output read data.
+   * @param ack 输出应答状态 / Output ACK status.
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   ErrorCode DpRead(uint8_t addr2b, uint32_t& val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
@@ -39,6 +58,13 @@ class JtagDp final
     return EC;
   }
 
+  /**
+   * @brief 执行单次 DP 写操作 / Issue a single DP write.
+   * @param addr2b 寄存器地址 `[3:2]` / 2-bit word address (`A[3:2]`).
+   * @param val 待写入 32 位数据 / 32-bit write value.
+   * @param ack 输出应答状态 / Output ACK status.
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   ErrorCode DpWrite(uint8_t addr2b, uint32_t val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
@@ -47,6 +73,14 @@ class JtagDp final
     return EC;
   }
 
+  /**
+   * @brief 带 RDBUFF 取数的完整 DP 读事务 / Complete DP read transaction followed by
+   *        RDBUFF read.
+   * @param addr2b 寄存器地址 `[3:2]` / 2-bit word address (`A[3:2]`).
+   * @param val 输出本次读取到的寄存器值 / Output register value.
+   * @param ack 输出应答状态 / Output ACK status.
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   ErrorCode DpReadTxn(uint8_t addr2b, uint32_t& val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
@@ -82,6 +116,14 @@ class JtagDp final
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief DP 写事务；访问 DP `addr2b == 0` 时转由 JTAG ABORT 路径执行 / DP write
+   *        transaction; routes `addr2b == 0` to JTAG ABORT.
+   * @param addr2b 寄存器地址 `[3:2]` / 2-bit word address (`A[3:2]`).
+   * @param val 待写入 32 位数据 / 32-bit write value.
+   * @param ack 输出应答状态 / Output ACK status.
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   ErrorCode DpWriteTxn(uint8_t addr2b, uint32_t val, JtagProtocol::Ack& ack)
   {
     if ((addr2b & 0x03u) == 0u)
@@ -92,6 +134,14 @@ class JtagDp final
     return DpWrite(addr2b, val, ack);
   }
 
+  /**
+   * @brief 带 RDBUFF 取数的完整 AP 读事务 / Complete AP read transaction followed by
+   *        RDBUFF read.
+   * @param addr2b 寄存器地址 `[3:2]` / 2-bit word address (`A[3:2]`).
+   * @param val 输出读取到的 AP 寄存器值 / Output AP register value.
+   * @param ack 输出应答状态 / Output ACK status.
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   ErrorCode ApReadTxn(uint8_t addr2b, uint32_t& val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
@@ -116,6 +166,13 @@ class JtagDp final
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief AP 写事务 / Issue an AP write transaction.
+   * @param addr2b 寄存器地址 `[3:2]` / 2-bit word address (`A[3:2]`).
+   * @param val 待写入 32 位数据 / 32-bit write value.
+   * @param ack 输出应答状态 / Output ACK status.
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   ErrorCode ApWriteTxn(uint8_t addr2b, uint32_t val, JtagProtocol::Ack& ack)
   {
     JtagProtocol::Response resp;
@@ -124,11 +181,24 @@ class JtagDp final
     return EC;
   }
 
+  /**
+   * @brief 读取默认 JTAG IDCODE 指令寄存器对应的值 / Read JTAG IDCODE using default
+   *        IDCODE IR.
+   * @param idcode 输出 32 位 IDCODE / Output 32-bit IDCODE.
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   ErrorCode ReadIdCode(uint32_t& idcode)
   {
     return ReadIdCodeWithIr(JtagProtocol::JTAG_IR_IDCODE, idcode);
   }
 
+  /**
+   * @brief 使用指定 IR 指令读取 32 位 IDCODE / Read 32-bit IDCODE using an explicit
+   *        IR opcode.
+   * @param ir IDCODE 指令码 / IDCODE instruction opcode.
+   * @param idcode 输出 32 位 IDCODE / Output 32-bit IDCODE.
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   ErrorCode ReadIdCodeWithIr(uint32_t ir, uint32_t& idcode)
   {
     const ErrorCode EC = SelectIr(ir);
@@ -147,6 +217,14 @@ class JtagDp final
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief 向 JTAG ABORT 扫描链写入 32 位中止控制字 / Shift a 32-bit abort word into
+   *        the JTAG ABORT scan chain.
+   * @param data 待写入的 ABORT 控制数据 / 32-bit abort control word.
+   * @param ack 输出应答状态（移位完成即设为 `OK`） / Output ACK status (set to `OK`
+   *        once the shift completes).
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   ErrorCode WriteAbort(uint32_t data, JtagProtocol::Ack& ack)
   {
     const ErrorCode EC = SelectIr(JtagProtocol::JTAG_IR_ABORT);
@@ -173,6 +251,13 @@ class JtagDp final
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief 执行一次底层 DPACC/APACC DR 移位传输 / Execute one low-level DPACC/APACC DR
+   *        transfer.
+   * @param req JTAG-DP 请求结构 / JTAG-DP request structure.
+   * @param resp 输出 JTAG-DP 响应结构 / Output JTAG-DP response structure.
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   ErrorCode Transfer(const JtagProtocol::Request& req, JtagProtocol::Response& resp)
   {
     const ErrorCode EC =

@@ -7,6 +7,10 @@
 namespace LibXR
 {
 
+/**
+ * @class MSPM0Timebase
+ * @brief 基于 SysTick 的 MSPM0 时间基准驱动 / SysTick-based MSPM0 timebase driver.
+ */
 class MSPM0Timebase : public Timebase
 {
  public:

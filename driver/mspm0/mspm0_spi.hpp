@@ -21,16 +21,27 @@ namespace LibXR
 class MSPM0SPI : public SPI
 {
  public:
+  /**
+   * @brief MSPM0 SPI 硬件资源描述 / MSPM0 SPI hardware resource descriptor.
+   */
   struct Resources
   {
-    SPI_Regs* instance;
-    IRQn_Type irqn;
-    uint32_t clock_freq;
-    uint8_t index;
-    uint8_t dma_rx_channel;
-    uint8_t dma_tx_channel;
+    SPI_Regs* instance;   ///< SPI 外设寄存器指针 / SPI peripheral register pointer.
+    IRQn_Type irqn;       ///< SPI 中断号 / SPI interrupt number.
+    uint32_t clock_freq;  ///< 外设输入时钟频率（Hz） / Peripheral clock frequency (Hz).
+    uint8_t index;        ///< 内部实例表索引 / Internal instance index.
+    uint8_t dma_rx_channel;  ///< RX DMA 通道号 / RX DMA channel index.
+    uint8_t dma_tx_channel;  ///< TX DMA 通道号 / TX DMA channel index.
   };
 
+  /**
+   * @brief 构造 MSPM0SPI 主机驱动实例 / Construct an `MSPM0SPI` master driver instance.
+   * @param res 硬件资源描述 / Hardware resource descriptor.
+   * @param dma_rx_buffer RX DMA 缓冲区 / RX DMA buffer.
+   * @param dma_tx_buffer TX DMA 缓冲区 / TX DMA buffer.
+   * @param dma_enable_min_size 启用 DMA 的最小传输字节数 / Minimum transfer size for DMA.
+   * @param config 初始 SPI 总线配置 / Initial SPI bus configuration.
+   */
   MSPM0SPI(Resources res, RawData dma_rx_buffer, RawData dma_tx_buffer,
            uint32_t dma_enable_min_size = 3,
            SPI::Configuration config = {SPI::ClockPolarity::LOW, SPI::ClockPhase::EDGE_1,
@@ -53,8 +64,19 @@ class MSPM0SPI : public SPI
 
   ErrorCode Transfer(size_t size, OperationRW& op, bool in_isr = false) override;
 
+  /**
+   * @brief 分发指定 SPI 实例的 DMA/外设中断 / Dispatch interrupt events for an SPI
+   * instance.
+   * @param index SPI 实例索引 / SPI instance index.
+   */
   static void OnInterrupt(uint8_t index);
 
+  /**
+   * @brief 根据 SPI 中断号解析内部实例索引 / Resolve the internal instance index from an
+   *        SPI IRQn.
+   * @param irqn MSPM0 SPI 中断号 / MSPM0 SPI interrupt number.
+   * @return 对应实例索引 / Resolved instance index.
+   */
   static constexpr uint8_t ResolveIndex(IRQn_Type irqn)
   {
     switch (irqn)

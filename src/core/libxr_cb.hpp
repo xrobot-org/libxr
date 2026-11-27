@@ -20,12 +20,20 @@ concept CallbackFunctionCompatible = requires(CallableType callable) {
   static_cast<void (*)(bool, BoundArgType, CallbackArgs...)>(callable);
 };
 
+/**
+ * @brief 回调块公共头，提供类型擦除后的调用函数指针
+ *        / Common callback block header carrying the type-erased invocation pointer
+ * @tparam Args 回调附加参数类型列表 / Additional callback argument types
+ */
 template <typename... Args>
 struct CallbackBlockHeader
 {
-  using InvokeFunType = void (*)(void*, bool, Args...);
+  using InvokeFunType =
+      void (*)(void*, bool,
+               Args...);  ///< 擦除调用入口函数指针类型 / Type-erased thunk pointer type.
 
-  InvokeFunType run_fun_ = nullptr;
+  InvokeFunType run_fun_ =
+      nullptr;  ///< 指向实际调用跳板函数的指针 / Pointer to the concrete invoke thunk.
 };
 
 /**
@@ -63,6 +71,13 @@ class CallbackBlock : public CallbackBlockHeader<Args...>
   CallbackBlock(const CallbackBlock& other) = delete;
   CallbackBlock& operator=(const CallbackBlock& other) = delete;
 
+  /**
+   * @brief 类型擦除调用跳板，转调到具体 `CallbackBlock` 实例
+   *        / Type-erased thunk that dispatches to a concrete `CallbackBlock` instance
+   * @param cb_block 回调块指针 / Pointer to callback block
+   * @param in_isr 当前是否在中断上下文 / Whether running in ISR context
+   * @param args 回调参数 / Callback arguments
+   */
   static void InvokeThunk(void* cb_block, bool in_isr, Args... args)
   {
     auto* cb = static_cast<CallbackBlock<ArgType, Args...>*>(cb_block);
@@ -70,6 +85,12 @@ class CallbackBlock : public CallbackBlockHeader<Args...>
   }
 
  protected:
+  /**
+   * @brief 调用绑定的回调函数并传入绑定参数与调用参数
+   *        / Invoke the bound function with the bound argument and passed arguments
+   * @param in_isr 当前是否在中断上下文 / Whether running in ISR context
+   * @param args 回调参数 / Callback arguments
+   */
   void Invoke(bool in_isr, Args... args)
   {
     fun_(in_isr, arg_, std::forward<Args>(args)...);
@@ -79,6 +100,12 @@ class CallbackBlock : public CallbackBlockHeader<Args...>
   ArgType arg_;       ///< 绑定的参数 / Bound argument
 };
 
+/**
+ * @brief 带重入保护的回调块，按最新挂起参数串行化自递归调用
+ *        / Reentry-guarded callback block serializing self-recursive invocations
+ * @tparam ArgType 绑定的第一个参数类型 / Type of the first bound argument
+ * @tparam Args 额外的参数类型列表 / Additional argument types
+ */
 template <typename ArgType, typename... Args>
 class GuardedCallbackBlock : public CallbackBlock<ArgType, Args...>
 {
@@ -98,6 +125,14 @@ class GuardedCallbackBlock : public CallbackBlock<ArgType, Args...>
     this->run_fun_ = &InvokeThunk;
   }
 
+  /**
+   * @brief 带重入防护的跳板函数，若回调已在执行则记录最新参数并在本轮结束后重放
+   *        / Reentry-guarded invoke thunk that defers and replays the latest pending
+   *        arguments if the callback is already running
+   * @param cb_block 回调块指针 / Pointer to guarded callback block
+   * @param in_isr 当前是否在中断上下文 / Whether running in ISR context
+   * @param args 回调参数 / Callback arguments
+   */
   static void InvokeThunk(void* cb_block, bool in_isr, Args... args)
   {
     auto* cb = static_cast<GuardedCallbackBlock<ArgType, Args...>*>(cb_block);
@@ -200,7 +235,15 @@ class Callback
    */
   Callback() : cb_block_(&empty_cb_block_) {}
 
+  /**
+   * @brief 默认拷贝构造函数 / Default copy constructor
+   */
   Callback(const Callback&) = default;
+
+  /**
+   * @brief 默认拷贝赋值运算符 / Default copy assignment operator
+   * @return 当前对象引用 / Reference to this callback
+   */
   Callback& operator=(const Callback&) = default;
 
   /**
@@ -230,6 +273,12 @@ class Callback
     return *this;
   }
 
+  /**
+   * @brief 触发回调执行 / Execute the underlying callback
+   * @tparam PassArgs 传入参数类型列表 / Passed argument types
+   * @param in_isr 当前是否在中断上下文 / Whether running in ISR context
+   * @param args 传递给回调的参数 / Arguments forwarded to the callback
+   */
   template <typename... PassArgs>
   void Run(bool in_isr, PassArgs&&... args) const
   {

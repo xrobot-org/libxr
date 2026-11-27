@@ -100,7 +100,8 @@ class ASync
     return cur;
   }
 
-  using Job = LibXR::Callback<ASync*>;
+  using Job =
+      LibXR::Callback<ASync*>;  ///< 异步任务回调类型 / Asynchronous job callback type.
 
   /**
    * @brief 提交任务 / Submit a job.

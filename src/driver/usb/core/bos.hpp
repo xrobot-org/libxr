@@ -65,12 +65,12 @@ class BosCapability
   virtual ConstRawData GetCapabilityDescriptor() const = 0;
 
   /**
-   * @brief 处理该能力相关 Vendor 请求 / Handle vendor request for this capability
-   *
-   * @param in_isr ISR 上下文标志 / ISR context flag
-   * @param setup  Setup 包 / Setup packet
-   * @param result 输出结果 / Output result
-   * @return OK：匹配且处理；NOT_SUPPORT：不匹配；其他：匹配但失败（上层应 STALL）
+   * @brief 处理该能力相关 Vendor 请求（依次传入 ISR 上下文标志、Setup 包与输出结果） /
+   *        Handle vendor request for this capability (parameters: ISR flag, Setup
+   *        packet, and output result).
+   * @return OK：匹配且处理；NOT_SUPPORT：不匹配；其他：匹配但失败（上层应 STALL） /
+   *         Returns OK if matched and handled, NOT_SUPPORT if unmatched, or an error
+   *         when matched but failed (caller should STALL).
    */
   virtual ErrorCode OnVendorRequest(bool /*in_isr*/, const SetupPacket* /*setup*/,
                                     BosVendorResult& /*result*/)

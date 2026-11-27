@@ -27,10 +27,13 @@ namespace LibXR
 #endif
 
 #if (LIBXR_ESP_WDT_MWDT1_RESERVED == 0)
+/// 默认选用的 ESP32 看门狗硬件定时器实例 / Default hardware watchdog timer instance.
 constexpr wdt_inst_t ESP32_WATCHDOG_DEFAULT_INSTANCE = WDT_MWDT1;
 #elif (LIBXR_ESP_WDT_MWDT0_RESERVED == 0)
+/// 默认选用的 ESP32 看门狗硬件定时器实例 / Default hardware watchdog timer instance.
 constexpr wdt_inst_t ESP32_WATCHDOG_DEFAULT_INSTANCE = WDT_MWDT0;
 #else
+/// 默认选用的 ESP32 看门狗硬件定时器实例 / Default hardware watchdog timer instance.
 constexpr wdt_inst_t ESP32_WATCHDOG_DEFAULT_INSTANCE = WDT_RWDT;
 #endif
 
@@ -41,9 +44,18 @@ static_assert(!(ESP32_WATCHDOG_DEFAULT_INSTANCE == WDT_MWDT1 &&
                 LIBXR_ESP_WDT_MWDT1_RESERVED),
               "LibXR ESP32Watchdog selected MWDT1, but MWDT1 is reserved by ESP-IDF.");
 
+/**
+ * @class ESP32Watchdog
+ * @brief ESP32 硬件看门狗驱动实现 / ESP32 hardware watchdog driver implementation.
+ */
 class ESP32Watchdog : public Watchdog
 {
  public:
+  /**
+   * @brief 构造 ESP32Watchdog 对象 / Construct an `ESP32Watchdog` instance.
+   * @param timeout_ms 看门狗超时时间（ms） / Watchdog timeout in milliseconds.
+   * @param feed_ms 自动喂狗周期（ms） / Automatic feed period in milliseconds.
+   */
   explicit ESP32Watchdog(uint32_t timeout_ms = 1000, uint32_t feed_ms = 250);
 
   ErrorCode SetConfig(const Configuration& config) override;

@@ -83,25 +83,30 @@ class STM32CAN : public CAN
    */
   void ProcessErrorInterrupt();
 
-  CAN_HandleTypeDef* hcan_;
+  CAN_HandleTypeDef* hcan_;  ///< STM32 HAL CAN 句柄 / STM32 HAL CAN handle.
 
-  stm32_can_id_t id_;
-  uint32_t fifo_;
-  static STM32CAN* map[STM32_CAN_NUMBER];  // NOLINT
+  stm32_can_id_t id_;                      ///< CAN 实例 ID / CAN instance ID.
+  uint32_t fifo_;                          ///< 接收 FIFO 编号 / RX FIFO index.
+  static STM32CAN* map[STM32_CAN_NUMBER];  ///< 按实例 ID 索引的驱动映射表 / Driver map
+                                           ///< indexed by CAN ID. NOLINT
 
+  /// 接收缓冲区（HAL 头 + Classic CAN 数据包） / Receive buffer (HAL header + classic
+  /// packet).
   struct
   {
-    CAN_RxHeaderTypeDef header;
-    ClassicPack pack;
+    CAN_RxHeaderTypeDef header;  ///< HAL CAN 接收帧头 / HAL CAN RX frame header.
+    ClassicPack pack;            ///< Classic CAN 数据包 / Classic CAN packet.
   } rx_buff_;
 
+  /// 发送缓冲区（HAL 头 + Classic CAN 数据包） / Transmit buffer (HAL header + classic
+  /// packet).
   struct
   {
-    CAN_TxHeaderTypeDef header;
-    ClassicPack pack;
+    CAN_TxHeaderTypeDef header;  ///< HAL CAN 发送帧头 / HAL CAN TX frame header.
+    ClassicPack pack;            ///< Classic CAN 数据包 / Classic CAN packet.
   } tx_buff_;
 
-  uint32_t txMailbox;
+  uint32_t txMailbox;  ///< 最近提交的 HAL 发送邮箱号 / Last submitted HAL TX mailbox.
 
   /// 发送槽池 / TX slot pool.
   SlotPool<ClassicPack> tx_queue_;
@@ -110,11 +115,21 @@ class STM32CAN : public CAN
   /// 待重试帧 / Pending retry frame.
   ClassicPack tx_retry_pack_{};
 
-  std::atomic<uint32_t> tx_lock_{0};
-  std::atomic<uint32_t> tx_pend_{0};
+  std::atomic<uint32_t> tx_lock_{
+      0};  ///< 发送服务并发互斥标志 / TX service concurrency lock.
+  std::atomic<uint32_t> tx_pend_{
+      0};  ///< 挂起重调度发送标记 / Pending TX reschedule flag.
 
+  /**
+   * @brief 由 ClassicPack 构造 HAL 发送帧头 / Build HAL TX header from a `ClassicPack`.
+   * @param p Classic CAN 帧结构 / Source `ClassicPack`.
+   * @param h 输出 HAL 发送帧头 / Output HAL TX header.
+   */
   static inline void BuildTxHeader(const ClassicPack& p, CAN_TxHeaderTypeDef& h);
 
+  /**
+   * @brief 从发送队列提取待发帧并提交到 HAL 邮箱 / Drain TX queue into HAL TX mailbox.
+   */
   void TxService();
 };
 }  // namespace LibXR

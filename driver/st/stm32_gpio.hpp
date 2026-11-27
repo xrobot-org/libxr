@@ -233,7 +233,8 @@ class STM32GPIO final : public GPIO
     return ErrorCode::OK;
   }
 
-  static STM32GPIO* map[16];  // NOLINT
+  static STM32GPIO* map[16];  ///< 按 EXTI 线路号索引的 GPIO 实例表 / GPIO instance map
+                              ///< indexed by EXTI line. NOLINT
 
  private:
   GPIO_TypeDef* port_;

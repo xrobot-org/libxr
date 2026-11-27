@@ -49,7 +49,8 @@ class GPIO
     Pull pull;            ///< GPIO 上拉/下拉配置 / GPIO pull-up/pull-down configuration.
   };
 
-  using Callback = LibXR::Callback<>;
+  using Callback =
+      LibXR::Callback<>;  ///< GPIO 中断回调类型 / GPIO interrupt callback type.
 
   /**
    * @brief GPIO 事件的回调函数 / Callback function for GPIO events.

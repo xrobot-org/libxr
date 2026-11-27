@@ -118,6 +118,14 @@ template <typename OwnerType, typename MemberType>
                                       OffsetOf(member));
 }
 
+/**
+ * @brief 通过常量成员指针恢复其所属常量对象指针
+ *        Recover the owning const object pointer from a const member pointer
+ * @param ptr 指向常量成员的指针 / Pointer to the const member
+ * @param member 指向成员的成员指针，如 `&Type::member` / Member pointer such as
+ * `&Type::member`
+ * @return 所属常量对象指针 / Pointer to the owning const object
+ */
 template <typename OwnerType, typename MemberType>
   requires MemberObjectPointer<OwnerType, MemberType>
 [[nodiscard]] inline const OwnerType* ContainerOf(const MemberType* ptr,

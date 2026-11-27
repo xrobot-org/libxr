@@ -74,8 +74,8 @@ class CH32UART : public UART
   /// 处理接收空闲和发送完成中断 / Handle RX idle and TX complete interrupts.
   void UartIRQHandler();
 
-  ch32_uart_id_t id_;
-  uint16_t uart_mode_;
+  ch32_uart_id_t id_;   ///< UART 实例编号 / UART instance ID.
+  uint16_t uart_mode_;  ///< USART 收发使能标志 / USART TX/RX mode flags.
 
   /// 接收字节队列与读请求 / RX byte queue and read requests.
   ReadPort _read_port;
@@ -90,14 +90,15 @@ class CH32UART : public UART
   /// 上次已处理的 DMA 接收位置 / Last processed RX DMA position.
   size_t last_rx_pos_ = 0;
 
-  USART_TypeDef* instance_;
-  DMA_Channel_TypeDef* dma_rx_channel_;
-  DMA_Channel_TypeDef* dma_tx_channel_;
+  USART_TypeDef* instance_;  ///< USART 外设寄存器基址 / USART peripheral registers.
+  DMA_Channel_TypeDef* dma_rx_channel_;  ///< RX DMA 通道 / RX DMA channel.
+  DMA_Channel_TypeDef* dma_tx_channel_;  ///< TX DMA 通道 / TX DMA channel.
 
   /// 发送半区是否在使用，仅后端处理器访问 / TX half in use; service-only access.
   Flag::Plain tx_busy_;
 
-  static CH32UART* map_[CH32_UART_NUMBER];
+  static CH32UART* map_[CH32_UART_NUMBER];  ///< 按 UART 实例 ID 索引的实例表 / Driver
+                                            ///< instance lookup table indexed by UART ID.
 
  private:
   /// 待应用配置的发布阶段 / Pending configuration publication phase.

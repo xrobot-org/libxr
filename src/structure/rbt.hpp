@@ -85,14 +85,41 @@ class RBTree
     {
     }
 
+    /**
+     * @brief 类型转换操作符，隐式转换为数据引用 / Conversion operator to data reference
+     * @return 数据引用 / Reference to stored data
+     */
     operator Data&() { return data_; }
+
+    /**
+     * @brief 赋值操作符，更新节点存储的数据 / Assignment operator updating stored data
+     * @param data 新数据值 / New data value
+     * @return 当前节点引用 / Reference to this node
+     */
     Node& operator=(const Data& data)
     {
       data_ = data;
       return *this;
     }
+
+    /**
+     * @brief 成员访问操作符，返回数据指针 / Member access operator returning data
+     * pointer
+     * @return 数据指针 / Pointer to stored data
+     */
     Data* operator->() { return &data_; }
+
+    /**
+     * @brief 常量成员访问操作符，返回常量数据指针 / Const member access operator
+     * returning const data pointer
+     * @return 常量数据指针 / Const pointer to stored data
+     */
     const Data* operator->() const { return &data_; }
+
+    /**
+     * @brief 解引用操作符，返回数据引用 / Dereference operator returning data reference
+     * @return 数据引用 / Reference to stored data
+     */
     Data& operator*() { return data_; }
 
     Data data_;  ///< 存储的数据 / Stored data.

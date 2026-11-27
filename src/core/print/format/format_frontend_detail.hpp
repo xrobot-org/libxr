@@ -204,7 +204,7 @@ template <Text Source, typename... Args>
 class Compiler
 {
  public:
-  using ErrorType = Error;
+  using ErrorType = Error;  ///< 前端错误码类型 / Frontend error code type.
 
   /**
    * @brief 返回不含结尾零字节的源字符串字节序列 / Return the source string bytes without

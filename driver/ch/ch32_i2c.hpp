@@ -16,6 +16,11 @@
 namespace LibXR
 {
 
+/**
+ * @class CH32I2C
+ * @brief CH32 I2C 主机驱动实现，支持 7/10 位寻址与 DMA/轮询传输
+ *        CH32 I2C master driver supporting 7/10-bit addressing and DMA/polling transfers.
+ */
 class CH32I2C : public I2C
 {
  public:
@@ -44,14 +49,16 @@ class CH32I2C : public I2C
 
   ErrorCode SetConfig(Configuration config) override;
 
-  /// DMA 回调入口 / DMA callbacks from CH32 DMA driver
+  /// DMA 接收中断回调入口 / DMA RX interrupt handler entry.
   void RxDmaIRQHandler();
+  /// DMA 发送中断回调入口 / DMA TX interrupt handler entry.
   void TxDmaIRQHandler();
 
   /// 错误中断回调 / I2C error IRQ callback
   void ErrorIRQHandler();
 
-  static CH32I2C* map_[CH32_I2C_NUMBER];
+  static CH32I2C* map_[CH32_I2C_NUMBER];  ///< 按 I2C 外设 ID 索引的驱动实例表 / Driver
+                                          ///< instance lookup table indexed by I2C ID.
 
  private:
   /// 默认超时（微秒） / Default timeout in microseconds
@@ -106,30 +113,34 @@ class CH32I2C : public I2C
   void RecoverAfterImmediateFailure();
 
  public:
-  I2C_TypeDef* instance_;
-  DMA_Channel_TypeDef* dma_rx_channel_;
-  DMA_Channel_TypeDef* dma_tx_channel_;
-  ch32_i2c_id_t id_;
-  uint32_t dma_enable_min_size_;
+  I2C_TypeDef* instance_;  ///< CH32 I2C 外设寄存器基址 / I2C peripheral registers.
+  DMA_Channel_TypeDef* dma_rx_channel_;  ///< RX DMA 通道 / RX DMA channel.
+  DMA_Channel_TypeDef* dma_tx_channel_;  ///< TX DMA 通道 / TX DMA channel.
+  ch32_i2c_id_t id_;                     ///< I2C 实例编号 / I2C instance ID.
+  uint32_t dma_enable_min_size_;  ///< 启用 DMA 的最小传输字节数 / Minimum transfer size
+                                  ///< for DMA.
 
-  RawData dma_buff_;
+  RawData dma_buff_;  ///< 内部 DMA 暂存缓冲区 / Internal DMA staging buffer.
 
-  ReadOperation read_op_;
-  WriteOperation write_op_;
-  RawData read_buff_;
-  bool read_ = false;
-  bool busy_ = false;
-  bool recovering_ = false;
+  ReadOperation read_op_;    ///< 当前读操作完成句柄 / Pending read completion operation.
+  WriteOperation write_op_;  ///< 当前写操作完成句柄 / Pending write completion operation.
+  RawData read_buff_;        ///< 当前读请求目标缓冲区 / Active read destination buffer.
+  bool read_ =
+      false;  ///< 当前传输方向标志（true 为读） / Current direction flag (true for read).
+  bool busy_ = false;  ///< 传输忙碌标志 / Active transfer busy flag.
+  bool recovering_ =
+      false;  ///< 总线错误恢复中标志 / Bus error recovery in progress flag.
 
-  GPIO_TypeDef* scl_port_;
-  uint16_t scl_pin_;
-  GPIO_TypeDef* sda_port_;
-  uint16_t sda_pin_;
+  GPIO_TypeDef* scl_port_;  ///< SCL 引脚端口 / SCL GPIO port.
+  uint16_t scl_pin_;        ///< SCL 引脚掩码 / SCL GPIO pin mask.
+  GPIO_TypeDef* sda_port_;  ///< SDA 引脚端口 / SDA GPIO port.
+  uint16_t sda_pin_;        ///< SDA 引脚掩码 / SDA GPIO pin mask.
 
-  Configuration cfg_{400000};
+  Configuration cfg_{400000};  ///< 当前 I2C 时钟配置 / Current I2C clock configuration.
 
-  bool ten_bit_addr_ = false;
-  AsyncBlockWait block_wait_{};
+  bool ten_bit_addr_ =
+      false;  ///< 是否启用 10 位从机地址 / Whether 10-bit slave addressing is enabled.
+  AsyncBlockWait block_wait_{};  ///< 阻塞等待辅助对象 / Blocking wait helper.
 };
 
 }  // namespace LibXR

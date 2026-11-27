@@ -103,9 +103,6 @@ LIBXR_PACKED_END
  * @brief 按当前 topic 的名字和类型契约把一条消息打包成 packet / Pack one message into
  *        one packet using the current topic name and type contract
  * @tparam Data payload 类型 / Payload type
- * @param data 待打包 payload / Payload to pack
- * @param packet 输出 packet / Output packed message
- * @param timestamp 要写入包头的时间戳 / Timestamp to store into the packet header
  * @return 操作结果错误码 / Error code
  */
 template <typename Data>

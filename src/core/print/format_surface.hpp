@@ -10,6 +10,11 @@
 
 namespace LibXR
 {
+/**
+ * @brief 编译期检查的 brace 风格格式字面量包装 / Compile-time checked brace-style format
+ *        literal wrapper
+ * @tparam Source 格式字符串字面量 / Format string literal
+ */
 template <Print::Text Source>
 class Format
 {

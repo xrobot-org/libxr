@@ -397,12 +397,30 @@ class EulerAngle
    */
   EulerAngle(const EulerAngle& p) : data_{p.data_[0], p.data_[1], p.data_[2]} {}
 
-  Scalar& Roll() noexcept { return data_[0]; }
-  const Scalar& Roll() const noexcept { return data_[0]; }
-  Scalar& Pitch() noexcept { return data_[1]; }
-  const Scalar& Pitch() const noexcept { return data_[1]; }
-  Scalar& Yaw() noexcept { return data_[2]; }
-  const Scalar& Yaw() const noexcept { return data_[2]; }
+  Scalar& Roll() noexcept
+  {
+    return data_[0];
+  }  ///< 获取横滚角引用 / Mutable roll angle reference.
+  const Scalar& Roll() const noexcept
+  {
+    return data_[0];
+  }  ///< 获取常量横滚角引用 / Const roll angle reference.
+  Scalar& Pitch() noexcept
+  {
+    return data_[1];
+  }  ///< 获取俯仰角引用 / Mutable pitch angle reference.
+  const Scalar& Pitch() const noexcept
+  {
+    return data_[1];
+  }  ///< 获取常量俯仰角引用 / Const pitch angle reference.
+  Scalar& Yaw() noexcept
+  {
+    return data_[2];
+  }  ///< 获取偏航角引用 / Mutable yaw angle reference.
+  const Scalar& Yaw() const noexcept
+  {
+    return data_[2];
+  }  ///< 获取常量偏航角引用 / Const yaw angle reference.
 
   /**
    * @brief 通过 3 元素数组构造欧拉角对象。
@@ -455,6 +473,10 @@ class EulerAngle
   /// Converts to a rotation matrix using the ZYX order by default.
   Eigen::Matrix<Scalar, 3, 3> ToRotationMatrix() const { return ToRotationMatrixZYX(); }
 
+  /**
+   * @brief 按 ZYX 顺序转换为 3x3 旋转矩阵 / Convert to a 3x3 rotation matrix (ZYX order).
+   * @return 旋转矩阵 / Resulting 3x3 rotation matrix.
+   */
   Eigen::Matrix<Scalar, 3, 3> ToRotationMatrixZYX() const
   {
     Scalar ca = std::cos(Yaw()), cb = std::cos(Pitch()), cc = std::cos(Roll());
@@ -466,6 +488,10 @@ class EulerAngle
         .finished();
   }
 
+  /**
+   * @brief 按 ZXY 顺序转换为 3x3 旋转矩阵 / Convert to a 3x3 rotation matrix (ZXY order).
+   * @return 旋转矩阵 / Resulting 3x3 rotation matrix.
+   */
   Eigen::Matrix<Scalar, 3, 3> ToRotationMatrixZXY() const
   {
     Scalar ca = std::cos(Yaw()), cb = std::cos(Roll()), cc = std::cos(Pitch());
@@ -477,6 +503,10 @@ class EulerAngle
         .finished();
   }
 
+  /**
+   * @brief 按 YXZ 顺序转换为 3x3 旋转矩阵 / Convert to a 3x3 rotation matrix (YXZ order).
+   * @return 旋转矩阵 / Resulting 3x3 rotation matrix.
+   */
   Eigen::Matrix<Scalar, 3, 3> ToRotationMatrixYXZ() const
   {
     Scalar ca = std::cos(Pitch()), cb = std::cos(Roll()), cc = std::cos(Yaw());
@@ -488,6 +518,10 @@ class EulerAngle
         .finished();
   }
 
+  /**
+   * @brief 按 YZX 顺序转换为 3x3 旋转矩阵 / Convert to a 3x3 rotation matrix (YZX order).
+   * @return 旋转矩阵 / Resulting 3x3 rotation matrix.
+   */
   Eigen::Matrix<Scalar, 3, 3> ToRotationMatrixYZX() const
   {
     Scalar ca = std::cos(Pitch()), cb = std::cos(Yaw()), cc = std::cos(Roll());
@@ -499,6 +533,10 @@ class EulerAngle
         .finished();
   }
 
+  /**
+   * @brief 按 XYZ 顺序转换为 3x3 旋转矩阵 / Convert to a 3x3 rotation matrix (XYZ order).
+   * @return 旋转矩阵 / Resulting 3x3 rotation matrix.
+   */
   Eigen::Matrix<Scalar, 3, 3> ToRotationMatrixXYZ() const
   {
     Scalar ca = std::cos(Roll()), cb = std::cos(Pitch()), cc = std::cos(Yaw());
@@ -510,6 +548,10 @@ class EulerAngle
         .finished();
   }
 
+  /**
+   * @brief 按 XZY 顺序转换为 3x3 旋转矩阵 / Convert to a 3x3 rotation matrix (XZY order).
+   * @return 旋转矩阵 / Resulting 3x3 rotation matrix.
+   */
   Eigen::Matrix<Scalar, 3, 3> ToRotationMatrixXZY() const
   {
     Scalar ca = std::cos(Roll()), cb = std::cos(Yaw()), cc = std::cos(Pitch());
@@ -576,26 +618,31 @@ class EulerAngle
     return Eigen::Quaternion<Scalar>(ToRotationMatrixXYZ());
   }
 
+  /// @brief 按 XZY 顺序转换为四元数 / Convert to a quaternion (XZY order).
   Eigen::Quaternion<Scalar> ToQuaternionXZY() const
   {
     return Eigen::Quaternion<Scalar>(ToRotationMatrixXZY());
   }
 
+  /// @brief 按 YXZ 顺序转换为四元数 / Convert to a quaternion (YXZ order).
   Eigen::Quaternion<Scalar> ToQuaternionYXZ() const
   {
     return Eigen::Quaternion<Scalar>(ToRotationMatrixYXZ());
   }
 
+  /// @brief 按 YZX 顺序转换为四元数 / Convert to a quaternion (YZX order).
   Eigen::Quaternion<Scalar> ToQuaternionYZX() const
   {
     return Eigen::Quaternion<Scalar>(ToRotationMatrixYZX());
   }
 
+  /// @brief 按 ZXY 顺序转换为四元数 / Convert to a quaternion (ZXY order).
   Eigen::Quaternion<Scalar> ToQuaternionZXY() const
   {
     return Eigen::Quaternion<Scalar>(ToRotationMatrixZXY());
   }
 
+  /// @brief 按 ZYX 顺序转换为四元数 / Convert to a quaternion (ZYX order).
   Eigen::Quaternion<Scalar> ToQuaternionZYX() const
   {
     return Eigen::Quaternion<Scalar>(ToRotationMatrixZYX());
@@ -677,6 +724,12 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
    */
   RotationMatrix(const Quaternion<Scalar>& q) { *this = q.ToRotationMatrix(); }
 
+  /**
+   * @brief 从 9 元素一维数组构造旋转矩阵（按行主序） / Construct rotation matrix from a
+   *        9-element row-major array.
+   * @tparam T 数组元素类型 / Array element scalar type.
+   * @param data 9 元素旋转矩阵数组 / 9-element matrix array.
+   */
   template <typename T, std::enable_if_t<std::is_same<T, Scalar>::value ||
                                              std::is_same<T, float>::value ||
                                              std::is_same<T, double>::value,
@@ -687,6 +740,11 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
         data[8];
   }
 
+  /**
+   * @brief 从 3x3 二维数组构造旋转矩阵 / Construct rotation matrix from a 3x3 array.
+   * @tparam T 数组元素类型 / Array element scalar type.
+   * @param data 3x3 旋转矩阵数组 / 3x3 matrix array.
+   */
   template <typename T, std::enable_if_t<std::is_same<T, Scalar>::value ||
                                              std::is_same<T, float>::value ||
                                              std::is_same<T, double>::value,
@@ -731,6 +789,11 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
     return *this;
   }
 
+  /**
+   * @brief 从 Eigen 3x3 矩阵赋值 / Assign from an Eigen 3x3 matrix.
+   * @param R 源 3x3 矩阵 / Source 3x3 matrix.
+   * @return 当前对象引用 / Reference to `*this`.
+   */
   RotationMatrix& operator=(const Eigen::Matrix<Scalar, 3, 3>& R)
   {
     this->data()[0] = R.data()[0];
@@ -745,18 +808,33 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
     return *this;
   }
 
+  /**
+   * @brief 从 Eigen 四元数转换为旋转矩阵并赋值 / Assign from an Eigen quaternion.
+   * @param q 源 Eigen 四元数 / Source Eigen quaternion.
+   * @return 当前对象引用 / Reference to `*this`.
+   */
   RotationMatrix& operator=(const Eigen::Quaternion<Scalar>& q)
   {
     *this = q.toRotationMatrix();
     return *this;
   }
 
+  /**
+   * @brief 从 LibXR 四元数转换为旋转矩阵并赋值 / Assign from a LibXR `Quaternion`.
+   * @param q 源四元数 / Source `Quaternion`.
+   * @return 当前对象引用 / Reference to `*this`.
+   */
   RotationMatrix& operator=(const Quaternion<Scalar>& q)
   {
     *this = q.ToRotationMatrix();
     return *this;
   }
 
+  /**
+   * @brief 旋转三维位置向量 / Rotate a 3D `Position` vector.
+   * @param p 输入位置向量 / Input position vector.
+   * @return 旋转后的位置向量 / Rotated position vector.
+   */
   Position<Scalar> operator*(const Position<Scalar>& p) const
   {
     return Position<Scalar>((*this) * Eigen::Matrix<Scalar, 3, 1>(p));
@@ -802,6 +880,8 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
    */
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngle() const { return ToEulerAngleZYX(); }
 
+  /// @brief 按 ZYX 顺序转换为欧拉角 `(roll, pitch, yaw)` / Convert to Euler angles
+  /// `(roll, pitch, yaw)` in ZYX order.
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngleZYX() const
   {
     const Eigen::Matrix<Scalar, 3, 3>& r = (*this);
@@ -813,6 +893,8 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
     return Eigen::Matrix<Scalar, 3, 1>(roll, pitch, yaw);
   }
 
+  /// @brief 按 XZY 顺序转换为欧拉角 `(roll, pitch, yaw)` / Convert to Euler angles
+  /// `(roll, pitch, yaw)` in XZY order.
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngleXZY() const
   {
     const Eigen::Matrix<Scalar, 3, 3>& r = (*this);
@@ -824,6 +906,8 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
     return Eigen::Matrix<Scalar, 3, 1>(roll, pitch, yaw);
   }
 
+  /// @brief 按 YZX 顺序转换为欧拉角 `(roll, pitch, yaw)` / Convert to Euler angles
+  /// `(roll, pitch, yaw)` in YZX order.
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngleYZX() const
   {
     const Eigen::Matrix<Scalar, 3, 3>& r = (*this);
@@ -835,6 +919,8 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
     return Eigen::Matrix<Scalar, 3, 1>(roll, pitch, yaw);
   }
 
+  /// @brief 按 YXZ 顺序转换为欧拉角 `(roll, pitch, yaw)` / Convert to Euler angles
+  /// `(roll, pitch, yaw)` in YXZ order.
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngleYXZ() const
   {
     const Eigen::Matrix<Scalar, 3, 3>& r = (*this);
@@ -846,6 +932,8 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
     return Eigen::Matrix<Scalar, 3, 1>(roll, pitch, yaw);
   }
 
+  /// @brief 按 ZXY 顺序转换为欧拉角 `(roll, pitch, yaw)` / Convert to Euler angles
+  /// `(roll, pitch, yaw)` in ZXY order.
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngleZXY() const
   {
     const Eigen::Matrix<Scalar, 3, 3>& r = (*this);
@@ -857,6 +945,8 @@ class RotationMatrix : public Eigen::Matrix<Scalar, 3, 3>
     return Eigen::Matrix<Scalar, 3, 1>(roll, pitch, yaw);
   }
 
+  /// @brief 按 XYZ 顺序转换为欧拉角 `(roll, pitch, yaw)` / Convert to Euler angles
+  /// `(roll, pitch, yaw)` in XYZ order.
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngleXYZ() const
   {
     const Eigen::Matrix<Scalar, 3, 3>& r = (*this);
@@ -996,18 +1086,35 @@ class Quaternion : public Eigen::Quaternion<Scalar>
                       this->z() + q.z());
   }
 
+  /**
+   * @brief 四元数逐分量加法（与 Eigen 四元数） / Component-wise quaternion addition with
+   *        an Eigen quaternion.
+   * @param q 右侧 Eigen 四元数 / Right-hand Eigen quaternion.
+   * @return 相加结果四元数 / Resulting quaternion.
+   */
   Quaternion operator+(const Eigen::Quaternion<Scalar>& q) const
   {
     return Quaternion(this->w() + q.w(), this->x() + q.x(), this->y() + q.y(),
                       this->z() + q.z());
   }
 
+  /**
+   * @brief 四元数逐分量减法 / Component-wise quaternion subtraction.
+   * @param q 右侧四元数 / Right-hand quaternion.
+   * @return 相减结果四元数 / Resulting quaternion.
+   */
   Quaternion operator-(const Quaternion& q) const
   {
     return Quaternion(this->w() - q.w(), this->x() - q.x(), this->y() - q.y(),
                       this->z() - q.z());
   }
 
+  /**
+   * @brief 四元数逐分量减法（与 Eigen 四元数） / Component-wise quaternion subtraction
+   *        with an Eigen quaternion.
+   * @param q 右侧 Eigen 四元数 / Right-hand Eigen quaternion.
+   * @return 相减结果四元数 / Resulting quaternion.
+   */
   Quaternion operator-(const Eigen::Quaternion<Scalar>& q) const
   {
     return Quaternion(this->w() - q.w(), this->x() - q.x(), this->y() - q.y(),
@@ -1024,6 +1131,11 @@ class Quaternion : public Eigen::Quaternion<Scalar>
     return Eigen::Quaternion<Scalar>(*this) * Eigen::Quaternion<Scalar>(q);
   }
 
+  /**
+   * @brief 与 Eigen 四元数相乘 / Multiply by an Eigen quaternion.
+   * @param q 右侧 Eigen 四元数 / Right-hand Eigen quaternion.
+   * @return 相乘结果四元数 / Resulting quaternion.
+   */
   Quaternion operator*(const Eigen::Quaternion<Scalar>& q) const
   {
     return Eigen::Quaternion<Scalar>(*this) * q;
@@ -1037,11 +1149,24 @@ class Quaternion : public Eigen::Quaternion<Scalar>
    */
   Quaternion operator/(const Quaternion& q) const { return (*this) * (-q); }
 
+  /**
+   * @brief 四元数除法（与 Eigen 四元数共轭相乘） / Quaternion division (multiply by
+   *        conjugate of an Eigen quaternion).
+   * @param q 除数 Eigen 四元数 / Divisor Eigen quaternion.
+   * @return 相除结果四元数 / Resulting quaternion.
+   */
   Quaternion operator/(const Eigen::Quaternion<Scalar>& q) const
   {
     return Eigen::Quaternion<Scalar>(*this) * q.conjugate();
   }
 
+  /**
+   * @brief 复合逐分量加法 / Compound component-wise addition.
+   * @tparam Q 四元数类型（`Quaternion` 或 `Eigen::Quaternion<Scalar>`） / Quaternion
+   * type.
+   * @param q 待加四元数 / Quaternion to add.
+   * @return 当前对象常量引用 / Const reference to `*this`.
+   */
   template <typename Q,
             std::enable_if_t<std::is_same<Q, Quaternion>::value ||
                                  std::is_same<Q, Eigen::Quaternion<Scalar>>::value,
@@ -1052,6 +1177,13 @@ class Quaternion : public Eigen::Quaternion<Scalar>
     return *this;
   }
 
+  /**
+   * @brief 复合逐分量减法 / Compound component-wise subtraction.
+   * @tparam Q 四元数类型（`Quaternion` 或 `Eigen::Quaternion<Scalar>`） / Quaternion
+   * type.
+   * @param q 待减四元数 / Quaternion to subtract.
+   * @return 当前对象常量引用 / Const reference to `*this`.
+   */
   template <typename Q,
             std::enable_if_t<std::is_same<Q, Quaternion>::value ||
                                  std::is_same<Q, Eigen::Quaternion<Scalar>>::value,
@@ -1086,6 +1218,8 @@ class Quaternion : public Eigen::Quaternion<Scalar>
    */
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngle() const { return ToEulerAngleZYX(); }
 
+  /// @brief 按 YZX 顺序转换为欧拉角 `(roll, pitch, yaw)` / Convert to Euler angles
+  /// `(roll, pitch, yaw)` in YZX order.
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngleYZX() const
   {
     Scalar roll = std::atan2(2 * this->w() * this->x() - 2 * this->y() * this->z(),
@@ -1096,6 +1230,8 @@ class Quaternion : public Eigen::Quaternion<Scalar>
     return Eigen::Matrix<Scalar, 3, 1>(roll, pitch, yaw);
   }
 
+  /// @brief 按 ZYX 顺序转换为欧拉角 `(roll, pitch, yaw)` / Convert to Euler angles
+  /// `(roll, pitch, yaw)` in ZYX order.
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngleZYX() const
   {
     Scalar yaw = std::atan2(2 * (this->w() * this->z() + this->x() * this->y()),
@@ -1106,6 +1242,8 @@ class Quaternion : public Eigen::Quaternion<Scalar>
     return Eigen::Matrix<Scalar, 3, 1>(roll, pitch, yaw);
   }
 
+  /// @brief 按 YXZ 顺序转换为欧拉角 `(roll, pitch, yaw)` / Convert to Euler angles
+  /// `(roll, pitch, yaw)` in YXZ order.
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngleYXZ() const
   {
     Scalar roll = std::asin(2 * (this->w() * this->x() - this->y() * this->z()));
@@ -1116,6 +1254,8 @@ class Quaternion : public Eigen::Quaternion<Scalar>
     return Eigen::Matrix<Scalar, 3, 1>(roll, pitch, yaw);
   }
 
+  /// @brief 按 ZXY 顺序转换为欧拉角 `(roll, pitch, yaw)` / Convert to Euler angles
+  /// `(roll, pitch, yaw)` in ZXY order.
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngleZXY() const
   {
     Scalar pitch = std::atan2(-2 * (this->x() * this->z() - this->w() * this->y()),
@@ -1126,6 +1266,8 @@ class Quaternion : public Eigen::Quaternion<Scalar>
     return Eigen::Matrix<Scalar, 3, 1>(roll, pitch, yaw);
   }
 
+  /// @brief 按 XZY 顺序转换为欧拉角 `(roll, pitch, yaw)` / Convert to Euler angles
+  /// `(roll, pitch, yaw)` in XZY order.
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngleXZY() const
   {
     Scalar pitch = std::atan2(2 * (this->w() * this->y() + this->x() * this->z()),
@@ -1136,6 +1278,8 @@ class Quaternion : public Eigen::Quaternion<Scalar>
     return Eigen::Matrix<Scalar, 3, 1>(roll, pitch, yaw);
   }
 
+  /// @brief 按 XYZ 顺序转换为欧拉角 `(roll, pitch, yaw)` / Convert to Euler angles
+  /// `(roll, pitch, yaw)` in XYZ order.
   Eigen::Matrix<Scalar, 3, 1> ToEulerAngleXYZ() const
   {
     Scalar yaw = std::atan2(-2 * (this->x() * this->y() - this->w() * this->z()),

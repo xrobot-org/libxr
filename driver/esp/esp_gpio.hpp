@@ -177,6 +177,11 @@ class ESP32GPIO : public GPIO
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief GPIO 公共 ISR 分发入口 / Shared GPIO ISR dispatcher entry.
+   * @param arg 注册时传入的 `ESP32GPIO*` 实例指针 / `ESP32GPIO*` pointer passed as ISR
+   *        argument.
+   */
   static void InterruptDispatcher(void* arg);
 
  private:

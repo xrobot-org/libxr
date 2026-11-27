@@ -533,6 +533,7 @@ class Topic::Callback
    * @param timestamp 当前消息时间戳 / Current message timestamp
    * @param payload_addr 当前消息 payload 对象地址 / Address of the current payload
    *        object
+   * @param payload_size 当前消息 payload 字节数 / Byte size of the current payload
    */
   void Run(bool in_isr, MicrosecondTimestamp timestamp, void* payload_addr,
            size_t payload_size) const
@@ -607,7 +608,6 @@ struct Topic::CallbackBlock : public Topic::SuberBlock
 
 /**
  * @brief 注册回调函数 / Register a callback function
- * @param cb 需要注册的回调函数 / Callback function to register
  *
  * @note 包含初始化期动态内存分配，回调订阅应长期存在 / Contains initialization-time
  * dynamic allocation; callback subscriptions are expected to be long-lived

@@ -7,7 +7,7 @@
 namespace LibXR
 {
 
-using DefaultScalar = LIBXR_DEFAULT_SCALAR;
+using DefaultScalar = LIBXR_DEFAULT_SCALAR;  ///< 默认标量类型 / Default scalar type.
 
 /**
  * @brief 角度循环处理类，用于处理周期性角度计算。
@@ -103,6 +103,12 @@ class CycleValue
    */
   CycleValue operator+(const Scalar& value) const { return CycleValue(value + value_); }
 
+  /**
+   * @brief 与另一周期角度相加并归一化到 `[0, 2π)` / Add another `CycleValue` and
+   * normalize into `[0, 2π)`.
+   * @param value 待相加的 `CycleValue` 对象 / Another `CycleValue` to add.
+   * @return 归一化后的新 `CycleValue` 对象 / New normalized `CycleValue` object.
+   */
   CycleValue operator+(const CycleValue& value) const
   {
     return CycleValue(value.value_ + value_);
@@ -123,6 +129,12 @@ class CycleValue
     return *this;
   }
 
+  /**
+   * @brief 与另一周期角度复合相加并归一化 / Compound-add another `CycleValue` and
+   * normalize.
+   * @param value 待相加的 `CycleValue` 对象 / Another `CycleValue` to add.
+   * @return 当前对象引用 / Reference to `*this`.
+   */
   CycleValue& operator+=(const CycleValue& value)
   {
     Scalar ans = value.value_ + value_;
@@ -167,6 +179,12 @@ class CycleValue
     return ans;
   }
 
+  /**
+   * @brief 计算与另一周期角度的有向差值（归一化到 `[-π, π)`） / Compute signed angular
+   *        difference to another `CycleValue` normalized into `[-π, π)`.
+   * @param value 待减去的 `CycleValue` 对象 / Another `CycleValue` to subtract.
+   * @return 归一化后的角度差值 / Normalized angular difference.
+   */
   Scalar operator-(const CycleValue& value) const
   {
     Scalar ans = value_ - value.value_;
@@ -198,6 +216,12 @@ class CycleValue
     return *this;
   }
 
+  /**
+   * @brief 复合减去另一周期角度并归一化到 `[0, 2π)` / Compound-subtract another
+   *        `CycleValue` and normalize into `[0, 2π)`.
+   * @param value 待减去的 `CycleValue` 对象 / Another `CycleValue` to subtract.
+   * @return 当前对象引用 / Reference to `*this`.
+   */
   CycleValue& operator-=(const CycleValue& value)
   {
     Scalar ans = value_ - value.value_;

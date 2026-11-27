@@ -26,10 +26,14 @@ class I2C
         clock_speed;  ///< I2C 通信时钟速率（单位：Hz） / The I2C clock speed (in Hz).
   };
 
+  /**
+   * @enum MemAddrLength
+   * @brief 定义 I2C 寄存器/存储器地址长度 / Defines the I2C memory address length.
+   */
   enum class MemAddrLength : uint8_t
   {
-    BYTE_8,
-    BYTE_16
+    BYTE_8,  ///< 8 位内存地址 / 8-bit memory address.
+    BYTE_16  ///< 16 位内存地址 / 16-bit memory address.
   };
 
   /**

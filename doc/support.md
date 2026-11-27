@@ -16,8 +16,8 @@
 | UART | ✅ |
 | SPI | ❌ |
 | I2C | ❌ |
-| CAN | 🔄 |
-| CANFD | 🔄 |
+| CAN | ✅ |
+| CANFD | ✅ |
 | ADC | ❌ |
 | DAC | ❌ |
 | PWM | ❌ |
@@ -95,7 +95,7 @@
 | DAC | ❌ |
 | PWM | ✅ |
 | USB-DEVICE | ✅ |
-| WDG | ❌ |
+| WDG | ✅ |
 
 | `Network` | CH32V307 |
 | ----------- | -------- |

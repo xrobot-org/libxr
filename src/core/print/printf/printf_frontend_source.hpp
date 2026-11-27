@@ -21,8 +21,19 @@ struct SourceAnalysisScratch
       0;  ///< 最高引用到的参数个数 / highest referenced argument count
   Error error = Error::None;  ///< 首个解析或分析错误 / first parse/analysis error
 
+  /**
+   * @brief 访问字面文本片段（仅统计分析阶段为空操作） / Visit a literal text span
+   *        (no-op during source analysis)
+   * @return 始终返回 `Error::None` / Always returns `Error::None`
+   */
   [[nodiscard]] consteval Error Text(size_t, size_t) const { return Error::None; }
 
+  /**
+   * @brief 记录一个已解析转换的参数引用顺序 / Record the argument reference order of a
+   *        parsed conversion
+   * @param conversion 已解析的转换描述 / Parsed conversion descriptor
+   * @return 始终返回 `Error::None` / Always returns `Error::None`
+   */
   [[nodiscard]] consteval Error Field(const Conversion& conversion)
   {
     order[field_count++] = conversion.arg_index;
@@ -60,10 +71,23 @@ struct SourceAnalysis
 template <size_t FieldCount, size_t ArgCount>
 struct ResolvedArgumentVisitor
 {
-  SourceAnalysis<FieldCount, ArgCount>& analysis;
+  SourceAnalysis<FieldCount, ArgCount>&
+      analysis;  ///< 待填充的源顺序参数分析结果 / Source-ordered argument analysis to
+                 ///< populate.
 
+  /**
+   * @brief 访问字面文本片段（仅统计分析阶段为空操作） / Visit a literal text span
+   *        (no-op during source analysis)
+   * @return 始终返回 `Error::None` / Always returns `Error::None`
+   */
   [[nodiscard]] consteval Error Text(size_t, size_t) const { return Error::None; }
 
+  /**
+   * @brief 记录一个已解析转换的参数引用顺序 / Record the argument reference order of a
+   *        parsed conversion
+   * @param conversion 已解析的转换描述 / Parsed conversion descriptor
+   * @return 始终返回 `Error::None` / Always returns `Error::None`
+   */
   [[nodiscard]] consteval Error Field(const Conversion& conversion)
   {
     auto field = FieldSelection::BuildFormatField(conversion);
@@ -88,9 +112,6 @@ struct ResolvedArgumentVisitor
 /**
  * @brief 遍历一个 printf 源字符串，并发射字面文本片段与已解析转换项 / Walk one printf
  * source string and emit literal-text spans plus parsed conversions
- * @param source 当前待解析的 printf 源字符串 / Printf source string to walk
- * @param visitor 接收文本片段与已解析转换项的 visitor / Visitor receiving text spans and
- * parsed conversions
  * @return 首个源级解析错误；成功时返回 `Error::None` / Returns the first source-level
  * parse error, or `Error::None` on success
  */

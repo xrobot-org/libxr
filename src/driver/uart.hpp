@@ -85,6 +85,15 @@ class UART
    */
   virtual ErrorCode SetConfig(Configuration config, bool in_isr = false) = 0;
 
+  /**
+   * @brief 向 UART 写入数据 / Write data to the UART interface.
+   * @tparam OperationType 写操作类型，需继承自 `WriteOperation` / Write operation type
+   *         derived from `WriteOperation`.
+   * @param data 待发送的只读数据缓冲区 / Read-only buffer containing data to write.
+   * @param op 异步或同步完成通知操作对象 / Completion operation descriptor.
+   * @param in_isr 是否在中断上下文中调用 / Whether invoked from an ISR.
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   template <typename OperationType, typename = std::enable_if_t<std::is_base_of_v<
                                         WriteOperation, std::decay_t<OperationType>>>>
   ErrorCode Write(ConstRawData data, OperationType&& op, bool in_isr = false)
@@ -92,6 +101,15 @@ class UART
     return (*write_port_)(data, std::forward<OperationType>(op), in_isr);
   }
 
+  /**
+   * @brief 从 UART 读取数据 / Read data from the UART interface.
+   * @tparam OperationType 读操作类型，需继承自 `ReadOperation` / Read operation type
+   *         derived from `ReadOperation`.
+   * @param data 用于接收数据的缓冲区 / Destination buffer for received data.
+   * @param op 异步或同步完成通知操作对象 / Completion operation descriptor.
+   * @param in_isr 是否在中断上下文中调用 / Whether invoked from an ISR.
+   * @return 操作结果错误码 / Error code indicating status.
+   */
   template <typename OperationType, typename = std::enable_if_t<std::is_base_of_v<
                                         ReadOperation, std::decay_t<OperationType>>>>
   ErrorCode Read(RawData data, OperationType&& op, bool in_isr = false)

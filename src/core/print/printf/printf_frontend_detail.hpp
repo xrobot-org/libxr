@@ -82,7 +82,7 @@ template <Text Source>
 class Printf::Compiler
 {
  public:
-  using ErrorType = Printf::Error;
+  using ErrorType = Printf::Error;  ///< 前端错误码类型 / Frontend error code type.
 
   /**
    * @brief 返回去掉结尾零字节后的源字符串数据 / Return the underlying source bytes
