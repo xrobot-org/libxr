@@ -595,6 +595,7 @@ class TestDevice final : public FSDevDevice
                                  ///< and IN stagings
   bool masked = false;
   unsigned masks = 0;  ///< owner 进来的次数 / Times the owner came in
+  void ForceReset() { ResetController(true); }
 
   static constexpr auto LANGUAGE = DescriptorStrings::MakeLanguagePack(
       DescriptorStrings::Language::EN_US, "XRobot", "FSDEV", "0001");
@@ -1921,6 +1922,13 @@ void TestResetDetachHeld()
   const unsigned masks = f.device.masks;
   f.device.Deinit(false);
   f.device.Init(false);
+  // 断开拉住期间再次 Stop / Reset / StopHardware 不得重复 HoldDetached 或碰硬件寄存器 /
+  // Repeated Stop / Reset / StopHardware while detach_held_ stays no-op on hardware
+  f.device.Stop(false);
+  TEST_ASSERT(Ctl::held && Ctl::holds == 1U && Ctl::held_accesses == accesses);
+  f.device.ForceReset();
+  TEST_ASSERT(Ctl::held && Ctl::holds == 1U && Ctl::held_accesses == accesses);
+  f.device.Start(false);
   Ticks(5);
   TEST_ASSERT(Ctl::held && Ctl::held_accesses == accesses && !Ctl::pull_up);
   TEST_ASSERT(f.device.masked && f.device.masks == masks);
@@ -2366,6 +2374,37 @@ void TestStatusWindow()
     TEST_ASSERT(f.klass.Send(Pattern(40, 0x12)) == ErrorCode::OK);
     TEST_ASSERT(TakeIn(1) == Pattern(40, 0x12));
     TEST_ASSERT(f.klass.in_done.size() == 2U);
+  }
+  // 状态窗期间收到 EP1 OUT 后又来一个被 NAK 的包篡改 COUNT1_RX 为 0x3FE：
+  // HoldStatusWindow 必须在 ClearCtrRx 之前 LatchRxCount 才能保住真实长度 /
+  // During status window, EP1 OUT packet followed by NAKed OUT overwriting COUNT1_RX to
+  // 0x3FE: HoldStatusWindow must LatchRxCount before ClearCtrRx
+  {
+    Ctl::rx_latch = true;
+    Ctl::nak_count = true;
+    Fixture fl(true);
+    const Bytes latched_data = Pattern(32, 0x77);
+    ReadUpToStatus(fl, 0x29);
+    TEST_ASSERT(Ctl::RxPacket(1, latched_data.data(), latched_data.size(), false));
+    Ctl::AckIn(1);
+    bool nacked = false;
+    Ctl::before_write = [&](uint8_t num, uint32_t value)
+    {
+      if (!nacked && num == 1U && (value & CTR_RX) == 0U && (Ctl::ep[1] & CTR_RX) != 0U)
+      {
+        nacked = true;
+        const Bytes junk(16, 0xEE);
+        TEST_ASSERT(!Ctl::RxPacket(1, junk.data(), junk.size(), false));
+      }
+    };
+    Irq();
+    Ctl::before_write = nullptr;
+    TEST_ASSERT(nacked && fl.klass.out_done.empty());
+    SendOut(0, {});
+    TEST_ASSERT(fl.klass.out_done.size() == 1U && fl.klass.out_done[0].actual == 32U &&
+                fl.klass.received == latched_data);
+    Ctl::nak_count = false;
+    Ctl::rx_latch = false;
   }
   Ctl::fast_ack = true;
 

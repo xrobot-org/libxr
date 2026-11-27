@@ -433,6 +433,7 @@ void CH32USBOtgHS::SetUpController()
   USBHSD->INT_EN =
       USBHS_UIE_SETUP_ACT | USBHS_UIE_TRANSFER | USBHS_UIE_DETECT | USBHS_UIE_SUSPEND;
   USBHSD->DEV_AD = 0U;
+  Ep::InitHardware();
   USBHSD->CONTROL |= USBHS_UC_DEV_PU_EN;
 }
 
@@ -443,6 +444,10 @@ void CH32USBOtgHS::StartController(bool in_isr)
   // first, then enable the USBHS bus clock.
   CH32UsbRcc::ConfigureUsb48M();
   RCC_AHBPeriphClockCmd(RCC_AHBPeriph_USBHS, ENABLE);
+  // 先屏蔽并登记对象，再做控制器初始化（若到点立即接上），最后开启中断线。
+  // Mask IRQ and register self before initializing hardware, then enable IRQ.
+  NVIC_DisableIRQ(USBHS_IRQn);
+  self_ = this;
   // 断开时间未到时只记下"要接上"，到点后 owner 接上；中断线照样使能。
   // While the detach time has not passed only "attach wanted" is recorded and the owner
   // attaches once it has; the line is enabled all the same.
@@ -450,10 +455,6 @@ void CH32USBOtgHS::StartController(bool in_isr)
   {
     SetUpController();
   }
-  // 先登记对象再开中断线：没有对象时中断只清标志，会丢掉这期间的总线复位。
-  // Register the object before the line is enabled: without an object the interrupt
-  // only clears the flags and would drop a bus reset arriving in between.
-  self_ = this;
   NVIC_EnableIRQ(USBHS_IRQn);
 }
 
@@ -479,6 +480,9 @@ void CH32USBOtgHS::HaltController()
     }
   }
   Ep::pending_stops_ = 0U;
+  suspended_ = false;
+  last_frame_no_ = UINT32_MAX;
+  setup_since_reset_ = false;
 }
 
 void CH32USBOtgHS::StopController(bool in_isr)

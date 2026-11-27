@@ -432,6 +432,7 @@ void CH32USBOtgFS::SetUpController()
   USBFSD->INT_EN =
       USBFS_UIE_SUSPEND | USBFS_UIE_BUS_RST | USBFS_UIE_TRANSFER | USBFS_UIE_HST_SOF;
   USBFSD->DEV_ADDR = 0U;
+  Ep::InitHardware();
   USBFSD->BASE_CTRL = USBFS_UC_DEV_PU_EN | USBFS_UC_INT_BUSY | USBFS_UC_DMA_EN;
   USBFSD->UDEV_CTRL = USBFS_UD_PD_DIS | USBFS_UD_PORT_EN;
 }
@@ -451,6 +452,10 @@ void CH32USBOtgFS::StartController(bool in_isr)
 #else
 #error "The SDK header of this part names no bus clock for the USBFS controller."
 #endif
+  // 先屏蔽并登记对象，再做控制器初始化（若到点立即接上），最后开启中断线。
+  // Mask IRQ and register self before initializing hardware, then enable IRQ.
+  NVIC_DisableIRQ(USBFS_IRQn);
+  self_ = this;
   // 断开时间未到时只记下"要接上"，到点后 owner 接上；中断线照样使能。
   // While the detach time has not passed only "attach wanted" is recorded and the owner
   // attaches once it has; the line is enabled all the same.
@@ -458,10 +463,6 @@ void CH32USBOtgFS::StartController(bool in_isr)
   {
     SetUpController();
   }
-  // 先登记对象再开中断线：没有对象时中断只清标志，会丢掉这期间的总线复位。
-  // Register the object before the line is enabled: without an object the interrupt
-  // only clears the flags and would drop a bus reset arriving in between.
-  self_ = this;
   NVIC_EnableIRQ(USBFS_IRQn);
 }
 
@@ -487,6 +488,7 @@ void CH32USBOtgFS::HaltController()
     }
   }
   Ep::pending_stops_ = 0U;
+  suspended_ = false;
 }
 
 void CH32USBOtgFS::StopController(bool in_isr)

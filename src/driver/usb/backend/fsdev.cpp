@@ -411,6 +411,10 @@ ErrorCode FSDevEndpoint::CheckHardware(const Config& cfg) const
 
 void FSDevEndpoint::ConfigureHardware(const Config& cfg)
 {
+  if (device_.detach_held_)
+  {
+    return;
+  }
   const uint8_t num = Num();
   if (cfg.type == Type::ISOCHRONOUS)
   {
@@ -484,6 +488,13 @@ void FSDevEndpoint::ConfigureHardware(const Config& cfg)
 void FSDevEndpoint::CloseHardware(bool in_isr)
 {
   UNUSED(in_isr);
+  if (device_.detach_held_)
+  {
+    iso_ = false;
+    iso_count_ = 0U;
+    iso_head_ = 0U;
+    return;
+  }
   if (Num() == 0U)
   {
     return;
@@ -511,6 +522,10 @@ void FSDevEndpoint::CloseHardware(bool in_isr)
 ErrorCode FSDevEndpoint::StartHardware(const HwRequest& request, bool in_isr)
 {
   UNUSED(in_isr);
+  if (device_.detach_held_)
+  {
+    return ErrorCode::FAILED;
+  }
   if (iso_)
   {
     // 排在已有的请求之后；IN 有空出的缓冲就拷进去。 / Queued behind the requests already
@@ -569,6 +584,20 @@ ErrorCode FSDevEndpoint::StartHardware(const HwRequest& request, bool in_isr)
 Endpoint::StopOutcome FSDevEndpoint::StopHardware(bool in_isr)
 {
   UNUSED(in_isr);
+  if (device_.detach_held_)
+  {
+    busy_ = false;
+    stopping_ = false;
+    stop_failed_ = false;
+    status_held_ = false;
+    if (iso_ && iso_count_ != 0U)
+    {
+      iso_req_[iso_head_].buffer = -1;
+      iso_head_ = static_cast<uint8_t>((iso_head_ + 1U) % ISO_REQUESTS);
+      --iso_count_;
+    }
+    return {ErrorCode::ABORTED, 0U};
+  }
   if (iso_)
   {
     return IsoStop();
@@ -715,6 +744,10 @@ void FSDevEndpoint::AdvanceStop(bool in_isr, uint16_t frame, bool force)
 ErrorCode FSDevEndpoint::StallHardware(bool in_isr)
 {
   UNUSED(in_isr);
+  if (device_.detach_held_)
+  {
+    return ErrorCode::FAILED;
+  }
   if (iso_)
   {
     // 等时没有 STALL：禁用，主机的令牌得不到应答。 / Isochronous has no STALL: disabled,
@@ -736,6 +769,10 @@ ErrorCode FSDevEndpoint::StallHardware(bool in_isr)
 ErrorCode FSDevEndpoint::ClearStallHardware(bool in_isr)
 {
   UNUSED(in_isr);
+  if (device_.detach_held_)
+  {
+    return ErrorCode::FAILED;
+  }
   if (Num() == 0U)
   {
     // 下一个 SETUP 把 EP0 两方向置 NAK 并设好 DATA0/1（RM0008 p.630）。
@@ -1045,6 +1082,7 @@ FSDevPool::FSDevPool(FSDevDevice& device, const MemoryMap& memory_map,
   REQUIRE(rx_ep_cfgs.size() > 0U && rx_ep_cfgs.size() <= MAX_EPS);
   REQUIRE(tx_ep_cfgs.size() > 0U && tx_ep_cfgs.size() <= MAX_EPS);
   REQUIRE(memory_map.alignment != 0U);
+  REQUIRE(pma_limit <= memory_map.packet_memory_size);
   const size_t limit = pma_limit != 0U ? pma_limit : memory_map.packet_memory_size;
   endpoint_count_ = static_cast<uint8_t>(
       rx_ep_cfgs.size() > tx_ep_cfgs.size() ? rx_ep_cfgs.size() : tx_ep_cfgs.size());
@@ -1166,21 +1204,25 @@ void FSDevDevice::AttachAgain()
   // at full speed a detach of some tens of microseconds mostly goes unseen (measured on
   // a CH32V208 and an STM32H723), and 5 ms or more was always seen. detach_ has counted
   // DETACH_MS by the time this runs.
-  if (detach_held_)
+  const bool was_held = detach_held_;
+  if (was_held)
   {
-    // 平台放开 D+ 并恢复控制器（时钟）；控制器重新初始化，与 HaltController 里的一样。
-    // The platform releases D+ and restores the controller (clock); the controller is
-    // initialized again, as in HaltController.
+    // 先屏蔽中断再开时钟重初始化，待 CNTR/Connect 就绪后再放开，避免半初始化态抢入中断。
+    // Mask IRQ before enabling clock and re-initializing, then unmask once ready.
+    MaskInterrupt();
     ReleaseDetached();
     detach_held_ = false;
     InitController();
-    // Dispatch 在拉住期间屏蔽了中断线（见 Dispatch）。 / Dispatch masked the line while
-    // held (see Dispatch).
-    UnmaskInterrupt();
   }
   REQUIRE(controller_ready_);
   WriteCntr(static_cast<uint16_t>(ReadCntr() | FSDEV_CNTR_RUN_MASK | FSDEV_CNTR_SOFM));
   Connect(true);
+  if (was_held)
+  {
+    // Dispatch 在拉住期间屏蔽了中断线（见 Dispatch）。 / Dispatch masked the line while
+    // held (see Dispatch).
+    UnmaskInterrupt();
+  }
 }
 
 bool FSDevDevice::WakeHeld(void* arg)
@@ -1195,7 +1237,6 @@ bool FSDevDevice::WakeHeld(void* arg)
 
 void FSDevDevice::HaltController()
 {
-  Connect(false);
   for (FSDevEndpoint* const* table : {in_, out_})
   {
     for (uint8_t i = 0U; i < MAX_EPS; ++i)
@@ -1205,6 +1246,9 @@ void FSDevDevice::HaltController()
         table[i]->busy_ = false;
         table[i]->stopping_ = false;
         table[i]->stop_failed_ = false;
+        table[i]->status_held_ = false;
+        table[i]->iso_head_ = 0U;
+        table[i]->iso_count_ = 0U;
       }
     }
   }
@@ -1212,6 +1256,21 @@ void FSDevDevice::HaltController()
   suspended_ = false;
   setup_shadow_pending_ = false;
   ep0_out_data_ = false;
+  ep0_shadow_pending_ = false;
+  status_window_ = false;
+  window_sofs_ = 0U;
+  sof_latched_ = false;
+  latched_ = 0U;
+  rx_counts_valid_ = 0U;
+  if (detach_held_)
+  {
+    // 时钟已关闭且 D+ 正由 GPIO 拉低（已保存引脚原配置）：禁止再次 Init/HoldDetached，
+    // 否则会关闭时钟前访问寄存器并覆盖 dp_saved_[]。
+    // Already held detached (clock off, D+ pulled low by GPIO with dp_saved_ saved):
+    // skip hardware writes so registers aren't touched and dp_saved_ isn't overwritten.
+    return;
+  }
+  Connect(false);
   // 强制复位清掉全部 EPnR，并关掉中断源。 / The forced reset clears every EPnR and
   // switches the interrupt sources off.
   InitController();
@@ -1371,6 +1430,11 @@ bool FSDevDevice::HoldStatusWindow()
       return true;
     }
     const uint8_t num = static_cast<uint8_t>(istr & FSDEV_ISTR_EP_ID);
+    if (num >= MAX_EPS)
+    {
+      status_window_ = false;
+      return false;
+    }
     if (num == 0U)
     {
       // EP0 上有事件：SETUP，或快速确认之后才到的包（再确认一次，不让它等 owner）。
@@ -1407,6 +1471,7 @@ bool FSDevDevice::HoldStatusWindow()
     }
     if ((epr & FSDEV_EP_CTR_RX) != 0U)
     {
+      LatchRxCount(num, epr);
       ClearCtrRx(num);
       latched_ = static_cast<uint16_t>(latched_ | (0x0001U << num));
     }
@@ -1496,7 +1561,6 @@ void FSDevDevice::CaptureSetup()
     // not handed over and the host's control transfer ends with a timeout, rather than
     // data taken for a SETUP or data without its first packet taken as complete. EP0 is
     // typed CONTROL again for the host's next SETUP.
-    ++setups_overwritten_;
     setup_shadow_pending_ = false;
     ep0_out_data_ = false;
     ClearCtrRx(0U);

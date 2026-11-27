@@ -125,7 +125,7 @@ class CH32USBOtgFS : public USB::DeviceService,
    * @note StopController 和 ResetController 共用。
    *       Shared by StopController and ResetController.
    */
-  static void HaltController();
+  void HaltController();
   /**
    * @brief 最短断开时间（5 ms）/ Minimum detach time (5 ms)
    * @note HaltController 之后调用 OnHalted：ResetController 传 true，StopController 传
@@ -262,7 +262,7 @@ class CH32USBOtgHS : public USB::DeviceService,
    * @note StopController 和 ResetController 共用。
    *       Shared by StopController and ResetController.
    */
-  static void HaltController();
+  void HaltController();
   /**
    * @brief 最短断开时间（5 ms）/ Minimum detach time (5 ms)
    * @note HaltController 之后调用 OnHalted：ResetController 传 true，StopController 传

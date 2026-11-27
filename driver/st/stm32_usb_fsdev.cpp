@@ -213,9 +213,11 @@ bool UsbClock(bool on)
 bool STM32USBDeviceDevFs::HoldDetached()
 {
 #if LIBXR_STM32_FSDEV_DP_DETACH
-  // 收发器断电，再关时钟；寄存器和 PMA 保留。 / Transceiver powered down, then the clock
-  // off; registers and PMA are kept.
+  // 收发器断电并清零 ISTR，再关时钟；寄存器和 PMA 保留。 / Power down transceiver, clear
+  // ISTR so no pending flag remains latched across clock-off, then disable clock.
   WriteCntr(static_cast<uint16_t>(USB::FSDEV_CNTR_FRES | USB::FSDEV_CNTR_PDWN));
+  WriteRegister(USB::FSDEV_REG_ISTR, 0U);
+  (void)ReadIstr();
   const bool clock_off = UsbClock(false);
   __HAL_RCC_GPIOA_CLK_ENABLE();
   // 先把输出锁存写 0，再切成推挽输出，切换时不会先出一个高电平。 / The output latch is

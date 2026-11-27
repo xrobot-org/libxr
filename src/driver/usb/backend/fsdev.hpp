@@ -1248,9 +1248,6 @@ class FSDevDevice : public DeviceService, public FSDevPool, public DeviceCore
   bool setup_shadow_pending_ = false;
   /// SETUP 的影子 / Shadow of the SETUP
   uint8_t setup_shadow_[8] = {};
-  /// 读之前就被数据包覆盖、因而丢掉的 SETUP（BULK 闸）/ SETUPs overwritten by a data
-  /// packet before they were read and therefore lost (BULK gate)
-  uint32_t setups_overwritten_ = 0U;
   /// 当前帧号 / The current frame number
   uint16_t FrameNumber()
   {

@@ -119,19 +119,35 @@ bool SieQuiet()
 }  // namespace
 
 CH32EndpointOtgHs::CH32EndpointOtgHs(EPNumber ep_num, Direction dir, RawData buffer)
-    : Endpoint(ep_num, dir, buffer)
+    : Endpoint(ep_num, dir, buffer), dma_base_(buffer.addr_)
 {
   map_[EPNumberToInt8(ep_num)][static_cast<uint8_t>(dir)] = this;
-  if (dir == Direction::IN)
+}
+
+void CH32EndpointOtgHs::InitHardware()
+{
+  for (uint8_t i = 0U; i < EP_OTG_HS_MAX_SIZE; ++i)
   {
-    SetDma(TxDma(ep_num), ep_num, buffer.addr_);
-    SetTxLen(ep_num, 0U);
-    *TxCtrl(ep_num) = USBHS_UEP_T_RES_NAK;
-  }
-  else
-  {
-    SetDma(RxDma(ep_num), ep_num, buffer.addr_);
-    *RxCtrl(ep_num) = USBHS_UEP_R_RES_NAK;
+    const auto ep_num = static_cast<EPNumber>(i);
+    for (uint8_t d = 0U; d < 2U; ++d)
+    {
+      CH32EndpointOtgHs* ep = map_[i][d];
+      if (ep == nullptr)
+      {
+        continue;
+      }
+      if (static_cast<Direction>(d) == Direction::IN)
+      {
+        SetDma(TxDma(ep_num), ep_num, ep->dma_base_);
+        SetTxLen(ep_num, 0U);
+        *TxCtrl(ep_num) = USBHS_UEP_T_RES_NAK;
+      }
+      else
+      {
+        SetDma(RxDma(ep_num), ep_num, ep->dma_base_);
+        *RxCtrl(ep_num) = USBHS_UEP_R_RES_NAK;
+      }
+    }
   }
 }
 

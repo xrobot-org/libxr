@@ -1887,14 +1887,28 @@ Endpoint::StopOutcome STM32OtgEndpoint::StopOutEp0()
   // them to keep receiving SETUPs.
   auto* regs = controller_.OutEp(0);
   regs->DOEPCTL |= USB_OTG_DOEPCTL_SNAK;
-  const size_t actual = Dma() ? 0U : hw_done_;
-  if ((regs->DOEPINT & USB_OTG_DOEPINT_XFRC) != 0U &&
-      (regs->DOEPINT & USB_OTG_DOEPINT_STUP) == 0U)
+  const uint32_t events = regs->DOEPINT;
+  if ((events & USB_OTG_DOEPINT_XFRC) != 0U && (events & USB_OTG_DOEPINT_STUP) == 0U)
   {
+    bool data = false;
+    if (!Dma())
+    {
+      data = !(controller_.core_id_ == USB_OTG_CORE_ID_310A &&
+               (events & USB_OTG_DOEPINT_STPKTRX) != 0U);
+    }
+    else
+    {
+      data = (events & USB_OTG_DOEPINT_OTEPSPR) == 0U &&
+             !(controller_.core_id_ > USB_OTG_CORE_ID_300A &&
+               (events & USB_OTG_DOEPINT_STPKTRX) != 0U);
+    }
     regs->DOEPINT = USB_OTG_DOEPINT_XFRC;
-    return {ErrorCode::OK, actual};
+    if (data)
+    {
+      return {ErrorCode::OK, OutBytes()};
+    }
   }
-  return {ErrorCode::ABORTED, actual};
+  return {ErrorCode::ABORTED, Dma() ? 0U : hw_done_};
 }
 
 ErrorCode STM32OtgEndpoint::StallHardware(bool in_isr)

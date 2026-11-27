@@ -2267,6 +2267,99 @@ void TestFsNoSuspendWhileDetached()
   TEST_ASSERT(fake_usbfsd.UEP2_TX_LEN == 64U);
 }
 
+/// CH32 OTG FS/HS 构造时不写 UEP* 寄存器（避免开时钟前 BusFault），Start 时才初始化，
+/// 且 HaltController 清掉 suspended_ 与 HS 帧号缓存 / Ctor writes no UEP* regs before
+/// clock enable; Start initializes them; HaltController clears suspended_ &
+/// last_frame_no_
+void TestOtgInitAndHaltState()
+{
+  // HS
+  {
+    ResetFakes();
+    fake_usbhsd.UEP0_DMA = 0xDEADBEEFU;
+    fake_usbhsd.UEP1_TX_DMA = 0xDEADBEEFU;
+    fake_usbhsd.UEP1_RX_DMA = 0xDEADBEEFU;
+    fake_usbhsd.UEP0_TX_CTRL = 0xAAU;
+    fake_usbhsd.UEP0_RX_CTRL = 0xAAU;
+
+    Block<64> ep0;
+    Block<2048> ep1_out;
+    Block<4096> ep1_in;
+    PairClass cls(EPNumber::EP1, EPNumber::EP1, Type::BULK, 512U);
+    ResettableUsb<CH32USBOtgHS> usb({ep0.Raw(), ep1_out.Raw()}, {ep0.Raw(), ep1_in.Raw()},
+                                    0x1209U, 0x0001U, 0x0100U, {&LANGUAGE}, {{&cls}});
+    TEST_ASSERT(fake_usbhsd.UEP0_DMA == 0xDEADBEEFU);
+    TEST_ASSERT(fake_usbhsd.UEP1_TX_DMA == 0xDEADBEEFU);
+    TEST_ASSERT(fake_usbhsd.UEP1_RX_DMA == 0xDEADBEEFU);
+    TEST_ASSERT(fake_usbhsd.UEP0_TX_CTRL == 0xAAU);
+    TEST_ASSERT(fake_usbhsd.UEP0_RX_CTRL == 0xAAU);
+
+    usb.Init(false);
+    usb.Start(false);
+    PendedHs();
+    TEST_ASSERT(fake_usbhsd.UEP0_DMA == Addr(ep0.bytes));
+    TEST_ASSERT(fake_usbhsd.UEP1_TX_DMA == Addr(ep1_in.bytes));
+    TEST_ASSERT(fake_usbhsd.UEP1_RX_DMA == Addr(ep1_out.bytes));
+    TEST_ASSERT(fake_usbhsd.UEP0_TX_CTRL == USBHS_UEP_T_RES_NAK);
+    TEST_ASSERT(fake_usbhsd.UEP0_RX_CTRL == USBHS_UEP_R_RES_ACK);
+
+    // 挂起后 Stop 再 Start，帧号清零、再次挂起与 SOF 都能上报 / Stop after suspend,
+    // restart: suspended_ and last_frame_no_ reset cleanly
+    fake_usbhsd.MIS_ST = USBHS_UMS_SIE_FREE | USBHS_UMS_SUSPEND;
+    RunHs();
+    usb.Stop(false);
+    PendedHs();
+    fake_usbhsd.MIS_ST = USBHS_UMS_SIE_FREE;
+    fake_usbhsd.FRAME_NO = 0x0123U;
+    usb.Start(false);
+    PendedHs();
+    TickAnd(6, PendedHs);
+    cls.frames.clear();
+    fake_usbhsd.FRAME_NO = 0x0123U;
+    fake_usbhsd.SPEED_TYPE = USBHS_USB_SPEED_HIGH;
+    LatchHs(USBHS_UIF_BUS_RST, 0U);
+    RunHs();
+    SetupPacket set_cfg{0x00U, 9U, 1U, 0U, 0U};
+    std::memcpy(ep0.bytes, &set_cfg, sizeof(set_cfg));
+    LatchHs(USBHS_UIF_SETUP_ACT, 0U, 0U);
+    RunHs();
+    fake_usbhsd.FRAME_NO = 0x0124U;
+    RunHs();
+    TEST_ASSERT(!cls.frames.empty() && cls.frames.back() == 0x0124U);
+  }
+
+  // FS
+  {
+    ResetFakes();
+    fake_usbfsd.UEP0_DMA = 0xDEADBEEFU;
+    fake_usbfsd.UEP1_DMA = 0xDEADBEEFU;
+    fake_usbfsd.UEP0_TX_CTRL = 0xAAU;
+    fake_usbfsd.UEP0_RX_CTRL = 0xAAU;
+
+    Block<64> ep0;
+    Block<256> ep1_out;
+    Block<256> ep1_in;
+    PairClass cls(EPNumber::EP1, EPNumber::EP2, Type::BULK, 64U);
+    ResettableUsb<CH32USBOtgFS> usb({ep0.Raw(), ep1_out.Raw(), {nullptr, 0}},
+                                    {ep0.Raw(), {nullptr, 0}, ep1_in.Raw()},
+                                    USB::DeviceDescriptor::PacketSize0::SIZE_64, 0x1209U,
+                                    0x0001U, 0x0100U, {&LANGUAGE}, {{&cls}});
+    TEST_ASSERT(fake_usbfsd.UEP0_DMA == 0xDEADBEEFU);
+    TEST_ASSERT(fake_usbfsd.UEP1_DMA == 0xDEADBEEFU);
+    TEST_ASSERT(fake_usbfsd.UEP0_TX_CTRL == 0xAAU);
+    TEST_ASSERT(fake_usbfsd.UEP0_RX_CTRL == 0xAAU);
+
+    usb.Init(false);
+    usb.Start(false);
+    PendedFs();
+    TEST_ASSERT(fake_usbfsd.UEP0_DMA == Addr(ep0.bytes));
+    TEST_ASSERT(fake_usbfsd.UEP1_DMA == Addr(ep1_out.bytes));
+    TEST_ASSERT(fake_usbfsd.UEP2_DMA == Addr(ep1_in.bytes));
+    TEST_ASSERT(fake_usbfsd.UEP0_TX_CTRL == USBFS_UEP_T_RES_NAK);
+    TEST_ASSERT(fake_usbfsd.UEP0_RX_CTRL == USBFS_UEP_R_RES_ACK);
+  }
+}
+
 void TestFsResetAsync()
 {
   ResetFakes();
@@ -2352,6 +2445,7 @@ int main(int argc, char** argv)
       {"fs_reset_async", TestFsResetAsync},
       {"fs_detach_requests", TestFsDetachRequests},
       {"fs_no_suspend_while_detached", TestFsNoSuspendWhileDetached},
+      {"otg_init_and_halt_state", TestOtgInitAndHaltState},
   };
   // 登记之前：没有节拍源时构造是致命错误。之后测试扮演唯一的节拍源。
   // Before the registration: construction without a tick source is fatal. Afterwards

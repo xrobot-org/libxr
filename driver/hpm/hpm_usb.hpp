@@ -269,13 +269,13 @@ class HPMUSBDevice : public HPMUSBController,
 
   /**
    * @brief 中断入口 / Interrupt entry
-   * @note 调用者：USB0 的中断函数（本驱动定义）。设备已构造时进入
-   *       OnControllerInterrupt，否则关掉控制器的中断源。
-   *       Caller: the USB0 interrupt function (defined by this driver). Enters
-   *       OnControllerInterrupt once the device is constructed, otherwise switches the
-   *       controller's interrupt sources off.
+   * @param regs 触发中断的 USB 寄存器块 / USB register block whose IRQ fired
+   * @note 调用者：USB 控制器的中断函数（本驱动定义）。设备已构造且寄存器块匹配时进入
+   *       OnControllerInterrupt，否则关掉该控制器的中断源。
+   *       Caller: the USB interrupt function (defined by this driver). Enters
+   *       OnControllerInterrupt when matched, otherwise switches USBINTR off.
    */
-  static void Dispatch();
+  static void Dispatch(USB_Type* regs = HPM_USB0);
 
   /**
    * @brief 打开中断并接上总线 / Enable interrupts and attach to the bus
@@ -353,9 +353,6 @@ class HPMUSBDevice : public HPMUSBController,
   void Attach();
   /// 总线复位的收尾（URI）/ Wind-up of a bus reset (URI)
   void OnUsbReset(bool in_isr);
-  /// 端口回到工作状态（PCI）：报告复位或恢复 / The port is operational again (PCI):
-  /// report the reset or the resume
-  void OnPortChange(bool in_isr);
   /**
    * @brief 按 dTD 令牌报告硬件上有请求的各端点的完成，同号先 IN 后 OUT / Report the
    *        completions of every endpoint with requests on the hardware by the dTD tokens,

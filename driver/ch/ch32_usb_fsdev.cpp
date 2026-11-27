@@ -155,9 +155,11 @@ CH32USBDeviceFS::CH32USBDeviceFS(
 bool CH32USBDeviceFS::HoldDetached()
 {
 #if LIBXR_CH32_USBD_DP_DETACH
-  // 收发器断电，再关 USBD 的接口时钟；寄存器和 PMA 保留。 / Transceiver powered down,
-  // then the interface clock of USBD off; registers and PMA are kept.
+  // 收发器断电并清零 ISTR，再关 USBD 接口时钟；寄存器和 PMA 保留。 / Power down the
+  // transceiver and clear ISTR before turning USBD clock off; registers and PMA kept.
   WriteCntr(static_cast<uint16_t>(USB::FSDEV_CNTR_FRES | USB::FSDEV_CNTR_PDWN));
+  WriteRegister(USB::FSDEV_REG_ISTR, 0U);
+  (void)ReadIstr();
   RCC_APB1PeriphClockCmd(RCC_APB1Periph_USB, DISABLE);
   // PA12 是 CFGHR 的 [19:16]（MODE、CNF）。先把输出锁存写 0，再切成推挽输出。
   // PA12 is CFGHR[19:16] (MODE, CNF). The output latch is written 0 before the switch to

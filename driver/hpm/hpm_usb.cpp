@@ -270,12 +270,15 @@ HPMUSBDevice::HPMUSBDevice(USB_Type* regs, uint32_t irq, bool high_speed,
   device_ = this;
 }
 
-void HPMUSBDevice::Dispatch()
+void HPMUSBDevice::Dispatch(USB_Type* regs)
 {
   HPMUSBDevice* device = device_;
-  if (device == nullptr)
+  if (device == nullptr || device->regs_ != regs)
   {
-    HPM_USB0->USBINTR = 0U;
+    if (regs != nullptr)
+    {
+      regs->USBINTR = 0U;
+    }
     return;
   }
   device->OnControllerInterrupt();
@@ -542,8 +545,10 @@ void HPMUSBDevice::HandleSetup(bool in_isr)
     for (uint32_t copy = 0; copy < RETRY_LIMIT; ++copy)
     {
       regs_->USBCMD |= USB_USBCMD_SUTW_MASK;
+      Fence();
       words[0] = qh.setup[0];
       words[1] = qh.setup[1];
+      Fence();
       if ((regs_->USBCMD & USB_USBCMD_SUTW_MASK) != 0U)
       {
         break;
@@ -1204,7 +1209,11 @@ ErrorCode HPMUSBEndpoint::ClearStallHardware(bool in_isr)
 
 #if defined(IRQn_USB0)
 SDK_DECLARE_EXT_ISR_M(IRQn_USB0, libxr_hpm_usb0_isr)
-void libxr_hpm_usb0_isr(void) { HPMUSBDevice::Dispatch(); }
+void libxr_hpm_usb0_isr(void) { HPMUSBDevice::Dispatch(HPM_USB0); }
+#endif
+#if defined(IRQn_USB1) && defined(HPM_USB1)
+SDK_DECLARE_EXT_ISR_M(IRQn_USB1, libxr_hpm_usb1_isr)
+void libxr_hpm_usb1_isr(void) { HPMUSBDevice::Dispatch(HPM_USB1); }
 #endif
 
 void HPMUSBDevice::ResetController(bool in_isr)

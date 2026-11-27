@@ -491,15 +491,16 @@ void ESP32USBDevice::IsrEntry(void* arg)
 void ESP32USBDevice::StartController(bool in_isr)
 {
   UNUSED(in_isr);
-  // 断开时间未到时只记下"要接上"，到点后定时器服务任务做接上的一轮。
-  // While the detach time has not passed only "attach wanted" is recorded; the timer
-  // service task runs the attach pass once it has passed.
+  // 断开时间未到时只记下"要接上"，到点后定时器服务任务做接上的一轮；不论是否延时接
+  // 上都要打开 CPU 中断线。
+  // While detach time remains, record attach wanted and enable the CPU interrupt line
+  // regardless so delayed attach still handles USB interrupts.
+  MaskInterrupt();
   if (detach_.WantAttach())
   {
-    MaskInterrupt();
     Connect();
-    UnmaskInterrupt();
   }
+  UnmaskInterrupt();
 }
 
 // 到点后的接上由定时器服务任务做（xTimerPendFunctionCallFromISR），见 detach_。
@@ -645,8 +646,10 @@ void ESP32USBDevice::ServiceHardware(bool in_isr)
     dev->gintsts_reg.val = GINT_ENUMDONE;
     reset_enum_pending_ = false;
     const uint32_t speed = dev->dsts_reg.enumspd;
-    REQUIRE_FROM_CALLBACK(speed == ENUM_SPEED_FULL_30_60 || speed == ENUM_SPEED_FULL_48,
-                          in_isr);
+    if (speed != ENUM_SPEED_FULL_30_60 && speed != ENUM_SPEED_FULL_48)
+    {
+      return;
+    }
   }
   if ((status & GINT_GOUTNAKEFF) != 0U)
   {
@@ -934,10 +937,13 @@ void ESP32USBDevice::HandleEp0Out(bool in_isr, uint32_t events)
   if (setup)
   {
     const uintptr_t start = reinterpret_cast<uintptr_t>(setup_buffer_);
+    const uintptr_t out_start = reinterpret_cast<uintptr_t>(ep0_out_buffer_);
     uintptr_t at = static_cast<uintptr_t>(out0->dma) - SETUP_SIZE;
-    if (at < start || at + SETUP_SIZE > start + EP0_BUFFER_SIZE)
+    const bool in_setup = at >= start && at + SETUP_SIZE <= start + EP0_BUFFER_SIZE;
+    const bool in_out = at >= out_start && at + SETUP_SIZE <= out_start + EP0_BUFFER_SIZE;
+    if (!in_setup && !in_out)
     {
-      at = (at == reinterpret_cast<uintptr_t>(ep0_out_buffer_)) ? at : start;
+      at = start;
     }
     std::atomic_signal_fence(std::memory_order_seq_cst);
     std::memcpy(&packet, reinterpret_cast<const void*>(at), sizeof(packet));
@@ -1054,6 +1060,7 @@ ESP32USBEndpoint::ESP32USBEndpoint(ESP32USBController& controller, EPNumber numb
   // cache，所以不做 cache 同步。
   // The slot is the DMA target (EP0 OUT excepted) and must be internal DMA-capable RAM.
   // Internal RAM bypasses the data cache, so no cache maintenance is done.
+  REQUIRE(buffer.size_ > 0U);
   const auto* start = static_cast<const uint8_t*>(buffer.addr_);
   REQUIRE(esp_ptr_dma_capable(start) && esp_ptr_dma_capable(start + buffer.size_ - 1U));
   const uint8_t num = EPNumberToInt8(number);
@@ -1225,7 +1232,7 @@ ErrorCode ESP32USBEndpoint::StartHardware(const HwRequest& request, bool in_isr)
     // One packet at a time into the controller's EP0 OUT buffer; length 0 (status
     // stage) also programs a full packet.
     hw_programmed_ = packet;
-    regs->tsiz = (1UL << TSIZ_PKTCNT_POS) | packet;
+    regs->tsiz = (SETUP_COUNT << TSIZ_SUPCNT_POS) | (1UL << TSIZ_PKTCNT_POS) | packet;
     regs->dma = Address(controller_.ep0_out_buffer_);
     ep0_armed_ = Ep0Armed::DATA;
   }
@@ -1590,6 +1597,7 @@ Endpoint::StopOutcome ESP32USBEndpoint::StopOutEp0()
   if (ep0_armed_ == Ep0Armed::DATA && (regs->intr & INT_XFRC) != 0U &&
       ((regs->tsiz >> TSIZ_PKTCNT_POS) & 1U) == 0U)
   {
+    regs->intr = INT_XFRC;
     return {ErrorCode::OK, OutBytes()};
   }
   return {ErrorCode::ABORTED, 0U};

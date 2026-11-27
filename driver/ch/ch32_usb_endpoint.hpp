@@ -218,6 +218,9 @@ class CH32EndpointOtgFs : public USB::Endpoint
 
   /// 写入本方向 RES 字段，保留其他位 / Write this direction's RES field, keep the rest
   void SetResponse(uint8_t res);
+  /// 开时钟后初始化全部已登记端点的 DMA 寄存器与 NAK / Initialize UEPn DMA and NAK
+  /// registers of all registered endpoints after clock enable
+  static void InitHardware();
 
   /**
    * @brief 端点表 / Endpoint table
@@ -571,6 +574,9 @@ class CH32EndpointOtgHs : public USB::Endpoint
 
   /// 写入本方向 RES 字段，保留其他位 / Write this direction's RES field, keep the rest
   void SetResponse(uint8_t res);
+  /// 开时钟后初始化全部已登记端点的 DMA 寄存器与 NAK / Initialize UEPn DMA and NAK
+  /// registers of all registered endpoints after clock enable
+  static void InitHardware();
 
   /**
    * @brief 端点表 / Endpoint table
@@ -664,6 +670,9 @@ class CH32EndpointOtgHs : public USB::Endpoint
    */
   uint8_t tog_window_ = 0;
   /// @}
+  /// 构造时保存的槽基址；SetUpController 时再写入 UEPn_*_DMA / Slot base saved at ctor;
+  /// programmed into UEPn_*_DMA inside SetUpController
+  void* const dma_base_;
 };
 
 #endif  // defined(USBHSD) || defined(__DOXYGEN__)

@@ -137,17 +137,33 @@ CH32EndpointOtgFs::CH32EndpointOtgFs(EPNumber ep_num, Direction dir, RawData buf
                                               : static_cast<uint8_t*>(buffer.addr_))
 {
   map_[EPNumberToInt8(ep_num)][static_cast<uint8_t>(dir)] = this;
-  // 共享块两个方向都把 UEPn_DMA 指向块基址。 / Both directions of a shared block point
-  // UEPn_DMA at the block base.
-  SetDma(ep_num, block_dma_base_);
-  if (dir == Direction::IN)
+}
+
+void CH32EndpointOtgFs::InitHardware()
+{
+  for (uint8_t i = 0U; i < EP_OTG_FS_MAX_SIZE; ++i)
   {
-    SetTxLen(ep_num, 0U);
-    *TxCtrl(ep_num) = USBFS_UEP_T_RES_NAK;
-  }
-  else
-  {
-    *RxCtrl(ep_num) = USBFS_UEP_R_RES_NAK;
+    const auto ep_num = static_cast<EPNumber>(i);
+    for (uint8_t d = 0U; d < 2U; ++d)
+    {
+      CH32EndpointOtgFs* ep = map_[i][d];
+      if (ep == nullptr)
+      {
+        continue;
+      }
+      // 共享块两个方向都把 UEPn_DMA 指向块基址。 / Both directions of a shared block
+      // point UEPn_DMA at the block base.
+      SetDma(ep_num, ep->block_dma_base_);
+      if (static_cast<Direction>(d) == Direction::IN)
+      {
+        SetTxLen(ep_num, 0U);
+        *TxCtrl(ep_num) = USBFS_UEP_T_RES_NAK;
+      }
+      else
+      {
+        *RxCtrl(ep_num) = USBFS_UEP_R_RES_NAK;
+      }
+    }
   }
 }
 
