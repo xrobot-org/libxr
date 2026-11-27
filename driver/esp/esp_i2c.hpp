@@ -17,11 +17,29 @@
 namespace LibXR
 {
 
+/**
+ * @class ESP32I2C
+ * @brief ESP32 I2C 主机驱动实现 / ESP32 I2C master driver implementation.
+ */
 class ESP32I2C : public I2C
 {
  public:
-  static constexpr int PIN_NO_CHANGE = -1;
+  static constexpr int PIN_NO_CHANGE =
+      -1;  ///< 保持引脚不重新映射标记 / Sentinel keeping a pin unchanged.
 
+  /**
+   * @brief 构造 ESP32I2C 主机驱动实例 / Construct an ESP32I2C master driver instance.
+   * @param port_num I2C 端口号 / I2C port number.
+   * @param scl_pin SCL 引脚号（或 `PIN_NO_CHANGE`） / SCL pin number (or
+   * `PIN_NO_CHANGE`).
+   * @param sda_pin SDA 引脚号（或 `PIN_NO_CHANGE`） / SDA pin number (or
+   * `PIN_NO_CHANGE`).
+   * @param clock_speed 通信时钟速率（Hz） / Bus clock frequency in Hz.
+   * @param enable_internal_pullup 是否启用片上弱上拉 / Enable internal pull-ups.
+   * @param timeout_ms 传输超时时间（ms） / Transfer timeout in milliseconds.
+   * @param isr_enable_min_size 启用中断/异步模式的最小传输字节数 / Minimum bytes for ISR
+   * path.
+   */
   ESP32I2C(i2c_port_t port_num, int scl_pin, int sda_pin, uint32_t clock_speed = 400000U,
            bool enable_internal_pullup = true, uint32_t timeout_ms = 100U,
            uint32_t isr_enable_min_size = 32U);
@@ -44,6 +62,10 @@ class ESP32I2C : public I2C
                      MemAddrLength mem_addr_size = MemAddrLength::BYTE_8,
                      bool in_isr = false) override;
 
+  /**
+   * @brief 获取绑定的 ESP-IDF I2C 端口号 / Get the bound ESP-IDF I2C port number.
+   * @return I2C 端口号 / I2C port number.
+   */
   i2c_port_t Port() const { return port_num_; }
 
  private:

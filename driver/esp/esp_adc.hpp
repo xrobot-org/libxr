@@ -19,17 +19,39 @@ struct adc_oneshot_hal_ctx_t;
 namespace LibXR
 {
 
+/**
+ * @class ESP32ADC
+ * @brief ESP32 ADC 驱动包装类，支持连续 DMA 与单次转换回退
+ *        ESP32 ADC driver wrapper supporting continuous DMA with oneshot fallback.
+ */
 class ESP32ADC
 {
  public:
+  /**
+   * @class Channel
+   * @brief 绑定到单个 ESP32 ADC 通道的 LibXR ADC 接口实现
+   *        LibXR ADC channel adapter bound to one ESP32 ADC channel.
+   */
   class Channel : public ADC
   {
    public:
+    /// @brief 构造未绑定通道占位对象 / Construct an unbound channel placeholder.
     Channel();
+    /**
+     * @brief 构造绑定到指定 ESP32ADC 通道的适配器 / Construct an adapter bound to an
+     *        `ESP32ADC` channel.
+     * @param parent 所属 `ESP32ADC` 实例 / Owning `ESP32ADC` instance.
+     * @param idx 通道在父实例中的索引 / Channel index within `parent`.
+     * @param channel_num ESP-IDF ADC 通道号 / ESP-IDF ADC channel number.
+     */
     Channel(ESP32ADC* parent, uint8_t idx, uint8_t channel_num);
 
     float Read() override;
 
+    /**
+     * @brief 获取对应的硬件 ADC 通道号 / Get the hardware ADC channel number.
+     * @return ESP-IDF ADC 通道号 / ESP-IDF ADC channel number.
+     */
     uint8_t ChannelNumber() const { return channel_num_; }
 
    private:
@@ -38,13 +60,28 @@ class ESP32ADC
     uint8_t channel_num_;
   };
 
+  /**
+   * @brief 连续 DMA 采样初始化结果 / Continuous DMA initialization result.
+   */
   enum class ContinuousInitResult : uint8_t
   {
-    STARTED = 0,
-    UNSUPPORTED,
-    FAILED,
+    STARTED = 0,  ///< 已启动连续 DMA 模式 / Continuous DMA started.
+    UNSUPPORTED,  ///< 当前单元/参数不支持连续模式 / Continuous mode unsupported.
+    FAILED,       ///< 初始化失败 / Initialization failed.
   };
 
+  /**
+   * @brief 构造 ESP32ADC 管理器并配置采样通道 / Construct ESP32ADC manager and configure
+   *        channels.
+   * @param unit ADC 硬件单元 / ADC hardware unit.
+   * @param channels ADC 通道号数组 / Array of ADC channel numbers.
+   * @param num_channels 通道数量 / Number of channels.
+   * @param freq 采样频率（Hz） / Sample frequency in Hz.
+   * @param attenuation 输入衰减配置 / Input attenuation configuration.
+   * @param bitwidth 采样位宽 / Sample resolution bitwidth.
+   * @param reference_voltage 参考电压（V） / Reference voltage in volts.
+   * @param dma_buf_size DMA 缓冲区大小 / DMA buffer size.
+   */
   ESP32ADC(
       adc_unit_t unit, const adc_channel_t* channels, uint8_t num_channels,
       uint32_t freq = SOC_ADC_SAMPLE_FREQ_THRES_LOW,
@@ -52,8 +89,18 @@ class ESP32ADC
       adc_bitwidth_t bitwidth = static_cast<adc_bitwidth_t>(SOC_ADC_DIGI_MAX_BITWIDTH),
       float reference_voltage = 3.3f, size_t dma_buf_size = 256);
 
+  /**
+   * @brief 按索引获取通道适配器引用 / Get the channel adapter reference by index.
+   * @param idx 通道索引 / Channel index.
+   * @return 通道对象引用 / Reference to the `Channel` object.
+   */
   Channel& GetChannel(uint8_t idx);
 
+  /**
+   * @brief 读取指定索引通道的电压值 / Read voltage of the channel at the given index.
+   * @param idx 通道索引 / Channel index.
+   * @return 换算后的电压值（V） / Converted voltage in volts.
+   */
   float ReadChannel(uint8_t idx);
 
  private:

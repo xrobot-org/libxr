@@ -33,6 +33,14 @@ inline void STM32_CallDCacheByAddr(FunctionType function, void* addr, int32_t ds
   function(addr, dsize);
 }
 
+/**
+ * @brief 按 `volatile void*` 指针类型调用 CMSIS D-Cache 接口
+ *        Calls the CMSIS D-Cache helper accepting a `volatile void*` pointer.
+ * @tparam FunctionType CMSIS D-Cache 函数指针/可调用类型 / CMSIS D-Cache callable type.
+ * @param function CMSIS D-Cache 操作函数 / CMSIS D-Cache function.
+ * @param addr 目标内存起始地址 / Target memory base address.
+ * @param dsize 操作字节数 / Byte size.
+ */
 template <typename FunctionType>
   requires(!DCacheFunctionAcceptsVoidPtr<FunctionType> &&
            DCacheFunctionAcceptsVolatileVoidPtr<FunctionType>)
@@ -41,6 +49,14 @@ inline void STM32_CallDCacheByAddr(FunctionType function, void* addr, int32_t ds
   function(reinterpret_cast<volatile void*>(addr), dsize);
 }
 
+/**
+ * @brief 按 `uint32_t*` 指针类型调用 CMSIS D-Cache 接口
+ *        Calls the CMSIS D-Cache helper accepting a `uint32_t*` pointer.
+ * @tparam FunctionType CMSIS D-Cache 函数指针/可调用类型 / CMSIS D-Cache callable type.
+ * @param function CMSIS D-Cache 操作函数 / CMSIS D-Cache function.
+ * @param addr 目标内存起始地址 / Target memory base address.
+ * @param dsize 操作字节数 / Byte size.
+ */
 template <typename FunctionType>
   requires(!DCacheFunctionAcceptsVoidPtr<FunctionType> &&
            !DCacheFunctionAcceptsVolatileVoidPtr<FunctionType>)

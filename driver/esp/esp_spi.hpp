@@ -15,9 +15,26 @@
 namespace LibXR
 {
 
+/**
+ * @class ESP32SPI
+ * @brief ESP32 SPI 主机驱动实现，支持 DMA 与轮询传输
+ *        ESP32 SPI master driver supporting DMA and polling transfers.
+ */
 class ESP32SPI : public SPI
 {
  public:
+  /**
+   * @brief 构造 ESP32SPI 主机驱动实例 / Construct an ESP32SPI master driver instance.
+   * @param host ESP-IDF SPI 主机设备 / ESP-IDF SPI host device.
+   * @param sclk_pin SCLK 引脚号 / SCLK pin number.
+   * @param miso_pin MISO 引脚号 / MISO pin number.
+   * @param mosi_pin MOSI 引脚号 / MOSI pin number.
+   * @param dma_rx RX DMA 缓冲区 / RX DMA buffer.
+   * @param dma_tx TX DMA 缓冲区 / TX DMA buffer.
+   * @param config 初始 SPI 总线配置 / Initial SPI bus configuration.
+   * @param dma_enable_min_size 启用 DMA 的最小传输字节数 / Minimum transfer size for DMA.
+   * @param enable_dma 是否允许使用 DMA / Whether DMA mode is enabled.
+   */
   ESP32SPI(spi_host_device_t host, int sclk_pin, int miso_pin, int mosi_pin,
            RawData dma_rx, RawData dma_tx,
            SPI::Configuration config =
@@ -46,8 +63,16 @@ class ESP32SPI : public SPI
 
   Prescaler GetMaxPrescaler() const override;
 
+  /**
+   * @brief 获取 RX DMA 缓冲区视图 / Get the RX DMA buffer view.
+   * @return RX DMA 缓冲区 / RX DMA buffer.
+   */
   RawData GetRxBuffer();
 
+  /**
+   * @brief 获取 TX DMA 缓冲区视图 / Get the TX DMA buffer view.
+   * @return TX DMA 缓冲区 / TX DMA buffer.
+   */
   RawData GetTxBuffer();
 
  private:

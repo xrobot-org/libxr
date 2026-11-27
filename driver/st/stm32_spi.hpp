@@ -77,20 +77,24 @@ class STM32SPI : public SPI
 
   ErrorCode Transfer(size_t size, OperationRW& op, bool in_isr) override;
 
-  SPI_HandleTypeDef* spi_handle_;
+  SPI_HandleTypeDef* spi_handle_;  ///< HAL SPI 句柄 / HAL SPI handle.
 
-  stm32_spi_id_t id_ = STM32_SPI_ID_ERROR;
+  stm32_spi_id_t id_ =
+      STM32_SPI_ID_ERROR;  ///< STM32 SPI 实例编号 / STM32 SPI instance ID.
 
-  uint32_t dma_enable_min_size_ = 3;
+  uint32_t dma_enable_min_size_ =
+      3;  ///< 启用 DMA 的最小传输字节数 / Minimum transfer size for DMA.
 
-  OperationRW rw_op_;
+  OperationRW rw_op_;  ///< 当前异步读写操作句柄 / Active read/write operation handle.
 
-  RawData read_buff_;
+  RawData read_buff_;  ///< 当前接收缓冲区 / Active receive buffer.
 
-  bool mem_read_ = false;
-  AsyncBlockWait block_wait_{};
+  bool mem_read_ =
+      false;  ///< 是否为寄存器读前置模式 / Whether reading with leading register prefix.
+  AsyncBlockWait block_wait_{};  ///< 阻塞等待辅助对象 / Blocking wait helper.
 
-  static STM32SPI* map[STM32_SPI_NUMBER];  // NOLINT
+  static STM32SPI* map[STM32_SPI_NUMBER];  ///< 按实例 ID 索引的驱动映射表 / Driver map
+                                           ///< indexed by SPI ID. NOLINT
 
  private:
   /**

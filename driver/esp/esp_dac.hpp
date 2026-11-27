@@ -16,9 +16,20 @@
 namespace LibXR
 {
 
+/**
+ * @class ESP32DAC
+ * @brief ESP32 DAC 驱动实现 / ESP32 DAC driver implementation.
+ */
 class ESP32DAC : public DAC
 {
  public:
+  /**
+   * @brief 构造 ESP32DAC 对象并输出初始电压 / Construct ESP32DAC and write an initial
+   *        voltage.
+   * @param channel_id DAC 通道编号 / DAC channel index.
+   * @param init_voltage 初始输出电压（V） / Initial output voltage in volts.
+   * @param reference_voltage 满量程参考电压（V） / Full-scale reference voltage in volts.
+   */
   explicit ESP32DAC(uint8_t channel_id = 0, float init_voltage = 0.0f,
                     float reference_voltage = 3.3f)
       : channel_id_(channel_id), reference_voltage_(reference_voltage)

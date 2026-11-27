@@ -190,14 +190,16 @@ class STM32UART : public UART
   /// 上次已处理的 DMA 接收位置 / Last processed RX DMA position.
   size_t last_rx_pos_ = 0;
 
-  UART_HandleTypeDef* uart_handle_;
+  UART_HandleTypeDef* uart_handle_;  ///< HAL UART 句柄 / HAL UART handle.
 
   /// 发送半区是否在使用，仅后端处理器访问 / TX half in use; service-only access.
   Flag::Plain tx_busy_;
 
-  stm32_uart_id_t id_ = STM32_UART_ID_ERROR;
+  stm32_uart_id_t id_ =
+      STM32_UART_ID_ERROR;  ///< STM32 UART 实例编号 / STM32 UART instance ID.
 
-  static STM32UART* map[STM32_UART_NUMBER];  // NOLINT
+  static STM32UART* map[STM32_UART_NUMBER];  ///< 按实例 ID 索引的驱动映射表 / Driver map
+                                             ///< indexed by UART ID. NOLINT
 
  private:
   /// 待应用配置的发布阶段 / Pending configuration publication phase.

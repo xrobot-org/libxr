@@ -8,18 +8,34 @@
 namespace LibXR
 {
 
+/**
+ * @class MSPM0I2C
+ * @brief TI MSPM0 I2C 主机驱动实现，支持 DMA 与中断传输
+ *        TI MSPM0 I2C master driver supporting DMA and interrupt transfers.
+ */
 class MSPM0I2C : public I2C
 {
  public:
+  /**
+   * @brief MSPM0 I2C 硬件资源描述 / MSPM0 I2C hardware resource descriptor.
+   */
   struct Resources
   {
-    I2C_Regs* instance;
-    IRQn_Type irqn;
-    uint32_t clock_freq;
-    uint32_t default_bus_speed_hz;
-    uint8_t index;
+    I2C_Regs* instance;   ///< I2C 外设寄存器指针 / I2C peripheral register pointer.
+    IRQn_Type irqn;       ///< I2C 中断号 / I2C interrupt number.
+    uint32_t clock_freq;  ///< 外设输入时钟频率（Hz） / Peripheral clock frequency (Hz).
+    uint32_t default_bus_speed_hz;  ///< 默认 I2C 总线速率（Hz） / Default I2C bus
+                                    ///< frequency (Hz).
+    uint8_t index;                  ///< 内部实例表索引 / Internal instance table index.
   };
 
+  /**
+   * @brief 构造 MSPM0I2C 主机驱动实例 / Construct an `MSPM0I2C` master driver instance.
+   * @param res 硬件资源描述 / Hardware resource descriptor.
+   * @param stage_buffer DMA 暂存缓冲区 / DMA staging buffer.
+   * @param dma_enable_min_size 启用 DMA 的最小传输字节数 / Minimum transfer size for DMA.
+   * @param config 初始 I2C 总线配置 / Initial I2C configuration.
+   */
   MSPM0I2C(Resources res, RawData stage_buffer, uint32_t dma_enable_min_size = 8,
            I2C::Configuration config = {100000});
 
@@ -41,6 +57,12 @@ class MSPM0I2C : public I2C
 
   ErrorCode SetConfig(Configuration config) override;
 
+  /**
+   * @brief 根据 I2C 中断号解析内部实例索引 / Resolve the internal instance index from an
+   *        I2C IRQn.
+   * @param irqn MSPM0 I2C 中断号 / MSPM0 I2C interrupt number.
+   * @return 对应实例索引 / Resolved instance index.
+   */
   static constexpr uint8_t ResolveIndex(IRQn_Type irqn)
   {
     switch (irqn)

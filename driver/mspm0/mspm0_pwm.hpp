@@ -6,16 +6,28 @@
 namespace LibXR
 {
 
+/**
+ * @class MSPM0PWM
+ * @brief TI MSPM0 GPTimer PWM 驱动实现 / TI MSPM0 GPTimer PWM driver implementation.
+ */
 class MSPM0PWM : public PWM
 {
  public:
+  /**
+   * @brief MSPM0 PWM 硬件资源描述 / MSPM0 PWM hardware resource descriptor.
+   */
   struct Resources
   {
-    GPTIMER_Regs* timer;
-    DL_TIMER_CC_INDEX channel;
-    uint32_t clock_freq;
+    GPTIMER_Regs* timer;  ///< GPTimer 外设寄存器指针 / GPTimer register pointer.
+    DL_TIMER_CC_INDEX
+    channel;              ///< 捕获/比较输出通道索引 / Capture/compare channel index.
+    uint32_t clock_freq;  ///< 定时器源时钟频率（Hz） / Timer clock frequency (Hz).
   };
 
+  /**
+   * @brief 构造 MSPM0PWM 输出对象 / Construct an `MSPM0PWM` output object.
+   * @param res PWM 硬件资源描述 / PWM hardware resource descriptor.
+   */
   MSPM0PWM(Resources res);
 
   /**

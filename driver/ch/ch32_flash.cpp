@@ -140,9 +140,18 @@ static inline void flash_clear_flags_once()
 // Only program and erase do that here; reads are not divided. It is halved after
 // interrupts are disabled and restored before they are enabled again; meanwhile the
 // peripherals clocked from HCLK (SysTick, the APB peripherals) run at half speed too.
+/**
+ * @brief CH32 Flash 擦写会话保护器：进入时关闭增强读与全局中断并在超过 120 MHz 时将
+ *        HCLK 二分频，退出时恢复。
+ *        CH32 Flash program/erase guard that halves HCLK above 120 MHz with IRQs
+ *        disabled and restores them on exit.
+ */
 class FlashAccessSession
 {
  public:
+  /**
+   * @brief 开启 Flash 擦写临界会话 / Enter a Flash program/erase critical session.
+   */
   FlashAccessSession()
   {
     flash_exit_enhanced_read_if_enabled();
@@ -157,6 +166,10 @@ class FlashAccessSession
     flash_clear_flags_once();
   }
 
+  /**
+   * @brief 结束 Flash 擦写临界会话并恢复时钟与中断 / Exit the session and restore clocks
+   *        and interrupts.
+   */
   ~FlashAccessSession()
   {
     flash_fast_lock();
@@ -165,7 +178,9 @@ class FlashAccessSession
     flash_set_access_clock_sysclk();
   }
 
+  /** @brief 禁用拷贝构造 / Copy construction is disabled. */
   FlashAccessSession(const FlashAccessSession&) = delete;
+  /** @brief 禁用拷贝赋值 / Copy assignment is disabled. */
   FlashAccessSession& operator=(const FlashAccessSession&) = delete;
 
  private:

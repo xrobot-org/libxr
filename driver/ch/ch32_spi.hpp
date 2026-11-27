@@ -42,14 +42,16 @@ class CH32SPI : public SPI
   uint32_t GetMaxBusSpeed() const override;
   SPI::Prescaler GetMaxPrescaler() const override;
 
-  /// DMA 中断回调 / DMA interrupt callbacks
+  /// DMA 接收中断回调 / DMA RX interrupt callback
   void RxDmaIRQHandler();
+  /// DMA 发送中断回调 / DMA TX interrupt callback
   void TxDmaIRQHandler();
 
   /// 轮询传输辅助函数 / Polling transfer helper
   ErrorCode PollingTransfer(uint8_t* rx, const uint8_t* tx, uint32_t len);
 
-  static CH32SPI* map_[CH32_SPI_NUMBER];
+  static CH32SPI* map_[CH32_SPI_NUMBER];  ///< 按 SPI 外设 ID 索引的实例映射表 / Driver
+                                          ///< instance map indexed by SPI ID.
 
  private:
   inline bool DmaBusy() const
@@ -69,35 +71,35 @@ class CH32SPI : public SPI
   static bool MapEnumToCH32Prescaler(SPI::Prescaler p, uint16_t& out);
 
  public:
-  SPI_TypeDef* instance_;
-  DMA_Channel_TypeDef* dma_rx_channel_;
-  DMA_Channel_TypeDef* dma_tx_channel_;
-  ch32_spi_id_t id_;
-  uint32_t dma_enable_min_size_;
+  SPI_TypeDef* instance_;  ///< CH32 SPI 外设寄存器基址 / SPI peripheral registers.
+  DMA_Channel_TypeDef* dma_rx_channel_;  ///< RX DMA 通道 / RX DMA channel.
+  DMA_Channel_TypeDef* dma_tx_channel_;  ///< TX DMA 通道 / TX DMA channel.
+  ch32_spi_id_t id_;                     ///< SPI 实例编号 / SPI instance ID.
+  uint32_t dma_enable_min_size_;  ///< 启用 DMA 的最小传输字节数 / Minimum transfer size
+                                  ///< for DMA.
 
-  /// 运行时状态 / Runtime state
-  OperationRW rw_op_;
-  RawData read_buff_;
-  bool mem_read_ = false;
-  bool busy_ = false;
+  OperationRW rw_op_;      ///< 当前异步读写操作句柄 / Active read/write operation handle.
+  RawData read_buff_;      ///< 当前接收缓冲区 / Active receive buffer.
+  bool mem_read_ = false;  ///< 是否跳过前导命令字节写回接收区 / Skip leading bytes when
+                           ///< capturing RX data.
+  bool busy_ = false;      ///< 传输忙碌标志 / Active transfer busy flag.
   uint32_t dma_transfer_ = 0;  ///< 已开始的 DMA 传输数 / DMA transfers started
 
-  /// SPI 寄存器配置缓存 / Cached SPI register configuration
-  uint16_t mode_;       ///< SPI_Mode_Master / SPI_Mode_Slave
-  uint16_t datasize_;   ///< SPI_DataSize_8b by default
-  uint16_t firstbit_;   ///< SPI_FirstBit_MSB / SPI_FirstBit_LSB
-  uint16_t prescaler_;  ///< SPI_BaudRatePrescaler_x
-  uint16_t nss_ = SPI_NSS_Soft;
+  uint16_t mode_;       ///< 主从模式配置（SPI_Mode_Master / Slave） / SPI_Mode_Master /
+                        ///< SPI_Mode_Slave
+  uint16_t datasize_;   ///< 数据位宽（默认 8 位） / SPI_DataSize_8b by default
+  uint16_t firstbit_;   ///< 位序（MSB/LSB） / SPI_FirstBit_MSB / SPI_FirstBit_LSB
+  uint16_t prescaler_;  ///< 分频配置 / SPI_BaudRatePrescaler_x
+  uint16_t nss_ = SPI_NSS_Soft;  ///< 片选管理模式 / NSS management mode.
 
-  /// GPIO 配置 / GPIO configuration
-  GPIO_TypeDef* sck_port_;
-  uint16_t sck_pin_;
-  GPIO_TypeDef* miso_port_;
-  uint16_t miso_pin_;
-  GPIO_TypeDef* mosi_port_;
-  uint16_t mosi_pin_;
+  GPIO_TypeDef* sck_port_;   ///< SCK 引脚端口 / SCK GPIO port.
+  uint16_t sck_pin_;         ///< SCK 引脚掩码 / SCK GPIO pin mask.
+  GPIO_TypeDef* miso_port_;  ///< MISO 引脚端口 / MISO GPIO port.
+  uint16_t miso_pin_;        ///< MISO 引脚掩码 / MISO GPIO pin mask.
+  GPIO_TypeDef* mosi_port_;  ///< MOSI 引脚端口 / MOSI GPIO port.
+  uint16_t mosi_pin_;        ///< MOSI 引脚掩码 / MOSI GPIO pin mask.
 
-  AsyncBlockWait block_wait_{};
+  AsyncBlockWait block_wait_{};  ///< 阻塞等待辅助对象 / Blocking wait helper.
 };
 
 }  // namespace LibXR

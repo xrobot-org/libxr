@@ -40,8 +40,11 @@ namespace LibXR
 class STM32GpdmaUartAdapter
 {
  public:
-  static constexpr size_t RX_NODE_COUNT = 4U;
-  using AbortCallback = void (*)(DMA_HandleTypeDef*);
+  static constexpr size_t RX_NODE_COUNT =
+      4U;  ///< 环形 GPDMA 接收链表节点数 / Number of circular GPDMA RX list nodes.
+  using AbortCallback =
+      void (*)(DMA_HandleTypeDef*);  ///< GPDMA 中止完成回调类型 / GPDMA abort completion
+                                     ///< callback type.
 
   /// 绑定已初始化的 UART 句柄 / Bind an initialized UART handle.
   explicit STM32GpdmaUartAdapter(UART_HandleTypeDef* uart_handle);

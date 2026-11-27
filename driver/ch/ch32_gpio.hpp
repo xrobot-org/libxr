@@ -8,38 +8,47 @@
 namespace LibXR
 {
 
+/**
+ * @brief CH32 GPIO 端口分组索引 / CH32 GPIO port group index
+ */
 typedef enum
 {
 #if defined(GPIOA)
-  CH32_GPIOA,
+  CH32_GPIOA,  ///< GPIOA 端口 / GPIOA port.
 #endif
 #if defined(GPIOB)
-  CH32_GPIOB,
+  CH32_GPIOB,  ///< GPIOB 端口 / GPIOB port.
 #endif
 #if defined(GPIOC)
-  CH32_GPIOC,
+  CH32_GPIOC,  ///< GPIOC 端口 / GPIOC port.
 #endif
 #if defined(GPIOD)
-  CH32_GPIOD,
+  CH32_GPIOD,  ///< GPIOD 端口 / GPIOD port.
 #endif
 #if defined(GPIOE)
-  CH32_GPIOE,
+  CH32_GPIOE,  ///< GPIOE 端口 / GPIOE port.
 #endif
 #if defined(GPIOF)
-  CH32_GPIOF,
+  CH32_GPIOF,  ///< GPIOF 端口 / GPIOF port.
 #endif
 #if defined(GPIOG)
-  CH32_GPIOG,
+  CH32_GPIOG,  ///< GPIOG 端口 / GPIOG port.
 #endif
 #if defined(GPIOH)
-  CH32_GPIOH,
+  CH32_GPIOH,  ///< GPIOH 端口 / GPIOH port.
 #endif
 #if defined(GPIOI)
-  CH32_GPIOI,
+  CH32_GPIOI,  ///< GPIOI 端口 / GPIOI port.
 #endif
-  CH32_GPIO_NUMBER
+  CH32_GPIO_NUMBER  ///< 可用 GPIO 端口数量 / Number of available GPIO ports.
 } ch32_gpio_group_t;
 
+/**
+ * @brief 根据 GPIO 端口指针获取对应的 RCC APB2 外设时钟掩码
+ *        Get the RCC APB2 peripheral clock mask for a GPIO port.
+ * @param port GPIO 端口寄存器指针 / Pointer to the GPIO port registers.
+ * @return RCC 外设时钟位掩码 / RCC peripheral clock bitmask.
+ */
 uint32_t ch32_get_gpio_periph(GPIO_TypeDef* port);
 
 /**
@@ -119,8 +128,17 @@ class CH32GPIO final : public GPIO
     return ErrorCode::OK;
   }
 
+  /**
+   * @brief 在外部中断触发时调用当前实例的回调 / Invoke the instance callback on EXTI
+   *        interrupt.
+   */
   void OnInterrupt();
 
+  /**
+   * @brief 根据 EXTI 线路号检查并分发 GPIO 中断 / Check and dispatch GPIO interrupt by
+   *        EXTI line index.
+   * @param line EXTI 线路号（`0..15`） / EXTI line index (`0..15`).
+   */
   static void CheckInterrupt(uint32_t line);
 
   /// EXTI 线路映射表 / EXTI line map
