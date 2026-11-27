@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "driver_async_condition.hpp"
 #include "libxr.hpp"
 #include "test.hpp"
 #include "test_assert.hpp"
@@ -51,6 +52,8 @@ void test_rbt();
 void test_ramfs();
 void test_power();
 void test_semaphore();
+void test_jtag_general_gpio();
+void test_jtag_protocol();
 void test_mutex();
 void test_stack();
 void test_swd_general_gpio();
@@ -90,7 +93,20 @@ void test_linux_uart_reconnect();
 void test_linux_uart_partial_disconnect();
 void test_linux_uart_initial_open_recovery();
 void test_slot_pool();
-void test_usb_cdc_tx();
+void test_usb_ep_slots();
+void test_usb_ep();
+void test_usb_ep_pool();
+void test_usb_dev_core();
+void test_usb_cdc();
+void test_usb_uac();
+void test_usb_hid();
+void test_usb_dfu();
+void test_usb_gsusb();
+void test_usb_gsusb_user_id();
+void test_usb_dap();
+void test_usb_detach_timer();
+void test_usb_detach_timer_fatal();
+void test_usb_fsdev();
 
 namespace LinuxSharedTopicBench
 {
@@ -210,7 +226,24 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"linux_uart_tests",
      {"uart_initial_recovery", &RunVoidEntry<test_linux_uart_initial_open_recovery>,
       true}},
-    {"usb_tests", {"cdc_tx", &RunVoidEntry<test_usb_cdc_tx>, false}},
+    {"usb_tests", {"usb_ep_slots", &RunVoidEntry<test_usb_ep_slots>, false}},
+    {"usb_tests", {"usb_ep", &RunVoidEntry<test_usb_ep>, false}},
+    {"usb_tests", {"usb_ep_pool", &RunVoidEntry<test_usb_ep_pool>, false}},
+    {"usb_tests", {"usb_dev_core", &RunVoidEntry<test_usb_dev_core>, false}},
+    {"usb_tests", {"usb_cdc", &RunVoidEntry<test_usb_cdc>, false}},
+    {"usb_tests", {"usb_uac", &RunVoidEntry<test_usb_uac>, false}},
+    {"usb_tests", {"usb_hid", &RunVoidEntry<test_usb_hid>, false}},
+    {"usb_tests", {"usb_dfu", &RunVoidEntry<test_usb_dfu>, false}},
+    {"usb_tests", {"usb_gsusb", &RunVoidEntry<test_usb_gsusb>, false}},
+    // 改动全局定时任务列表 / Replaces the global timer task list
+    {"usb_tests", {"usb_gsusb_user_id", &RunVoidEntry<test_usb_gsusb_user_id>, true}},
+    {"usb_tests", {"usb_dap", &RunVoidEntry<test_usb_dap>, false}},
+    {"usb_tests", {"usb_detach_timer", &RunVoidEntry<test_usb_detach_timer>, false}},
+    {"usb_tests",
+     {"usb_detach_timer_fatal", &RunVoidEntry<test_usb_detach_timer_fatal>, true, false}},
+    {"usb_tests", {"usb_fsdev", &RunVoidEntry<test_usb_fsdev>, false}},
+    {"debug_tests", {"jtag_general_gpio", &RunVoidEntry<test_jtag_general_gpio>, false}},
+    {"debug_tests", {"jtag_protocol", &RunVoidEntry<test_jtag_protocol>, false}},
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},
     {"core_tests", {"assert", &RunVoidEntry<test_assert>, true, false}},
@@ -319,6 +352,10 @@ int main(int argc, char** argv)
       reinterpret_cast<void*>(0));
 
   LibXR::Assert::RegisterFatalErrorCallback(err_cb);
+
+  // 主机测试自己调用 OnTick，扮演唯一的节拍源。
+  // Host tests call OnTick themselves and play the only tick source.
+  LibXR::DriverAsyncCondition::RegisterTickSource();
 
   if (!direct)
   {

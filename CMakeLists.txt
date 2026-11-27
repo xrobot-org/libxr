@@ -176,6 +176,20 @@ if(_xr_force_os_sources)
   endif()
 endif()
 
+# 底层内存函数对任意类型缓冲区做字宽别名访问；禁用严格别名以防 LTO 跨 TU 内联误优化。
+# Low-level memory routines alias arbitrary buffers as words; disable strict
+# aliasing so LTO cross-TU inlining cannot misoptimize caller loads/stores.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
+   CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
+   CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+  set_property(
+    SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/core/libxr_mem_o3.cpp"
+           "${CMAKE_CURRENT_SOURCE_DIR}/src/core/libxr_mem_cmp.cpp"
+    APPEND
+    PROPERTY COMPILE_OPTIONS "-fno-strict-aliasing"
+  )
+endif()
+
 include(${CMAKE_CURRENT_SOURCE_DIR}/src/core/CMakeLists.txt)
 
 # The current tree still relies on basename and short subtree includes across major layers.

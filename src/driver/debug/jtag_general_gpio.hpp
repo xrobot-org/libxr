@@ -256,9 +256,8 @@ class JtagGeneralGPIO final : public Jtag
   /**
    * @brief TMS 固定，打 cycles 个时钟 / Clock cycles cycles with a fixed TMS
    *
-   * 不更新本类记录的 TAP 状态：调用方用它改变了状态时，之后要自己调用 ResetTap()。
-   * The TAP state tracked by this class is not updated: a caller that changes the state
-   * with it has to call ResetTap() afterwards.
+   * 同步按 IEEE 1149.1 状态机推进本类记录的 `current_state_`。
+   * Advances `current_state_` tracked by this class along the IEEE 1149.1 state machine.
    *
    * @param cycles 时钟数 / Number of clocks.
    * @param tms 这些时钟里的 TMS 电平 / TMS level during these clocks.
@@ -295,6 +294,14 @@ class JtagGeneralGPIO final : public Jtag
         tdo_lsb_first[i / 8u] =
             static_cast<uint8_t>(tdo_lsb_first[i / 8u] | (1u << (i & 7u)));
       }
+    }
+
+    // 固定 TMS 下 IEEE 1149.1 状态机最多 5 拍到达稳态。
+    // Under fixed TMS the IEEE 1149.1 FSM reaches its steady state in at most 5 clocks.
+    const uint32_t STEPS = (cycles < 5u) ? cycles : 5u;
+    for (uint32_t i = 0; i < STEPS; ++i)
+    {
+      current_state_ = NextTapState(current_state_, tms);
     }
 
     return ErrorCode::OK;
@@ -453,6 +460,47 @@ class JtagGeneralGPIO final : public Jtag
 
   /// 忙等半个 TCK 周期 / Busy-wait for half a TCK period.
   inline void DelayHalf() { Timebase::BusyLoop(half_period_loops_); }
+
+  /// IEEE 1149.1 单步状态转移 / Single-step IEEE 1149.1 TAP state transition.
+  static constexpr TapState NextTapState(TapState s, bool tms)
+  {
+    switch (s)
+    {
+      case TapState::TEST_LOGIC_RESET:
+        return tms ? TapState::TEST_LOGIC_RESET : TapState::RUN_TEST_IDLE;
+      case TapState::RUN_TEST_IDLE:
+        return tms ? TapState::SELECT_DR_SCAN : TapState::RUN_TEST_IDLE;
+      case TapState::SELECT_DR_SCAN:
+        return tms ? TapState::SELECT_IR_SCAN : TapState::CAPTURE_DR;
+      case TapState::CAPTURE_DR:
+        return tms ? TapState::EXIT1_DR : TapState::SHIFT_DR;
+      case TapState::SHIFT_DR:
+        return tms ? TapState::EXIT1_DR : TapState::SHIFT_DR;
+      case TapState::EXIT1_DR:
+        return tms ? TapState::UPDATE_DR : TapState::PAUSE_DR;
+      case TapState::PAUSE_DR:
+        return tms ? TapState::EXIT2_DR : TapState::PAUSE_DR;
+      case TapState::EXIT2_DR:
+        return tms ? TapState::UPDATE_DR : TapState::SHIFT_DR;
+      case TapState::UPDATE_DR:
+        return tms ? TapState::SELECT_DR_SCAN : TapState::RUN_TEST_IDLE;
+      case TapState::SELECT_IR_SCAN:
+        return tms ? TapState::TEST_LOGIC_RESET : TapState::CAPTURE_IR;
+      case TapState::CAPTURE_IR:
+        return tms ? TapState::EXIT1_IR : TapState::SHIFT_IR;
+      case TapState::SHIFT_IR:
+        return tms ? TapState::EXIT1_IR : TapState::SHIFT_IR;
+      case TapState::EXIT1_IR:
+        return tms ? TapState::UPDATE_IR : TapState::PAUSE_IR;
+      case TapState::PAUSE_IR:
+        return tms ? TapState::EXIT2_IR : TapState::PAUSE_IR;
+      case TapState::EXIT2_IR:
+        return tms ? TapState::UPDATE_IR : TapState::SHIFT_IR;
+      case TapState::UPDATE_IR:
+        return tms ? TapState::SELECT_DR_SCAN : TapState::RUN_TEST_IDLE;
+    }
+    return TapState::TEST_LOGIC_RESET;
+  }
 
  private:
   TckGpioType& tck_;  ///< TCK GPIO / GPIO for TCK.

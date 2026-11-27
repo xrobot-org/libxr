@@ -37,6 +37,129 @@ foreach(debug RANGE 0 1)
   endforeach()
 endforeach()
 
+include(CheckCXXSourceCompiles)
+
+string(
+  CONCAT _xr_unaligned_probe_src
+         "#if defined(__ARM_FEATURE_UNALIGNED) || defined(__x86_64__) || "
+         "defined(__i386__) || defined(_M_X64) || defined(_M_IX86) || "
+         "defined(__aarch64__) || defined(_M_ARM64) || "
+         "defined(__riscv_misaligned_fast)\n"
+         "int main() { return 0; }\n"
+         "#else\n"
+         "#error no_fast_unaligned_word\n"
+         "#endif\n"
+)
+check_cxx_source_compiles("${_xr_unaligned_probe_src}" _xr_has_fast_unaligned_word)
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
+   CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
+   CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+  set_property(
+    SOURCE ../../src/core/libxr_mem_o3.cpp ../../src/core/libxr_mem_cmp.cpp
+    APPEND
+    PROPERTY COMPILE_OPTIONS "-fno-strict-aliasing"
+  )
+
+  set(_xr_saved_required_flags "${CMAKE_REQUIRED_FLAGS}")
+  set(_xr_saved_required_link_options "${CMAKE_REQUIRED_LINK_OPTIONS}")
+  set(CMAKE_REQUIRED_FLAGS "-O3 -flto")
+  set(CMAKE_REQUIRED_LINK_OPTIONS "-O3" "-flto")
+  check_cxx_source_compiles("int main() { return 0; }" _xr_mem_supports_lto)
+  set(CMAKE_REQUIRED_FLAGS "${_xr_saved_required_flags}")
+  set(CMAKE_REQUIRED_LINK_OPTIONS "${_xr_saved_required_link_options}")
+else()
+  set(_xr_mem_supports_lto FALSE)
+endif()
+
+set(_xr_mem_policy_matrix
+    "shifted_odd_32|LIBXR_FASTCOPY_POLICY_SHIFTED_ODD|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|4U"
+    "shifted_all_32|LIBXR_FASTCOPY_POLICY_SHIFTED_ALL|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|4U"
+    "shifted_odd_64|LIBXR_FASTCOPY_POLICY_SHIFTED_ODD|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|8U"
+    "shifted_all_64|LIBXR_FASTCOPY_POLICY_SHIFTED_ALL|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|8U"
+    "std_libc|LIBXR_FASTCOPY_POLICY_STD_LIBC|LIBXR_MEM_POLICY_STD_LIBC|LIBXR_MEM_POLICY_STD_LIBC|LIBXR_MEM_POLICY_STD_LIBC|DEFAULT"
+    "mixed_esp_xtensa|LIBXR_FASTCOPY_POLICY_STD_LIBC|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_STD_LIBC|LIBXR_MEM_POLICY_BUILTIN|4U"
+)
+if(_xr_has_fast_unaligned_word)
+  list(
+    APPEND
+      _xr_mem_policy_matrix
+      "unaligned_word|LIBXR_FASTCOPY_POLICY_UNALIGNED_WORD|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|DEFAULT"
+  )
+endif()
+foreach(_xr_mem_case IN LISTS _xr_mem_policy_matrix)
+  string(REPLACE "|" ";" _xr_mem_parts "${_xr_mem_case}")
+  list(GET _xr_mem_parts 0 _xr_mem_name)
+  list(GET _xr_mem_parts 1 _xr_copy_policy)
+  list(GET _xr_mem_parts 2 _xr_move_policy)
+  list(GET _xr_mem_parts 3 _xr_set_policy)
+  list(GET _xr_mem_parts 4 _xr_cmp_policy)
+  list(GET _xr_mem_parts 5 _xr_mem_word_size)
+  set(_xr_mem_target "test_mem_policy_${_xr_mem_name}")
+  add_executable(
+    ${_xr_mem_target}
+    core/libxr_mem/test_mem_policy.cpp
+    ../../src/core/libxr_mem_o3.cpp
+    ../../src/core/libxr_mem_cmp.cpp
+  )
+  target_include_directories(
+    ${_xr_mem_target} PRIVATE .. ../../src/core
+  )
+  target_compile_features(${_xr_mem_target} PRIVATE cxx_std_20)
+  target_compile_definitions(
+    ${_xr_mem_target}
+    PRIVATE LIBXR_FASTCOPY_POLICY=${_xr_copy_policy}
+            LIBXR_FASTMOVE_POLICY=${_xr_move_policy}
+            LIBXR_FASTSET_POLICY=${_xr_set_policy}
+            LIBXR_FASTCMP_POLICY=${_xr_cmp_policy}
+  )
+  if(NOT "${_xr_mem_word_size}" STREQUAL "DEFAULT")
+    target_compile_definitions(
+      ${_xr_mem_target} PRIVATE LIBXR_MEM_WORD_SIZE=${_xr_mem_word_size}
+    )
+  endif()
+  target_compile_options(
+    ${_xr_mem_target} PRIVATE -O3 -Wall -Wextra -Werror
+  )
+  add_test(NAME ${_xr_mem_target} COMMAND ${_xr_mem_target})
+  set_tests_properties(${_xr_mem_target} PROPERTIES TIMEOUT 10)
+endforeach()
+
+if(_xr_mem_supports_lto)
+  foreach(_xr_mem_lto_bits IN ITEMS 32 64)
+    if(_xr_mem_lto_bits EQUAL 32)
+      set(_xr_mem_lto_word_size "4U")
+    else()
+      set(_xr_mem_lto_word_size "8U")
+    endif()
+    set(_xr_mem_lto_target "test_mem_policy_lto_${_xr_mem_lto_bits}")
+    add_executable(
+      ${_xr_mem_lto_target}
+      core/libxr_mem/test_mem_policy.cpp
+      ../../src/core/libxr_mem_o3.cpp
+      ../../src/core/libxr_mem_cmp.cpp
+    )
+    target_include_directories(
+      ${_xr_mem_lto_target} PRIVATE .. ../../src/core
+    )
+    target_compile_features(${_xr_mem_lto_target} PRIVATE cxx_std_20)
+    target_compile_definitions(
+      ${_xr_mem_lto_target}
+      PRIVATE LIBXR_FASTCOPY_POLICY=LIBXR_FASTCOPY_POLICY_SHIFTED_ODD
+              LIBXR_FASTMOVE_POLICY=LIBXR_MEM_POLICY_BUILTIN
+              LIBXR_FASTSET_POLICY=LIBXR_MEM_POLICY_BUILTIN
+              LIBXR_FASTCMP_POLICY=LIBXR_MEM_POLICY_BUILTIN
+              LIBXR_MEM_WORD_SIZE=${_xr_mem_lto_word_size}
+    )
+    target_compile_options(
+      ${_xr_mem_lto_target} PRIVATE -O3 -flto -Wall -Wextra -Werror
+    )
+    target_link_options(${_xr_mem_lto_target} PRIVATE -O3 -flto)
+    add_test(NAME ${_xr_mem_lto_target} COMMAND ${_xr_mem_lto_target})
+    set_tests_properties(${_xr_mem_lto_target} PROPERTIES TIMEOUT 10)
+  endforeach()
+endif()
+
 # 用实际裸机后端验证协作式 ASync；时钟由测试控制，不链接 Linux xr 库。
 # Test cooperative ASync with the actual bare-metal backend and a controlled clock.
 add_executable(
@@ -89,6 +212,10 @@ if(_xr_driver STREQUAL "linux")
   set_tests_properties(test_linux_can_error PROPERTIES TIMEOUT 10)
 endif()
 
+# USB 仿真后端和 DAP 仿真（driver/usb/sim/usb_sim.cmake）。
+# The USB simulation backend and the DAP simulation (driver/usb/sim/usb_sim.cmake).
+include(driver/usb/sim/usb_sim.cmake)
+
 add_executable(
   libxr_test
   main.cpp
@@ -110,12 +237,25 @@ add_executable(
   core/rw/stdio/test_linux_stdio_print.cpp
   core/rw/write_port/test_write_port.cpp
   core/rw/write_stream/test_write_stream.cpp
+  driver/debug/jtag_general_gpio/test_jtag_general_gpio.cpp
+  driver/debug/jtag_protocol/test_jtag_protocol.cpp
   driver/debug/swd_general_gpio/test_swd_general_gpio.cpp
   driver/debug/swd_protocol/test_swd_protocol.cpp
   driver/driver_async_condition/test_driver_async_condition.cpp
   driver/power/test_power.cpp
   driver/uart/test_uart.cpp
-  driver/usb/test_cdc_uart.cpp
+  driver/usb/test_usb_ep_slots.cpp
+  driver/usb/test_usb_ep.cpp
+  driver/usb/test_usb_ep_pool.cpp
+  driver/usb/test_usb_dev_core.cpp
+  driver/usb/test_cdc.cpp
+  driver/usb/test_uac.cpp
+  driver/usb/test_hid.cpp
+  driver/usb/test_dfu.cpp
+  driver/usb/test_gsusb.cpp
+  driver/usb/test_dap.cpp
+  driver/usb/test_usb_detach_timer.cpp
+  driver/usb/test_usb_fsdev.cpp
   driver/timebase/test_timebase.cpp
   middleware/database/database/test_database.cpp
   middleware/database/raw/raw/test_linux_database_raw.cpp
@@ -192,7 +332,7 @@ set_tests_properties(
 # the static_assert message.
 add_library(
   test_stack_insert_nontrivial OBJECT EXCLUDE_FROM_ALL
-  structure/stack/stack_insert_nontrivial.cpp
+                                      structure/stack/stack_insert_nontrivial.cpp
 )
 target_link_libraries(test_stack_insert_nontrivial PRIVATE xr)
 add_test(NAME stack_insert_nontrivial
@@ -200,8 +340,9 @@ add_test(NAME stack_insert_nontrivial
                  --target test_stack_insert_nontrivial
 )
 set_tests_properties(
-  stack_insert_nontrivial PROPERTIES PASS_REGULAR_EXPRESSION
-                                     "requires a trivially copyable element type" TIMEOUT 120
+  stack_insert_nontrivial
+  PROPERTIES PASS_REGULAR_EXPRESSION "requires a trivially copyable element type" TIMEOUT
+             120
 )
 
 add_library(
