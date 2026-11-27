@@ -77,9 +77,7 @@ class HPMUSBController : public USB::EndpointPool
 {
  public:
   /// 端点号上限（ENDPTCTRL 的个数）/ Endpoint numbers (count of ENDPTCTRL registers)
-#if defined(__DOXYGEN__)
-  static constexpr uint8_t MAX_ENDPOINTS = 16U;
-#elif defined(USB_SOC_DCD_MAX_ENDPOINT_COUNT)
+#if defined(USB_SOC_DCD_MAX_ENDPOINT_COUNT)
   static constexpr uint8_t MAX_ENDPOINTS =
       static_cast<uint8_t>(USB_SOC_DCD_MAX_ENDPOINT_COUNT);
 #else

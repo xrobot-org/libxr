@@ -55,7 +55,7 @@ class STM32OtgController : public USB::EndpointPool
   /// 控制器配置 / Controller configuration
   struct HardwareConfig
   {
-#if defined(USB_OTG_EMBEDDED_PHY) || defined(__DOXYGEN__)
+#if defined(USB_OTG_EMBEDDED_PHY)
     Phy phy = Phy::EMBEDDED_FS;  ///< PHY 接口 / PHY interface
 #elif defined(USB_OTG_HS_EMBEDDED_PHY)
     Phy phy = Phy::EMBEDDED_HS;  ///< PHY 接口 / PHY interface
