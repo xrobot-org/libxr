@@ -32,6 +32,12 @@ usb_sim_program(test_swd_target "${DAP_SIM_DIR}/test_swd_target.cpp")
 add_test(NAME swd_target COMMAND test_swd_target)
 set_tests_properties(swd_target PROPERTIES TIMEOUT 60)
 
+# JTAG 目标仿真：经 JtagDp 和经 JtagGeneralGPIO 接仿真引脚 / The JTAG target model through
+# JtagDp and through JtagGeneralGPIO on simulated pins
+usb_sim_program(test_jtag_target "${DAP_SIM_DIR}/test_jtag_target.cpp")
+add_test(NAME jtag_target COMMAND test_jtag_target)
+set_tests_properties(jtag_target PROPERTIES TIMEOUT 60)
+
 # DAP v2 随机测试，经 USB 仿真后端到 SWD 目标仿真 / Randomised DAP v2 test through the USB
 # simulation backend to the simulated SWD target
 usb_sim_program(test_dap_fuzz "${DAP_SIM_DIR}/test_dap_fuzz.cpp")

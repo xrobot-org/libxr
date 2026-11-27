@@ -148,8 +148,8 @@ class DapLinkV1Class : public DeviceClass
   size_t GetMaxConfigSize() const override { return sizeof(desc_block_); }
   const char* GetInterfaceString(size_t local_interface_index) const override;
 
-  /// 单功能设备时把设备类写成 HID / As a single-function device, write HID as the
-  /// device class
+  /// 接口级识别类：设备类设为 PER_INTERFACE（符合 USB HID 1.11 §4.2）/
+  /// Interface-level class: set device class to PER_INTERFACE (USB HID 1.11 §4.2)
   ErrorCode WriteDeviceDescriptor(DeviceDescriptor& descriptor) override;
 
   /**
@@ -418,6 +418,7 @@ class DapLinkV1Class : public DeviceClass
                                  uint8_t* resp, uint16_t resp_cap, uint16_t& out_len);
   void SetTransferAbortFlag(bool on);
   void DriveReset(bool release);
+  void ResetJtagChainState();
 
   /// @name 构造时固定 / Fixed at construction
   /// @{
@@ -542,7 +543,7 @@ const char* DapLinkV1Class<SwdPort>::GetInterfaceString(
 template <typename SwdPort>
 ErrorCode DapLinkV1Class<SwdPort>::WriteDeviceDescriptor(DeviceDescriptor& descriptor)
 {
-  descriptor.data_.bDeviceClass = DeviceDescriptor::ClassID::HID;
+  descriptor.data_.bDeviceClass = DeviceDescriptor::ClassID::PER_INTERFACE;
   descriptor.data_.bDeviceSubClass = 0;
   descriptor.data_.bDeviceProtocol = 0;
   return ErrorCode::OK;
@@ -908,13 +909,7 @@ void DapLinkV1Class<SwdPort>::SyncSession(uint32_t epoch)
 
   if constexpr (JTAG_ENABLED)
   {
-    jtag_chain_.count = 0u;
-    jtag_chain_.index = 0u;
-    jtag_chain_.ir_before_bits_len = 0u;
-    jtag_chain_.ir_after_bits_len = 0u;
-    jtag_chain_.dr_before_bits_len = 0u;
-    jtag_chain_.dr_after_bits_len = 0u;
-    Memory::FastSet(jtag_ir_len_, 0, sizeof(jtag_ir_len_));
+    ResetJtagChainState();
   }
 
   last_nreset_level_high_ = true;
@@ -1230,9 +1225,17 @@ ErrorCode DapLinkV1Class<SwdPort>::HandleConnect(bool /*in_isr*/, const uint8_t*
       }
       else
       {
+        static constexpr uint8_t SWD_TO_JTAG_SEQUENCE[2] = {0x3Cu, 0xE7u};
+        (void)swd_.SetClockHz(swj_clock_hz_);
+        (void)swd_.LineReset();
+        (void)swd_.SeqWriteBits(16u, SWD_TO_JTAG_SEQUENCE);
+        (void)swd_.LineReset();
         (void)jtag_->SetClockHz(swj_clock_hz_);
+        (void)jtag_->ResetTap();
+
         dap_state_.debug_port = LibXR::USB::DapLinkV1Def::DebugPort::JTAG;
         dap_state_.transfer_abort = false;
+        ResetJtagChainState();
         resp[1] = to_u8(LibXR::USB::DapLinkV1Def::Port::JTAG);
       }
     }
@@ -1259,6 +1262,13 @@ ErrorCode DapLinkV1Class<SwdPort>::HandleDisconnect(bool /*in_isr*/,
   }
 
   swd_.Close();
+  if constexpr (JTAG_ENABLED)
+  {
+    if (jtag_ != nullptr)
+    {
+      jtag_->Close();
+    }
+  }
   dap_state_.debug_port = LibXR::USB::DapLinkV1Def::DebugPort::DISABLED;
   dap_state_.transfer_abort = false;
 
@@ -1584,8 +1594,45 @@ ErrorCode DapLinkV1Class<SwdPort>::HandleSWJSequence(bool /*in_isr*/, const uint
   }
 
   const uint8_t* DATA = &req[2];
-  const ErrorCode EC = swd_.SeqWriteBits(bit_count, DATA);
-  if (EC != ErrorCode::OK)
+  ErrorCode ec = ErrorCode::OK;
+  if constexpr (JTAG_ENABLED)
+  {
+    if (jtag_ != nullptr &&
+        dap_state_.debug_port == LibXR::USB::DapLinkV1Def::DebugPort::JTAG)
+    {
+      uint32_t bit_idx = 0u;
+      while (bit_idx < bit_count)
+      {
+        const bool TMS_BIT = (((DATA[bit_idx / 8u] >> (bit_idx & 7u)) & 0x01u) != 0u);
+        uint32_t run = 1u;
+        while ((bit_idx + run) < bit_count)
+        {
+          const uint32_t NEXT_I = bit_idx + run;
+          const bool NEXT_BIT = (((DATA[NEXT_I / 8u] >> (NEXT_I & 7u)) & 0x01u) != 0u);
+          if (NEXT_BIT != TMS_BIT)
+          {
+            break;
+          }
+          ++run;
+        }
+        ec = jtag_->Sequence(run, TMS_BIT, nullptr, nullptr);
+        if (ec != ErrorCode::OK)
+        {
+          break;
+        }
+        bit_idx += run;
+      }
+    }
+    else
+    {
+      ec = swd_.SeqWriteBits(bit_count, DATA);
+    }
+  }
+  else
+  {
+    ec = swd_.SeqWriteBits(bit_count, DATA);
+  }
+  if (ec != ErrorCode::OK)
   {
     resp[1] = to_u8(LibXR::USB::DapLinkV1Def::Status::ERROR);
     return ErrorCode::OK;
@@ -3549,6 +3596,22 @@ void DapLinkV1Class<SwdPort>::DriveReset(bool release)
   if (nreset_gpio_ != nullptr)
   {
     (void)nreset_gpio_->Write(release);
+  }
+}
+
+template <typename SwdPort>
+void DapLinkV1Class<SwdPort>::ResetJtagChainState()
+{
+  if constexpr (JTAG_ENABLED)
+  {
+    jtag_chain_.ir_length = jtag_ir_len_;
+    jtag_chain_.count = 0u;
+    jtag_chain_.index = 0u;
+    jtag_chain_.ir_before_bits_len = 0u;
+    jtag_chain_.ir_after_bits_len = 0u;
+    jtag_chain_.dr_before_bits_len = 0u;
+    jtag_chain_.dr_after_bits_len = 0u;
+    Memory::FastSet(jtag_ir_len_, 0, sizeof(jtag_ir_len_));
   }
 }
 

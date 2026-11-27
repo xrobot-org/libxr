@@ -606,6 +606,11 @@ class DapLinkV2Class : public DeviceClass
     {
       return;
     }
+    if (!StepStillBound())
+    {
+      (void)ep->ReleaseSlot(slot);
+      return;
+    }
     cur_in_ = slot;
     cur_in_ep_ = ep;
   }
@@ -655,10 +660,12 @@ class DapLinkV2Class : public DeviceClass
     held_n_ = 0u;
     armed_head_ = 0u;
     armed_n_ = 0u;
+    uint32_t drained = 0u;
     if (send_idx_ != SLOT_NONE)
     {
       resp_pool_.Release(send_idx_);
       send_idx_ = SLOT_NONE;
+      ++drained;
     }
     size_t slot = SLOT_NONE;
     while (cmd_pool_.Take(slot) == ErrorCode::OK)
@@ -668,8 +675,12 @@ class DapLinkV2Class : public DeviceClass
     while (resp_pool_.Take(slot) == ErrorCode::OK)
     {
       resp_pool_.Release(slot);
+      ++drained;
     }
-    staged_outstanding_.store(0u, std::memory_order_release);
+    if (drained != 0u)
+    {
+      staged_outstanding_.fetch_sub(drained, std::memory_order_acq_rel);
+    }
   }
 
   /// 字节流状态归零，放掉正在拼装的命令槽 / Reset the byte-stream state, give back the
@@ -711,7 +722,9 @@ class DapLinkV2Class : public DeviceClass
 
     if (pad_skip_ > 0u && n <= pad_skip_)
     {
-      pad_skip_ = static_cast<uint16_t>(pad_skip_ - n);
+      // 短包或零长度包提前结束了本次 USB 传输，剩余 pad_skip_ 清零以免吃掉下一条命令头 /
+      // A short packet or ZLP ended this transfer early; clear remaining pad_skip_
+      pad_skip_ = (n < mps) ? 0u : static_cast<uint16_t>(pad_skip_ - n);
       (void)data_out_->ReleaseSlot(slot);
       return true;
     }
@@ -1280,7 +1293,7 @@ class DapLinkV2Class : public DeviceClass
         return false;
       }
 
-      if (resp_off >= resp_cap)
+      if (resp_off >= resp_cap || (resp_cap - resp_off) < 2u)
       {
         return false;
       }
@@ -1535,6 +1548,11 @@ class DapLinkV2Class : public DeviceClass
   ErrorCode HandleInfo(const uint8_t* req, uint16_t req_len, uint8_t* resp,
                        uint16_t resp_cap, uint16_t& out_len)
   {
+    if (resp_cap < 2u)
+    {
+      out_len = 0u;
+      return ErrorCode::NOT_FOUND;
+    }
     if (req_len < 2u)
     {
       resp[0] = ToU8(LibXR::USB::DapLinkV2Def::CommandId::INFO);
@@ -1608,6 +1626,11 @@ class DapLinkV2Class : public DeviceClass
   ErrorCode BuildInfoStringResponse(uint8_t cmd, const char* str, uint8_t* resp,
                                     uint16_t resp_cap, uint16_t& out_len)
   {
+    if (resp_cap < 2u)
+    {
+      out_len = 0u;
+      return ErrorCode::NOT_FOUND;
+    }
     resp[0] = cmd;
     resp[1] = 0u;
 
@@ -2112,10 +2135,47 @@ class DapLinkV2Class : public DeviceClass
 
     const uint8_t* data = &req[2];
 
-    // 委托给 SwdPort 实现（此处不使用 RawMode，也不做引脚级控制）。
-    // Delegate to SwdPort implementation (no RawMode / no pin-level control here)
-    const ErrorCode EC = swd_.SeqWriteBits(BIT_COUNT, data);
-    if (EC != ErrorCode::OK)
+    // 委托给 Jtag（JTAG 模式）或 SwdPort 实现（此处不做引脚级控制）。
+    // Delegate to Jtag (in JTAG mode) or SwdPort (no pin-level control here)
+    ErrorCode ec = ErrorCode::OK;
+    if constexpr (JTAG_ENABLED)
+    {
+      if (jtag_ != nullptr &&
+          dap_state_.debug_port == LibXR::USB::DapLinkV2Def::DebugPort::JTAG)
+      {
+        uint32_t bit_idx = 0u;
+        while (bit_idx < BIT_COUNT)
+        {
+          const bool TMS_BIT = (((data[bit_idx / 8u] >> (bit_idx & 7u)) & 0x01u) != 0u);
+          uint32_t run = 1u;
+          while ((bit_idx + run) < BIT_COUNT)
+          {
+            const uint32_t NEXT_I = bit_idx + run;
+            const bool NEXT_BIT = (((data[NEXT_I / 8u] >> (NEXT_I & 7u)) & 0x01u) != 0u);
+            if (NEXT_BIT != TMS_BIT)
+            {
+              break;
+            }
+            ++run;
+          }
+          ec = jtag_->Sequence(run, TMS_BIT, nullptr, nullptr);
+          if (ec != ErrorCode::OK)
+          {
+            break;
+          }
+          bit_idx += run;
+        }
+      }
+      else
+      {
+        ec = swd_.SeqWriteBits(BIT_COUNT, data);
+      }
+    }
+    else
+    {
+      ec = swd_.SeqWriteBits(BIT_COUNT, data);
+    }
+    if (ec != ErrorCode::OK)
     {
       resp[1] = ToU8(LibXR::USB::DapLinkV2Def::Status::ERROR);
       // 保持传输层返回 OK，使主机仍能收到有效响应。

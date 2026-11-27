@@ -52,6 +52,8 @@ void test_rbt();
 void test_ramfs();
 void test_power();
 void test_semaphore();
+void test_jtag_general_gpio();
+void test_jtag_protocol();
 void test_mutex();
 void test_stack();
 void test_swd_general_gpio();
@@ -185,6 +187,8 @@ void test_usb_dap_v2_unbind();
 void test_usb_dap_v2_threads();
 void test_usb_dap_v1_slots();
 void test_usb_dap_v2_slots();
+void test_usb_dap_v1_jtag();
+void test_usb_dap_v2_jtag();
 void test_usb_detach_timer_states();
 void test_usb_detach_timer_reset();
 void test_usb_detach_timer_start();
@@ -438,6 +442,8 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests", {"dap_v2_threads", &RunVoidEntry<test_usb_dap_v2_threads>, false}},
     {"usb_tests", {"dap_v1_slots", &RunVoidEntry<test_usb_dap_v1_slots>, false}},
     {"usb_tests", {"dap_v2_slots", &RunVoidEntry<test_usb_dap_v2_slots>, false}},
+    {"usb_tests", {"dap_v1_jtag", &RunVoidEntry<test_usb_dap_v1_jtag>, false}},
+    {"usb_tests", {"dap_v2_jtag", &RunVoidEntry<test_usb_dap_v2_jtag>, false}},
     {"usb_tests",
      {"detach_timer_states", &RunVoidEntry<test_usb_detach_timer_states>, false}},
     {"usb_tests",
@@ -479,6 +485,8 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"usb_tests", {"fsdev_iso_window", &RunVoidEntry<test_usb_fsdev_iso_window>, false}},
     {"usb_tests", {"fsdev_ep0_gate", &RunVoidEntry<test_usb_fsdev_ep0_gate>, false}},
     {"usb_tests", {"fsdev_iso_drd", &RunVoidEntry<test_usb_fsdev_iso_drd>, false}},
+    {"debug_tests", {"jtag_general_gpio", &RunVoidEntry<test_jtag_general_gpio>, false}},
+    {"debug_tests", {"jtag_protocol", &RunVoidEntry<test_jtag_protocol>, false}},
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},
     {"debug_tests", {"swd_protocol", &RunVoidEntry<test_swd_protocol>, false}},
     {"core_tests", {"assert", &RunVoidEntry<test_assert>, true, false}},

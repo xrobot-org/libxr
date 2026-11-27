@@ -100,8 +100,9 @@ add_executable(
 )
 target_link_libraries(test_ch32_usb PRIVATE xr)
 target_include_directories(
-  test_ch32_usb PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/ch"
-                           "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/ch32"
+  test_ch32_usb
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/.." "${CMAKE_CURRENT_SOURCE_DIR}/../../driver/ch"
+          "${CMAKE_CURRENT_SOURCE_DIR}/driver/usb/ch32"
 )
 target_compile_definitions(test_ch32_usb PRIVATE LIBXR_CH32_CONFIG_FILE=fake_ch32_usb.h)
 add_test(NAME test_ch32_usb COMMAND test_ch32_usb)
@@ -132,6 +133,8 @@ add_executable(
   core/rw/stdio/test_linux_stdio_print.cpp
   core/rw/write_port/test_write_port.cpp
   core/rw/write_stream/test_write_stream.cpp
+  driver/debug/jtag_general_gpio/test_jtag_general_gpio.cpp
+  driver/debug/jtag_protocol/test_jtag_protocol.cpp
   driver/debug/swd_general_gpio/test_swd_general_gpio.cpp
   driver/debug/swd_protocol/test_swd_protocol.cpp
   driver/driver_async_condition/test_driver_async_condition.cpp
@@ -225,7 +228,7 @@ set_tests_properties(
 # the static_assert message.
 add_library(
   test_stack_insert_nontrivial OBJECT EXCLUDE_FROM_ALL
-  structure/stack/stack_insert_nontrivial.cpp
+                                      structure/stack/stack_insert_nontrivial.cpp
 )
 target_link_libraries(test_stack_insert_nontrivial PRIVATE xr)
 add_test(NAME stack_insert_nontrivial
@@ -233,8 +236,9 @@ add_test(NAME stack_insert_nontrivial
                  --target test_stack_insert_nontrivial
 )
 set_tests_properties(
-  stack_insert_nontrivial PROPERTIES PASS_REGULAR_EXPRESSION
-                                     "requires a trivially copyable element type" TIMEOUT 120
+  stack_insert_nontrivial
+  PROPERTIES PASS_REGULAR_EXPRESSION "requires a trivially copyable element type" TIMEOUT
+             120
 )
 
 add_library(

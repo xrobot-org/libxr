@@ -29,8 +29,10 @@
 #include <utility>
 #include <vector>
 
+#include "../debug/sim/jtag_target.hpp"
 #include "daplink_v1.hpp"
 #include "daplink_v2.hpp"
+#include "debug/jtag_general_gpio.hpp"
 #include "debug/swd.hpp"
 #include "dev_core.hpp"
 #include "ep.hpp"
@@ -931,6 +933,51 @@ void TestV2Commands()
     TEST_ASSERT(b.hw.ep1_in.InFlight() == (Bytes{EXECUTE, 0xFFU}));
   }
 
+  // EXECUTE_COMMANDS 只剩 1 字节响应余量时的 INFO：绝不可越界写 resp[1] /
+  // EXECUTE_COMMANDS with exactly 1 byte of resp_cap remaining before INFO must fail
+  // cleanly without 1-byte out-of-bounds write
+  {
+    V2Bench b;
+    Enumerate(b.dev, b.hw);
+    // 2 (hdr) + 113 * 9 (INFO VENDOR_ID -> "XRobot\0") + 4 (PACKET_SIZE) = 1023 -> 1 B
+    // left
+    Bytes req{EXECUTE, 115U};
+    for (int i = 0; i < 113; ++i)
+    {
+      req.push_back(INFO);
+      req.push_back(VENDOR_ID);
+    }
+    req.push_back(INFO);
+    req.push_back(PACKET_SIZE_ID);
+    req.push_back(INFO);
+    req.push_back(0xEEU);
+    for (size_t off = 0; off < req.size(); off += 64U)
+    {
+      const size_t end = std::min(req.size(), off + 64U);
+      b.Send(Bytes(req.begin() + static_cast<std::ptrdiff_t>(off),
+                   req.begin() + static_cast<std::ptrdiff_t>(end)));
+    }
+    TEST_ASSERT(b.hw.ep1_in.InFlight() == (Bytes{EXECUTE, 0xFFU}));
+  }
+
+  // pad_skip_ 期间主机提前发短包 / ZLP 结束填充：下一条命令头字节不能被吞掉 /
+  // Early short packet / ZLP during pad_skip_ must clear remaining skip
+  {
+    V2Bench b;
+    Enumerate(b.dev, b.hw);
+    Bytes first(64, 0U);
+    first[0] = INFO;
+    first[1] = PACKET_SIZE_ID;
+    b.Send(first);
+    InDone(b.dev, b.hw.ep1_in);
+    b.Send(Bytes(64, 0U));  // opens pad_skip_ = 1024 - 128 = 896
+    b.Send(Bytes(16, 0U));  // short packet (< 64): ends USB transfer early
+    b.Send({INFO, VENDOR_ID});
+    TEST_ASSERT(b.hw.ep1_in.inflight && b.hw.ep1_in.InFlight()[0] == INFO &&
+                b.hw.ep1_in.InFlight()[1] == 7U);
+    InDone(b.dev, b.hw.ep1_in);
+  }
+
   // 补零的请求占满命令槽：补零照收，第五条命令的包留在类里，最后全部应答 / Padded
   // requests fill the command slots: padding is still taken, the fifth command's packet
   // is held by the class, and everything is answered in the end
@@ -1303,6 +1350,32 @@ void TestV2UnbindInFlight()
     TEST_ASSERT(b.hw.ep2_out.inflight);
   }
 
+  // 多个响应暂存且 owner 正好在解绑期间排空 resp_pool_ 时，staged_outstanding_ 只能减
+  // 去实际清空的槽数，不可因 store(0) 导致 Step  THREAD 稍后归还时无符号下溢 /
+  // ResetChannels must subtract only the drained staged count instead of storing 0
+  {
+    V2Bench b;
+    Enumerate(b.dev, b.hw);
+    b.Send({INFO, PACKET_SIZE_ID});
+    b.Send({INFO, PACKET_SIZE_ID});
+    HostOut(b.dev, b.hw.ep2_out, {DELAY, 0xFFU, 0xFFU});
+    std::atomic<bool> returned{false};
+    std::thread step(
+        [&]
+        {
+          (void)b.dap.Step(1000);
+          returned.store(true);
+        });
+    TEST_ASSERT(WaitUntil([&] { return b.swd.clock_calls.load() != 0U; }));
+    SetConfiguration(b.dev, b.hw, 1U);
+    step.join();
+    Run(b.dap);
+    BothInSlotsFree(b.hw.ep1_in);
+    b.Send({INFO, PACKET_COUNT_ID});
+    TEST_ASSERT(b.hw.ep1_in.InFlight() == (Bytes{INFO, 1U, 0x04U}));
+    InDone(b.dev, b.hw.ep1_in);
+  }
+
   // SWD 只归 Step 线程：绑定和解绑不调用 SWD / SWD belongs to the Step thread: bind and
   // unbind make no SWD call
   {
@@ -1614,9 +1687,10 @@ void TestV1Enumeration()
     b.dev.Init(false);
     b.dev.Reset(Speed::FULL);
     TEST_ASSERT(!b.dap.IsInited());
-    // 单功能设备：设备类是 HID / A single function: the device class is HID
+    // 接口级识别：设备类为 PER_INTERFACE，HID 类在接口描述符上 / Interface-level class:
+    // device class is PER_INTERFACE, HID class sits on the interface descriptor
     const Bytes device = GetDescriptor(b.dev, b.hw, 1U, 0U, 18U);
-    TEST_ASSERT(device.size() == 18U && device[4] == 0x03U);
+    TEST_ASSERT(device.size() == 18U && device[4] == 0x00U);
 
     // 配置头、接口、HID、IN、OUT，共 41 字节 / Header, interface, HID, IN, OUT: 41
     const Bytes fs = GetDescriptor(b.dev, b.hw, 2U, 0U, 255U);
@@ -2200,6 +2274,389 @@ void TestV1SlotCounts()
   }
 }
 
+/// 发送一次 DAP 命令并取回唯一 IN 响应包 / Send one DAP command and collect the single IN
+/// response packet
+template <typename Bench>
+Bytes ExchangeDapCmd(Bench& b, Bytes req, bool pad_to_64)
+{
+  if (pad_to_64 && req.size() < 64U)
+  {
+    req.resize(64U, 0U);
+  }
+  b.Send(req);
+  TEST_ASSERT(b.hw.ep1_in.inflight);
+  const Bytes resp = b.hw.ep1_in.InFlight();
+  b.DrainIn();
+  TEST_ASSERT(b.hw.ep2_out.inflight);
+  return resp;
+}
+
+void AppendLe32(Bytes& out, uint32_t value)
+{
+  out.push_back(static_cast<uint8_t>(value & 0xFFU));
+  out.push_back(static_cast<uint8_t>((value >> 8) & 0xFFU));
+  out.push_back(static_cast<uint8_t>((value >> 16) & 0xFFU));
+  out.push_back(static_cast<uint8_t>((value >> 24) & 0xFFU));
+}
+
+uint32_t ReadLe32(const Bytes& buf, size_t off)
+{
+  TEST_ASSERT(off + 4U <= buf.size());
+  return static_cast<uint32_t>(buf[off]) | (static_cast<uint32_t>(buf[off + 1U]) << 8) |
+         (static_cast<uint32_t>(buf[off + 2U]) << 16) |
+         (static_cast<uint32_t>(buf[off + 3U]) << 24);
+}
+
+/// 经 JtagGeneralGPIO + JtagTarget 测 DAP v1/v2 的完整 JTAG 路径 / Full JTAG protocol
+/// path for DAP v1/v2 over JtagGeneralGPIO and pin-level JtagTarget
+template <typename Bench>
+void RunDapJtagSuite(bool pad_to_64)
+{
+  namespace JSim = LibXR::Debug::Sim;
+  namespace DDef = LibXR::USB::DapLinkV2Def;
+
+  constexpr uint8_t CAPABILITIES = static_cast<uint8_t>(InfoId::CAPABILITIES);
+  constexpr uint8_t DISCONNECT = static_cast<uint8_t>(CommandId::DISCONNECT);
+  constexpr uint8_t TRANSFER_CONFIGURE =
+      static_cast<uint8_t>(CommandId::TRANSFER_CONFIGURE);
+  constexpr uint8_t WRITE_ABORT = static_cast<uint8_t>(CommandId::WRITE_ABORT);
+  constexpr uint8_t SWJ_CLOCK = static_cast<uint8_t>(CommandId::SWJ_CLOCK);
+  constexpr uint8_t JTAG_SEQUENCE = static_cast<uint8_t>(CommandId::JTAG_SEQUENCE);
+  constexpr uint8_t JTAG_CONFIGURE = static_cast<uint8_t>(CommandId::JTAG_CONFIGURE);
+  constexpr uint8_t JTAG_IDCODE = static_cast<uint8_t>(CommandId::JTAG_IDCODE);
+  constexpr uint8_t JTAG_PORT = static_cast<uint8_t>(Port::JTAG);
+
+  // 1. 未绑定 JTAG 前 CAPABILITIES 不含 JTAG 位；绑定后置位 / CAPABILITIES reports
+  // DAP_CAP_JTAG only when SetJtag is attached
+  JSim::JtagTarget target({
+      JSim::JtagTapSpec{5U, 0x1BA00477U, 0x01U, false},
+      JSim::JtagTapSpec{4U, JSim::JtagDebugPort::JTAG_DP_IDCODE,
+                        LibXR::Debug::JtagProtocol::JTAG_IR_IDCODE, true},
+      JSim::JtagTapSpec{4U, 0x2BA00477U, LibXR::Debug::JtagProtocol::JTAG_IR_IDCODE,
+                        false},
+  });
+  JSim::SimTckPin tck(target.wire);
+  JSim::SimTmsPin tms(target.wire);
+  JSim::SimTdiPin tdi(target.wire);
+  JSim::SimTdoPin tdo(target.wire);
+  LibXR::Debug::JtagGeneralGPIO<JSim::SimTckPin, JSim::SimTmsPin, JSim::SimTdiPin,
+                                JSim::SimTdoPin>
+      jtag(tck, tms, tdi, tdo, 0U);
+
+  Bench b;
+  Enumerate(b.dev, b.hw);
+
+  Bytes caps = ExchangeDapCmd(b, {INFO, CAPABILITIES}, pad_to_64);
+  TEST_ASSERT(caps[0] == INFO && caps[1] == 1U && (caps[2] & DDef::DAP_CAP_JTAG) == 0U &&
+              (caps[2] & DDef::DAP_CAP_SWD) != 0U);
+
+  b.dap.SetJtag(&jtag);
+  caps = ExchangeDapCmd(b, {INFO, CAPABILITIES}, pad_to_64);
+  TEST_ASSERT(caps[0] == INFO && caps[1] == 1U && (caps[2] & DDef::DAP_CAP_JTAG) != 0U);
+
+  // 2. CONNECT(JTAG) + SWJ_CLOCK + 3-TAP CONFIGURE + IDCODE（含 5-bit 0x01 回退与越界）/
+  // CONNECT(JTAG), SWJ_CLOCK, 3-TAP CONFIGURE and IDCODE (incl. 5-bit 0x01 &
+  // out-of-range)
+  const Bytes conn = ExchangeDapCmd(b, {CONNECT, JTAG_PORT}, pad_to_64);
+  TEST_ASSERT(conn[0] == CONNECT && conn[1] == JTAG_PORT);
+
+  Bytes clk_req{SWJ_CLOCK};
+  AppendLe32(clk_req, 1'000'000U);
+  const Bytes clk_resp = ExchangeDapCmd(b, clk_req, pad_to_64);
+  TEST_ASSERT(clk_resp[0] == SWJ_CLOCK && clk_resp[1] == 0U);
+
+  const Bytes cfg_resp = ExchangeDapCmd(b, {JTAG_CONFIGURE, 3U, 5U, 4U, 4U}, pad_to_64);
+  TEST_ASSERT(cfg_resp[0] == JTAG_CONFIGURE && cfg_resp[1] == 0U);
+
+  const Bytes id0 = ExchangeDapCmd(b, {JTAG_IDCODE, 0U}, pad_to_64);
+  TEST_ASSERT(id0[0] == JTAG_IDCODE && id0[1] == 0U && ReadLe32(id0, 2U) == 0x1BA00477U);
+
+  const Bytes id1 = ExchangeDapCmd(b, {JTAG_IDCODE, 1U}, pad_to_64);
+  TEST_ASSERT(id1[0] == JTAG_IDCODE && id1[1] == 0U &&
+              ReadLe32(id1, 2U) == JSim::JtagDebugPort::JTAG_DP_IDCODE);
+
+  const Bytes id2 = ExchangeDapCmd(b, {JTAG_IDCODE, 2U}, pad_to_64);
+  TEST_ASSERT(id2[0] == JTAG_IDCODE && id2[1] == 0U && ReadLe32(id2, 2U) == 0x2BA00477U);
+
+  const Bytes id3 = ExchangeDapCmd(b, {JTAG_IDCODE, 3U}, pad_to_64);
+  TEST_ASSERT(id3[0] == JTAG_IDCODE && id3[1] == 0xFFU);
+
+  // 3. JTAG_SEQUENCE（含 TMS=1、count=0->64、TDO 采集，并故意停在非 IDLE 状态）紧跟
+  //    DAP_TRANSFER / JTAG_SEQUENCE (TMS=1, count=0->64, TDO capture, ending off-idle)
+  //    followed directly by DAP_TRANSFER
+  {
+    Bytes jseq_long{
+        JTAG_SEQUENCE,
+        2U,
+        static_cast<uint8_t>(DDef::JTAG_SEQUENCE_TMS | 5U),
+        0x00U,
+        static_cast<uint8_t>(DDef::JTAG_SEQUENCE_TDO | 0U),
+        0xAAU,
+        0x55U,
+        0x12U,
+        0x34U,
+        0x56U,
+        0x78U,
+        0x9AU,
+        0xBCU,
+    };
+    const unsigned edges_before = target.wire.tck_rising_edges;
+    const Bytes jseq_long_resp = ExchangeDapCmd(b, jseq_long, pad_to_64);
+    TEST_ASSERT(jseq_long_resp[0] == JTAG_SEQUENCE && jseq_long_resp[1] == 0U);
+    if (!pad_to_64)
+    {
+      TEST_ASSERT(jseq_long_resp.size() == 2U + 8U);
+    }
+    TEST_ASSERT(target.wire.tck_rising_edges == edges_before + 69U);
+  }
+
+  // 把目标停到 SHIFT_DR 并在该状态下通过 JTAG_SEQUENCE 采出 TAP0 的 IDCODE / Leave TAP
+  // at SHIFT_DR while capturing TAP0 IDCODE via JTAG_SEQUENCE
+  {
+    Bytes cap_seq{
+        JTAG_SEQUENCE,
+        4U,
+        static_cast<uint8_t>(DDef::JTAG_SEQUENCE_TMS | 5U),
+        0x00U,  // -> TEST_LOGIC_RESET (IR=IDCODE)
+        0x01U,
+        0x00U,  // 1 cycle TMS=0 -> RUN_TEST_IDLE
+        static_cast<uint8_t>(DDef::JTAG_SEQUENCE_TMS | 1U),
+        0x00U,  // 1 cycle TMS=1 -> SELECT_DR_SCAN
+        0x02U,
+        0x00U,  // 2 cycles TMS=0 -> CAPTURE_DR -> SHIFT_DR
+    };
+    const Bytes cap_enter = ExchangeDapCmd(b, cap_seq, pad_to_64);
+    TEST_ASSERT(cap_enter[0] == JTAG_SEQUENCE && cap_enter[1] == 0U);
+    TEST_ASSERT(target.wire.State() == LibXR::Debug::TapState::SHIFT_DR);
+
+    Bytes cap_tdo{
+        JTAG_SEQUENCE, 1U,    static_cast<uint8_t>(DDef::JTAG_SEQUENCE_TDO | 32U),
+        0x00U,         0x00U, 0x00U,
+        0x00U,
+    };
+    const Bytes cap_resp = ExchangeDapCmd(b, cap_tdo, pad_to_64);
+    TEST_ASSERT(cap_resp[0] == JTAG_SEQUENCE && cap_resp[1] == 0U);
+    TEST_ASSERT(ReadLe32(cap_resp, 2U) == 0x1BA00477U);
+    TEST_ASSERT(target.wire.State() == LibXR::Debug::TapState::SHIFT_DR);
+  }
+
+  // 此时硬件 TAP 还在 SHIFT_DR！紧接着做 DAP_TRANSFER（DP 上电写 + 读 CTRL/STAT）必须能
+  // 先安全回到 IDLE 再读写 / Target is still at SHIFT_DR; immediate DAP_TRANSFER must
+  // resync and access TAP1 DP CTRL/STAT cleanly
+  {
+    Bytes xfer{TRANSFER, 1U, 2U};
+    xfer.push_back(DDef::DAP_TRANSFER_A2);  // DP write CTRL/STAT
+    AppendLe32(xfer, 0x50000000U);
+    xfer.push_back(DDef::DAP_TRANSFER_RNW | DDef::DAP_TRANSFER_A2);  // DP read CTRL/STAT
+    const Bytes xresp = ExchangeDapCmd(b, xfer, pad_to_64);
+    TEST_ASSERT(xresp[0] == TRANSFER && xresp[1] == 2U &&
+                xresp[2] == DDef::DAP_TRANSFER_OK);
+    TEST_ASSERT((ReadLe32(xresp, 3U) & 0xF0000000U) == 0xF0000000U);
+    TEST_ASSERT(target.wire.protocol_errors == 0U);
+  }
+
+  // 4. JTAG 模式下发送 SWJ_SEQUENCE：必须走 jtag_ 而非 swd_，且之后紧跟的 TRANSFER 正常 /
+  // SWJ_SEQUENCE in JTAG mode must drive jtag_ (not swd_) and keep TAP state coherent
+  {
+    const unsigned swd_seqs_before = b.swd.sequences;
+    const unsigned tck_before = target.wire.tck_rising_edges;
+    // 7 位 LSB-first: 1,1,1,1,1,0,1 (0x5FU) -> TLR -> RTI -> SELECT_DR_SCAN
+    const Bytes swj_resp = ExchangeDapCmd(b, {SWJ_SEQUENCE, 7U, 0x5FU}, pad_to_64);
+    TEST_ASSERT(swj_resp[0] == SWJ_SEQUENCE && swj_resp[1] == 0U);
+    TEST_ASSERT(b.swd.sequences == swd_seqs_before);
+    TEST_ASSERT(target.wire.tck_rising_edges == tck_before + 7U);
+    TEST_ASSERT(target.wire.State() == LibXR::Debug::TapState::SELECT_DR_SCAN);
+  }
+
+  // 5. 经 DAP_TRANSFER 读写 SRAM 与读取 CPUID / DAP_TRANSFER SRAM write-read and CPUID
+  {
+    Bytes xfer{TRANSFER, 1U, 6U};
+    xfer.push_back(DDef::DAP_TRANSFER_A3);  // DP write SELECT = 0
+    AppendLe32(xfer, 0x00000000U);
+    xfer.push_back(DDef::DAP_TRANSFER_APNDP);  // AP write CSW = 0x23000012 (word + inc)
+    AppendLe32(xfer, 0x23000012U);
+    xfer.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_A2);  // AP write TAR
+    AppendLe32(xfer, 0x20000100U);
+    xfer.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_A3 |
+                   DDef::DAP_TRANSFER_A2);  // AP write DRW
+    AppendLe32(xfer, 0xCAFEBABEU);
+    xfer.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_A2);  // AP write TAR
+    AppendLe32(xfer, 0x20000100U);
+    xfer.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_RNW |
+                   DDef::DAP_TRANSFER_A3 | DDef::DAP_TRANSFER_A2);  // AP read DRW
+    const Bytes xresp = ExchangeDapCmd(b, xfer, pad_to_64);
+    TEST_ASSERT(xresp[0] == TRANSFER && xresp[1] == 6U &&
+                xresp[2] == DDef::DAP_TRANSFER_OK);
+    TEST_ASSERT(ReadLe32(xresp, 3U) == 0xCAFEBABEU);
+  }
+
+  {
+    Bytes xfer{TRANSFER, 1U, 2U};
+    xfer.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_A2);  // AP write TAR
+    AppendLe32(xfer, JSim::TargetMemory::CPUID);
+    xfer.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_RNW |
+                   DDef::DAP_TRANSFER_A3 | DDef::DAP_TRANSFER_A2);  // AP read DRW
+    const Bytes xresp = ExchangeDapCmd(b, xfer, pad_to_64);
+    TEST_ASSERT(xresp[0] == TRANSFER && xresp[1] == 2U &&
+                xresp[2] == DDef::DAP_TRANSFER_OK);
+    TEST_ASSERT(ReadLe32(xresp, 3U) == 0x410FC241U);
+  }
+
+  // 6. MATCH_MASK 与 MATCH_VALUE（不匹配返回 MISMATCH，匹配返回 OK）/ MATCH_MASK &
+  // MATCH_VALUE
+  {
+    const Bytes cfg =
+        ExchangeDapCmd(b, {TRANSFER_CONFIGURE, 2U, 8U, 0U, 4U, 0U}, pad_to_64);
+    TEST_ASSERT(cfg[0] == TRANSFER_CONFIGURE && cfg[1] == 0U);
+
+    Bytes mismatch_req{TRANSFER, 1U, 2U};
+    mismatch_req.push_back(DDef::DAP_TRANSFER_MATCH_MASK);
+    AppendLe32(mismatch_req, 0x0000FFFFU);
+    mismatch_req.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_RNW |
+                           DDef::DAP_TRANSFER_A3 | DDef::DAP_TRANSFER_A2 |
+                           DDef::DAP_TRANSFER_MATCH_VALUE);
+    AppendLe32(mismatch_req, 0x0000DEADU);
+    const Bytes mismatch_resp = ExchangeDapCmd(b, mismatch_req, pad_to_64);
+    TEST_ASSERT(mismatch_resp[0] == TRANSFER &&
+                mismatch_resp[2] ==
+                    (DDef::DAP_TRANSFER_OK | DDef::DAP_TRANSFER_MISMATCH));
+
+    // TAR 因 CSW auto-inc 前进了 4 字节，先设回 CPUID 再测匹配成功 / Reset TAR to CPUID
+    Bytes match_req{TRANSFER, 1U, 3U};
+    match_req.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_A2);
+    AppendLe32(match_req, JSim::TargetMemory::CPUID);
+    match_req.push_back(DDef::DAP_TRANSFER_MATCH_MASK);
+    AppendLe32(match_req, 0x0000FFFFU);
+    match_req.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_RNW |
+                        DDef::DAP_TRANSFER_A3 | DDef::DAP_TRANSFER_A2 |
+                        DDef::DAP_TRANSFER_MATCH_VALUE);
+    AppendLe32(match_req, 0x0000C241U);
+    const Bytes match_resp = ExchangeDapCmd(b, match_req, pad_to_64);
+    TEST_ASSERT(match_resp[0] == TRANSFER && match_resp[1] == 3U &&
+                match_resp[2] == DDef::DAP_TRANSFER_OK);
+  }
+
+  // 7. WAIT 重试成功 + 重试耗尽 -> WRITE_ABORT 恢复 + 总线错误置 STICKYERR 与 W1C 清除 /
+  // WAIT retry recovery, WRITE_ABORT after WAIT exhaustion, bus error STICKYERR + W1C
+  {
+    TEST_ASSERT(
+        ExchangeDapCmd(b, {TRANSFER_CONFIGURE, 0U, 4U, 0U, 0U, 0U}, pad_to_64)[1] == 0U);
+    target.dp.inject_wait = 3U;
+    Bytes read_ram{TRANSFER, 1U, 2U};
+    read_ram.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_A2);
+    AppendLe32(read_ram, 0x20000100U);
+    read_ram.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_RNW |
+                       DDef::DAP_TRANSFER_A3 | DDef::DAP_TRANSFER_A2);
+    const Bytes r_ok = ExchangeDapCmd(b, read_ram, pad_to_64);
+    TEST_ASSERT(r_ok[0] == TRANSFER && r_ok[1] == 2U && r_ok[2] == DDef::DAP_TRANSFER_OK);
+    TEST_ASSERT(ReadLe32(r_ok, 3U) == 0xCAFEBABEU);
+    TEST_ASSERT(target.dp.inject_wait == 0U);
+
+    // 等待重试耗尽后发 WRITE_ABORT 清挂起请求 / Exhaust wait retries then WRITE_ABORT
+    TEST_ASSERT(
+        ExchangeDapCmd(b, {TRANSFER_CONFIGURE, 0U, 1U, 0U, 0U, 0U}, pad_to_64)[1] == 0U);
+    target.dp.inject_wait = 10U;
+    const Bytes r_wait = ExchangeDapCmd(b, read_ram, pad_to_64);
+    TEST_ASSERT(r_wait[0] == TRANSFER && r_wait[2] == DDef::DAP_TRANSFER_WAIT);
+
+    Bytes abort_req{WRITE_ABORT, 1U};
+    AppendLe32(abort_req, 0x00000001U);  // DAPABORT
+    TEST_ASSERT(ExchangeDapCmd(b, abort_req, pad_to_64)[1] == 0U);
+    TEST_ASSERT(target.dp.inject_wait == 0U);
+
+    const Bytes r_after_abort = ExchangeDapCmd(b, read_ram, pad_to_64);
+    TEST_ASSERT(r_after_abort[0] == TRANSFER &&
+                r_after_abort[2] == DDef::DAP_TRANSFER_OK &&
+                ReadLe32(r_after_abort, 3U) == 0xCAFEBABEU);
+
+    // 写只读 Flash 地址引发总线错误 -> CTRL/STAT.STICKYERR 置位 -> W1C 清除后恢复 /
+    // Writing read-only flash sets STICKYERR; W1C CTRL/STAT clears it
+    Bytes fault_req{TRANSFER, 1U, 3U};
+    fault_req.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_A2);
+    AppendLe32(fault_req, 0x08000000U);
+    fault_req.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_A3 |
+                        DDef::DAP_TRANSFER_A2);
+    AppendLe32(fault_req, 0x11223344U);
+    fault_req.push_back(DDef::DAP_TRANSFER_RNW |
+                        DDef::DAP_TRANSFER_A2);  // read CTRL/STAT
+    const Bytes f_resp = ExchangeDapCmd(b, fault_req, pad_to_64);
+    TEST_ASSERT(f_resp[0] == TRANSFER && f_resp[1] == 3U &&
+                f_resp[2] == DDef::DAP_TRANSFER_OK);
+    TEST_ASSERT((ReadLe32(f_resp, 3U) & JSim::JtagDebugPort::STICKYERR) != 0U);
+
+    Bytes clear_err{TRANSFER, 1U, 2U};
+    clear_err.push_back(DDef::DAP_TRANSFER_A2);
+    AppendLe32(clear_err, 0x50000000U | JSim::JtagDebugPort::STICKYERR);
+    clear_err.push_back(DDef::DAP_TRANSFER_RNW | DDef::DAP_TRANSFER_A2);
+    const Bytes c_resp = ExchangeDapCmd(b, clear_err, pad_to_64);
+    TEST_ASSERT(c_resp[0] == TRANSFER && c_resp[1] == 2U &&
+                c_resp[2] == DDef::DAP_TRANSFER_OK);
+    TEST_ASSERT((ReadLe32(c_resp, 3U) & JSim::JtagDebugPort::STICKYERR) == 0U);
+  }
+
+  // 8. TRANSFER_BLOCK 多字连续写入与回读（8 字 = 36 字节，适配 v1 64 字节报告和 v2）/
+  // TRANSFER_BLOCK multi-word SRAM write & read (8 words fits v1 64-byte report and v2)
+  {
+    Bytes set_tar{TRANSFER, 1U, 1U};
+    set_tar.push_back(DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_A2);
+    AppendLe32(set_tar, 0x20000200U);
+    TEST_ASSERT(ExchangeDapCmd(b, set_tar, pad_to_64)[2] == DDef::DAP_TRANSFER_OK);
+
+    Bytes blk_w{TRANSFER_BLOCK, 1U, 8U, 0U,
+                DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_A3 | DDef::DAP_TRANSFER_A2};
+    for (uint32_t i = 0; i < 8U; ++i)
+    {
+      AppendLe32(blk_w, 0xA1000000U + i);
+    }
+    const Bytes bw_resp = ExchangeDapCmd(b, blk_w, pad_to_64);
+    TEST_ASSERT(bw_resp[0] == TRANSFER_BLOCK && (bw_resp[1] | (bw_resp[2] << 8)) == 8U &&
+                bw_resp[3] == DDef::DAP_TRANSFER_OK);
+
+    TEST_ASSERT(ExchangeDapCmd(b, set_tar, pad_to_64)[2] == DDef::DAP_TRANSFER_OK);
+    const Bytes blk_r =
+        ExchangeDapCmd(b,
+                       {TRANSFER_BLOCK, 1U, 8U, 0U,
+                        DDef::DAP_TRANSFER_APNDP | DDef::DAP_TRANSFER_RNW |
+                            DDef::DAP_TRANSFER_A3 | DDef::DAP_TRANSFER_A2},
+                       pad_to_64);
+    TEST_ASSERT(blk_r[0] == TRANSFER_BLOCK && (blk_r[1] | (blk_r[2] << 8)) == 8U &&
+                blk_r[3] == DDef::DAP_TRANSFER_OK);
+    for (uint32_t i = 0; i < 8U; ++i)
+    {
+      TEST_ASSERT(ReadLe32(blk_r, 4U + 4U * i) == 0xA1000000U + i);
+    }
+  }
+
+  // 9. DISCONNECT + 第二次 CONNECT(JTAG) 会话状态复位校验 + USB 重绑 /
+  // DISCONNECT, second CONNECT(JTAG) state reset check, and USB rebind
+  {
+    const Bytes disc = ExchangeDapCmd(b, {DISCONNECT}, pad_to_64);
+    TEST_ASSERT(disc[0] == DISCONNECT && disc[1] == 0U);
+    TEST_ASSERT(ExchangeDapCmd(b, {JTAG_IDCODE, 1U}, pad_to_64)[1] == 0xFFU);
+
+    // 重连 JTAG 后链状态应被清空，重新 CONFIGURE 前 IDCODE 应报错 / Re-connecting JTAG
+    // resets the configured chain until JTAG_CONFIGURE runs again
+    TEST_ASSERT(ExchangeDapCmd(b, {CONNECT, JTAG_PORT}, pad_to_64)[1] == JTAG_PORT);
+    TEST_ASSERT(ExchangeDapCmd(b, {JTAG_IDCODE, 1U}, pad_to_64)[1] == 0xFFU);
+    TEST_ASSERT(ExchangeDapCmd(b, {JTAG_CONFIGURE, 3U, 5U, 4U, 4U}, pad_to_64)[1] == 0U);
+    TEST_ASSERT(ReadLe32(ExchangeDapCmd(b, {JTAG_IDCODE, 1U}, pad_to_64), 2U) ==
+                JSim::JtagDebugPort::JTAG_DP_IDCODE);
+
+    // USB 解绑重绑：重绑后再次 JTAG 连接与传输 / USB unbind + rebind
+    SetConfiguration(b.dev, b.hw, 0U);
+    SetConfiguration(b.dev, b.hw, 1U);
+    TEST_ASSERT(ExchangeDapCmd(b, {CONNECT, JTAG_PORT}, pad_to_64)[1] == JTAG_PORT);
+    TEST_ASSERT(ExchangeDapCmd(b, {JTAG_CONFIGURE, 3U, 5U, 4U, 4U}, pad_to_64)[1] == 0U);
+    TEST_ASSERT(ReadLe32(ExchangeDapCmd(b, {JTAG_IDCODE, 1U}, pad_to_64), 2U) ==
+                JSim::JtagDebugPort::JTAG_DP_IDCODE);
+  }
+
+  TEST_ASSERT(target.wire.protocol_errors == 0U);
+}
+
+void TestV1Jtag() { RunDapJtagSuite<V1Bench>(true); }
+void TestV2Jtag() { RunDapJtagSuite<V2Bench>(false); }
+
 }  // namespace
 
 void test_usb_dap_v1_enum() { TestV1Enumeration(); }
@@ -2219,3 +2676,5 @@ void test_usb_dap_v2_threads()
 }
 void test_usb_dap_v1_slots() { TestV1SlotCounts(); }
 void test_usb_dap_v2_slots() { TestV2SlotCounts(); }
+void test_usb_dap_v1_jtag() { TestV1Jtag(); }
+void test_usb_dap_v2_jtag() { TestV2Jtag(); }
