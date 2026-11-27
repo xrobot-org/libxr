@@ -303,10 +303,10 @@ class GsUsbClass : public DeviceClass
     host_format_ok_.store(0U, std::memory_order_release);
     for (uint8_t ch = 0U; ch < CAN_CH_NUM; ++ch)
     {
-      can_enabled_[ch].store(0U, std::memory_order_relaxed);
-      fd_enabled_[ch].store(0U, std::memory_order_relaxed);
-      berr_enabled_[ch].store(0U, std::memory_order_relaxed);
-      timestamps_enabled_[ch].store(0U, std::memory_order_relaxed);
+      can_enabled_[ch].store(0U, std::memory_order_release);
+      fd_enabled_[ch].store(0U, std::memory_order_release);
+      berr_enabled_[ch].store(0U, std::memory_order_release);
+      timestamps_enabled_[ch].store(0U, std::memory_order_release);
     }
     for (uint8_t ch = 0U; ch < CAN_CH_NUM; ++ch)
     {
@@ -488,7 +488,7 @@ class GsUsbClass : public DeviceClass
         {
           return ErrorCode::ARG_ERR;
         }
-        berr_enabled_[ch].store(on != 0U ? 1U : 0U, std::memory_order_relaxed);
+        berr_enabled_[ch].store(on != 0U ? 1U : 0U, std::memory_order_release);
         return ErrorCode::OK;
       }
 
@@ -898,11 +898,14 @@ class GsUsbClass : public DeviceClass
     const bool fd = fd_supported_ && (mode.flags & GsUsb::GSCAN_MODE_FD) != 0U;
     const uint32_t prev_can_enabled = can_enabled_[ch].load(std::memory_order_relaxed);
     const uint32_t prev_fd_enabled = fd_enabled_[ch].load(std::memory_order_relaxed);
-    if (!start)
-    {
-      can_enabled_[ch].store(0U, std::memory_order_relaxed);
-      fd_enabled_[ch].store(0U, std::memory_order_relaxed);
-    }
+    const uint32_t prev_berr_enabled = berr_enabled_[ch].load(std::memory_order_relaxed);
+    // RESET 和重复 START 都先停收再 SetConfig/清队列，防止配置与清理间隙 CAN
+    // 回调继续入旧帧。 Stop callbacks before SetConfig and queue drop on both RESET and
+    // repeated START so CAN ISRs cannot enqueue stale-config frames during the
+    // transition.
+    can_enabled_[ch].store(0U, std::memory_order_release);
+    fd_enabled_[ch].store(0U, std::memory_order_release);
+    berr_enabled_[ch].store(0U, std::memory_order_release);
 
     LibXR::CAN::Configuration cfg = config_[ch];
     cfg.mode.loopback = (mode.flags & GsUsb::GSCAN_MODE_LOOP_BACK) != 0U;
@@ -913,8 +916,9 @@ class GsUsbClass : public DeviceClass
     ErrorCode result = cans_[ch]->SetConfig(cfg);
     if (result != ErrorCode::OK)
     {
-      can_enabled_[ch].store(prev_can_enabled, std::memory_order_relaxed);
-      fd_enabled_[ch].store(prev_fd_enabled, std::memory_order_relaxed);
+      berr_enabled_[ch].store(prev_berr_enabled, std::memory_order_release);
+      fd_enabled_[ch].store(prev_fd_enabled, std::memory_order_release);
+      can_enabled_[ch].store(prev_can_enabled, std::memory_order_release);
       return result;
     }
     if (fd_supported_)
@@ -926,8 +930,9 @@ class GsUsbClass : public DeviceClass
       if (result != ErrorCode::OK)
       {
         (void)cans_[ch]->SetConfig(config_[ch]);
-        can_enabled_[ch].store(prev_can_enabled, std::memory_order_relaxed);
-        fd_enabled_[ch].store(prev_fd_enabled, std::memory_order_relaxed);
+        berr_enabled_[ch].store(prev_berr_enabled, std::memory_order_release);
+        fd_enabled_[ch].store(prev_fd_enabled, std::memory_order_release);
+        can_enabled_[ch].store(prev_can_enabled, std::memory_order_release);
         return result;
       }
       fd_config_[ch] = fd_cfg;
@@ -935,21 +940,21 @@ class GsUsbClass : public DeviceClass
     config_[ch] = cfg;
     DropStagedFrames(ch);
     DropChannelFrames(in_isr, ch);
+    timestamps_enabled_[ch].store(
+        (mode.flags & GsUsb::GSCAN_MODE_HW_TIMESTAMP) != 0U ? 1U : 0U,
+        std::memory_order_release);
     if (start)
     {
-      can_enabled_[ch].store(1U, std::memory_order_relaxed);
-      fd_enabled_[ch].store(fd ? 1U : 0U, std::memory_order_relaxed);
+      berr_enabled_[ch].store(
+          (mode.flags & GsUsb::GSCAN_MODE_BERR_REPORTING) != 0U ? 1U : 0U,
+          std::memory_order_release);
+      fd_enabled_[ch].store(fd ? 1U : 0U, std::memory_order_release);
+      can_enabled_[ch].store(1U, std::memory_order_release);
     }
     else if (!AnyChannelStarted())
     {
       FlushInEndpoint(in_isr);
     }
-    timestamps_enabled_[ch].store(
-        (mode.flags & GsUsb::GSCAN_MODE_HW_TIMESTAMP) != 0U ? 1U : 0U,
-        std::memory_order_relaxed);
-    berr_enabled_[ch].store(
-        (mode.flags & GsUsb::GSCAN_MODE_BERR_REPORTING) != 0U ? 1U : 0U,
-        std::memory_order_relaxed);
     return ErrorCode::OK;
   }
 
@@ -989,7 +994,7 @@ class GsUsbClass : public DeviceClass
       }
       return;
     }
-    if (can_enabled_[ch].load(std::memory_order_relaxed) == 0U)
+    if (can_enabled_[ch].load(std::memory_order_acquire) == 0U)
     {
       return;
     }
@@ -1020,7 +1025,7 @@ class GsUsbClass : public DeviceClass
   /// 收到 FD 帧：入本通道的队列 / An FD frame arrived: queue it on its channel
   void OnFdCanRx(bool in_isr, uint8_t ch, const LibXR::FDCAN::FDPack& pack)
   {
-    if (fd_enabled_[ch].load(std::memory_order_relaxed) == 0U)
+    if (fd_enabled_[ch].load(std::memory_order_acquire) == 0U)
     {
       return;
     }
@@ -1064,7 +1069,7 @@ class GsUsbClass : public DeviceClass
    */
   bool MakeErrorFrame(uint8_t ch, const LibXR::CAN::ClassicPack& pack, QueueItem& item)
   {
-    if (berr_enabled_[ch].load(std::memory_order_relaxed) == 0U ||
+    if (berr_enabled_[ch].load(std::memory_order_acquire) == 0U ||
         !LibXR::CAN::IsErrorId(pack.id))
     {
       return false;
@@ -1474,6 +1479,13 @@ class GsUsbClass : public DeviceClass
     return cans_[ch]->AddMessage(pack);
   }
 
+  /// CAN 驱动队列暂满或外设忙，需暂存等待重试 / CAN driver queue full or peripheral
+  /// busy: stage and retry later
+  static bool IsCanTxBusy(ErrorCode result)
+  {
+    return result == ErrorCode::FULL || result == ErrorCode::BUSY;
+  }
+
   /// 按通道顺序重试暂存主机帧，接受后才入 echo 队列 / Retry staged host frames in
   /// order per channel, queueing the echo only once accepted
   void ServiceStagedFrames()
@@ -1496,7 +1508,11 @@ class GsUsbClass : public DeviceClass
             DropStagedFrames(ch);
             break;
           }
-          if (SubmitToCan(ch, item.hdr, item.data) == ErrorCode::FULL)
+          // FULL/BUSY 保留队头等待下一次排空；OK
+          // 或其他错误消费该帧并按原语义回显以归还主机 tx_context。 FULL/BUSY keeps the
+          // head for retry; OK or other driver errors consume it and emit the echo as
+          // before so the host reclaims its tx_context.
+          if (IsCanTxBusy(SubmitToCan(ch, item.hdr, item.data)))
           {
             break;
           }
@@ -1619,8 +1635,17 @@ class GsUsbClass : public DeviceClass
     echo.hdr = hdr;
     LibXR::Memory::FastCopy(echo.data, payload, data_size);
 
-    if (stage_queues_[ch]->Size() != 0U ||
-        SubmitToCan(ch, hdr, payload) == ErrorCode::FULL)
+    // 若本通道有暂存帧，先尝试排空两个 SOF 之间硬件已消化的空位，再决定直接发送或暂存；
+    // 若暂存仍满（如超过每通道 tx_stage_size 上限），不阻塞共享 OUT 端点，丢弃并回发 echo
+    // 以便主机回收 tx_context。
+    // If this channel has staged frames, drain slots freed between SOFs first; only
+    // stage if traffic remains backed up. On full stage, drop and echo immediately so
+    // the shared OUT endpoint is never stalled and the host reclaims its tx_context.
+    if (stage_queues_[ch]->Size() != 0U)
+    {
+      ServiceStagedFrames();
+    }
+    if (stage_queues_[ch]->Size() != 0U || IsCanTxBusy(SubmitToCan(ch, hdr, payload)))
     {
       echo.timestamp_us = 0U;
       if (stage_queues_[ch]->Push(echo) == ErrorCode::OK)
@@ -1670,7 +1695,7 @@ class GsUsbClass : public DeviceClass
   /// are on, else 0; any context
   uint32_t MakeTimestampUs(uint8_t ch) const
   {
-    if (timestamps_enabled_[ch].load(std::memory_order_relaxed) == 0U)
+    if (timestamps_enabled_[ch].load(std::memory_order_acquire) == 0U)
     {
       return 0U;
     }

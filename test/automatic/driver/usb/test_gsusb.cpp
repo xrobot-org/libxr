@@ -143,6 +143,7 @@ struct TxQueueModel
   size_t capacity = SIZE_MAX;
   size_t queued = 0;
   unsigned refused = 0;
+  ErrorCode full_error = ErrorCode::FULL;
 
   bool Take()
   {
@@ -177,7 +178,7 @@ class StubCan : public LibXR::CAN
   {
     if (!queue.Take())
     {
-      return ErrorCode::FULL;
+      return queue.full_error;
     }
     tx.push_back(pack);
     return ErrorCode::OK;
@@ -237,7 +238,7 @@ class StubFdCan : public LibXR::FDCAN
   {
     if (!queue.Take())
     {
-      return ErrorCode::FULL;
+      return queue.full_error;
     }
     tx.push_back(pack);
     return ErrorCode::OK;
@@ -246,7 +247,7 @@ class StubFdCan : public LibXR::FDCAN
   {
     if (!queue.Take())
     {
-      return ErrorCode::FULL;
+      return queue.full_error;
     }
     fd_tx.push_back(pack);
     return ErrorCode::OK;
@@ -1932,6 +1933,63 @@ void TestCanTxStaging()
     // echoed
     TEST_ASSERT(hw.ep1_in.transfers.size() == 1U &&
                 U32(hw.ep1_in.transfers[0], 0) == 12U);
+  }
+
+  // 6) 两个 SOF 之间释放 CAN 槽位并立即灌入新 OUT 帧：不等待下个 SOF 即先排空暂存、不误溢
+  // / CAN slots freed between SOFs drain staged frames on next OUT without premature drop
+  {
+    Fixture f(32U, 32U, nullptr, 0U, 4U);
+    f.Start(true, false);
+    f.can0.queue.capacity = 2U;
+
+    for (uint32_t i = 0U; i < 6U; ++i)
+    {
+      HostOut(f.dev, f.hw.ep2_out, Frame(i, 0x400U + i, 1U, 0U, 0U, {0U}));
+    }
+    // 2 帧进入 CAN，4 帧填满 stage_queues_[0] / 2 in CAN, 4 fill stage_queues_[0]
+    TEST_ASSERT(f.can0.tx.size() == 2U);
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.Sent().size() == 2U);
+
+    // 不发 SOF，释放 2 个 CAN 槽位并立刻灌入帧 6、7：第 6 帧到来时应先把帧 2、3 排进 CAN
+    // Without SOF, free 2 CAN slots and push frames 6, 7: frames 2, 3 drain into CAN
+    // first
+    f.can0.queue.Drain(2U);
+    HostOut(f.dev, f.hw.ep2_out, Frame(6U, 0x406U, 1U, 0U, 0U, {0U}));
+    HostOut(f.dev, f.hw.ep2_out, Frame(7U, 0x407U, 1U, 0U, 0U, {0U}));
+    TEST_ASSERT(f.can0.tx.size() == 4U);
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.Sent().size() == 4U);
+
+    f.can0.queue.capacity = 10U;
+    f.dev.Sof(1U);
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.can0.tx.size() == 8U && f.Sent().size() == 8U);
+    for (uint32_t i = 0U; i < 8U; ++i)
+    {
+      TEST_ASSERT(f.can0.tx[i].id == 0x400U + i && U32(f.Sent()[i], 0) == i);
+    }
+  }
+
+  // 7) AddMessage 返回 ErrorCode::BUSY 时同样进入暂存重试 / ErrorCode::BUSY stages for
+  // retry
+  {
+    Fixture f(32U, 32U, nullptr, 0U, 4U);
+    f.Start(true, false);
+    f.can0.queue.capacity = 0U;
+    f.can0.queue.full_error = ErrorCode::BUSY;
+
+    HostOut(f.dev, f.hw.ep2_out, Frame(10U, 0x410U, 1U, 0U, 0U, {1U}));
+    HostOut(f.dev, f.hw.ep2_out, Frame(11U, 0x411U, 1U, 0U, 0U, {2U}));
+    TEST_ASSERT(f.can0.tx.empty());
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.Sent().empty());
+
+    f.can0.queue.capacity = 4U;
+    f.dev.Sof(1U);
+    Drain(f.dev, f.hw.ep1_in);
+    TEST_ASSERT(f.can0.tx.size() == 2U && f.Sent().size() == 2U);
+    TEST_ASSERT(U32(f.Sent()[0], 0) == 10U && U32(f.Sent()[1], 0) == 11U);
   }
 }
 
