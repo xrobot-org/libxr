@@ -34,6 +34,10 @@ class SPI
     EDGE_2 = 1   ///< 在第二个时钟边沿采样数据 / Data sampled on the second clock edge.
   };
 
+  /**
+   * @enum Prescaler
+   * @brief 定义 SPI 时钟分频系数 / Defines the SPI clock division factor.
+   */
   enum class Prescaler : uint8_t
   {
     DIV_1 = 0,       ///< 分频系数为 1 / Division factor is 1.
@@ -339,6 +343,21 @@ class SPI
   {
     if (IsDoubleBuffer())
     {
+      double_buffer_rx_.Switch();
+      double_buffer_tx_.Switch();
+    }
+  }
+
+  /**
+   * @brief SPI 成功传输后推进双缓冲 / Advance SPI double buffers after a successful
+   * transfer.
+   */
+  void AdvanceBuffer()
+  {
+    if (IsDoubleBuffer())
+    {
+      double_buffer_rx_.EnablePending();
+      double_buffer_tx_.EnablePending();
       double_buffer_rx_.Switch();
       double_buffer_tx_.Switch();
     }
