@@ -10,15 +10,6 @@ using namespace LibXR;
 
 #if defined(USBHSD)
 
-// 中断属性只有 WCH 的 RISC-V 编译器认识；主机测试按普通函数编译。
-// Only the WCH RISC-V compiler knows the interrupt attribute; host tests build a plain
-// function.
-#if defined(__riscv)
-#define CH32_USB_IRQ __attribute__((interrupt("WCH-Interrupt-fast")))
-#else
-#define CH32_USB_IRQ
-#endif
-
 namespace
 {
 
@@ -45,7 +36,7 @@ void ClearPendingOtgHsInterrupts()
 }  // namespace
 
 // NOLINTNEXTLINE(readability-identifier-naming)
-extern "C" CH32_USB_IRQ void USBHS_IRQHandler(void)
+extern "C" __attribute__((interrupt("WCH-Interrupt-fast"))) void USBHS_IRQHandler(void)
 {
   CH32USBOtgHS* usb = CH32USBOtgHS::self_;
   if (usb == nullptr)
