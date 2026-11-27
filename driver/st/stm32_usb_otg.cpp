@@ -1,6 +1,7 @@
 #include "stm32_usb_otg.hpp"
 
-#if defined(HAL_PCD_MODULE_ENABLED) && (defined(USB_OTG_FS) || defined(USB_OTG_HS))
+#if defined(HAL_PCD_MODULE_ENABLED) && (defined(USB_OTG_FS) || defined(USB_OTG_HS) || \
+                                        defined(USB1_OTG_HS) || defined(USB2_OTG_HS))
 
 #include <cstring>
 
@@ -19,7 +20,7 @@ constexpr uint8_t OTG_HS_INDEX = 1;
 #if defined(USB_OTG_FS)
 #if defined(USB_OTG_FS_MAX_IN_ENDPOINTS)
 constexpr uint8_t OTG_FS_ENDPOINTS = USB_OTG_FS_MAX_IN_ENDPOINTS;
-#elif defined(STM32H7) || defined(STM32N6)
+#elif defined(STM32H7)
 constexpr uint8_t OTG_FS_ENDPOINTS = 9;
 #elif defined(STM32F1)
 // F105/F107：EP0 加 3 个 IN、3 个 OUT 端点（RM0008 "OTG_FS main features"）。
@@ -30,7 +31,7 @@ constexpr uint8_t OTG_FS_ENDPOINTS = 6;
 #endif
 #if defined(USB_OTG_FS_TOTAL_FIFO_SIZE)
 constexpr size_t OTG_FS_FIFO = USB_OTG_FS_TOTAL_FIFO_SIZE;
-#elif defined(STM32H7) || defined(STM32N6)
+#elif defined(STM32H7)
 constexpr size_t OTG_FS_FIFO = 4096;
 #else
 constexpr size_t OTG_FS_FIFO = 1280;
@@ -38,6 +39,11 @@ constexpr size_t OTG_FS_FIFO = 1280;
 #endif
 
 #if defined(USB_OTG_HS)
+#if defined(STM32WBA)
+constexpr IRQn_Type OTG_HS_IRQ = USB_OTG_HS_IRQn;
+#else
+constexpr IRQn_Type OTG_HS_IRQ = OTG_HS_IRQn;
+#endif
 #if defined(USB_OTG_HS_MAX_IN_ENDPOINTS)
 constexpr uint8_t OTG_HS_ENDPOINTS = USB_OTG_HS_MAX_IN_ENDPOINTS;
 #else
@@ -47,6 +53,28 @@ constexpr uint8_t OTG_HS_ENDPOINTS = 9;
 constexpr size_t OTG_HS_FIFO = USB_OTG_HS_TOTAL_FIFO_SIZE;
 #else
 constexpr size_t OTG_HS_FIFO = 4096;
+#endif
+#endif
+
+#if !defined(USB_OTG_HS) && (defined(USB1_OTG_HS) || defined(USB2_OTG_HS))
+#if defined(USB_OTG_FS)
+#error "STM32 parts with both USB_OTG_FS and USB1/2_OTG_HS need a third device slot."
+#endif
+constexpr uint8_t OTG_HS1_INDEX = 0;
+constexpr uint8_t OTG_HS2_INDEX = 1;
+#if defined(USB_OTG_HS_MAX_IN_ENDPOINTS)
+constexpr uint8_t OTG_HS1_ENDPOINTS = USB_OTG_HS_MAX_IN_ENDPOINTS;
+constexpr uint8_t OTG_HS2_ENDPOINTS = USB_OTG_HS_MAX_IN_ENDPOINTS;
+#else
+constexpr uint8_t OTG_HS1_ENDPOINTS = 9;
+constexpr uint8_t OTG_HS2_ENDPOINTS = 9;
+#endif
+#if defined(USB_OTG_HS_TOTAL_FIFO_SIZE)
+constexpr size_t OTG_HS1_FIFO = USB_OTG_HS_TOTAL_FIFO_SIZE;
+constexpr size_t OTG_HS2_FIFO = USB_OTG_HS_TOTAL_FIFO_SIZE;
+#else
+constexpr size_t OTG_HS1_FIFO = 4096;
+constexpr size_t OTG_HS2_FIFO = 4096;
 #endif
 #endif
 
@@ -157,7 +185,14 @@ STM32OtgController::STM32OtgController(
   cfg.speed = USBD_FS_SPEED;
 #endif
   cfg.dma_enable = hw.dma ? 1U : 0U;
-  cfg.phy_itface = USB_OTG_EMBEDDED_PHY;
+#if defined(USB_OTG_EMBEDDED_PHY)
+  if (hw.phy == Phy::EMBEDDED_FS)
+  {
+    cfg.phy_itface = USB_OTG_EMBEDDED_PHY;
+  }
+#else
+  REQUIRE(hw.phy != Phy::EMBEDDED_FS);
+#endif
 #if defined(USB_OTG_ULPI_PHY)
   if (hw.phy == Phy::ULPI)
   {
@@ -586,15 +621,43 @@ void STM32USBOtgDevice::Dispatch(USB_OTG_GlobalTypeDef* core)
 {
   uint8_t index = MAX_DEVICES;
 #if defined(USB_OTG_FS)
+#if defined(USB_OTG_FS_S) && defined(USB_OTG_FS_NS)
+  if (core == USB_OTG_FS_S || core == USB_OTG_FS_NS)
+#else
   if (core == USB_OTG_FS)
+#endif
   {
     index = OTG_FS_INDEX;
   }
 #endif
 #if defined(USB_OTG_HS)
+#if defined(USB_OTG_HS_S) && defined(USB_OTG_HS_NS)
+  if (core == USB_OTG_HS_S || core == USB_OTG_HS_NS)
+#else
   if (core == USB_OTG_HS)
+#endif
   {
     index = OTG_HS_INDEX;
+  }
+#endif
+#if !defined(USB_OTG_HS) && defined(USB1_OTG_HS)
+#if defined(USB1_OTG_HS_S) && defined(USB1_OTG_HS_NS)
+  if (core == USB1_OTG_HS_S || core == USB1_OTG_HS_NS)
+#else
+  if (core == USB1_OTG_HS)
+#endif
+  {
+    index = OTG_HS1_INDEX;
+  }
+#endif
+#if !defined(USB_OTG_HS) && defined(USB2_OTG_HS)
+#if defined(USB2_OTG_HS_S) && defined(USB2_OTG_HS_NS)
+  if (core == USB2_OTG_HS_S || core == USB2_OTG_HS_NS)
+#else
+  if (core == USB2_OTG_HS)
+#endif
+  {
+    index = OTG_HS2_INDEX;
   }
 #endif
   if (index >= MAX_DEVICES)
@@ -2008,8 +2071,42 @@ STM32USBDeviceOtgHS::STM32USBDeviceOtgHS(
     const std::initializer_list<const USB::DescriptorStrings::LanguagePack*> LANG_LIST,
     const std::initializer_list<const std::initializer_list<USB::DeviceClass*>> CONFIGS,
     ConstRawData uid)
-    : STM32USBOtgDevice(OTG_HS_INDEX, USB_OTG_HS, OTG_HS_IRQn, OTG_HS_ENDPOINTS,
+    : STM32USBOtgDevice(OTG_HS_INDEX, USB_OTG_HS, OTG_HS_IRQ, OTG_HS_ENDPOINTS,
                         OTG_HS_FIFO, hw, rx_fifo_size, RX_EP_CFGS, TX_EP_CFGS,
+                        packet_size, vid, pid, bcd, LANG_LIST, CONFIGS, uid)
+{
+}
+#endif
+
+#if !defined(USB_OTG_HS) && defined(USB1_OTG_HS)
+STM32USBDeviceOtgHS1::STM32USBDeviceOtgHS1(
+    const HardwareConfig& hw, size_t rx_fifo_size,
+    const std::initializer_list<RawData> RX_EP_CFGS,
+    const std::initializer_list<EPInConfig> TX_EP_CFGS,
+    USB::DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid,
+    uint16_t bcd,
+    const std::initializer_list<const USB::DescriptorStrings::LanguagePack*> LANG_LIST,
+    const std::initializer_list<const std::initializer_list<USB::DeviceClass*>> CONFIGS,
+    ConstRawData uid)
+    : STM32USBOtgDevice(OTG_HS1_INDEX, USB1_OTG_HS, USB1_OTG_HS_IRQn, OTG_HS1_ENDPOINTS,
+                        OTG_HS1_FIFO, hw, rx_fifo_size, RX_EP_CFGS, TX_EP_CFGS,
+                        packet_size, vid, pid, bcd, LANG_LIST, CONFIGS, uid)
+{
+}
+#endif
+
+#if !defined(USB_OTG_HS) && defined(USB2_OTG_HS)
+STM32USBDeviceOtgHS2::STM32USBDeviceOtgHS2(
+    const HardwareConfig& hw, size_t rx_fifo_size,
+    const std::initializer_list<RawData> RX_EP_CFGS,
+    const std::initializer_list<EPInConfig> TX_EP_CFGS,
+    USB::DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid,
+    uint16_t bcd,
+    const std::initializer_list<const USB::DescriptorStrings::LanguagePack*> LANG_LIST,
+    const std::initializer_list<const std::initializer_list<USB::DeviceClass*>> CONFIGS,
+    ConstRawData uid)
+    : STM32USBOtgDevice(OTG_HS2_INDEX, USB2_OTG_HS, USB2_OTG_HS_IRQn, OTG_HS2_ENDPOINTS,
+                        OTG_HS2_FIFO, hw, rx_fifo_size, RX_EP_CFGS, TX_EP_CFGS,
                         packet_size, vid, pid, bcd, LANG_LIST, CONFIGS, uid)
 {
 }
@@ -2033,9 +2130,21 @@ extern "C" void libxr_stm32_otg_dispatch(PCD_HandleTypeDef* hpcd)
     }
 #endif
 #if defined(USB_OTG_HS)
-    if (irq == OTG_HS_IRQn)
+    if (irq == OTG_HS_IRQ)
     {
       core = USB_OTG_HS;
+    }
+#endif
+#if !defined(USB_OTG_HS) && defined(USB1_OTG_HS)
+    if (irq == USB1_OTG_HS_IRQn)
+    {
+      core = USB1_OTG_HS;
+    }
+#endif
+#if !defined(USB_OTG_HS) && defined(USB2_OTG_HS)
+    if (irq == USB2_OTG_HS_IRQn)
+    {
+      core = USB2_OTG_HS;
     }
 #endif
     if (core == nullptr)

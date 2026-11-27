@@ -8,7 +8,7 @@
 
 using namespace LibXR;
 
-#if defined(USBHSD)
+#if LIBXR_CH32_HAS_USBHS
 
 namespace
 {
@@ -503,6 +503,6 @@ void CH32USBOtgHS::ResetController(bool in_isr)
   }
 }
 
-#endif  // defined(USBHSD)
+#endif  // LIBXR_CH32_HAS_USBHS
 
 // NOLINTEND(cppcoreguidelines-pro-type-cstyle-cast,performance-no-int-to-ptr)

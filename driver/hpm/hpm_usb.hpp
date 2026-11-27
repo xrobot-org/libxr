@@ -77,7 +77,13 @@ class HPMUSBController : public USB::EndpointPool
 {
  public:
   /// 端点号上限（ENDPTCTRL 的个数）/ Endpoint numbers (count of ENDPTCTRL registers)
-  static constexpr uint8_t MAX_ENDPOINTS = 16U;
+#if defined(USB_SOC_DCD_MAX_ENDPOINT_COUNT)
+  static constexpr uint8_t MAX_ENDPOINTS =
+      static_cast<uint8_t>(USB_SOC_DCD_MAX_ENDPOINT_COUNT);
+#else
+  static constexpr uint8_t MAX_ENDPOINTS =
+      static_cast<uint8_t>(sizeof(USB_Type::ENDPTCTRL) / sizeof(USB_Type::ENDPTCTRL[0]));
+#endif
   /// ENDPTCOMPLETE 等寄存器中 IN 方向的位偏移 / Bit offset of the IN direction in
   /// ENDPTCOMPLETE and the like
   static constexpr uint32_t IN_SHIFT = 16U;
@@ -175,8 +181,8 @@ class HPMUSBController : public USB::EndpointPool
   /// 本对象的队列头表；2048 字节对齐（ENDPTLISTADDR）/ This object's dQH list; 2048-byte
   /// aligned (ENDPTLISTADDR)
   alignas(2048) QueueHead qh_[MAX_ENDPOINTS * 2U] = {};
-  /// dTD 池的大小：32 个端点方向各两个，共 2 KiB / Size of the dTD pool: two for each
-  /// of the 32 endpoint directions, 2 KiB
+  /// dTD 池的大小：每个端点方向各两个 / Size of the dTD pool: two for each endpoint
+  /// direction
   static constexpr uint8_t TD_POOL = MAX_ENDPOINTS * 2U * 2U;
   /**
    * @brief dTD 池；每个端点构造时按槽数连续取一段 / dTD pool; every endpoint takes a

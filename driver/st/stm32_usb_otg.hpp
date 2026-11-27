@@ -10,7 +10,8 @@
 #include "usb/core/usb_service.hpp"
 #include "usb/device/dev_core.hpp"
 
-#if defined(HAL_PCD_MODULE_ENABLED) && (defined(USB_OTG_FS) || defined(USB_OTG_HS))
+#if defined(HAL_PCD_MODULE_ENABLED) && (defined(USB_OTG_FS) || defined(USB_OTG_HS) || \
+                                        defined(USB1_OTG_HS) || defined(USB2_OTG_HS))
 
 namespace LibXR
 {
@@ -46,16 +47,24 @@ class STM32OtgController : public USB::EndpointPool
   {
     EMBEDDED_FS,  ///< 片内全速 PHY / Embedded full-speed PHY
     ULPI,         ///< 外部 ULPI 高速 PHY / External ULPI high-speed PHY
-    EMBEDDED_HS   ///< 片内高速 PHY（F723/F733 等）/ Embedded high-speed PHY (F723/F733)
+    /// 片内高速 PHY（F723/F733/U5A5/H7RS/WBA6x/N6 等）/ Embedded high-speed PHY
+    /// (F723/F733/U5A5/H7RS/WBA6x/N6)
+    EMBEDDED_HS
   };
 
   /// 控制器配置 / Controller configuration
   struct HardwareConfig
   {
+#if defined(USB_OTG_EMBEDDED_PHY)
     Phy phy = Phy::EMBEDDED_FS;  ///< PHY 接口 / PHY interface
-    bool dma = false;            ///< 使用 core 内部 DMA / Use the core's internal DMA
-    bool vbus_sensing = false;   ///< VBUS 检测 / VBUS sensing
-    bool high_speed = false;     ///< 以高速枚举（需高速 PHY）/ Enumerate at high speed
+#elif defined(USB_OTG_HS_EMBEDDED_PHY)
+    Phy phy = Phy::EMBEDDED_HS;  ///< PHY 接口 / PHY interface
+#else
+    Phy phy = Phy::ULPI;  ///< PHY 接口 / PHY interface
+#endif
+    bool dma = false;           ///< 使用 core 内部 DMA / Use the core's internal DMA
+    bool vbus_sensing = false;  ///< VBUS 检测 / VBUS sensing
+    bool high_speed = false;    ///< 以高速枚举（需高速 PHY）/ Enumerate at high speed
     /// DMA 时 EP0 OUT 的缓冲：≥ 64 B，32 字节对齐，DMA 可达 / EP0 OUT buffer with DMA:
     /// ≥ 64 B, 32-byte aligned, reachable by DMA
     RawData ep0_dma_buffer{nullptr, 0};
@@ -632,6 +641,42 @@ class STM32USBDeviceOtgHS : public STM32USBOtgDevice
  public:
   /// 参数见 STM32USBOtgDevice / Parameters as for STM32USBOtgDevice
   STM32USBDeviceOtgHS(
+      const HardwareConfig& hw, size_t rx_fifo_size,
+      const std::initializer_list<RawData> RX_EP_CFGS,
+      const std::initializer_list<EPInConfig> TX_EP_CFGS,
+      USB::DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid,
+      uint16_t bcd,
+      const std::initializer_list<const USB::DescriptorStrings::LanguagePack*> LANG_LIST,
+      const std::initializer_list<const std::initializer_list<USB::DeviceClass*>> CONFIGS,
+      ConstRawData uid = {nullptr, 0});
+};
+#endif
+
+#if !defined(USB_OTG_HS) && defined(USB1_OTG_HS)
+/// STM32 OTG HS1 设备 / STM32 OTG HS1 device
+class STM32USBDeviceOtgHS1 : public STM32USBOtgDevice
+{
+ public:
+  /// 参数见 STM32USBOtgDevice / Parameters as for STM32USBOtgDevice
+  STM32USBDeviceOtgHS1(
+      const HardwareConfig& hw, size_t rx_fifo_size,
+      const std::initializer_list<RawData> RX_EP_CFGS,
+      const std::initializer_list<EPInConfig> TX_EP_CFGS,
+      USB::DeviceDescriptor::PacketSize0 packet_size, uint16_t vid, uint16_t pid,
+      uint16_t bcd,
+      const std::initializer_list<const USB::DescriptorStrings::LanguagePack*> LANG_LIST,
+      const std::initializer_list<const std::initializer_list<USB::DeviceClass*>> CONFIGS,
+      ConstRawData uid = {nullptr, 0});
+};
+#endif
+
+#if !defined(USB_OTG_HS) && defined(USB2_OTG_HS)
+/// STM32 OTG HS2 设备 / STM32 OTG HS2 device
+class STM32USBDeviceOtgHS2 : public STM32USBOtgDevice
+{
+ public:
+  /// 参数见 STM32USBOtgDevice / Parameters as for STM32USBOtgDevice
+  STM32USBDeviceOtgHS2(
       const HardwareConfig& hw, size_t rx_fifo_size,
       const std::initializer_list<RawData> RX_EP_CFGS,
       const std::initializer_list<EPInConfig> TX_EP_CFGS,

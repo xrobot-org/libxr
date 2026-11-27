@@ -142,15 +142,29 @@ STM32USBDeviceDevFs::STM32USBDeviceDevFs(
   // RM0008 p.202, p.625: LP shares 20 with CAN_RX0, HP shares 19 with CAN_TX.
   const IRQn_Type lines[] = {USB_LP_CAN1_RX0_IRQn, USB_HP_CAN1_TX_IRQn};
 #elif defined(STM32F3)
+#if defined(SYSCFG_CFGR1_USB_IT_RMP)
   // RM0316 p.251：USB_IT_RMP=1 时用专用线 74/75，否则与 CAN 共用 19/20。
   // RM0316 p.251: dedicated lines 74/75 with USB_IT_RMP=1, else 19/20 shared with CAN.
   const bool remapped = (SYSCFG->CFGR1 & SYSCFG_CFGR1_USB_IT_RMP) != 0U;
   const IRQn_Type lines[] = {remapped ? USB_LP_IRQn : USB_LP_CAN_RX0_IRQn,
                              remapped ? USB_HP_IRQn : USB_HP_CAN_TX_IRQn};
+#else
+  // F373 无重映射位，固定使用独立 USB_LP / USB_HP 中断线（75/74）。
+  // F373 has no remap bit and uses dedicated USB_LP / USB_HP lines (75/74).
+  const IRQn_Type lines[] = {USB_LP_IRQn, USB_HP_IRQn};
+#endif
 #elif defined(STM32G4) || defined(STM32WB) || defined(STM32L1)
   const IRQn_Type lines[] = {USB_LP_IRQn, USB_HP_IRQn};
-#elif defined(STM32F0) || defined(STM32L0) || defined(STM32L4)
+#elif defined(STM32F0) || defined(STM32L0) || defined(STM32L4) || defined(STM32U5)
   const IRQn_Type lines[] = {USB_IRQn};
+#elif defined(STM32L5) || defined(STM32U3)
+  const IRQn_Type lines[] = {USB_FS_IRQn};
+#elif defined(STM32G0)
+#if defined(UCPD1)
+  const IRQn_Type lines[] = {USB_UCPD1_2_IRQn};
+#else
+  const IRQn_Type lines[] = {USB_IRQn};
+#endif
 #elif defined(USB_DRD_FS)
   const IRQn_Type lines[] = {USB_DRD_FS_IRQn};
 #else
