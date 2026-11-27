@@ -131,9 +131,9 @@ enum class Status : std::uint8_t
  */
 enum class Port : std::uint8_t
 {
-  DEFAULT = 0x00,  ///< 使用默认端口 / Use default port.
-  SWD = 0x01,      ///< 选择 SWD 端口 / Select SWD port.
-  JTAG = 0x02      ///< 选择 JTAG 端口 / Select JTAG port.
+  DISABLED = 0x00,  ///< 未连接或默认端口 / Disabled or default debug port.
+  SWD = 0x01,       ///< 选择 SWD 端口 / Select SWD port.
+  JTAG = 0x02       ///< 选择 JTAG 端口 / Select JTAG port.
 };
 
 /**
