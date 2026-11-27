@@ -159,6 +159,7 @@ add_executable(
   system/timer/test_timer.cpp
   utils/crc/test_crc.cpp
   utils/cycle_value/test_cycle_value.cpp
+  utils/ekf/test_ekf.cpp
   utils/flag/test_flag.cpp
   utils/float_encoder/test_encoder.cpp
   utils/inertia/test_inertia.cpp
