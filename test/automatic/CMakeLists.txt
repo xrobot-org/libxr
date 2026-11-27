@@ -62,9 +62,12 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
   )
 
   set(_xr_saved_required_flags "${CMAKE_REQUIRED_FLAGS}")
+  set(_xr_saved_required_link_options "${CMAKE_REQUIRED_LINK_OPTIONS}")
   set(CMAKE_REQUIRED_FLAGS "-O3 -flto")
+  set(CMAKE_REQUIRED_LINK_OPTIONS "-O3" "-flto")
   check_cxx_source_compiles("int main() { return 0; }" _xr_mem_supports_lto)
   set(CMAKE_REQUIRED_FLAGS "${_xr_saved_required_flags}")
+  set(CMAKE_REQUIRED_LINK_OPTIONS "${_xr_saved_required_link_options}")
 else()
   set(_xr_mem_supports_lto FALSE)
 endif()
@@ -151,7 +154,7 @@ if(_xr_mem_supports_lto)
     target_compile_options(
       ${_xr_mem_lto_target} PRIVATE -O3 -flto -Wall -Wextra -Werror
     )
-    target_link_options(${_xr_mem_lto_target} PRIVATE -flto)
+    target_link_options(${_xr_mem_lto_target} PRIVATE -O3 -flto)
     add_test(NAME ${_xr_mem_lto_target} COMMAND ${_xr_mem_lto_target})
     set_tests_properties(${_xr_mem_lto_target} PROPERTIES TIMEOUT 10)
   endforeach()
