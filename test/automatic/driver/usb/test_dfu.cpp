@@ -538,13 +538,15 @@ void TestDownload()
               status.state == S(DFUState::DFU_ERROR));
   ClearStatus(dev, hw);
   TEST_ASSERT(GetState(dev, hw) == S(DFUState::DFU_IDLE));
-  // 空闲时零长度 DNLOAD 是协议错误 / A zero-length DNLOAD while idle is a protocol error
-  TEST_ASSERT(Dnload(dev, hw, 0U, {}));
+  // 空闲时零长度 DNLOAD STALL 并锁存 ERR_STALLEDPKT / A zero-length DNLOAD while idle
+  // stalls the control pipe and latches ERR_STALLEDPKT
+  Refused(dev, hw, Make(0x21U, DNLOAD, 0U, 0U, 0U));
   TEST_ASSERT(GetState(dev, hw) == S(DFUState::DFU_ERROR));
   status = GetStatus(dev, hw);
-  TEST_ASSERT(status.status == C(DFUStatusCode::ERR_NOTDONE) &&
+  TEST_ASSERT(status.status == C(DFUStatusCode::ERR_STALLEDPKT) &&
               status.state == S(DFUState::DFU_ERROR));
   ClearStatus(dev, hw);
+  TEST_ASSERT(GetState(dev, hw) == S(DFUState::DFU_IDLE));
 
   // 块 0：256 字节、四个包，核心收齐后交给类 / Block 0: 256 bytes in four packets,
   // handed to the class once the core has them all
@@ -670,7 +672,10 @@ void TestDownload()
   }
 }
 
-/// 轮询等待从应答算起 / The poll wait counts from the answer
+/// DNBUSY / MANIFEST 下 GETSTATUS 不按时钟 STALL；已完成立即推进，未完成重报剩余时间，
+/// 其余请求 STALL / GETSTATUS in DNBUSY or MANIFEST never stalls for timing; a done
+/// step advances immediately, a pending one repeats the busy state with remaining time,
+/// and other requests stall
 void TestPollWait()
 {
   BootFixture f;
@@ -679,8 +684,6 @@ void TestPollWait()
   Enumerate(dev, hw);
   const Bytes block0(256U, 0xA5U);
 
-  // 块 0 加一个 GETSTATUS；状态阶段留着 / Block 0 and one GETSTATUS; the status stage
-  // is left open
   auto download_block0 = [&]()
   {
     TEST_ASSERT(Dnload(dev, hw, 0U, block0));
@@ -688,42 +691,86 @@ void TestPollWait()
     TEST_ASSERT(status.state == S(DFUState::DFU_DNBUSY));
     return status.poll;
   };
-  // 状态阶段迟到（像擦写关中断时那样），主机在应答之后正好等 bwPollTimeout 回来：不
-  // STALL，已写完
-  // The status stage completes late (as when flash work blocks interrupts), then the
-  // host comes back exactly bwPollTimeout after the answer: not stalled, and done
-  auto late_status_stage = [&](uint32_t reported)
-  {
-    SleepMs(reported / 2U);
-    StatusOut(dev, hw);
-    f.boot.Process();
-    SleepMs(reported - reported / 2U);
-    const Status status = GetStatus(dev, hw);
-    TEST_ASSERT(status.state == S(DFUState::DFU_DNLOAD_IDLE));
-  };
 
-  // 还没实测时，要擦除的一步报 25 ms；马上回来太早：STALL，进入错误
-  // Before any measurement a step that erases reports 25 ms; coming back at once is too
-  // early: stalled, in error
+  // (a) 擦写步骤完成后，不睡眠立刻问 GETSTATUS 也推进到 DFU_DNLOAD_IDLE /
+  // Once the write step is done, an immediate GETSTATUS advances without sleeping
   TEST_ASSERT(download_block0() == 25U);
-  Refused(dev, hw, Make(0xA1U, GETSTATUS, 0U, 0U, 6U));
-  const Status error = GetStatus(dev, hw);
-  TEST_ASSERT(error.state == S(DFUState::DFU_ERROR) &&
-              error.status == C(DFUStatusCode::ERR_STALLEDPKT));
-  ClearStatus(dev, hw);
-  // 被 STALL 打断的那次没有放行任何工作 / The interrupted one released no work
+  StatusOut(dev, hw);
   f.boot.Process();
-  TEST_ASSERT(f.flash.writes == 0U);
+  Status status = GetStatus(dev, hw);
+  TEST_ASSERT(status.status == 0U && status.state == S(DFUState::DFU_DNLOAD_IDLE) &&
+              status.poll == 0U);
+  TEST_ASSERT(std::equal(block0.begin(), block0.end(), f.flash_mem.begin()));
 
-  TEST_ASSERT(download_block0() == 25U);
-  late_status_stage(25U);
-
-  // ABORT 后块 0 要重新擦除，报实测值（RAM Flash 瞬间完成，取下限 10 ms）
-  // After ABORT block 0 needs its erase again, reported with the measured value
-  // (instant on RAM flash, so the 10 ms floor)
+  // ABORT 后块 0 重新擦除，报实测下限 10 ms / After ABORT block 0 needs its erase again,
+  // reported with the 10 ms measured floor
   ControlNone(dev, hw, Make(0x21U, ABORT, 0U, 0U, 0U));
   TEST_ASSERT(download_block0() == 10U);
-  late_status_stage(10U);
+  StatusOut(dev, hw);
+  f.boot.Process();
+  status = GetStatus(dev, hw);
+  TEST_ASSERT(status.status == 0U && status.state == S(DFUState::DFU_DNLOAD_IDLE));
+
+  // (b) 擦写尚未完成时重复问 GETSTATUS 不 STALL，继续返回 DNBUSY 与剩余等待；其他请求
+  // 仍 STALL（DFU 1.1 A.2.5）/ Repeated GETSTATUS while pending does not stall and keeps
+  // reporting DNBUSY; other requests still stall
+  {
+    BootFixture bf;
+    FakeUsb bdev(bf.hw, {{&bf.boot}});
+    Enumerate(bdev, bf.hw);
+    TEST_ASSERT(Dnload(bdev, bf.hw, 0U, block0));
+    Status bstatus = GetStatus(bdev, bf.hw, 0U, false);
+    TEST_ASSERT(bstatus.status == 0U && bstatus.state == S(DFUState::DFU_DNBUSY) &&
+                bstatus.poll == 25U);
+    StatusOut(bdev, bf.hw);
+    for (int i = 0; i < 3; ++i)
+    {
+      bstatus = GetStatus(bdev, bf.hw);
+      TEST_ASSERT(bstatus.status == 0U && bstatus.state == S(DFUState::DFU_DNBUSY) &&
+                  bstatus.poll > 0U && bstatus.poll <= 25U);
+    }
+    Refused(bdev, bf.hw, Make(0x21U, DNLOAD, 0U, 0U, 16U));
+    bstatus = GetStatus(bdev, bf.hw);
+    TEST_ASSERT(bstatus.status == C(DFUStatusCode::ERR_STALLEDPKT) &&
+                bstatus.state == S(DFUState::DFU_ERROR));
+    ClearStatus(bdev, bf.hw);
+  }
+
+  // (c) MANIFEST 中同样如此：未完成不 STALL、其他请求 STALL，完成后立刻推进 /
+  // Same in MANIFEST: pending GETSTATUS never stalls, other requests stall, done advances
+  {
+    BootFixture mf;
+    FakeUsb mdev(mf.hw, {{&mf.boot}});
+    Enumerate(mdev, mf.hw);
+    TEST_ASSERT(Dnload(mdev, mf.hw, 0U, block0));
+    TEST_ASSERT(GetStatus(mdev, mf.hw).state == S(DFUState::DFU_DNBUSY));
+    mf.boot.Process();
+    TEST_ASSERT(GetStatus(mdev, mf.hw).state == S(DFUState::DFU_DNLOAD_IDLE));
+    TEST_ASSERT(Dnload(mdev, mf.hw, 1U, {}));
+    Status ms = GetStatus(mdev, mf.hw, 0U, false);
+    TEST_ASSERT(ms.state == S(DFUState::DFU_MANIFEST) && ms.poll > 0U);
+    ms = GetStatus(mdev, mf.hw);
+    TEST_ASSERT(ms.state == S(DFUState::DFU_MANIFEST) && ms.poll > 0U);
+    Refused(mdev, mf.hw, Make(0xA1U, GETSTATE, 0U, 0U, 1U));
+    ms = GetStatus(mdev, mf.hw);
+    TEST_ASSERT(ms.status == C(DFUStatusCode::ERR_STALLEDPKT) &&
+                ms.state == S(DFUState::DFU_ERROR));
+  }
+
+  {
+    BootFixture mf;
+    FakeUsb mdev(mf.hw, {{&mf.boot}});
+    Enumerate(mdev, mf.hw);
+    TEST_ASSERT(Dnload(mdev, mf.hw, 0U, block0));
+    TEST_ASSERT(GetStatus(mdev, mf.hw).state == S(DFUState::DFU_DNBUSY));
+    mf.boot.Process();
+    TEST_ASSERT(GetStatus(mdev, mf.hw).state == S(DFUState::DFU_DNLOAD_IDLE));
+    TEST_ASSERT(Dnload(mdev, mf.hw, 1U, {}));
+    TEST_ASSERT(GetStatus(mdev, mf.hw).state == S(DFUState::DFU_MANIFEST));
+    mf.boot.Process();
+    const Status ms = GetStatus(mdev, mf.hw);
+    TEST_ASSERT(ms.status == 0U && ms.state == S(DFUState::DFU_MANIFEST_WAIT_RESET));
+  }
 }
 
 /// DFU 依赖的控制完成回调：只有被主机确认的应答才有后果 / The control completion
