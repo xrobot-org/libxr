@@ -67,7 +67,8 @@ class LPFilter
    */
   explicit LPFilter(const Param& param) : param_(param)
   {
-    ASSERT(param_.time_constant > Scalar(0));
+    ASSERT(std::isfinite(param_.time_constant) && param_.time_constant > Scalar(0));
+    ZeroState(state_);
   }
 
   /**
@@ -77,7 +78,7 @@ class LPFilter
    */
   void SetParam(const Param& param)
   {
-    ASSERT(param.time_constant > Scalar(0));
+    ASSERT(std::isfinite(param.time_constant) && param.time_constant > Scalar(0));
     param_ = param;
   }
 
@@ -118,7 +119,11 @@ class LPFilter
    * @brief 返回给定采样间隔下的系数。Returns the coefficient for a sample interval.
    * @param dt 采样间隔，必须大于 0。Sample interval, must be positive.
    */
-  Scalar GetAlpha(Scalar dt) const { return dt / (param_.time_constant + dt); }
+  Scalar GetAlpha(Scalar dt) const
+  {
+    ASSERT(std::isfinite(dt) && dt > Scalar(0));
+    return dt / (param_.time_constant + dt);
+  }
 
   /**
    * @brief 重置滤波器状态，下一次更新重新吸收样本。
@@ -126,15 +131,16 @@ class LPFilter
    */
   void Reset()
   {
-    state_ = T{};
+    ZeroState(state_);
     initialized_ = false;
   }
 
   /**
    * @brief 按采样间隔推进一次。Advances one sample by the given interval.
    *
-   * `dt <= 0` 时保持状态不变；第一个样本直接成为状态。
-   * Keeps the state when `dt <= 0`; the first sample becomes the state.
+   * `dt <= 0` 或非有限值时保持状态不变；第一个样本直接成为状态。
+   * Keeps the state when `dt` is non-positive or non-finite; the first sample becomes
+   * the state.
    *
    * @param x 本次样本。Sample.
    * @param dt 距上次样本的间隔。Interval since the previous sample.
@@ -149,7 +155,7 @@ class LPFilter
       return state_;
     }
 
-    if (!(dt > Scalar(0)))
+    if (!(std::isfinite(dt) && dt > Scalar(0)))
     {
       return state_;
     }
@@ -159,11 +165,29 @@ class LPFilter
   }
 
   /**
-   * @brief 返回当前状态。Returns the current state.
+   * @brief 返回当前状态（首次 Update 前或 Reset 后为零值）。
+   *        Returns the current state (zero before the first Update or after Reset).
    */
   const T& State() const { return state_; }
 
+  /**
+   * @brief 返回是否已吸收过首样本。Returns whether the first sample has been absorbed.
+   */
+  bool IsInitialized() const { return initialized_; }
+
  private:
+  static void ZeroState(T& s)
+  {
+    if constexpr (requires { s.setZero(); })
+    {
+      s.setZero();
+    }
+    else
+    {
+      s = T{};
+    }
+  }
+
   Param param_;
   T state_{};
   bool initialized_ = false;

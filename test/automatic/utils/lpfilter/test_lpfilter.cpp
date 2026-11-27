@@ -18,6 +18,7 @@
 #include <Eigen/Dense>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <type_traits>
 
 #include "libxr_def.hpp"
@@ -46,18 +47,24 @@ void test_lpfilter()
     }
     TEST_ASSERT(equal(static_cast<double>(filter.State()), expected));
 
-    // 检查内容：dt 不是正数时保持状态。
-    // Check: a non-positive dt keeps the state.
+    // 检查内容：dt 不是正数或非有限值时保持状态。
+    // Check: a non-positive or non-finite dt keeps the state.
     const float before = filter.State();
     filter.Update(10.0f, 0.0f);
     TEST_ASSERT(equal(static_cast<double>(filter.State()), static_cast<double>(before)));
     filter.Update(10.0f, -0.01f);
     TEST_ASSERT(equal(static_cast<double>(filter.State()), static_cast<double>(before)));
+    filter.Update(10.0f, std::numeric_limits<float>::infinity());
+    TEST_ASSERT(equal(static_cast<double>(filter.State()), static_cast<double>(before)));
+    filter.Update(10.0f, std::numeric_limits<float>::quiet_NaN());
+    TEST_ASSERT(equal(static_cast<double>(filter.State()), static_cast<double>(before)));
 
     // 检查内容：Reset 之后下一次更新重新吸收样本。
     // Check: after Reset the next update absorbs its sample again.
     filter.Reset();
+    TEST_ASSERT(!filter.IsInitialized());
     filter.Update(5.0f, 0.01f);
+    TEST_ASSERT(filter.IsInitialized());
     TEST_ASSERT(equal(static_cast<double>(filter.State()), 5.0));
   }
 
