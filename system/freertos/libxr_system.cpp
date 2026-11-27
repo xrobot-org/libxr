@@ -23,8 +23,8 @@ uint32_t LibXR::libxr_freertos_timebase_tick_offset = 0;
 #if defined(ESP_PLATFORM)
 namespace LibXR::Detail
 {
-/// IDF 的 tick 钩子登记为节拍源（tick.cpp）/ Registers IDF's tick hook as the tick
-/// source (tick.cpp)
+/// IDF 的 tick 钩子登记为节拍源（driver/esp/esp_tick.cpp）/ Registers IDF's tick hook as
+/// the tick source (driver/esp/esp_tick.cpp)
 void RegisterEspTickHook();
 }  // namespace LibXR::Detail
 #endif

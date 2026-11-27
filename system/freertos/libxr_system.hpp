@@ -62,9 +62,9 @@ void PlatformInit(uint32_t timer_pri = 2,
  * 最低。FreeRTOS 的节拍从不高于上限；RequestPoll（发布 + 挂起）在其中合法。不需要
  * configUSE_TICK_HOOK。
  * ESP-IDF（ESP_PLATFORM）：不包装（IDF 的 FreeRTOS 是 IDF 组件）；PlatformInit 调用
- * esp_register_freertos_tick_hook_for_cpu(钩子, 0) 并 RegisterTickSource。只挂 CPU 0：
- * 双核时每个核各有节拍中断，钩子挂两核会计两次；CPU 0 是推进 xTickCount 的核（IDF
- * FreeRTOS 的 xTaskIncrementTick 只在 CPU 0 计数）。
+ * driver/esp/esp_tick.cpp 里的 RegisterEspTickHook() 挂接 CPU 0 tick 钩子并调用
+ * RegisterTickSource。只挂 CPU 0：双核时每个核各有节拍中断，钩子挂两核会计两次；CPU 0
+ * 是推进 xTickCount 的核（IDF FreeRTOS 的 xTaskIncrementTick 只在 CPU 0 计数）。
  * 钩子在节拍中断里运行（1 级，低于系统调用上限），频率 CONFIG_FREERTOS_HZ（IDF 默认
  * 100 Hz）。
  * Not ESP: tick.cpp in this directory defines BaseType_t __wrap_xTaskIncrementTick(void):
@@ -88,11 +88,11 @@ void PlatformInit(uint32_t timer_pri = 2,
  * SysTick at 0xf0 (port.c:202), the lowest. FreeRTOS's tick is never above the ceiling;
  * RequestPoll (publish + pend) is legal in it. configUSE_TICK_HOOK is not needed.
  * ESP-IDF (ESP_PLATFORM): no wrap (IDF's FreeRTOS is an IDF component); PlatformInit
- * calls esp_register_freertos_tick_hook_for_cpu(hook, 0) and RegisterTickSource. CPU 0
- * only: with two cores each has its own tick interrupt, and a hook on both would count
- * twice; CPU 0 is the core that advances xTickCount (IDF FreeRTOS counts the tick in
- * xTaskIncrementTick on CPU 0 only). The hook runs in the
- * tick interrupt (level 1, below the system call ceiling) at CONFIG_FREERTOS_HZ (IDF
- * default 100 Hz).
+ * calls RegisterEspTickHook() in driver/esp/esp_tick.cpp to attach the CPU 0 tick hook
+ * and call RegisterTickSource. CPU 0 only: with two cores each has its own tick
+ * interrupt, and a hook on both would count twice; CPU 0 is the core that advances
+ * xTickCount (IDF FreeRTOS counts the tick in xTaskIncrementTick on CPU 0 only). The
+ * hook runs in the tick interrupt (level 1, below the system call ceiling) at
+ * CONFIG_FREERTOS_HZ (IDF default 100 Hz).
  */
 }  // namespace LibXR
