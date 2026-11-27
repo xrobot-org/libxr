@@ -10,7 +10,8 @@ namespace LibXR
 {
 using DefaultScalar = LIBXR_DEFAULT_SCALAR;
 
-constexpr DefaultScalar PID_SIGMA = 1e-6f;
+constexpr DefaultScalar PID_SIGMA =
+    1e-6f;  ///< PID 浮点除零保护阈值 / Epsilon threshold guarding PID division.
 
 /**
  * @brief 通用 PID 控制器类。

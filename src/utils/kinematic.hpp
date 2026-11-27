@@ -191,7 +191,7 @@ class Object
    */
   typedef struct
   {
-    Inertia<Scalar> inertia;
+    Inertia<Scalar> inertia;  ///< 物体惯性参数 / Object inertia parameters.
   } Param;
 
   /**
@@ -247,6 +247,10 @@ class Object
    */
   void SetQuaternion(const Quaternion<Scalar>& quat) { runtime_.state = quat; }
 
+  /**
+   * @brief 逆向运动学递推虚接口，由派生节点覆写 / Virtual backward kinematics hook
+   *        overridden by derived nodes.
+   */
   virtual void CalcBackward() {}
 };
 
