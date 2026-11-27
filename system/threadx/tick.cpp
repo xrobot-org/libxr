@@ -27,5 +27,8 @@ struct TickSourceRegistration
 {
   TickSourceRegistration() { LibXR::DriverAsyncCondition::RegisterTickSource(); }
 };
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((init_priority(101)))
+#endif
 const TickSourceRegistration TICK_SOURCE_REGISTRATION;
 }  // namespace

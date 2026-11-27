@@ -5,7 +5,8 @@ file(GLOB ${PROJECT_NAME}_DRIVER_C_SOURCES "${CMAKE_CURRENT_LIST_DIR}/*.c")
 target_sources(
   ${PROJECT_NAME}
   PRIVATE ${${PROJECT_NAME}_DRIVER_CPP_SOURCES}
-  PRIVATE ${${PROJECT_NAME}_DRIVER_C_SOURCES})
+  PRIVATE ${${PROJECT_NAME}_DRIVER_C_SOURCES}
+)
 
 target_include_directories(${PROJECT_NAME} PUBLIC ${CMAKE_CURRENT_LIST_DIR})
 
@@ -21,8 +22,10 @@ target_link_options(
 if(_xr_system STREQUAL "none")
   target_link_options(${PROJECT_NAME} INTERFACE "-Wl,--wrap=HAL_IncTick")
   xr_keep_sources_out_of_lto("stm32[a-z0-9]+xx_hal\\.c$")
+  xr_keep_sources_out_of_lto("driver/st/stm32_hal_tick\\.cpp$")
 endif()
 
-# The HAL source that defines both wrapped PCD functions stays out of link-time
-# optimization (see cmake/keep_out_of_lto.cmake).
+# The HAL source that defines both wrapped PCD functions and the wrapper translation unit
+# stay out of link-time optimization (see cmake/keep_out_of_lto.cmake).
 xr_keep_sources_out_of_lto("stm32[a-z0-9]+xx_hal_pcd\\.c$")
+xr_keep_sources_out_of_lto("driver/st/stm32_usb_wrap\\.cpp$")

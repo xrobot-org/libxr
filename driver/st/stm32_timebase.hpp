@@ -16,9 +16,12 @@
  * tick 走，与工程构造 STM32Timebase 还是 STM32TimerTimebase 无关：类选错只影响时间戳
  * （实测：HAL 节拍来自 TIM2、SysTick 归 FreeRTOS 的 H503 工程上，STM32Timebase 的时间戳
  * 每毫秒回退一次），不影响节拍
- * 计数。目标文件的静态构造调用 RegisterTickSource。stm32*_hal.c 与 stm32*_hal_pcd.c
- * 一样不参与 LTO。失效：工程在同一个源文件里定义并调用 HAL_IncTick（--wrap 只替换未定义
- * 的引用），没有节拍，由 DetachTimer 的检测报出。
+ * 计数。目标文件的静态构造调用 RegisterTickSource（init_priority(101)，早于全局
+ * USB 对象构造）。要求启用 `LIBXR_OBJECT_BUILD`（与 `stm32_usb_wrap.cpp` 前提相同，
+ * 让目标文件无条件进入最终链接，避免静态库裁剪丢掉 `TICK_SOURCE_REGISTRATION`）。
+ * `stm32*_hal.c`、`stm32_hal_tick.cpp` 与 `stm32*_hal_pcd.c` 一样不参与 LTO。
+ * 失效：工程在同一个源文件里定义并调用 HAL_IncTick（--wrap 只替换未定义的引用），
+ * 没有节拍，由 DetachTimer 的检测报出。
  * Compiled and linked only when the system layer is none (driver/st/CMakeLists.txt adds
  * -Wl,--wrap=HAL_IncTick; otherwise __real_HAL_IncTick would be an undefined
  * reference). Under FreeRTOS or ThreadX the tick comes from the system layer and
@@ -28,10 +31,13 @@
  * constructed STM32Timebase or STM32TimerTimebase: the wrong class only affects
  * timestamps (measured on an H503 project whose HAL tick runs from TIM2 while FreeRTOS
  * owns SysTick: STM32Timebase stepped back once per millisecond), not the tick count.
- * Static construction of its object file calls RegisterTickSource. stm32*_hal.c stays out
- * of LTO like stm32*_hal_pcd.c. Failure: the project defines and calls HAL_IncTick in the
- * same source file (--wrap replaces undefined references only); there is then no tick,
- * and DetachTimer's check reports it.
+ * Static construction (init_priority(101), ahead of global USB objects) registers the
+ * tick source. Requires `LIBXR_OBJECT_BUILD` (same precondition as `stm32_usb_wrap.cpp`)
+ * so `stm32_hal_tick.cpp.obj` is linked unconditionally and `TICK_SOURCE_REGISTRATION` is
+ * never dropped by a static archive linker pass. `stm32*_hal.c`, `stm32_hal_tick.cpp`
+ * and `stm32*_hal_pcd.c` stay out of LTO. Failure: the project defines and calls
+ * HAL_IncTick in the same source file (--wrap replaces undefined references only); there
+ * is then no tick, and DetachTimer's check reports it.
  */
 extern "C" void __wrap_HAL_IncTick(void);
 #endif

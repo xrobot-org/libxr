@@ -1,14 +1,15 @@
 # --wrap replaces a symbol when the linker resolves it. With link-time optimization the
 # compiler can bind a call to the wrapped function before the linker sees it (a direct
 # call or inlined code), and the wrapper is skipped for that call; which calls are
-# affected changes with the project and the optimization level. The source that defines
-# a wrapped function is therefore compiled without LTO in every target of the project,
-# which leaves every reference to it to the linker; its callers and LibXR itself can stay
-# in LTO.
+# affected changes with the project and the optimization level. Both the source that
+# defines a wrapped function and the __wrap_* wrapper translation unit itself are
+# compiled without LTO in every target of the project, leaving every reference and the
+# wrap glue to the linker.
 #
-# xr_keep_sources_out_of_lto(<regex>): every source of the project whose path matches
-# <regex> gets -fno-lto. The patterns are collected and applied once, at the end of the
-# configuration (CMake 3.19), so that targets created after LibXR are seen as well.
+# xr_keep_sources_out_of_lto(<regex>): every source of the project whose normalized
+# absolute path matches <regex> (case-insensitively) gets -fno-lto. The patterns are
+# collected and applied once, at the end of the configuration (CMake 3.19), so that
+# targets created after LibXR are seen as well.
 
 function(_xr_apply_no_lto)
   if(NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
@@ -25,7 +26,11 @@ function(_xr_apply_no_lto)
   while(_pending)
     list(GET _pending 0 _dir)
     list(REMOVE_AT _pending 0)
-    get_property(_subdirs DIRECTORY "${_dir}" PROPERTY SUBDIRECTORIES)
+    get_property(
+      _subdirs
+      DIRECTORY "${_dir}"
+      PROPERTY SUBDIRECTORIES
+    )
     list(APPEND _dirs ${_subdirs})
     list(APPEND _pending ${_subdirs})
   endwhile()
@@ -33,7 +38,11 @@ function(_xr_apply_no_lto)
   # The matching sources, in whichever target the project compiles them.
   set(_files "")
   foreach(_dir IN LISTS _dirs)
-    get_property(_targets DIRECTORY "${_dir}" PROPERTY BUILDSYSTEM_TARGETS)
+    get_property(
+      _targets
+      DIRECTORY "${_dir}"
+      PROPERTY BUILDSYSTEM_TARGETS
+    )
     foreach(_target IN LISTS _targets)
       get_target_property(_type ${_target} TYPE)
       set(_sources "")
@@ -48,9 +57,15 @@ function(_xr_apply_no_lto)
         list(APPEND _sources ${_interface})
       endif()
       foreach(_source IN LISTS _sources)
+        if(_source MATCHES "^\\$<")
+          continue()
+        endif()
+        get_filename_component(_file "${_source}" ABSOLUTE BASE_DIR "${_dir}")
+        string(REPLACE "\\" "/" _file_norm "${_file}")
+        string(TOLOWER "${_file_norm}" _file_lower)
         foreach(_pattern IN LISTS _patterns)
-          if(_source MATCHES "${_pattern}")
-            get_filename_component(_file "${_source}" ABSOLUTE BASE_DIR "${_dir}")
+          string(TOLOWER "${_pattern}" _pat_lower)
+          if(_file_lower MATCHES "${_pat_lower}")
             list(APPEND _files "${_file}")
           endif()
         endforeach()
