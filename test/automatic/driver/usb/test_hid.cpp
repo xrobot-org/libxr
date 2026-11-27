@@ -1008,11 +1008,14 @@ void TestSlotCounts()
 
 }  // namespace
 
-void test_usb_hid_enum() { TestEnumeration(); }
-void test_usb_hid_requests() { TestRequests(); }
-void test_usb_hid_in() { TestInput(); }
-void test_usb_hid_out() { TestOutput(); }
-void test_usb_hid_bind_fail() { TestBindFailure(); }
-void test_usb_hid_unbind() { TestUnbindInFlight(); }
-void test_usb_hid_threads() { TestThreads(); }
-void test_usb_hid_slots() { TestSlotCounts(); }
+void test_usb_hid()
+{
+  TestEnumeration();
+  TestRequests();
+  TestInput();
+  TestOutput();
+  TestBindFailure();
+  TestUnbindInFlight();
+  TestThreads();
+  TestSlotCounts();
+}

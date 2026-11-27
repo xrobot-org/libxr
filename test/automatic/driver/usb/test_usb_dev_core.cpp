@@ -1552,25 +1552,22 @@ void TestThreads()
 
 }  // namespace
 
-void test_usb_dev_core_enum() { TestEnumeration(); }
-void test_usb_dev_core_standard() { TestStandardRequests(); }
-void test_usb_dev_core_high_speed() { TestHighSpeedAndBos(); }
-void test_usb_dev_core_control() { TestControlTransfers(); }
-void test_usb_dev_core_replace() { TestSetupReplaces(); }
-void test_usb_dev_core_lifecycle()
+void test_usb_dev_core()
 {
+  TestEnumeration();
+  TestStandardRequests();
+  TestHighSpeedAndBos();
+  TestControlTransfers();
+  TestSetupReplaces();
   TestResetAndDisconnect();
   TestSuspendSofService();
-}
-void test_usb_dev_core_stop_fail() { TestStopFailure(); }
-void test_usb_dev_core_bind_fail() { TestBindFailure(); }
-void test_usb_dev_core_early_status() { TestEarlyStatusOut(); }
-void test_usb_dev_core_late_completion() { TestLateCompletion(); }
-void test_usb_dev_core_synch_frame() { TestSynchFrame(); }
-void test_usb_dev_core_no_allocation() { TestNoAllocation(); }
-void test_usb_dev_core_threads() { TestThreads(); }
-void test_usb_dev_core_async()
-{
+  TestStopFailure();
+  TestBindFailure();
+  TestEarlyStatusOut();
+  TestLateCompletion();
+  TestSynchFrame();
+  TestNoAllocation();
+  TestThreads();
   TestSetupLatchedBeforeStart(false);
   TestSetupLatchedBeforeStart(true);
   TestEp0IndirectNewReply();

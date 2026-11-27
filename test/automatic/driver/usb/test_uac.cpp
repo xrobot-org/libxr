@@ -955,12 +955,15 @@ void TestSlotCounts()
 
 }  // namespace
 
-void test_usb_uac_enum() { TestEnumeration(); }
-void test_usb_uac_stream() { TestStream(); }
-void test_usb_uac_requests() { TestRequests(); }
-void test_usb_uac_pacing() { TestPacing(); }
-void test_usb_uac_bind_fail() { TestBindFailure(); }
-void test_usb_uac_unbind() { TestUnbindInFlight(); }
-void test_usb_uac_set_interface() { TestSetInterface(); }
-void test_usb_uac_threads() { TestThreads(); }
-void test_usb_uac_slots() { TestSlotCounts(); }
+void test_usb_uac()
+{
+  TestEnumeration();
+  TestStream();
+  TestRequests();
+  TestPacing();
+  TestBindFailure();
+  TestUnbindInFlight();
+  TestSetInterface();
+  TestThreads();
+  TestSlotCounts();
+}

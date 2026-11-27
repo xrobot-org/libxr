@@ -2331,22 +2331,22 @@ void TestV2Jtag() { RunDapJtagSuite<V2Bench>(false); }
 
 }  // namespace
 
-void test_usb_dap_v1_enum() { TestV1Enumeration(); }
-void test_usb_dap_v1_commands() { TestV1Commands(); }
-void test_usb_dap_v1_bind_fail() { TestV1BindFailure(); }
-void test_usb_dap_v1_unbind() { TestV1UnbindInFlight(); }
-void test_usb_dap_v1_threads() { TestV1Threads(); }
-void test_usb_dap_v2_enum() { TestV2Enumeration(); }
-void test_usb_dap_v2_commands() { TestV2Commands(); }
-void test_usb_dap_v2_zlp() { TestV2ClosingZlp(); }
-void test_usb_dap_v2_bind_fail() { TestV2BindFailure(); }
-void test_usb_dap_v2_unbind() { TestV2UnbindInFlight(); }
-void test_usb_dap_v2_threads()
+void test_usb_dap()
 {
+  TestV1Enumeration();
+  TestV1Commands();
+  TestV1BindFailure();
+  TestV1UnbindInFlight();
+  TestV1Threads();
+  TestV2Enumeration();
+  TestV2Commands();
+  TestV2ClosingZlp();
+  TestV2BindFailure();
+  TestV2UnbindInFlight();
   TestV2Threads();
   TestV2RebindRace();
+  TestV1SlotCounts();
+  TestV2SlotCounts();
+  TestV1Jtag();
+  TestV2Jtag();
 }
-void test_usb_dap_v1_slots() { TestV1SlotCounts(); }
-void test_usb_dap_v2_slots() { TestV2SlotCounts(); }
-void test_usb_dap_v1_jtag() { TestV1Jtag(); }
-void test_usb_dap_v2_jtag() { TestV2Jtag(); }

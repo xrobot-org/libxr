@@ -1301,24 +1301,18 @@ void TestTestClassSlots()
 
 }  // namespace
 
-void test_usb_cdc_enum() { TestEnumeration(); }
-void test_usb_cdc_requests()
+void test_usb_cdc()
 {
+  TestEnumeration();
   TestRequests();
   TestCdcToUart();
-}
-void test_usb_cdc_tx() { TestTransmit(); }
-void test_usb_cdc_rx() { TestReceive(); }
-void test_usb_cdc_test_classes() { TestTestClasses(); }
-void test_usb_cdc_bind_fail() { TestBindFailure(); }
-void test_usb_cdc_unbind() { TestUnbindInFlight(); }
-void test_usb_cdc_threads()
-{
+  TestTransmit();
+  TestReceive();
+  TestTestClasses();
+  TestBindFailure();
+  TestUnbindInFlight();
   TestThreads();
   TestReceiveRace();
-}
-void test_usb_cdc_slots()
-{
   TestSlotCounts();
   TestTestClassSlots();
 }

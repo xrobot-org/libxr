@@ -557,10 +557,6 @@ void test_usb_ep_pool()
   CheckGetRelease();
   CheckEndpoint0();
   CheckFindEndpoint();
-}
-
-void test_usb_ep_pool_query()
-{
   CheckQueryValues();
   CheckQueryMatchesConfigure();
 }

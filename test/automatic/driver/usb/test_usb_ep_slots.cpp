@@ -1029,10 +1029,6 @@ void test_usb_ep_slots()
   CheckFinishLent();
   CheckSingleSlot();
   CheckEnablePrecondition();
-}
-
-void test_usb_ep_slots_threads()
-{
   CheckDisableEnableBetweenLendAndQueue(true);
   CheckDisableEnableBetweenLendAndQueue(false);
   CheckStress(2U, 1U);

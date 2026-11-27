@@ -398,22 +398,23 @@ void TestTickCount()
 
 }  // namespace
 
-void test_usb_detach_timer_states()
+void test_usb_detach_timer()
 {
   TestDetachWithoutAttach();
   TestHaltAfterTimePassed();
   TestTickCount();
-}
-void test_usb_detach_timer_reset() { TestResetAttachesFromTick(); }
-void test_usb_detach_timer_start() { TestStartDuringDetach(); }
-void test_usb_detach_timer_stop() { TestStopCancelsAttach(); }
-void test_usb_detach_timer_keep_count() { TestResetDuringDetachKeepsCount(); }
-void test_usb_detach_timer_no_busy() { TestNoBusy(); }
-void test_usb_detach_timer_defer()
-{
+  TestResetAttachesFromTick();
+  TestStartDuringDetach();
+  TestStopCancelsAttach();
+  TestResetDuringDetachKeepsCount();
+  TestNoBusy();
   TestDeferWithoutPend();
   TestDetachDuringRetry();
 }
-void test_usb_detach_timer_second_source() { TestSecondRegistrationFatal(); }
-void test_usb_detach_timer_no_tick() { TestMissingTickCheck(); }
-void test_usb_detach_timer_poll_isr() { TestPollInIsrWithoutPendFatal(); }
+
+void test_usb_detach_timer_fatal()
+{
+  TestSecondRegistrationFatal();
+  TestMissingTickCheck();
+  TestPollInIsrWithoutPendFatal();
+}

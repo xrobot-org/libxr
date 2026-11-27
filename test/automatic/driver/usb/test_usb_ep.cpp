@@ -4289,8 +4289,6 @@ void CheckStopsAgainstThreads(bool direct, bool pend)
   irq.join();
 }
 
-}  // namespace
-
 /// 一个服务区间的包数：上限、类型、速度、包长、槽和后端上限 / Packets per service
 /// interval: bound, type, speed, packet size, slot and backend limits
 void CheckIntervalPackets()
@@ -4414,7 +4412,7 @@ void CheckIntervalPackets()
   static_assert(Endpoint::PacketSizeField(64U, 1U) == 64U);
 }
 
-void test_usb_ep_configure()
+void CheckConfigure()
 {
   CheckPacketSizes();
   CheckSlotsAndLimits();
@@ -5052,8 +5050,11 @@ void CheckMostSlots()
   TEST_ASSERT(rec.seen.size() == Endpoint::MAX_SLOTS);
 }
 
-void test_usb_ep_in()
+}  // namespace
+
+void test_usb_ep()
 {
+  CheckConfigure();
   for (const uint8_t limit :
        {uint8_t{1U}, uint8_t{2U}, uint8_t{3U}, uint8_t{4U}, uint8_t{9U}})
   {
@@ -5089,17 +5090,9 @@ void test_usb_ep_in()
   CheckZeroLength();
   CheckInReturnCodes();
   CheckInWhileStalled();
-}
-
-void test_usb_ep_out()
-{
   CheckOutBasic();
   CheckOutLengths();
   CheckOutStale();
-}
-
-void test_usb_ep_zlp()
-{
   CheckZlpSent(false);
   CheckZlpSent(true);
   CheckZlpNotNeeded();
@@ -5110,10 +5103,6 @@ void test_usb_ep_zlp()
   CheckZlpOnWireStopped(ErrorCode::ABORTED);
   CheckZlpOwedDataFails();
   CheckZlpStartFails();
-}
-
-void test_usb_ep_stop()
-{
   CheckCloseIdle();
   CheckCloseInFlight(ErrorCode::ABORTED, 4U);
   CheckCloseInFlight(ErrorCode::OK, 10U);
@@ -5122,77 +5111,12 @@ void test_usb_ep_stop()
   CheckStallIdle();
   CheckStallInFlight();
   CheckClearStallIdle();
-}
-
-void test_usb_ep_stop_fail()
-{
   for (const bool direct : {true, false})
   {
     CheckStopFails(Ender::FLUSH, direct);
     CheckStopFails(Ender::STALL, direct);
     CheckStopFails(Ender::CLOSE, direct);
   }
-}
-
-void test_usb_ep_async_table()
-{
-  for (const bool direct : {true, false})
-  {
-    CheckRowsWithoutStop(direct);
-    CheckRowInFlight(direct);
-    CheckRowsWithPendingStop(direct);
-    CheckRowsWithFailedStop(direct);
-  }
-}
-
-void test_usb_ep_async_chains()
-{
-  for (const bool direct : {true, false})
-  {
-    CheckDeferredChains(direct);
-    CheckOneSlotRebind(direct);
-    CheckHardwareConfig(direct);
-  }
-}
-
-void test_usb_ep_async_late()
-{
-  for (const bool direct : {true, false})
-  {
-    CheckLateAfterStop(direct);
-    CheckOneCallbackPerRequest(direct);
-  }
-}
-
-void test_usb_ep_async_reset()
-{
-  for (const bool direct : {true, false})
-  {
-    CheckResetWithDeferredSteps(direct);
-    CheckTimeoutSamePass(direct);
-  }
-}
-
-void test_usb_ep_async_tick()
-{
-  CheckTickStops();
-  CheckTickWhileOwnerServes();
-  CheckPollOnlyPass();
-}
-
-void test_usb_ep_async_death() { CheckContractAsserts(); }
-
-void test_usb_ep_async_threads()
-{
-  for (const bool direct : {true, false})
-  {
-    CheckStopsAgainstThreads(direct, false);
-    CheckStopsAgainstThreads(direct, true);
-  }
-}
-
-void test_usb_ep_reentry()
-{
   CheckHeldStart();
   CheckResubmitInCallback(false);
   CheckResubmitInCallback(true);
@@ -5206,12 +5130,7 @@ void test_usb_ep_reentry()
   CheckEndInCompletionCallback(Ender::CLOSE);
   CheckStallInStoppedCallback();
   CheckLifecycleOnOtherEndpoint();
-}
-
-void test_usb_ep_errors() { CheckHardwareErrors(); }
-
-void test_usb_ep_service()
-{
+  CheckHardwareErrors();
   CheckGate();
   CheckInterruptWins();
   CheckInterruptWhileThreadOwns();
@@ -5220,12 +5139,31 @@ void test_usb_ep_service()
   CheckRegister();
   CheckPassOrder();
   CheckRepeatedDeviceBit();
-}
-
-void test_usb_ep_threads()
-{
   CheckThreads(false);
   CheckThreads(true);
   CheckReceiveAgainstClose(false);
   CheckReceiveAgainstClose(true);
+  for (const bool direct : {true, false})
+  {
+    CheckRowsWithoutStop(direct);
+    CheckRowInFlight(direct);
+    CheckRowsWithPendingStop(direct);
+    CheckRowsWithFailedStop(direct);
+    CheckDeferredChains(direct);
+    CheckOneSlotRebind(direct);
+    CheckHardwareConfig(direct);
+    CheckLateAfterStop(direct);
+    CheckOneCallbackPerRequest(direct);
+    CheckResetWithDeferredSteps(direct);
+    CheckTimeoutSamePass(direct);
+  }
+  CheckTickStops();
+  CheckTickWhileOwnerServes();
+  CheckPollOnlyPass();
+  CheckContractAsserts();
+  for (const bool direct : {true, false})
+  {
+    CheckStopsAgainstThreads(direct, false);
+    CheckStopsAgainstThreads(direct, true);
+  }
 }

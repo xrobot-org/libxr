@@ -1172,13 +1172,16 @@ void TestThreads()
 
 }  // namespace
 
-void test_usb_dfu_enum() { TestEnumeration(); }
-void test_usb_dfu_runtime() { TestRuntimeRequests(); }
-void test_usb_dfu_runtime_jump() { TestRuntimeJump(); }
-void test_usb_dfu_download() { TestDownload(); }
-void test_usb_dfu_poll() { TestPollWait(); }
-void test_usb_dfu_status_stage() { TestStatusStage(); }
-void test_usb_dfu_bind_fail() { TestBindFail(); }
-void test_usb_dfu_unbind() { TestUnbind(); }
-void test_usb_dfu_winusb() { TestWinUsb(); }
-void test_usb_dfu_threads() { TestThreads(); }
+void test_usb_dfu()
+{
+  TestEnumeration();
+  TestRuntimeRequests();
+  TestRuntimeJump();
+  TestDownload();
+  TestPollWait();
+  TestStatusStage();
+  TestBindFail();
+  TestUnbind();
+  TestWinUsb();
+  TestThreads();
+}

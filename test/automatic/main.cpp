@@ -94,129 +94,19 @@ void test_linux_uart_partial_disconnect();
 void test_linux_uart_initial_open_recovery();
 void test_slot_pool();
 void test_usb_ep_slots();
-void test_usb_ep_slots_threads();
-void test_usb_ep_configure();
-void test_usb_ep_in();
-void test_usb_ep_out();
-void test_usb_ep_zlp();
-void test_usb_ep_stop();
-void test_usb_ep_stop_fail();
-void test_usb_ep_reentry();
-void test_usb_ep_errors();
-void test_usb_ep_service();
-void test_usb_ep_threads();
-void test_usb_ep_async_table();
-void test_usb_ep_async_chains();
-void test_usb_ep_async_late();
-void test_usb_ep_async_reset();
-void test_usb_ep_async_tick();
-void test_usb_ep_async_death();
-void test_usb_ep_async_threads();
+void test_usb_ep();
 void test_usb_ep_pool();
-void test_usb_ep_pool_query();
-void test_usb_dev_core_enum();
-void test_usb_dev_core_standard();
-void test_usb_dev_core_high_speed();
-void test_usb_dev_core_control();
-void test_usb_dev_core_replace();
-void test_usb_dev_core_lifecycle();
-void test_usb_dev_core_stop_fail();
-void test_usb_dev_core_bind_fail();
-void test_usb_dev_core_early_status();
-void test_usb_dev_core_late_completion();
-void test_usb_dev_core_synch_frame();
-void test_usb_dev_core_no_allocation();
-void test_usb_dev_core_threads();
-void test_usb_dev_core_async();
-void test_usb_cdc_enum();
-void test_usb_cdc_requests();
-void test_usb_cdc_tx();
-void test_usb_cdc_rx();
-void test_usb_cdc_test_classes();
-void test_usb_cdc_bind_fail();
-void test_usb_cdc_unbind();
-void test_usb_cdc_threads();
-void test_usb_cdc_slots();
-void test_usb_uac_enum();
-void test_usb_uac_stream();
-void test_usb_uac_requests();
-void test_usb_uac_pacing();
-void test_usb_uac_bind_fail();
-void test_usb_uac_unbind();
-void test_usb_uac_set_interface();
-void test_usb_uac_threads();
-void test_usb_uac_slots();
-void test_usb_hid_enum();
-void test_usb_hid_requests();
-void test_usb_hid_in();
-void test_usb_hid_out();
-void test_usb_hid_bind_fail();
-void test_usb_hid_unbind();
-void test_usb_hid_threads();
-void test_usb_hid_slots();
-void test_usb_dfu_enum();
-void test_usb_dfu_runtime();
-void test_usb_dfu_runtime_jump();
-void test_usb_dfu_download();
-void test_usb_dfu_poll();
-void test_usb_dfu_status_stage();
-void test_usb_dfu_bind_fail();
-void test_usb_dfu_unbind();
-void test_usb_dfu_winusb();
-void test_usb_dfu_threads();
-void test_usb_gsusb_enum();
-void test_usb_gsusb_requests();
-void test_usb_gsusb_host_frames();
-void test_usb_gsusb_multi_packet();
-void test_usb_gsusb_to_host();
+void test_usb_dev_core();
+void test_usb_cdc();
+void test_usb_uac();
+void test_usb_hid();
+void test_usb_dfu();
+void test_usb_gsusb();
 void test_usb_gsusb_user_id();
-void test_usb_gsusb_bind_fail();
-void test_usb_gsusb_unbind();
-void test_usb_gsusb_threads();
-void test_usb_gsusb_slots();
-void test_usb_dap_v1_enum();
-void test_usb_dap_v1_commands();
-void test_usb_dap_v1_bind_fail();
-void test_usb_dap_v1_unbind();
-void test_usb_dap_v1_threads();
-void test_usb_dap_v2_enum();
-void test_usb_dap_v2_commands();
-void test_usb_dap_v2_zlp();
-void test_usb_dap_v2_bind_fail();
-void test_usb_dap_v2_unbind();
-void test_usb_dap_v2_threads();
-void test_usb_dap_v1_slots();
-void test_usb_dap_v2_slots();
-void test_usb_dap_v1_jtag();
-void test_usb_dap_v2_jtag();
-void test_usb_detach_timer_states();
-void test_usb_detach_timer_reset();
-void test_usb_detach_timer_start();
-void test_usb_detach_timer_stop();
-void test_usb_detach_timer_keep_count();
-void test_usb_detach_timer_no_busy();
-void test_usb_detach_timer_defer();
-void test_usb_detach_timer_second_source();
-void test_usb_detach_timer_no_tick();
-void test_usb_detach_timer_poll_isr();
-void test_usb_fsdev_control();
-void test_usb_fsdev_bulk();
-void test_usb_fsdev_stop();
-void test_usb_fsdev_detach();
-void test_usb_fsdev_setup();
-void test_usb_fsdev_clear_out();
-void test_usb_fsdev_clear_in();
-void test_usb_fsdev_clear_halted();
-void test_usb_fsdev_clear_race();
-void test_usb_fsdev_iso_in();
-void test_usb_fsdev_iso_out();
-void test_usb_fsdev_iso_stop();
-void test_usb_fsdev_iso_other();
-void test_usb_fsdev_iso_stall();
-void test_usb_fsdev_iso_reset();
-void test_usb_fsdev_iso_window();
-void test_usb_fsdev_ep0_gate();
-void test_usb_fsdev_iso_drd();
+void test_usb_dap();
+void test_usb_detach_timer();
+void test_usb_detach_timer_fatal();
+void test_usb_fsdev();
 
 namespace LinuxSharedTopicBench
 {
@@ -334,157 +224,22 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"linux_uart_tests",
      {"uart_initial_recovery", &RunVoidEntry<test_linux_uart_initial_open_recovery>,
       true}},
-    {"usb_tests", {"ep_slots", &RunVoidEntry<test_usb_ep_slots>, false}},
-    {"usb_tests", {"ep_slots_threads", &RunVoidEntry<test_usb_ep_slots_threads>, false}},
-    {"usb_tests", {"ep_configure", &RunVoidEntry<test_usb_ep_configure>, false}},
-    {"usb_tests", {"ep_in", &RunVoidEntry<test_usb_ep_in>, false}},
-    {"usb_tests", {"ep_out", &RunVoidEntry<test_usb_ep_out>, false}},
-    {"usb_tests", {"ep_zlp", &RunVoidEntry<test_usb_ep_zlp>, false}},
-    {"usb_tests", {"ep_stop", &RunVoidEntry<test_usb_ep_stop>, false}},
-    {"usb_tests", {"ep_stop_fail", &RunVoidEntry<test_usb_ep_stop_fail>, false}},
-    {"usb_tests", {"ep_reentry", &RunVoidEntry<test_usb_ep_reentry>, false}},
-    {"usb_tests", {"ep_errors", &RunVoidEntry<test_usb_ep_errors>, false}},
-    {"usb_tests", {"ep_service", &RunVoidEntry<test_usb_ep_service>, false}},
-    {"usb_tests", {"ep_threads", &RunVoidEntry<test_usb_ep_threads>, false}},
-    {"usb_tests", {"ep_async_table", &RunVoidEntry<test_usb_ep_async_table>, false}},
-    {"usb_tests", {"ep_async_chains", &RunVoidEntry<test_usb_ep_async_chains>, false}},
-    {"usb_tests", {"ep_async_late", &RunVoidEntry<test_usb_ep_async_late>, false}},
-    {"usb_tests", {"ep_async_reset", &RunVoidEntry<test_usb_ep_async_reset>, false}},
-    {"usb_tests", {"ep_async_tick", &RunVoidEntry<test_usb_ep_async_tick>, false}},
-    {"usb_tests", {"ep_async_death", &RunVoidEntry<test_usb_ep_async_death>, false}},
-    {"usb_tests", {"ep_async_threads", &RunVoidEntry<test_usb_ep_async_threads>, false}},
-    {"usb_tests", {"ep_pool", &RunVoidEntry<test_usb_ep_pool>, false}},
-    {"usb_tests", {"ep_pool_query", &RunVoidEntry<test_usb_ep_pool_query>, false}},
-    {"usb_tests", {"dev_core_enum", &RunVoidEntry<test_usb_dev_core_enum>, false}},
-    {"usb_tests",
-     {"dev_core_standard", &RunVoidEntry<test_usb_dev_core_standard>, false}},
-    {"usb_tests",
-     {"dev_core_high_speed", &RunVoidEntry<test_usb_dev_core_high_speed>, false}},
-    {"usb_tests", {"dev_core_control", &RunVoidEntry<test_usb_dev_core_control>, false}},
-    {"usb_tests", {"dev_core_replace", &RunVoidEntry<test_usb_dev_core_replace>, false}},
-    {"usb_tests",
-     {"dev_core_lifecycle", &RunVoidEntry<test_usb_dev_core_lifecycle>, false}},
-    {"usb_tests",
-     {"dev_core_stop_fail", &RunVoidEntry<test_usb_dev_core_stop_fail>, false}},
-    {"usb_tests",
-     {"dev_core_bind_fail", &RunVoidEntry<test_usb_dev_core_bind_fail>, false}},
-    {"usb_tests",
-     {"dev_core_early_status", &RunVoidEntry<test_usb_dev_core_early_status>, false}},
-    {"usb_tests",
-     {"dev_core_late_completion", &RunVoidEntry<test_usb_dev_core_late_completion>,
-      false}},
-    {"usb_tests",
-     {"dev_core_synch_frame", &RunVoidEntry<test_usb_dev_core_synch_frame>, false}},
-    {"usb_tests",
-     {"dev_core_no_allocation", &RunVoidEntry<test_usb_dev_core_no_allocation>, false}},
-    {"usb_tests", {"dev_core_threads", &RunVoidEntry<test_usb_dev_core_threads>, false}},
-    {"usb_tests", {"dev_core_async", &RunVoidEntry<test_usb_dev_core_async>, false}},
-    {"usb_tests", {"cdc_enum", &RunVoidEntry<test_usb_cdc_enum>, false}},
-    {"usb_tests", {"cdc_requests", &RunVoidEntry<test_usb_cdc_requests>, false}},
-    {"usb_tests", {"cdc_tx", &RunVoidEntry<test_usb_cdc_tx>, false}},
-    {"usb_tests", {"cdc_rx", &RunVoidEntry<test_usb_cdc_rx>, false}},
-    {"usb_tests", {"cdc_test_classes", &RunVoidEntry<test_usb_cdc_test_classes>, false}},
-    {"usb_tests", {"cdc_bind_fail", &RunVoidEntry<test_usb_cdc_bind_fail>, false}},
-    {"usb_tests", {"cdc_unbind", &RunVoidEntry<test_usb_cdc_unbind>, false}},
-    {"usb_tests", {"cdc_threads", &RunVoidEntry<test_usb_cdc_threads>, false}},
-    {"usb_tests", {"cdc_slots", &RunVoidEntry<test_usb_cdc_slots>, false}},
-    {"usb_tests", {"uac_enum", &RunVoidEntry<test_usb_uac_enum>, false}},
-    {"usb_tests", {"uac_stream", &RunVoidEntry<test_usb_uac_stream>, false}},
-    {"usb_tests", {"uac_requests", &RunVoidEntry<test_usb_uac_requests>, false}},
-    {"usb_tests", {"uac_pacing", &RunVoidEntry<test_usb_uac_pacing>, false}},
-    {"usb_tests", {"uac_bind_fail", &RunVoidEntry<test_usb_uac_bind_fail>, false}},
-    {"usb_tests", {"uac_unbind", &RunVoidEntry<test_usb_uac_unbind>, false}},
-    {"usb_tests",
-     {"uac_set_interface", &RunVoidEntry<test_usb_uac_set_interface>, false}},
-    {"usb_tests", {"uac_threads", &RunVoidEntry<test_usb_uac_threads>, false}},
-    {"usb_tests", {"uac_slots", &RunVoidEntry<test_usb_uac_slots>, false}},
-    {"usb_tests", {"hid_enum", &RunVoidEntry<test_usb_hid_enum>, false}},
-    {"usb_tests", {"hid_requests", &RunVoidEntry<test_usb_hid_requests>, false}},
-    {"usb_tests", {"hid_in", &RunVoidEntry<test_usb_hid_in>, false}},
-    {"usb_tests", {"hid_out", &RunVoidEntry<test_usb_hid_out>, false}},
-    {"usb_tests", {"hid_bind_fail", &RunVoidEntry<test_usb_hid_bind_fail>, false}},
-    {"usb_tests", {"hid_unbind", &RunVoidEntry<test_usb_hid_unbind>, false}},
-    {"usb_tests", {"hid_threads", &RunVoidEntry<test_usb_hid_threads>, false}},
-    {"usb_tests", {"hid_slots", &RunVoidEntry<test_usb_hid_slots>, false}},
-    {"usb_tests", {"dfu_enum", &RunVoidEntry<test_usb_dfu_enum>, false}},
-    {"usb_tests", {"dfu_runtime", &RunVoidEntry<test_usb_dfu_runtime>, false}},
-    {"usb_tests", {"dfu_runtime_jump", &RunVoidEntry<test_usb_dfu_runtime_jump>, false}},
-    {"usb_tests", {"dfu_download", &RunVoidEntry<test_usb_dfu_download>, false}},
-    {"usb_tests", {"dfu_poll", &RunVoidEntry<test_usb_dfu_poll>, false}},
-    {"usb_tests", {"dfu_status_stage", &RunVoidEntry<test_usb_dfu_status_stage>, false}},
-    {"usb_tests", {"dfu_bind_fail", &RunVoidEntry<test_usb_dfu_bind_fail>, false}},
-    {"usb_tests", {"dfu_unbind", &RunVoidEntry<test_usb_dfu_unbind>, false}},
-    {"usb_tests", {"dfu_winusb", &RunVoidEntry<test_usb_dfu_winusb>, false}},
-    {"usb_tests", {"dfu_threads", &RunVoidEntry<test_usb_dfu_threads>, false}},
-    {"usb_tests", {"gsusb_enum", &RunVoidEntry<test_usb_gsusb_enum>, false}},
-    {"usb_tests", {"gsusb_requests", &RunVoidEntry<test_usb_gsusb_requests>, false}},
-    {"usb_tests",
-     {"gsusb_host_frames", &RunVoidEntry<test_usb_gsusb_host_frames>, false}},
-    {"usb_tests",
-     {"gsusb_multi_packet", &RunVoidEntry<test_usb_gsusb_multi_packet>, false}},
-    {"usb_tests", {"gsusb_to_host", &RunVoidEntry<test_usb_gsusb_to_host>, false}},
+    {"usb_tests", {"usb_ep_slots", &RunVoidEntry<test_usb_ep_slots>, false}},
+    {"usb_tests", {"usb_ep", &RunVoidEntry<test_usb_ep>, false}},
+    {"usb_tests", {"usb_ep_pool", &RunVoidEntry<test_usb_ep_pool>, false}},
+    {"usb_tests", {"usb_dev_core", &RunVoidEntry<test_usb_dev_core>, false}},
+    {"usb_tests", {"usb_cdc", &RunVoidEntry<test_usb_cdc>, false}},
+    {"usb_tests", {"usb_uac", &RunVoidEntry<test_usb_uac>, false}},
+    {"usb_tests", {"usb_hid", &RunVoidEntry<test_usb_hid>, false}},
+    {"usb_tests", {"usb_dfu", &RunVoidEntry<test_usb_dfu>, false}},
+    {"usb_tests", {"usb_gsusb", &RunVoidEntry<test_usb_gsusb>, false}},
     // 改动全局定时任务列表 / Replaces the global timer task list
-    {"usb_tests", {"gsusb_user_id", &RunVoidEntry<test_usb_gsusb_user_id>, true}},
-    {"usb_tests", {"gsusb_bind_fail", &RunVoidEntry<test_usb_gsusb_bind_fail>, false}},
-    {"usb_tests", {"gsusb_unbind", &RunVoidEntry<test_usb_gsusb_unbind>, false}},
-    {"usb_tests", {"gsusb_threads", &RunVoidEntry<test_usb_gsusb_threads>, false}},
-    {"usb_tests", {"gsusb_slots", &RunVoidEntry<test_usb_gsusb_slots>, false}},
-    {"usb_tests", {"dap_v1_enum", &RunVoidEntry<test_usb_dap_v1_enum>, false}},
-    {"usb_tests", {"dap_v1_commands", &RunVoidEntry<test_usb_dap_v1_commands>, false}},
-    {"usb_tests", {"dap_v1_bind_fail", &RunVoidEntry<test_usb_dap_v1_bind_fail>, false}},
-    {"usb_tests", {"dap_v1_unbind", &RunVoidEntry<test_usb_dap_v1_unbind>, false}},
-    {"usb_tests", {"dap_v1_threads", &RunVoidEntry<test_usb_dap_v1_threads>, false}},
-    {"usb_tests", {"dap_v2_enum", &RunVoidEntry<test_usb_dap_v2_enum>, false}},
-    {"usb_tests", {"dap_v2_commands", &RunVoidEntry<test_usb_dap_v2_commands>, false}},
-    {"usb_tests", {"dap_v2_zlp", &RunVoidEntry<test_usb_dap_v2_zlp>, false}},
-    {"usb_tests", {"dap_v2_bind_fail", &RunVoidEntry<test_usb_dap_v2_bind_fail>, false}},
-    {"usb_tests", {"dap_v2_unbind", &RunVoidEntry<test_usb_dap_v2_unbind>, false}},
-    {"usb_tests", {"dap_v2_threads", &RunVoidEntry<test_usb_dap_v2_threads>, false}},
-    {"usb_tests", {"dap_v1_slots", &RunVoidEntry<test_usb_dap_v1_slots>, false}},
-    {"usb_tests", {"dap_v2_slots", &RunVoidEntry<test_usb_dap_v2_slots>, false}},
-    {"usb_tests", {"dap_v1_jtag", &RunVoidEntry<test_usb_dap_v1_jtag>, false}},
-    {"usb_tests", {"dap_v2_jtag", &RunVoidEntry<test_usb_dap_v2_jtag>, false}},
+    {"usb_tests", {"usb_gsusb_user_id", &RunVoidEntry<test_usb_gsusb_user_id>, true}},
+    {"usb_tests", {"usb_dap", &RunVoidEntry<test_usb_dap>, false}},
+    {"usb_tests", {"usb_detach_timer", &RunVoidEntry<test_usb_detach_timer>, false}},
     {"usb_tests",
-     {"detach_timer_states", &RunVoidEntry<test_usb_detach_timer_states>, false}},
-    {"usb_tests",
-     {"detach_timer_reset", &RunVoidEntry<test_usb_detach_timer_reset>, false}},
-    {"usb_tests",
-     {"detach_timer_start", &RunVoidEntry<test_usb_detach_timer_start>, false}},
-    {"usb_tests",
-     {"detach_timer_stop", &RunVoidEntry<test_usb_detach_timer_stop>, false}},
-    {"usb_tests",
-     {"detach_timer_keep_count", &RunVoidEntry<test_usb_detach_timer_keep_count>, false}},
-    {"usb_tests",
-     {"detach_timer_no_busy", &RunVoidEntry<test_usb_detach_timer_no_busy>, false}},
-    {"usb_tests",
-     {"detach_timer_defer", &RunVoidEntry<test_usb_detach_timer_defer>, false}},
-    {"usb_tests",
-     {"detach_timer_second_source", &RunVoidEntry<test_usb_detach_timer_second_source>,
-      true, false}},
-    {"usb_tests",
-     {"detach_timer_no_tick", &RunVoidEntry<test_usb_detach_timer_no_tick>, true, false}},
-    {"usb_tests",
-     {"detach_timer_poll_isr", &RunVoidEntry<test_usb_detach_timer_poll_isr>, true,
-      false}},
-    {"usb_tests", {"fsdev_control", &RunVoidEntry<test_usb_fsdev_control>, false}},
-    {"usb_tests", {"fsdev_bulk", &RunVoidEntry<test_usb_fsdev_bulk>, false}},
-    {"usb_tests", {"fsdev_stop", &RunVoidEntry<test_usb_fsdev_stop>, false}},
-    {"usb_tests", {"fsdev_detach", &RunVoidEntry<test_usb_fsdev_detach>, false}},
-    {"usb_tests", {"fsdev_setup", &RunVoidEntry<test_usb_fsdev_setup>, false}},
-    {"usb_tests", {"fsdev_clear_out", &RunVoidEntry<test_usb_fsdev_clear_out>, false}},
-    {"usb_tests", {"fsdev_clear_in", &RunVoidEntry<test_usb_fsdev_clear_in>, false}},
-    {"usb_tests",
-     {"fsdev_clear_halted", &RunVoidEntry<test_usb_fsdev_clear_halted>, false}},
-    {"usb_tests", {"fsdev_clear_race", &RunVoidEntry<test_usb_fsdev_clear_race>, false}},
-    {"usb_tests", {"fsdev_iso_in", &RunVoidEntry<test_usb_fsdev_iso_in>, false}},
-    {"usb_tests", {"fsdev_iso_out", &RunVoidEntry<test_usb_fsdev_iso_out>, false}},
-    {"usb_tests", {"fsdev_iso_stop", &RunVoidEntry<test_usb_fsdev_iso_stop>, false}},
-    {"usb_tests", {"fsdev_iso_other", &RunVoidEntry<test_usb_fsdev_iso_other>, false}},
-    {"usb_tests", {"fsdev_iso_stall", &RunVoidEntry<test_usb_fsdev_iso_stall>, false}},
-    {"usb_tests", {"fsdev_iso_reset", &RunVoidEntry<test_usb_fsdev_iso_reset>, false}},
-    {"usb_tests", {"fsdev_iso_window", &RunVoidEntry<test_usb_fsdev_iso_window>, false}},
-    {"usb_tests", {"fsdev_ep0_gate", &RunVoidEntry<test_usb_fsdev_ep0_gate>, false}},
-    {"usb_tests", {"fsdev_iso_drd", &RunVoidEntry<test_usb_fsdev_iso_drd>, false}},
+     {"usb_detach_timer_fatal", &RunVoidEntry<test_usb_detach_timer_fatal>, true, false}},
+    {"usb_tests", {"usb_fsdev", &RunVoidEntry<test_usb_fsdev>, false}},
     {"debug_tests", {"jtag_general_gpio", &RunVoidEntry<test_jtag_general_gpio>, false}},
     {"debug_tests", {"jtag_protocol", &RunVoidEntry<test_jtag_protocol>, false}},
     {"debug_tests", {"swd_general_gpio", &RunVoidEntry<test_swd_general_gpio>, false}},

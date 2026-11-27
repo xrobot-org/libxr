@@ -1547,21 +1547,19 @@ void TestBindHelperCount()
 
 }  // namespace
 
-void test_usb_gsusb_enum() { TestEnumeration(); }
-void test_usb_gsusb_requests() { TestRequests(); }
-void test_usb_gsusb_host_frames() { TestHostFrames(); }
-void test_usb_gsusb_multi_packet() { TestMultiPacket(); }
-void test_usb_gsusb_to_host()
+void test_usb_gsusb()
 {
+  TestEnumeration();
+  TestRequests();
+  TestHostFrames();
+  TestMultiPacket();
   TestToHost();
   TestFrameEnd();
-}
-void test_usb_gsusb_user_id() { TestUserId(); }
-void test_usb_gsusb_bind_fail()
-{
   TestBindFailure();
   TestBindHelperCount();
+  TestUnbindInFlight();
+  TestThreads();
+  TestSlotCounts();
 }
-void test_usb_gsusb_unbind() { TestUnbindInFlight(); }
-void test_usb_gsusb_threads() { TestThreads(); }
-void test_usb_gsusb_slots() { TestSlotCounts(); }
+
+void test_usb_gsusb_user_id() { TestUserId(); }

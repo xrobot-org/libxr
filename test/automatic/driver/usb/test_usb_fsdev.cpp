@@ -3603,29 +3603,6 @@ void TestIsoStatusWindow()
   TEST_ASSERT(f.bulk.completes == 1U);
 }
 
-}  // namespace
-
-void test_usb_fsdev_control()
-{
-  TestEnumeration();
-  TestControlWrite();
-  TestStatusOutWithData();
-  TestEp0FastAck();
-  TestEp0EarlyOut();
-}
-
-void TestNakCount();
-
-void test_usb_fsdev_bulk()
-{
-  TestBulk();
-  TestConfigure();
-  TestBusEvents();
-  TestCdcEcho();
-  TestCloseNaks();
-  TestNakCount();
-}
-
 /**
  * @brief CH32：OUT 包等着时有 IN 被 ACK / CH32: an IN is ACKed while an OUT packet waits
  * @note 中断先处理那个 IN 完成，期间主机的下一个 OUT 包被 NAK、把 COUNT_RX 写成 0x3FE。
@@ -3665,8 +3642,21 @@ void TestNakCount()
   Ctl::rx_latch = false;
 }
 
-void test_usb_fsdev_stop()
+}  // namespace
+
+void test_usb_fsdev()
 {
+  TestEnumeration();
+  TestControlWrite();
+  TestStatusOutWithData();
+  TestEp0FastAck();
+  TestEp0EarlyOut();
+  TestBulk();
+  TestConfigure();
+  TestBusEvents();
+  TestCdcEcho();
+  TestCloseNaks();
+  TestNakCount();
   TestStopPending();
   TestStopLatchedCompletion();
   TestStopCompletesInWrite();
@@ -3677,36 +3667,8 @@ void test_usb_fsdev_stop()
   TestStopTimeout();
   TestDeviceStop();
   TestStartDuringReset();
-}
-
-void test_usb_fsdev_detach()
-{
   TestResetDetachHeld();
   TestStopDuringResetDetach();
-}
-
-void test_usb_fsdev_clear_out() { TestClearStallKeepsOut(); }
-void test_usb_fsdev_clear_in() { TestClearStallKeepsIn(); }
-void test_usb_fsdev_clear_halted() { TestClearStallHalted(); }
-void test_usb_fsdev_clear_race() { TestClearStallRace(); }
-void test_usb_fsdev_iso_in() { TestIsoIn(false); }
-void test_usb_fsdev_iso_out() { TestIsoOut(false); }
-void test_usb_fsdev_iso_stop() { TestIsoStop(false); }
-void test_usb_fsdev_iso_other() { TestIsoOtherDirection(); }
-void test_usb_fsdev_iso_stall() { TestIsoStall(); }
-void test_usb_fsdev_iso_reset() { TestIsoBusReset(); }
-void test_usb_fsdev_iso_window() { TestIsoStatusWindow(); }
-void test_usb_fsdev_ep0_gate() { TestEp0BlindOut(); }
-
-void test_usb_fsdev_iso_drd()
-{
-  TestIsoIn(true);
-  TestIsoOut(true);
-  TestIsoStop(true);
-}
-
-void test_usb_fsdev_setup()
-{
   TestSetupWithInCompletion();
   TestSetupInArmWindow();
   TestStopKeepsSetup();
@@ -3716,4 +3678,19 @@ void test_usb_fsdev_setup()
   TestStatusWindow();
   TestStatusWindowEnds();
   TestStatusWindowDataStage();
+  TestClearStallKeepsOut();
+  TestClearStallKeepsIn();
+  TestClearStallHalted();
+  TestClearStallRace();
+  TestIsoIn(false);
+  TestIsoOut(false);
+  TestIsoStop(false);
+  TestIsoOtherDirection();
+  TestIsoStall();
+  TestIsoBusReset();
+  TestIsoStatusWindow();
+  TestEp0BlindOut();
+  TestIsoIn(true);
+  TestIsoOut(true);
+  TestIsoStop(true);
 }
