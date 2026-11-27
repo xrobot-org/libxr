@@ -868,6 +868,14 @@ void TestInput()
     ClearHalt(dev, hw, 0x81U);
     TEST_ASSERT(hw.ep1_in.inflight && hw.ep1_in.LastBytes() == second);
     Drain(dev, hw.ep1_in);
+
+    // 解绑后再发不崩溃、返回 FAILED；重新配置后槽数全部可用 / After unbind returns
+    // FAILED without crashing and restores all slots on rebind
+    SetConfiguration(dev, hw, 0U);
+    TEST_ASSERT(hid.SendInputReport({report.data(), 8U}, false) == ErrorCode::FAILED);
+    SetConfiguration(dev, hw, 1U);
+    TEST_ASSERT(hid.SendInputReport({report.data(), 8U}, false) == ErrorCode::OK);
+    Drain(dev, hw.ep1_in);
   }
 
   // 键盘：按下、六键、幻影状态、松开 / Keyboard: press, six keys, phantom, release

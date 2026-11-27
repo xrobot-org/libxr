@@ -312,8 +312,8 @@ DeviceComposition::DeviceComposition(
         first_interface += item->GetInterfaceCount();
       }
     }
-    winusb_cap_ = new WinUsb::MsOs20BosCapability(
-        BuildWinUsbSet(info, functions, !composite_ && functions == 1U));
+    winusb_cap_ = new WinUsb::MsOs20BosCapability(BuildWinUsbSet(
+        info, functions, !composite_ && config_count_ == 1U && functions == 1U));
     delete[] info;
     bos_.AddCapability(winusb_cap_);
   }

@@ -1141,6 +1141,31 @@ void TestHighSpeedAndBos()
   // 枚举在高速下照常 / Enumeration at high speed works as usual
   Enumerate(dev, hw, Speed::HIGH);
   TEST_ASSERT(hw.ep1_in.MaxPacketSize() == 512U && hw.ep2_out.LastLength() == 512U);
+
+  // 非复合多配置且仅含 1 个 WinUSB 功能时必须用配置子集头，不可退化成设备级格式 /
+  // Multi-config non-composite with 1 WinUSB function must emit Configuration Subset
+  {
+    Hw mhw;
+    TestClass c1;
+    c1.guid = "{01234567-89AB-CDEF-0123-456789ABCDEF}";
+    TestClass c2;
+    FakeUsb mdev(mhw, {{&c1}, {&c2}}, Speed::HIGH, DeviceDescriptor::PacketSize0::SIZE_64,
+                 USBSpec::USB_2_1);
+    mdev.Init(false);
+    mdev.Reset(Speed::HIGH);
+    Bytes mbos = GetDescriptor(mdev, mhw, 15U, 0U, 255U);
+    TEST_ASSERT(mbos.size() >= 5U + 28U);
+    const uint8_t mvendor = mbos[5 + 26];
+    const uint16_t mlen = static_cast<uint16_t>(mbos[5 + 24] | (mbos[5 + 25] << 8U));
+    Bytes mset = ControlIn(mdev, mhw, Make(0xC0U, mvendor, 0U, 7U, 0xFFU));
+    TEST_ASSERT(mset.size() == mlen && mlen == 0x00B2U);
+    // Offset 10..17: Configuration Subset Header (length=8, type=1, bConfigValue=0)
+    // Offset 18..25: Function Subset Header (length=8, type=2, bFirstInterface=0)
+    TEST_ASSERT(mset[10] == 8U && mset[11] == 0U && mset[12] == 1U && mset[13] == 0U &&
+                mset[14] == 0U);
+    TEST_ASSERT(mset[18] == 8U && mset[19] == 0U && mset[20] == 2U && mset[21] == 0U &&
+                mset[22] == 0U);
+  }
 }
 
 /// 类请求的数据阶段，两个方向 / Data stages of class requests, both directions
@@ -1564,6 +1589,29 @@ void TestStopFailure()
     TEST_ASSERT(hw.ep2_out.configures == configures + 1U);
     TEST_ASSERT(hw.ep2_out.starts.size() == starts + 1U && hw.ep2_out.inflight);
     TEST_ASSERT(Configuration(dev, hw) == 1U && dev.resets == 0U);
+  }
+
+  // Stop 因未决停止进入 detach_pending_ 期间收到 OnBusReset：不得重新 Initialize EP0，
+  // 待停止完成后 FinishDetach 再完整收尾 / OnBusReset during detach_pending_ must not
+  // re-open EP0 before FinishDetach runs
+  {
+    Hw hw;
+    TestClass cls;
+    FakeUsb dev(hw, {{&cls}});
+    dev.Init(false);
+    Enumerate(dev, hw);
+    hw.ep2_out.stuck = true;
+    dev.Stop(false);
+    TEST_ASSERT(!dev.Inited() && hw.ep2_out.inflight);
+    const size_t ep0_configs = hw.in0.configures;
+    dev.Reset();
+    TEST_ASSERT(!dev.Inited() && hw.in0.configures == ep0_configs);
+    hw.ep2_out.stuck = false;
+    dev.Irq([&hw](bool isr) { hw.ep2_out.Done(isr, 0U, ErrorCode::ABORTED); });
+    TEST_ASSERT(!dev.Inited() && hw.in0.GetState() == Endpoint::State::DISABLED);
+    dev.Start(false);
+    dev.Reset();
+    TEST_ASSERT(dev.Inited() && hw.in0.GetState() == Endpoint::State::IDLE);
   }
 }
 

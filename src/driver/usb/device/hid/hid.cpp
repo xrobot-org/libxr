@@ -77,9 +77,11 @@ ErrorCode HID::SendInputReport(ConstRawData report, bool in_isr)
     (void)ep->ReleaseSlot(slot);
     return ErrorCode::FAILED;
   }
-  // 绑定时已查过一次请求装得下最长报告。
-  // The bind checked that one request holds the longest report.
-  ASSERT(report.size_ <= slot.data.size_);
+  if (report.size_ > slot.data.size_)
+  {
+    (void)ep->ReleaseSlot(slot);
+    return ErrorCode::FAILED;
+  }
   LibXR::Memory::FastCopy(slot.data.addr_, report.addr_, report.size_);
   // 主机按报告描述符知道报告长度，不需要结尾零长度包；ABORTED 时槽已空闲。
   // The host knows the report length from the report descriptor, so no closing packet;

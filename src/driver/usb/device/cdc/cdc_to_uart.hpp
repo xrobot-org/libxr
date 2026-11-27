@@ -24,7 +24,8 @@ class CDCToUart : public CDCUart
 {
  public:
   /**
-   * @brief 构造并启动两条回调链 / Construct and start both callback chains
+   * @brief 构造并准备两条回调链（首次绑定端点后启动）/ Construct and prepare both
+   *        callback chains (started upon the first endpoint bind)
    * @param data_in_ep_num 数据 IN 端点号 / Data IN endpoint number
    * @param data_out_ep_num 数据 OUT 端点号 / Data OUT endpoint number
    * @param comm_ep_num 通知端点号 / Notification endpoint number
@@ -41,6 +42,9 @@ class CDCToUart : public CDCUart
             size_t tx_queue_size = 5);
 
  protected:
+  /// 基类绑定成功后首次启动两条回调链 / Start both callback chains once after first bind
+  [[nodiscard]] ErrorCode BindEndpoints(EndpointPool& pool, uint8_t first_interface,
+                                        bool in_isr) override;
   /**
    * @brief 把线路编码应用到 UART / Apply the line coding to the UART
    * @note 总是应答，不 STALL。UART 不接受时逐项放宽：先 1 位停止位，再无校验，再 8
@@ -72,6 +76,7 @@ class CDCToUart : public CDCUart
   WriteOperation op_write_uart_;  ///< UART 写 / UART write
   ReadOperation op_read_cdc_;     ///< CDC 读 / CDC read
   ReadOperation op_read_uart_;    ///< UART 读 / UART read
+  bool chains_started_ = false;   ///< 两条回调链已启动 / Both chains have started
 };
 
 }  // namespace LibXR::USB

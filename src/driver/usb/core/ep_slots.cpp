@@ -114,7 +114,7 @@ LibXR::ErrorCode EndpointSlots::ClaimForReceiving(Lend& lend)
 }
 
 LibXR::ErrorCode EndpointSlots::Queue(const Lend& lend, const Request& request,
-                                      bool sending)
+                                      bool sending, size_t max_length)
 {
   if (!Holds(lend))
   {
@@ -135,6 +135,27 @@ LibXR::ErrorCode EndpointSlots::Queue(const Lend& lend, const Request& request,
       ASSERT(!ended);
       return LibXR::ErrorCode::STATE_ERR;
     }
+    if (state == STALE)
+    {
+      if (!ended)
+      {
+        record.stamp.store(lend.stamp + 1U, std::memory_order_release);
+        ended = true;
+      }
+      if (word_.compare_exchange_weak(old, WithState(old, index, FREE),
+                                      std::memory_order_acq_rel,
+                                      std::memory_order_relaxed))
+      {
+        return LibXR::ErrorCode::ABORTED;
+      }
+      continue;
+    }
+    if (!ended && request.length > max_length)
+    {
+      // 非作废槽长度越界：保持 LENT 且不推进戳，调用者可继续释放或按短长度重提。
+      // Oversized length on a valid slot: keep it LENT and leave the stamp intact.
+      return LibXR::ErrorCode::SIZE_ERR;
+    }
     if (!ended)
     {
       // 这次借出到此结束：先推进戳，再改变槽状态。之后只会在 LENT 与 STALE
@@ -144,16 +165,6 @@ LibXR::ErrorCode EndpointSlots::Queue(const Lend& lend, const Request& request,
       // finished by the compare-and-swap below.
       record.stamp.store(lend.stamp + 1U, std::memory_order_release);
       ended = true;
-    }
-    if (state == STALE)
-    {
-      if (word_.compare_exchange_weak(old, WithState(old, index, FREE),
-                                      std::memory_order_acq_rel,
-                                      std::memory_order_relaxed))
-      {
-        return LibXR::ErrorCode::ABORTED;
-      }
-      continue;
     }
     // 槽是 LENT 且戳相符，只有持有者能改变它；release 使这些写先于 owner 在 TakeNext
     // 中的读取。排队序号取自这次比较交换所基于的状态字，所以先后与比较交换的先后一致。

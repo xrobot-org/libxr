@@ -180,12 +180,8 @@ ErrorCode Endpoint::AcquireSlot(Slot& slot)
 
 ErrorCode Endpoint::Submit(const Slot& slot, size_t length, bool zlp, bool in_isr)
 {
-  if (length > MaxTransferSize())
-  {
-    return ErrorCode::SIZE_ERR;
-  }
-  const ErrorCode result =
-      slot_states_.Queue({slot.index_, slot.stamp_}, {length, zlp}, true);
+  const ErrorCode result = slot_states_.Queue({slot.index_, slot.stamp_}, {length, zlp},
+                                              true, MaxTransferSize());
   if (result == ErrorCode::OK)
   {
     NotifyOwner(in_isr);

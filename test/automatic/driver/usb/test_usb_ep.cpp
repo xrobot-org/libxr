@@ -1223,6 +1223,20 @@ void CheckInReturnCodes()
   TEST_ASSERT(r.ep.AcquireSlot(a) == ErrorCode::OK);
   TEST_ASSERT(r.ep.AcquireSlot(b) == ErrorCode::OK);
   TEST_ASSERT(r.rec.seen.size() == 2U);
+
+  // Close 后重绑成更小的 MaxTransferSize：作废的槽以超限长度 Submit 仍必须判 ABORTED
+  // 并归还槽 / After Close + rebind to a smaller MaxTransferSize: submitting a stale
+  // slot with length > new MaxTransferSize must return ABORTED and free the slot
+  Close(r.dev, r.ep);
+  r.ep.limits.max_packets = 1U;
+  TEST_ASSERT(Configure(r.dev, r.ep, Direction::IN, Type::BULK, 64U) == ErrorCode::OK);
+  TEST_ASSERT(r.ep.MaxTransferSize() == 64U);
+  TEST_ASSERT(r.ep.Submit(a, 128U, false, false) == ErrorCode::ABORTED);
+  TEST_ASSERT(r.ep.ReleaseSlot(b) == ErrorCode::OK);
+  TEST_ASSERT(r.ep.AcquireSlot(a) == ErrorCode::OK);
+  TEST_ASSERT(r.ep.AcquireSlot(b) == ErrorCode::OK);
+  TEST_ASSERT(r.ep.ReleaseSlot(a) == ErrorCode::OK);
+  TEST_ASSERT(r.ep.ReleaseSlot(b) == ErrorCode::OK);
 }
 
 /// STALLED 时提交排队，ClearStall 后启动 / Submitted while STALLED, started by

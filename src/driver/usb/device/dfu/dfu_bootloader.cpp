@@ -512,6 +512,11 @@ bool DfuBootloaderBackend::ReadSeal(SealRecord& seal)
 
 bool DfuBootloaderBackend::WriteSeal(size_t image_size, uint32_t crc32)
 {
+  if (seal_offset_ > image_size_limit_ ||
+      seal_storage_size_ > image_size_limit_ - seal_offset_)
+  {
+    return false;
+  }
   // seal 可能和镜像共用最后一个擦除块；沿用本会话的擦除表，不会擦掉已写的镜像。
   // The seal may share the last erase block with the image; the session's erase map is
   // reused, so the image already programmed is not erased.

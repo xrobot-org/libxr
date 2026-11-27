@@ -471,6 +471,10 @@ class StubCan : public LibXR::CAN
  public:
   ErrorCode SetConfig(const Configuration& cfg) override
   {
+    if (configure_result != ErrorCode::OK)
+    {
+      return configure_result;
+    }
     last = cfg;
     ++configures;
     return ErrorCode::OK;
@@ -507,6 +511,7 @@ class StubCan : public LibXR::CAN
   std::vector<ClassicPack> tx;
   bool has_state = false;
   ErrorState error_state{};
+  ErrorCode configure_result = ErrorCode::OK;
 };
 
 /// 记录发送、可注入接收的 FDCAN / FDCAN that records sends and injects receives
@@ -521,6 +526,10 @@ class StubFdCan : public LibXR::FDCAN
   }
   ErrorCode SetConfig(const FDCAN::Configuration& cfg) override
   {
+    if (fd_configure_result != ErrorCode::OK)
+    {
+      return fd_configure_result;
+    }
     last = cfg;
     ++fd_configures;
     return ErrorCode::OK;
@@ -562,6 +571,7 @@ class StubFdCan : public LibXR::FDCAN
   size_t fd_configures = 0;
   std::vector<ClassicPack> tx;
   std::vector<FDPack> fd_tx;
+  ErrorCode fd_configure_result = ErrorCode::OK;
 };
 
 /// 记录写入的 GPIO / GPIO that records writes
@@ -744,6 +754,21 @@ void TestRequests()
   TEST_ASSERT(can0.configures == 1U && can0.last.mode.loopback);
   TEST_ASSERT(can0.last.mode.one_shot && !can0.last.mode.listen_only);
   DataRefused(dev, hw, Make(OUT_VENDOR, Req(Gs::BReq::MODE), 0U, 0U, 8U), U32s({7U, 0U}));
+
+  // BITTIMING 分母 32 位溢出和除零：必须安全拒绝/不崩溃 / 32-bit wrap & div-by-zero
+  // in BITTIMING must not fault
+  VendorOut(dev, hw, Gs::BReq::BITTIMING, 0U, U32s({0xFFFFFFFFU, 0U, 0U, 1U, 1U}));
+  VendorOut(dev, hw, Gs::BReq::BITTIMING, 0U, U32s({0xFFFFU, 0U, 0U, 1U, 0x10000U}));
+
+  // MODE 配置失败时状态必须回滚且传回错误 / HandleMode rolls back & rejects on failure
+  can0.configure_result = ErrorCode::FAILED;
+  DataRefused(dev, hw, Make(OUT_VENDOR, Req(Gs::BReq::MODE), 0U, 0U, 8U),
+              U32s({static_cast<uint32_t>(Gs::CanMode::RESET), 0U}));
+  can0.configure_result = ErrorCode::OK;
+  // ch0 仍保持开启状态：收发帧依然入队 / ch0 remains enabled cleanly after rollback
+  can0.Inject(0x321U, {9U});
+  TEST_ASSERT(hw.ep1_in.inflight);
+  Drain(dev, hw.ep1_in);
 
   // IDENTIFY 写 GPIO / IDENTIFY writes the GPIO
   VendorOut(dev, hw, Gs::BReq::IDENTIFY, 0U, U32s({1U}));
@@ -1298,7 +1323,8 @@ void TestUserId()
 }
 
 /// 绑定后收发都通 / Sending and receiving work after a bind
-void CheckWorks(FakeUsb& dev, Hw& hw, StubCan& can0)
+template <typename CanStub>
+void CheckWorks(FakeUsb& dev, Hw& hw, CanStub& can0)
 {
   HostFormat(dev, hw);
   Mode(dev, hw, 0U, Gs::CanMode::START);
@@ -1357,10 +1383,10 @@ void TestBindFailure()
     CheckWorks(dev, hw, can0);
   }
 
-  // 一次请求装不下 80 字节的帧：槽只有 64 字节；OUT 后端一次只收一个包；IN 后端一次
-  // 最多 79 字节。都拒绝配置，两个端点关闭，不挂接收。
-  // One request cannot hold an 80-byte frame: 64-byte slots; an OUT backend taking one
-  // packet per request; an IN backend taking at most 79 bytes. Each refuses the
+  // FD 一次请求装不下 80 字节的帧：槽只有 64 字节；OUT 后端一次只收一个包；IN 后端
+  // 一次最多 79 字节。都拒绝配置，两个端点关闭，不挂接收。
+  // FD cannot hold an 80-byte frame in one request: 64-byte slots; an OUT backend taking
+  // one packet per request; an IN backend taking at most 79 bytes. Each refuses the
   // configuration, both endpoints closed, nothing armed.
   for (int how = 0; how < 3; ++how)
   {
@@ -1373,9 +1399,9 @@ void TestBindFailure()
     {
       hw.ep1_in.limits = {64U, SIZE_MAX, 79U};
     }
-    StubCan can0;
-    StubCan can1;
-    Gs2 gs(EPNumber::EP1, EPNumber::EP2, {&can0, &can1});
+    StubFdCan fd0;
+    GsUsbClass<1> gs(EPNumber::EP1, EPNumber::EP2,
+                     std::initializer_list<LibXR::FDCAN*>{&fd0});
     FakeUsb dev(hw, {{&gs}});
     dev.Init(false);
     dev.Reset();
@@ -1390,7 +1416,7 @@ void TestBindFailure()
       hw.ep1_in.limits = {};
       SetConfiguration(dev, hw, 1U);
       TEST_ASSERT(hw.ep2_out.LastLength() == 512U);
-      CheckWorks(dev, hw, can0);
+      CheckWorks(dev, hw, fd0);
     }
   }
 
@@ -1412,6 +1438,39 @@ void TestBindFailure()
     Refused(dev, hw, Make(0x00U, 9U, 1U, 0U, 0U));
     TEST_ASSERT(hw.ep1_in.closes == 1U && hw.ep2_out.closes == 1U);
     TEST_ASSERT(hw.ep2_out.starts.empty() && !hw.ep2_out.inflight);
+  }
+
+  // Classic CAN 只需 24 B 主机缓冲，64 B MaxTransferSize 必须能绑定成功；FD 需 80 B
+  // 必须失败 Classic CAN only requires 24 B and must bind at 64 B; FD requires 80 B and
+  // must fail
+  {
+    Hw hw;
+    hw.ep1_in.limits.max_packets = 1U;
+    hw.ep2_out.limits.max_packets = 1U;
+    StubCan can0;
+    StubCan can1;
+    Gs2 gs(EPNumber::EP1, EPNumber::EP2, {&can0, &can1});
+    FakeUsb dev(hw, {{&gs}});
+    Enumerate(dev, hw);
+    TEST_ASSERT(hw.ep1_in.MaxTransferSize() == 64U && hw.ep2_out.inflight);
+    HostFormat(dev, hw);
+    Mode(dev, hw, 0U, Gs::CanMode::START);
+    can0.Inject(0x111U, {1U, 2U});
+    TEST_ASSERT(hw.ep1_in.inflight);
+    Drain(dev, hw.ep1_in);
+  }
+  {
+    Hw hw;
+    hw.ep1_in.limits.max_packets = 1U;
+    hw.ep2_out.limits.max_packets = 1U;
+    StubFdCan fd0;
+    GsUsbClass<1> gs(EPNumber::EP1, EPNumber::EP2,
+                     std::initializer_list<LibXR::FDCAN*>{&fd0});
+    FakeUsb dev(hw, {{&gs}});
+    dev.Init(false);
+    dev.Reset();
+    Refused(dev, hw, Make(0x00U, 9U, 1U, 0U, 0U));
+    TEST_ASSERT(hw.ep1_in.closes == 1U && hw.ep2_out.closes == 1U);
   }
 
   // 端点没有登记：写描述符失败，GET_DESCRIPTOR 和 SET_CONFIGURATION 都被拒。

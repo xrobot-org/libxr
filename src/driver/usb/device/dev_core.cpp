@@ -129,7 +129,7 @@ void DeviceCore::OnBusReset(bool in_isr, Speed speed)
   Deinitialize(in_isr);
   service_.SetSpeed(speed);
   suspended_ = false;
-  if (enable_requested_.load(std::memory_order_acquire) != 0U)
+  if (enable_requested_.load(std::memory_order_acquire) != 0U && !detach_pending_)
   {
     Initialize(in_isr);
   }
@@ -230,7 +230,7 @@ void DeviceCore::HandleDeviceEvents(bool in_isr, uint32_t events)
   if ((events & ENABLE_EVENT) != 0U)
   {
     const bool enable = enable_requested_.load(std::memory_order_acquire) != 0U;
-    if (enable && !inited_)
+    if (enable && !inited_ && !detach_pending_)
     {
       Initialize(in_isr);
     }

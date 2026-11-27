@@ -241,8 +241,9 @@ class GsUsbClass : public DeviceClass
       result = BindEndpoint(pool, data_out_num_, DATA_OUT_CONFIG,
                             desc_block_.ep_out.wMaxPacketSize, in_isr, data_out_);
     }
-    if (result == ErrorCode::OK && (data_in_->MaxTransferSize() < WIRE_MAX_SIZE ||
-                                    data_out_->MaxTransferSize() < WIRE_MAX_SIZE))
+    const size_t min_transfer = HostBufferSize(fd_supported_);
+    if (result == ErrorCode::OK && (data_in_->MaxTransferSize() < min_transfer ||
+                                    data_out_->MaxTransferSize() < min_transfer))
     {
       // 一帧必须是一个请求：拆成两个请求会让主机和设备对帧边界的理解错开。
       // One frame must be one request: split over two, host and device would disagree
@@ -785,12 +786,14 @@ class GsUsbClass : public DeviceClass
     }
     LibXR::CAN::Configuration& cfg = config_[ch];
     cfg.bit_timing = {bt.brp, bt.prop_seg, bt.phase_seg1, bt.phase_seg2, bt.sjw};
-    const uint32_t tseg1 = bt.prop_seg + bt.phase_seg1;
-    const uint32_t tq_num = 1U + tseg1 + bt.phase_seg2;
-    if (bt.brp != 0U)
+    const uint64_t tseg1 = static_cast<uint64_t>(bt.prop_seg) + bt.phase_seg1;
+    const uint64_t tq_num = 1ULL + tseg1 + bt.phase_seg2;
+    const uint64_t denom = static_cast<uint64_t>(bt.brp) * tq_num;
+    if (denom != 0ULL)
     {
-      cfg.bitrate = cans_[ch]->GetClockFreq() / (bt.brp * tq_num);
-      cfg.sample_point = static_cast<float>(1U + tseg1) / static_cast<float>(tq_num);
+      cfg.bitrate = static_cast<uint32_t>(cans_[ch]->GetClockFreq() / denom);
+      cfg.sample_point = static_cast<float>(static_cast<double>(1ULL + tseg1) /
+                                            static_cast<double>(tq_num));
     }
     else
     {
@@ -814,13 +817,14 @@ class GsUsbClass : public DeviceClass
     LibXR::FDCAN::Configuration& fd_cfg = fd_config_[ch];
     static_cast<LibXR::CAN::Configuration&>(fd_cfg) = config_[ch];
     fd_cfg.data_timing = {bt.brp, bt.prop_seg, bt.phase_seg1, bt.phase_seg2, bt.sjw};
-    const uint32_t tseg1 = bt.prop_seg + bt.phase_seg1;
-    const uint32_t tq_num = 1U + tseg1 + bt.phase_seg2;
-    if (bt.brp != 0U)
+    const uint64_t tseg1 = static_cast<uint64_t>(bt.prop_seg) + bt.phase_seg1;
+    const uint64_t tq_num = 1ULL + tseg1 + bt.phase_seg2;
+    const uint64_t denom = static_cast<uint64_t>(bt.brp) * tq_num;
+    if (denom != 0ULL)
     {
-      fd_cfg.data_bitrate = fdcans_[ch]->GetClockFreq() / (bt.brp * tq_num);
-      fd_cfg.data_sample_point =
-          static_cast<float>(1U + tseg1) / static_cast<float>(tq_num);
+      fd_cfg.data_bitrate = static_cast<uint32_t>(fdcans_[ch]->GetClockFreq() / denom);
+      fd_cfg.data_sample_point = static_cast<float>(static_cast<double>(1ULL + tseg1) /
+                                                    static_cast<double>(tq_num));
     }
     else
     {
@@ -850,30 +854,55 @@ class GsUsbClass : public DeviceClass
         return ErrorCode::ARG_ERR;
     }
     const bool fd = fd_supported_ && (mode.flags & GsUsb::GSCAN_MODE_FD) != 0U;
-    can_enabled_[ch].store(start ? 1U : 0U, std::memory_order_relaxed);
-    fd_enabled_[ch].store(start && fd ? 1U : 0U, std::memory_order_relaxed);
+    const uint32_t prev_can_enabled = can_enabled_[ch].load(std::memory_order_relaxed);
+    const uint32_t prev_fd_enabled = fd_enabled_[ch].load(std::memory_order_relaxed);
+    if (!start)
+    {
+      can_enabled_[ch].store(0U, std::memory_order_relaxed);
+      fd_enabled_[ch].store(0U, std::memory_order_relaxed);
+    }
 
-    LibXR::CAN::Configuration& cfg = config_[ch];
+    LibXR::CAN::Configuration cfg = config_[ch];
     cfg.mode.loopback = (mode.flags & GsUsb::GSCAN_MODE_LOOP_BACK) != 0U;
     cfg.mode.listen_only = (mode.flags & GsUsb::GSCAN_MODE_LISTEN_ONLY) != 0U;
     cfg.mode.triple_sampling = (mode.flags & GsUsb::GSCAN_MODE_TRIPLE_SAMPLE) != 0U;
     cfg.mode.one_shot = (mode.flags & GsUsb::GSCAN_MODE_ONE_SHOT) != 0U;
+
+    ErrorCode result = cans_[ch]->SetConfig(cfg);
+    if (result != ErrorCode::OK)
+    {
+      can_enabled_[ch].store(prev_can_enabled, std::memory_order_relaxed);
+      fd_enabled_[ch].store(prev_fd_enabled, std::memory_order_relaxed);
+      return result;
+    }
+    if (fd_supported_)
+    {
+      LibXR::FDCAN::Configuration fd_cfg = fd_config_[ch];
+      static_cast<LibXR::CAN::Configuration&>(fd_cfg) = cfg;
+      fd_cfg.fd_mode.fd_enabled = fd;
+      result = fdcans_[ch]->SetConfig(fd_cfg);
+      if (result != ErrorCode::OK)
+      {
+        (void)cans_[ch]->SetConfig(config_[ch]);
+        can_enabled_[ch].store(prev_can_enabled, std::memory_order_relaxed);
+        fd_enabled_[ch].store(prev_fd_enabled, std::memory_order_relaxed);
+        return result;
+      }
+      fd_config_[ch] = fd_cfg;
+    }
+    config_[ch] = cfg;
+    if (start)
+    {
+      can_enabled_[ch].store(1U, std::memory_order_relaxed);
+      fd_enabled_[ch].store(fd ? 1U : 0U, std::memory_order_relaxed);
+    }
     timestamps_enabled_[ch].store(
         (mode.flags & GsUsb::GSCAN_MODE_HW_TIMESTAMP) != 0U ? 1U : 0U,
         std::memory_order_relaxed);
     berr_enabled_[ch].store(
         (mode.flags & GsUsb::GSCAN_MODE_BERR_REPORTING) != 0U ? 1U : 0U,
         std::memory_order_relaxed);
-
-    const ErrorCode result = cans_[ch]->SetConfig(cfg);
-    if (fd_supported_)
-    {
-      LibXR::FDCAN::Configuration& fd_cfg = fd_config_[ch];
-      static_cast<LibXR::CAN::Configuration&>(fd_cfg) = cfg;
-      fd_cfg.fd_mode.fd_enabled = fd;
-      (void)fdcans_[ch]->SetConfig(fd_cfg);
-    }
-    return result;
+    return ErrorCode::OK;
   }
 
   /// @name 发往主机 / To the host

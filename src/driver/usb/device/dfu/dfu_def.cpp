@@ -105,7 +105,9 @@ ErrorCode DfuInterfaceClassBase::CheckClassRequest(const SetupPacket& setup) con
   if (input != is_input ||
       (request == DFURequest::GETSTATUS && setup.wLength != sizeof(DFUStatusResponse)) ||
       (request == DFURequest::GETSTATE && setup.wLength != 1U) ||
-      (request == DFURequest::DETACH && setup.wLength != 0U))
+      ((request == DFURequest::DETACH || request == DFURequest::CLRSTATUS ||
+        request == DFURequest::ABORT) &&
+       setup.wLength != 0U))
   {
     return ErrorCode::ARG_ERR;
   }

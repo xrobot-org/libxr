@@ -77,10 +77,21 @@ CDCToUart::CDCToUart(Endpoint::EPNumber data_in_ep_num,
       },
       this);
   op_write_cdc_ = WriteOperation(cb_cdc_write_);
+}
 
-  // 各挂一次读，进入两条链 / One read each to enter both chains
-  (void)Read({nullptr, 0}, op_read_cdc_, false);
-  (void)uart_.Read({nullptr, 0}, op_read_uart_, false);
+ErrorCode CDCToUart::BindEndpoints(EndpointPool& pool, uint8_t first_interface,
+                                   bool in_isr)
+{
+  const ErrorCode result = CDCUart::BindEndpoints(pool, first_interface, in_isr);
+  if (result == ErrorCode::OK && !chains_started_)
+  {
+    chains_started_ = true;
+    // 首次绑定（service_ 已就绪）后再挂两边的读，避免构造时触发 UART 回调早于设备服务赋值
+    // Arm both chains once after the first bind so service_ is guaranteed ready
+    (void)Read({nullptr, 0}, op_read_cdc_, in_isr);
+    (void)uart_.Read({nullptr, 0}, op_read_uart_, in_isr);
+  }
+  return result;
 }
 
 void CDCToUart::ApplyLineCoding(bool in_isr, CDCLineCoding& coding,

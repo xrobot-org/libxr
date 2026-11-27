@@ -743,6 +743,44 @@ void TestCdcToUart()
   TEST_ASSERT(hw.ep1_in.inflight);
   Drain(dev, hw.ep1_in);
   TEST_ASSERT(hw.ep1_in.wire == world);
+
+  // 复位重新枚举后，两条桥接链不重复挂载且收发继续正常 / After bus reset + re-enumerate,
+  // chains do not duplicate and bridging still works
+  dev.Reset();
+  ControlNone(dev, hw, Make(0x00U, 5U, 7U, 0U, 0U));
+  SetConfiguration(dev, hw, 1U);
+  {
+    auto queue = uart.rx.GetReadQueue(false);
+    const Bytes again{'a', 'g', 'a', 'i', 'n'};
+    TEST_ASSERT(queue.PushBatch(again.data(), again.size()) == ErrorCode::OK);
+    queue.Publish();
+  }
+  TEST_ASSERT(hw.ep1_in.inflight);
+  Drain(dev, hw.ep1_in);
+  Bytes expected_wire = world;
+  expected_wire.insert(expected_wire.end(), {'a', 'g', 'a', 'i', 'n'});
+  TEST_ASSERT(hw.ep1_in.wire == expected_wire);
+
+  // 构造前 UART 已有可读数据且尚未构造 FakeUsb：CDCToUart 构造不能提前触发读回调写
+  // CDC（此时 service_ 仍为空），枚举后再把预存字节发往主机 / Pre-buffered UART RX
+  // bytes before CDCToUart construction & FakeUsb creation: ctor must not touch
+  // service_ == nullptr, and queued bytes flush to host once enumerated
+  {
+    Hw pre_hw;
+    LimitedUart pre_uart;
+    const Bytes pre{'p', 'r', 'e', '!'};
+    {
+      auto queue = pre_uart.rx.GetReadQueue(false);
+      TEST_ASSERT(queue.PushBatch(pre.data(), pre.size()) == ErrorCode::OK);
+      queue.Publish();
+    }
+    CDCToUart pre_cdc(EPNumber::EP1, EPNumber::EP2, EPNumber::EP3, pre_uart);
+    FakeUsb pre_dev(pre_hw, {{&pre_cdc}});
+    Enumerate(pre_dev, pre_hw);
+    TEST_ASSERT(pre_hw.ep1_in.inflight);
+    Drain(pre_dev, pre_hw.ep1_in);
+    TEST_ASSERT(pre_hw.ep1_in.wire == pre);
+  }
 }
 
 /// 发送：零长度包、多槽、绑定前写入、回调写入、同步完成、STALL / Transmit: closing
@@ -979,9 +1017,9 @@ void TestTestClasses()
     FakeUsb dev(hw, {{&cdc}});
     Enumerate(dev, hw);
     TEST_ASSERT(hw.ep2_out.inflight && hw.ep2_out.starts.size() == 1U);
-    TEST_ASSERT(hw.ep2_out.LastLength() == 64U && !cdc.IsDtrSet());
+    TEST_ASSERT(hw.ep2_out.LastLength() == hw.ep2_out.MaxPacketSize() && !cdc.IsDtrSet());
 
-    // 没有 DTR：丢弃并重新挂接收 / No DTR: dropped, armed again
+    // 没有 DTR：丢弃并重新挂接收，不发送 IN / No DTR: dropped, armed again, no IN
     HostOut(dev, hw.ep2_out, Pattern(64, 3));
     TEST_ASSERT(hw.ep2_out.inflight && hw.ep2_out.starts.size() == 2U);
     TEST_ASSERT(hw.ep1_in.starts.empty());
@@ -990,23 +1028,49 @@ void TestTestClasses()
     TEST_ASSERT(cdc.IsDtrSet() && Notification(hw).size() == 10U);
     InDone(dev, hw.ep3_in);
 
-    // 每个 OUT 包换来一个满包零数据 / Each OUT packet gets one full zero packet
+    // 收到一个 OUT 包后 IN 填满所有槽（长度为 MaxTransferSize，全 0）；每次 IN 完成后
+    // 不用再发 OUT 包也会自动续发下一批 IN / One OUT packet fills every free IN slot
+    // (length MaxTransferSize, all zeros); InDone keeps pumping IN without new OUT
+    const size_t tx_len = hw.ep1_in.MaxTransferSize();
+    TEST_ASSERT(tx_len == 512U);
     HostOut(dev, hw.ep2_out, Pattern(10, 7));
-    TEST_ASSERT(hw.ep1_in.inflight && hw.ep1_in.LastLength() == 64U);
+    TEST_ASSERT(hw.ep1_in.inflight && hw.ep1_in.LastLength() == tx_len);
     const uint8_t* zeros = hw.ep1_in.starts.back().data;
-    TEST_ASSERT(std::all_of(zeros, zeros + 64, [](uint8_t b) { return b == 0U; }));
+    TEST_ASSERT(std::all_of(zeros, zeros + tx_len, [](uint8_t b) { return b == 0U; }));
     TEST_ASSERT(hw.ep2_out.inflight && hw.ep2_out.starts.size() == 3U);
+    // 两槽都在用（1 在途、1 排队）：先完成一次，应自动补发第 3 次（starts == 2）并
+    // 继续在途，无需新的 OUT 包 / Two slots busy: finishing one keeps pumping without
+    // another OUT packet
     InDone(dev, hw.ep1_in);
-    HostOut(dev, hw.ep2_out, Pattern(5, 1));
-    TEST_ASSERT(hw.ep1_in.inflight && hw.ep2_out.starts.size() == 4U);
+    TEST_ASSERT(hw.ep1_in.inflight && hw.ep1_in.starts.size() == 2U &&
+                hw.ep1_in.LastLength() == tx_len);
+    const uint8_t* zeros2 = hw.ep1_in.starts.back().data;
+    TEST_ASSERT(std::all_of(zeros2, zeros2 + tx_len, [](uint8_t b) { return b == 0U; }));
     InDone(dev, hw.ep1_in);
+    TEST_ASSERT(hw.ep1_in.inflight && hw.ep1_in.starts.size() == 3U);
 
-    // 清 DTR：不再发送，继续接收 / DTR cleared: no more sending, still receiving
+    // DTR=1 时对 ep2_out 发 SET_FEATURE(ENDPOINT_HALT) 触发 ABORTED：不误发 IN /
+    // Halting ep2_out while DTR=1 produces ABORTED without triggering an IN submit
+    const size_t in_before_halt = hw.ep1_in.starts.size();
+    ControlNone(dev, hw, Make(0x02U, 3U, 0U, 0x02U, 0U));
+    TEST_ASSERT(hw.ep2_out.IsStalled() && !hw.ep2_out.inflight);
+    TEST_ASSERT(hw.ep1_in.starts.size() == in_before_halt);
+
+    // 清 DTR 后清除 EP2 OUT 的 HALT：已排队的 1 个空闲槽发完后停止，重挂后收到 OUT
+    // 也不再触发 IN / Clear EP2 OUT HALT after DTR clears: drain the 1 already-queued
+    // slot, then submit no more IN even on newly received OUT
     SetLineState(dev, hw, 0x00U);
     InDone(dev, hw.ep3_in);
     const size_t in_starts = hw.ep1_in.starts.size();
-    HostOut(dev, hw.ep2_out, Pattern(8, 2));
-    TEST_ASSERT(hw.ep1_in.starts.size() == in_starts && hw.ep2_out.inflight);
+    while (hw.ep1_in.inflight)
+    {
+      InDone(dev, hw.ep1_in);
+    }
+    TEST_ASSERT(hw.ep1_in.starts.size() == in_starts + 1U && !hw.ep1_in.inflight);
+    ControlNone(dev, hw, Make(0x02U, 1U, 0U, 0x02U, 0U));
+    TEST_ASSERT(!hw.ep2_out.IsStalled() && hw.ep2_out.inflight);
+    HostOut(dev, hw.ep2_out, Pattern(10, 8));
+    TEST_ASSERT(hw.ep1_in.starts.size() == in_starts + 1U && !hw.ep1_in.inflight);
 
     SetConfiguration(dev, hw, 0U);
     TEST_ASSERT(hw.ep1_in.closes == 1U && hw.ep2_out.closes == 1U);
@@ -1017,12 +1081,24 @@ void TestTestClasses()
     CDCReadTest cdc(EPNumber::EP1, EPNumber::EP2, EPNumber::EP3);
     FakeUsb dev(hw, {{&cdc}});
     Enumerate(dev, hw);
-    TEST_ASSERT(hw.ep2_out.inflight && hw.ep2_out.LastLength() == 64U);
+    const size_t rx_len = hw.ep2_out.MaxTransferSize();
+    TEST_ASSERT(rx_len == 512U);
+    TEST_ASSERT(hw.ep2_out.inflight && hw.ep2_out.LastLength() == rx_len);
     for (uint8_t i = 0; i < 4U; ++i)
     {
       HostOut(dev, hw.ep2_out, Pattern(64, i));
-      TEST_ASSERT(hw.ep2_out.inflight && hw.ep2_out.starts.size() == 2U + i);
+      TEST_ASSERT(hw.ep2_out.inflight && hw.ep2_out.starts.size() == 2U + i &&
+                  hw.ep2_out.LastLength() == rx_len);
     }
+    // STALL ABORTED 后不触发 IN；CLEAR_FEATURE 后恢复全部接收 / Halting aborts cleanly
+    // without IN traffic, and CLEAR_FEATURE resumes receiving
+    ControlNone(dev, hw, Make(0x02U, 3U, 0U, 0x02U, 0U));
+    TEST_ASSERT(hw.ep2_out.IsStalled() && !hw.ep2_out.inflight);
+    ControlNone(dev, hw, Make(0x02U, 1U, 0U, 0x02U, 0U));
+    TEST_ASSERT(!hw.ep2_out.IsStalled() && hw.ep2_out.inflight &&
+                hw.ep2_out.LastLength() == rx_len);
+    HostOut(dev, hw.ep2_out, Pattern(64, 9));
+    TEST_ASSERT(hw.ep2_out.inflight);
     TEST_ASSERT(hw.ep1_in.starts.empty() && hw.ep3_in.starts.empty());
   }
 }
@@ -1548,6 +1624,7 @@ void TestTestClassSlots()
       FakeUsb dev(hw, {{&cdc}});
       Enumerate(dev, hw);
       TEST_ASSERT(AllReceiving(hw.ep2_out));
+      TEST_ASSERT(hw.ep2_out.LastLength() == hw.ep2_out.MaxTransferSize());
       HostOut(dev, hw.ep2_out, Pattern(64, 1));
       TEST_ASSERT(hw.ep2_out.inflight && AllReceiving(hw.ep2_out));
     }
@@ -1557,8 +1634,23 @@ void TestTestClassSlots()
       FakeUsb dev(hw, {{&cdc}});
       Enumerate(dev, hw);
       TEST_ASSERT(AllReceiving(hw.ep2_out));
+      TEST_ASSERT(hw.ep2_out.LastLength() == hw.ep2_out.MaxPacketSize());
       HostOut(dev, hw.ep2_out, Pattern(64, 1));
       TEST_ASSERT(hw.ep2_out.inflight && AllReceiving(hw.ep2_out));
+      SetLineState(dev, hw, 0x01U);
+      InDone(dev, hw.ep3_in);
+      HostOut(dev, hw.ep2_out, Pattern(64, 2));
+      TEST_ASSERT(hw.ep1_in.inflight &&
+                  hw.ep1_in.LastLength() == hw.ep1_in.MaxTransferSize());
+      // 所有 IN 槽应都已被填满或提交，再来 AcquireSlot 得 BUSY / All IN slots filled
+      Endpoint::Slot extra;
+      TEST_ASSERT(hw.ep1_in.AcquireSlot(extra) == ErrorCode::BUSY);
+      SetLineState(dev, hw, 0x00U);
+      InDone(dev, hw.ep3_in);
+      while (hw.ep1_in.inflight)
+      {
+        InDone(dev, hw.ep1_in);
+      }
     }
   }
 }

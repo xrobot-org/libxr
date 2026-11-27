@@ -714,6 +714,8 @@ void TestRuntimeRequests()
   Refused(dev, hw, Make(0x41U, DETACH, 0U, 0U, 0U));       // 厂商 / vendor
   Refused(dev, hw, Make(0x21U, DNLOAD, 0U, 0U, 0U));       // 运行时没有 / not runtime
   Refused(dev, hw, Make(0x21U, DETACH, 0U, 0x0100U, 0U));  // wIndex 高字节 / high byte
+  Refused(dev, hw, Make(0x21U, CLRSTATUS, 0U, 0U, 1U));    // CLRSTATUS 非零长度
+  Refused(dev, hw, Make(0x21U, ABORT, 0U, 0U, 1U));        // ABORT 非零长度
   TEST_ASSERT(GetState(dev, hw) == S(DFUState::APP_IDLE));
 
   // 没有跳转函数时不提供 DETACH / Without a jump function DETACH is not offered
@@ -955,6 +957,8 @@ void TestDownload()
   ClearStatus(dev, hw);
   Refused(dev, hw, Make(0xA1U, GETSTATUS, 0U, 9U, 6U));  // 别的接口 / other interface
   Refused(dev, hw, Make(0x21U, CLRSTATUS, 0U, 0U, 0U));  // 不在错误中 / not in error
+  Refused(dev, hw, Make(0x21U, CLRSTATUS, 0U, 0U, 1U));  // 非零 wLength
+  Refused(dev, hw, Make(0x21U, ABORT, 0U, 0U, 1U));      // 非零 wLength
   ClearStatus(dev, hw);
   Refused(dev, hw, Make(0x41U, 0x5BU, 0U, 0U, 0U));  // 别的厂商请求 / other vendor
 
@@ -966,6 +970,22 @@ void TestDownload()
   f.flash_mem[100] ^= 0xFFU;
   DfuBootloaderBackend damaged(f.flash, 0, 2304, 2048, &JumpToApp);
   TEST_ASSERT(!damaged.HasValidImage());
+
+  // seal_offset + seal_storage_size > image_size_limit 时 WriteSeal 必须越界保护失败，
+  // 不得写爆 erased_blocks_ 或 image_size_limit_ / Out-of-bounds seal must fail safely
+  {
+    Bytes mem(4096U, 0U);
+    RamFlash flash(256U, 8U, {mem.data(), mem.size()});
+    Boot oob_boot(flash, 0U, 2060U, 2048U, &JumpToApp);
+    Hw oob_hw;
+    FakeUsb oob_dev(oob_hw, {{&oob_boot}});
+    Enumerate(oob_dev, oob_hw);
+    const Bytes tiny = Pattern(64U, 0x11U);
+    const Status st =
+        DownloadImage(oob_dev, oob_hw, tiny, 256U, [&]() { oob_boot.Process(); });
+    TEST_ASSERT(st.state == S(DFUState::DFU_ERROR) && st.status != 0U &&
+                !oob_boot.HasValidImage());
+  }
 }
 
 /// 轮询等待从应答算起 / The poll wait counts from the answer

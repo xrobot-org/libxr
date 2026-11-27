@@ -160,13 +160,19 @@ class EndpointSlots
    * @param lend 当前这次借出 / The current lend
    * @param request 请求参数，原样交给 TakeNext / Request parameters, handed to TakeNext
    * @param sending 调用者的方向，须与绑定的方向一致 / Caller's direction; must match
+   * @param max_length 当前绑定允许的最大请求长度；作废与方向检查优先于长度检查 / Maximum
+   *        request length allowed by the current binding; staleness and state checks
+   *        precede the length check
    * @return OK；ABORTED：槽在停用时被作废，现已空闲；STATE_ERR：lend 不是该槽当前这次
-   *         借出，或方向不符，槽不受影响。作废先于方向检查：作废的槽方向不符时也返回
-   *         ABORTED 并变空闲。
+   *         借出，或方向不符，槽不受影响；SIZE_ERR：request.length 超过 max_length，
+   *         槽仍保留在调用者手中。作废先于长度与方向检查：作废的槽即使超长或方向不符也
+   *         返回 ABORTED 并变空闲。
    *         OK; ABORTED: the slot was marked stale by Disable and is now free;
    *         STATE_ERR: lend is not the slot's current lend, or the direction differs,
-   *         and the slot is left alone. Staleness is checked before the direction: a
-   *         stale slot with the wrong direction also gets ABORTED and becomes free.
+   *         and the slot is left alone; SIZE_ERR: request.length exceeds max_length and
+   *         the slot stays lent. Staleness is checked before length and direction: a
+   *         stale slot with oversized length or wrong direction still returns ABORTED
+   *         and becomes free.
    * @note 任何上下文。参数在确认句柄之后、排队的比较交换之前写入；此时只有持有者能
    *       改变该槽，所以写入不与他人冲突。返回 OK 或 ABORTED 之后这个句柄不再被接受。
    *       Any context. The parameters are written after the handle is confirmed and
@@ -174,7 +180,8 @@ class EndpointSlots
    *       then, so the write races with nobody. After OK or ABORTED the handle is no
    *       longer accepted.
    */
-  [[nodiscard]] ErrorCode Queue(const Lend& lend, const Request& request, bool sending);
+  [[nodiscard]] ErrorCode Queue(const Lend& lend, const Request& request, bool sending,
+                                size_t max_length = SIZE_MAX);
 
   /**
    * @brief 交回借出或作废的槽，不排队 / Hand back a lent or stale slot without queuing
