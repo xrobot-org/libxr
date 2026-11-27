@@ -16,6 +16,7 @@
  */
 
 #include <Eigen/Dense>
+#include <algorithm>
 #include <cmath>
 #include <type_traits>
 
@@ -72,9 +73,27 @@ void test_lpfilter()
     TEST_ASSERT(std::abs(filter.GetAlpha(0.002f) - 1.0f / 3.0f) < 1e-6f);
 
     filter.SetCutoffFrequency(40.0f);
-    const double tau = 1.0 / (2.0 * LibXR::TWO_PI * 40.0);
-    TEST_ASSERT(std::abs(static_cast<double>(filter.GetParam().time_constant) - tau) <
-                1e-9);
+    // 独立手推期望值：tau = 1 / (2 * pi * 40) = 1 / (80 * pi) ≈ 0.0039788736 s。
+    // Independent hand-computed expectation: tau = 1 / (2 * pi * 40).
+    constexpr double EXPECTED_TAU_40HZ = 0.003978873577297384;
+    TEST_ASSERT(std::abs(static_cast<double>(filter.GetParam().time_constant) -
+                         EXPECTED_TAU_40HZ) < 1e-7);
+
+    // 检查内容：40 Hz 正弦波在 4000 Hz 采样下的稳态幅值应接近 -3 dB (1 / sqrt(2))。
+    // Check: a 40 Hz sine sampled at 4000 Hz attenuates to ~1/sqrt(2) (-3 dB).
+    filter.Reset();
+    const float dt = 1.0f / 4000.0f;
+    float steady_peak = 0.0f;
+    for (int i = 0; i < 400; ++i)
+    {
+      const float x = std::sin(2.0f * 3.14159265358979323846f * 40.0f * i * dt);
+      const float y = filter.Update(x, dt);
+      if (i >= 300)
+      {
+        steady_peak = std::max(steady_peak, std::abs(y));
+      }
+    }
+    TEST_ASSERT(std::abs(static_cast<double>(steady_peak) - 0.70710678) < 0.03);
 
     filter.SetParam(LibXR::LPFilter<>::Param{.time_constant = 0.5f});
     TEST_ASSERT(std::abs(filter.GetParam().time_constant - 0.5f) < 1e-6f);

@@ -93,8 +93,7 @@ class LPFilter
   void SetCutoffFrequency(Scalar cutoff_frequency)
   {
     ASSERT(std::isfinite(cutoff_frequency) && cutoff_frequency > Scalar(0));
-    param_.time_constant =
-        Scalar(1) / (Scalar(2) * static_cast<Scalar>(TWO_PI) * cutoff_frequency);
+    param_.time_constant = Scalar(1) / (static_cast<Scalar>(TWO_PI) * cutoff_frequency);
   }
 
   /**
