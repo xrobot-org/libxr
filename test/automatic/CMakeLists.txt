@@ -186,6 +186,45 @@ target_compile_features(test_async_cooperative PRIVATE cxx_std_20)
 add_test(NAME test_async_cooperative COMMAND test_async_cooperative)
 set_tests_properties(test_async_cooperative PROPERTIES TIMEOUT 10)
 
+# 可控时钟 DFU 运行时防 ABA 与弱内存序验证；不链接 Linux xr 库。
+# Controlled-clock DFU runtime ABA prevention and weak-memory test; standalone link.
+add_executable(
+  test_dfu_runtime_aba
+  driver/usb/test_dfu_runtime_aba.cpp
+  ../../src/core/libxr_mem_o3.cpp
+  ../../src/driver/usb/core/ep.cpp
+  ../../src/driver/usb/core/ep_pool.cpp
+  ../../src/driver/usb/core/ep_slots.cpp
+  ../../src/driver/usb/core/usb_service.cpp
+  ../../src/driver/usb/device/device_class.cpp
+  ../../src/driver/usb/device/dfu/dfu_def.cpp
+  ../../src/driver/usb/device/dfu/dfu_runtime.cpp
+)
+target_include_directories(
+  test_dfu_runtime_aba
+  PRIVATE . .. ../../src/driver/usb/core ../../src/driver/usb/device
+          ../../src/driver/usb/device/bos ../../src/driver/usb/device/dfu
+          $<TARGET_PROPERTY:xr,INTERFACE_INCLUDE_DIRECTORIES>
+)
+target_compile_definitions(
+  test_dfu_runtime_aba PRIVATE $<TARGET_PROPERTY:xr,INTERFACE_COMPILE_DEFINITIONS>
+)
+target_compile_features(test_dfu_runtime_aba PRIVATE cxx_std_20)
+add_test(NAME test_dfu_runtime_aba COMMAND test_dfu_runtime_aba)
+set_tests_properties(test_dfu_runtime_aba PROPERTIES TIMEOUT 10)
+
+# USB 核心构造与前置契约 REQUIRE 拒绝测试（fork 隔离，不启动 PlatformInit）。
+# USB core construction REQUIRE contract tests (fork-isolated without PlatformInit).
+add_executable(test_usb_core_contracts driver/usb/test_usb_core_contracts.cpp)
+target_include_directories(
+  test_usb_core_contracts
+  PRIVATE . .. ../../src/driver/usb/core ../../src/driver/usb/device
+          ../../src/driver/usb/device/bos
+)
+target_link_libraries(test_usb_core_contracts PRIVATE xr)
+add_test(NAME test_usb_core_contracts COMMAND test_usb_core_contracts)
+set_tests_properties(test_usb_core_contracts PROPERTIES TIMEOUT 10)
+
 # LinuxCANFD 的自动化测试：默认创建临时 vcan 接口，需要 CAP_NET_ADMIN；
 # 无法创建时以退出码 77 跳过（CTest 的 SKIP_RETURN_CODE）。也可用
 # --a can0 --b can1 在真实互连接口上运行。

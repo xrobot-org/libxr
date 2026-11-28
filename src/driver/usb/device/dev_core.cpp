@@ -584,6 +584,10 @@ ErrorCode DeviceCore::SendDescriptor(bool in_isr)
         return ErrorCode::NOT_SUPPORT;
       }
       data = composition_.Bos().GetBosDescriptor();
+      if (data.addr_ == nullptr || data.size_ == 0U)
+      {
+        return ErrorCode::FAILED;
+      }
       break;
 
     default:

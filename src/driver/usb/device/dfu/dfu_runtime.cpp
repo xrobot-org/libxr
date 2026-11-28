@@ -34,18 +34,20 @@ DfuRuntimeClass::DfuRuntimeClass(JumpFun jump_to_bootloader, void* jump_ctx,
 
 void DfuRuntimeClass::Process()
 {
-  if (launch_phase_.load(std::memory_order_acquire) != WAITING)
+  const uint32_t token = launch_phase_.load(std::memory_order_acquire);
+  if (token == IDLE)
   {
     return;
   }
-  const uint32_t deadline = detach_deadline_ms_.load(std::memory_order_relaxed);
+  const uint32_t deadline = detach_deadline_ms_.load(std::memory_order_acquire);
   if (static_cast<int32_t>(NowMs() - deadline) < 0)
   {
     return;
   }
-  // 换成 IDLE 成功的那一次才跳：owner 同时取消时不跳。
-  // Only the call that swaps in IDLE jumps: no jump when the owner cancels meanwhile.
-  uint32_t expected = WAITING;
+  // 只替换读到的那一代令牌：若期间取消并重新发来 DETACH，新令牌不同，不会误跳。
+  // Swap only the generation token read above: a cancel and re-armed DETACH carries a
+  // new token and will not jump early.
+  uint32_t expected = token;
   if (!launch_phase_.compare_exchange_strong(expected, IDLE, std::memory_order_acq_rel))
   {
     return;
@@ -141,8 +143,9 @@ void DfuRuntimeClass::OnControlComplete(bool in_isr, const SetupPacket& setup)
   // wValue is the timeout the host asks for; 0 means the default.
   const uint16_t timeout =
       (setup.wValue == 0U) ? default_detach_timeout_ms_ : setup.wValue;
-  detach_deadline_ms_.store(NowMs() + timeout, std::memory_order_relaxed);
-  launch_phase_.store(WAITING, std::memory_order_release);
+  next_token_ += 2U;
+  detach_deadline_ms_.store(NowMs() + timeout, std::memory_order_release);
+  launch_phase_.store(next_token_, std::memory_order_release);
 }
 
 void DfuRuntimeClass::OnControlAbort(bool in_isr, const SetupPacket& setup)

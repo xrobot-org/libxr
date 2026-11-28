@@ -1,5 +1,7 @@
 #include "device_composition.hpp"
 
+#include <limits>
+
 #include "libxr_mem.hpp"
 #include "winusb_msos20.hpp"
 
@@ -20,72 +22,108 @@ namespace
 
 using ConfigList = std::initializer_list<const std::initializer_list<DeviceClass*>>;
 
-/// 接口字符串号从序列号之后开始 / Interface string indices start after the serial number
+// 接口字符串号从序列号之后开始 / Interface string indices start after the serial number
 constexpr uint8_t FIRST_INTERFACE_STRING =
     static_cast<uint8_t>(DescriptorStrings::Index::SERIAL_NUMBER_STRING) + 1U;
 
-/// UTF-8 字符串转成 UTF-16LE 后的字节数（只支持 BMP）/ Bytes of a UTF-8 string as
-/// UTF-16LE (BMP only)
-size_t Utf16Length(const char* text)
+// 构造前校验配置数非零、不溢出 uint8_t 且所有类指针非空 / Validate non-empty,
+// uint8_t-bounded configs and non-null class pointers before member initialization
+size_t CheckedConfigCount(const ConfigList& configs)
 {
-  size_t length = 0;
-  for (size_t i = 0; text[i] != '\0';)
+  REQUIRE(configs.size() > 0U && configs.size() <= UINT8_MAX);
+  for (const auto& group : configs)
   {
-    const auto c = static_cast<unsigned char>(text[i]);
-    if (c < 0x80U)
+    for (DeviceClass* item : group)
     {
-      i += 1U;
+      REQUIRE(item != nullptr);
     }
-    else if ((c & 0xE0U) == 0xC0U)
-    {
-      i += 2U;
-    }
-    else if ((c & 0xF0U) == 0xE0U)
-    {
-      i += 3U;
-    }
-    else
-    {
-      // BMP 之外的码点跳过，不占字节。
-      // Code points outside the BMP are skipped and take no bytes.
-      i += 4U;
-      continue;
-    }
-    length += 2U;
   }
-  return length;
+  return configs.size();
 }
 
-/// 把 UTF-8 写成 UTF-16LE，规则同 Utf16Length / Write UTF-8 as UTF-16LE, same rules as
-/// Utf16Length
-void ToUtf16(const char* text, uint8_t* out)
+// 遍历全部配置中去重后的非空设备类 / Visit each deduplicated non-null class across all
+// configurations
+template <typename Fn>
+void ForEachUniqueClass(const ConfigList& configs, Fn&& fn)
 {
-  const auto* s = reinterpret_cast<const unsigned char*>(text);
-  while (*s != 0U)
+  size_t pos_g = 0U;
+  for (const auto& group : configs)
   {
-    uint32_t code = 0U;
-    if (*s < 0x80U)
+    size_t pos_i = 0U;
+    for (DeviceClass* item : group)
     {
-      code = *s++;
+      if (item != nullptr)
+      {
+        bool seen = false;
+        size_t g_idx = 0U;
+        for (const auto& prev_group : configs)
+        {
+          if (g_idx > pos_g || seen)
+          {
+            break;
+          }
+          size_t i_idx = 0U;
+          for (DeviceClass* prev : prev_group)
+          {
+            if (g_idx == pos_g && i_idx >= pos_i)
+            {
+              break;
+            }
+            if (prev == item)
+            {
+              seen = true;
+              break;
+            }
+            ++i_idx;
+          }
+          ++g_idx;
+        }
+        if (!seen)
+        {
+          fn(*item);
+        }
+      }
+      ++pos_i;
     }
-    else if ((*s & 0xE0U) == 0xC0U)
-    {
-      code = (s[0] & 0x1FU) << 6U | (s[1] & 0x3FU);
-      s += 2;
-    }
-    else if ((*s & 0xF0U) == 0xE0U)
-    {
-      code = (s[0] & 0x0FU) << 12U | (s[1] & 0x3FU) << 6U | (s[2] & 0x3FU);
-      s += 3;
-    }
-    else
-    {
-      s += 4;
-      continue;
-    }
-    *out++ = static_cast<uint8_t>(code);
-    *out++ = static_cast<uint8_t>(code >> 8U);
+    ++pos_g;
   }
+}
+
+// 计算去重后 BOS 描述符所需字节上限 / Compute BOS buffer upper bound over deduplicated
+// classes
+size_t BosBytesFor(const ConfigList& configs)
+{
+  size_t bytes = LibXR::USB::BOS_HEADER_SIZE + LibXR::USB::USB2_EXT_CAP_SIZE +
+                 sizeof(WinUsb::MsOs20PlatformCapability);
+  ForEachUniqueClass(
+      configs,
+      [&bytes](DeviceClass& item)
+      {
+        for (size_t i = 0U; i < item.GetBosCapabilityCount(); ++i)
+        {
+          if (BosCapability* cap = item.GetBosCapability(i))
+          {
+            const size_t cap_size = cap->GetMaxCapabilityDescriptorSize();
+            REQUIRE(cap_size <= std::numeric_limits<size_t>::max() - bytes);
+            bytes += cap_size;
+          }
+        }
+      });
+  return bytes;
+}
+
+// 计算去重后 BOS 能力槽位数 / Compute BOS capability slots over deduplicated classes
+size_t BosCapCountFor(const ConfigList& configs)
+{
+  size_t count = 1U;
+  ForEachUniqueClass(configs,
+                     [&count](DeviceClass& item)
+                     {
+                       const size_t cap_count = item.GetBosCapabilityCount();
+                       REQUIRE(cap_count <= std::numeric_limits<size_t>::max() - count);
+                       count += cap_count;
+                     });
+  return count;
 }
 
 /// 所有配置中的类指针总数（去重前）/ Number of class pointers over all configurations
@@ -204,48 +242,17 @@ DeviceComposition::DeviceComposition(
     const std::initializer_list<const std::initializer_list<DeviceClass*>>& configs,
     ConstRawData uid, uint8_t bm_attributes, uint8_t max_power)
     : pool_(pool),
-      configs_(new Config[configs.size()]),
+      configs_(new Config[CheckedConfigCount(configs)]),
       config_count_(static_cast<uint8_t>(configs.size())),
       classes_(new DeviceClass*[ClassSlots(configs)]),
       bm_attributes_(bm_attributes),
       max_power_(max_power),
       strings_(languages, static_cast<const uint8_t*>(uid.addr_), uid.size_),
-      // BOS 的容量按全部类的能力加一个 WinUSB 能力算；在构造体之前算，所以就地遍历。
-      // The BOS is sized for every class's capabilities plus one WinUSB capability;
-      // computed before the body, hence the walk in place.
-      bos_(
-          [&configs]
-          {
-            size_t bytes = LibXR::USB::BOS_HEADER_SIZE + LibXR::USB::USB2_EXT_CAP_SIZE +
-                           sizeof(WinUsb::MsOs20PlatformCapability);
-            for (const auto& group : configs)
-            {
-              for (DeviceClass* item : group)
-              {
-                for (size_t i = 0; i < item->GetBosCapabilityCount(); ++i)
-                {
-                  BosCapability* cap = item->GetBosCapability(i);
-                  bytes += (cap != nullptr) ? cap->GetCapabilityDescriptor().size_ : 0U;
-                }
-              }
-            }
-            return bytes;
-          }(),
-          [&configs]
-          {
-            size_t count = 1U;
-            for (const auto& group : configs)
-            {
-              for (DeviceClass* item : group)
-              {
-                count += item->GetBosCapabilityCount();
-              }
-            }
-            return count;
-          }())
+      // BOS 的容量按去重后类的能力上界加一个 WinUSB 能力算；构造前已校验配置合法。
+      // The BOS is sized for deduplicated classes' upper-bound capabilities plus one
+      // WinUSB capability; inputs are validated before member initialization.
+      bos_(BosBytesFor(configs), BosCapCountFor(configs))
 {
-  ASSERT(config_count_ > 0U && configs.size() <= UINT8_MAX);
-
   // 整理配置表和去重的类表；给每个类写入服务指针。
   // Build the configuration tables and the deduplicated class table; give every class
   // its service pointer.
@@ -258,12 +265,16 @@ DeviceComposition::DeviceComposition(
     config.count = group.size();
     composite_ = composite_ || group.size() > 1U;
     size_t size = sizeof(DeviceClass::Header);
+    size_t config_interfaces = 0U;
     size_t n = 0;
     for (DeviceClass* item : group)
     {
-      ASSERT(item != nullptr);
       config.classes[n++] = item;
-      size += item->GetMaxConfigSize();
+      const size_t max_size = item->GetMaxConfigSize();
+      size = (max_size >= UINT16_MAX - size) ? UINT16_MAX : (size + max_size);
+      const size_t itf_count = item->GetInterfaceCount();
+      REQUIRE(itf_count <= UINT8_MAX - config_interfaces);
+      config_interfaces += itf_count;
       composite_ = composite_ || item->HasIAD();
       bool known = false;
       for (size_t i = 0; i < class_count_; ++i)
@@ -315,7 +326,8 @@ DeviceComposition::DeviceComposition(
     winusb_cap_ = new WinUsb::MsOs20BosCapability(BuildWinUsbSet(
         info, functions, !composite_ && config_count_ == 1U && functions == 1U));
     delete[] info;
-    bos_.AddCapability(winusb_cap_);
+    const bool added = bos_.AddCapability(winusb_cap_);
+    REQUIRE(added);
   }
   for (size_t i = 0; i < class_count_; ++i)
   {
@@ -323,7 +335,8 @@ DeviceComposition::DeviceComposition(
     {
       if (BosCapability* cap = classes_[i]->GetBosCapability(j))
       {
-        bos_.AddCapability(cap);
+        const bool added = bos_.AddCapability(cap);
+        REQUIRE(added);
       }
     }
   }
@@ -341,6 +354,7 @@ ErrorCode DeviceComposition::SetConfiguration(uint8_t value, Speed speed, bool i
     return ErrorCode::OK;
   }
   const Config& config = configs_[value - 1U];
+  size_t total_size = sizeof(DeviceClass::Header);
   uint8_t first_interface = 0;
   size_t bound = 0;
   ErrorCode result = ErrorCode::OK;
@@ -353,9 +367,19 @@ ErrorCode DeviceComposition::SetConfiguration(uint8_t value, Speed speed, bool i
     {
       break;
     }
+    const size_t itf_count = item->GetInterfaceCount();
+    if ((block.size_ != 0U && block.addr_ == nullptr) ||
+        block.size_ > item->GetMaxConfigSize() ||
+        block.size_ > config_buffer_.size_ - total_size ||
+        itf_count > static_cast<size_t>(UINT8_MAX) - first_interface)
+    {
+      result = ErrorCode::FAILED;
+      break;
+    }
+    total_size += block.size_;
     result = item->BindEndpoints(pool_, first_interface, in_isr);
     bound = i + 1U;
-    first_interface = static_cast<uint8_t>(first_interface + item->GetInterfaceCount());
+    first_interface = static_cast<uint8_t>(first_interface + itf_count);
   }
   if (result != ErrorCode::OK)
   {
@@ -391,13 +415,25 @@ ErrorCode DeviceComposition::WriteConfigDescriptor(uint8_t index, Speed speed,
     {
       return result;
     }
-    ASSERT(block.size_ <= item->GetMaxConfigSize());
-    ASSERT(offset + block.size_ <= config_buffer_.size_);
+    if ((block.size_ != 0U && block.addr_ == nullptr) ||
+        block.size_ > item->GetMaxConfigSize() ||
+        block.size_ > config_buffer_.size_ - offset)
+    {
+      return ErrorCode::FAILED;
+    }
     LibXR::Memory::FastCopy(buffer + offset, block.addr_, block.size_);
     offset += block.size_;
-    first_interface = static_cast<uint8_t>(first_interface + item->GetInterfaceCount());
+    const size_t interface_count = item->GetInterfaceCount();
+    if (interface_count > static_cast<size_t>(UINT8_MAX) - first_interface)
+    {
+      return ErrorCode::FAILED;
+    }
+    first_interface = static_cast<uint8_t>(first_interface + interface_count);
   }
-  ASSERT(offset <= UINT16_MAX);
+  if (offset > UINT16_MAX)
+  {
+    return ErrorCode::FAILED;
+  }
   DeviceClass::Header header{};
   header.bLength = sizeof(DeviceClass::Header);
   header.bDescriptorType =
@@ -498,7 +534,7 @@ ErrorCode DeviceComposition::WriteDeviceDescriptor(DeviceDescriptor& descriptor)
   // 只有一个配置、一个类、一个接口、没有 IAD 的设备才由类改写。
   // Only a device with one configuration, one class, one interface and no IAD lets
   // its class rewrite the descriptor.
-  if (config_count_ != 1U || composite_ ||
+  if (config_count_ != 1U || composite_ || configs_[0].count != 1U ||
       configs_[0].classes[0]->GetInterfaceCount() != 1U)
   {
     return ErrorCode::NOT_SUPPORT;
@@ -556,7 +592,7 @@ void DeviceComposition::RegisterInterfaceStrings()
       if (const char* text = classes_[c]->GetInterfaceString(i))
       {
         ++interface_string_count_;
-        const size_t length = Utf16Length(text);
+        const size_t length = DescriptorStrings::CalcUTF16LELen(text);
         longest = (length > longest) ? length : longest;
       }
     }
@@ -565,9 +601,9 @@ void DeviceComposition::RegisterInterfaceStrings()
   {
     return;
   }
-  ASSERT(FIRST_INTERFACE_STRING + interface_string_count_ <= 256U &&
-         longest + 2U <= 255U);
-  interface_strings_ = new const char*[interface_string_count_];
+  REQUIRE(interface_string_count_ <= 256U - FIRST_INTERFACE_STRING &&
+          longest <= DescriptorStrings::MAX_DESCRIPTOR_BYTES - 2U);
+  interface_strings_ = new const char*[interface_string_count_]();
   string_buffer_ = {new uint8_t[longest + 2U], longest + 2U};
 
   size_t n = 0;
@@ -582,25 +618,33 @@ void DeviceComposition::RegisterInterfaceStrings()
         {
           item->interface_string_base_ = static_cast<uint8_t>(FIRST_INTERFACE_STRING + n);
         }
+        REQUIRE(n < interface_string_count_);
         interface_strings_[n++] = text;
       }
     }
   }
+  REQUIRE(n == interface_string_count_);
 }
 
 ErrorCode DeviceComposition::GenerateInterfaceString(uint8_t index, ConstRawData& data)
 {
   const size_t n = static_cast<size_t>(index - FIRST_INTERFACE_STRING);
-  if (n >= interface_string_count_)
+  if (n >= interface_string_count_ || string_buffer_.size_ < 2U)
   {
     return ErrorCode::NOT_FOUND;
   }
   auto* buffer = static_cast<uint8_t*>(string_buffer_.addr_);
   const char* text = interface_strings_[n];
-  const size_t length = Utf16Length(text) + 2U;
+  size_t written = 0U;
+  if (!DescriptorStrings::EncodeUtf16Le(text, buffer + 2U, string_buffer_.size_ - 2U,
+                                        written) ||
+      written > DescriptorStrings::MAX_DESCRIPTOR_BYTES - 2U)
+  {
+    return ErrorCode::FAILED;
+  }
+  const size_t length = written + 2U;
   buffer[0] = static_cast<uint8_t>(length);
   buffer[1] = static_cast<uint8_t>(LibXR::USB::DescriptorType::STRING);
-  ToUtf16(text, buffer + 2);
   data = {buffer, length};
   return ErrorCode::OK;
 }

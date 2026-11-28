@@ -53,11 +53,13 @@ class DeviceComposition
    *        descriptors
    * @param max_power 配置描述符 bMaxPower（2 mA）/ bMaxPower (2 mA units)
    * @note 调用者：设备核心构造时一次。去重得到类表，给每个类写入服务指针和接口字符串
-   *       号，按所有配置中最大的 GetMaxConfigSize 之和分配配置描述符缓冲，建 BOS。
+   *       号，按各配置中最大的 GetMaxConfigSize 之和以 UINT16_MAX 为上限分配配置描述
+   *       符缓冲（实际单速总长在运行期校验），建 BOS。
    *       Caller: the device core, once at construction. Builds the deduplicated class
    *       table, writes each class's service pointer and interface string base,
-   *       allocates the configuration descriptor buffer for the largest sum of
-   *       GetMaxConfigSize over the configurations and builds the BOS.
+   *       allocates the configuration descriptor buffer up to UINT16_MAX from the largest
+   *       sum of GetMaxConfigSize across configurations (actual per-speed total length
+   *       checked at runtime), and builds the BOS.
    */
   DeviceComposition(
       EndpointPool& pool, DeviceService& service,
@@ -88,11 +90,13 @@ class DeviceComposition
    * @param value 配置值，0 表示取消配置 / Configuration value, 0 to deconfigure
    * @param speed 当前总线速度 / Current bus speed
    * @param in_isr 是否在中断中 / Whether in an ISR
-   * @return OK；ARG_ERR：value 大于 ConfigCount()，什么都不改；其他：某个类的
-   *         WriteDescriptors 或 BindEndpoints 的错误，此时已回到未配置。
-   *         OK; ARG_ERR: value exceeds ConfigCount() and nothing changes; otherwise the
-   *         error of a class's WriteDescriptors or BindEndpoints, and the device is
-   *         back to unconfigured.
+   * @return OK；ARG_ERR：value 大于 ConfigCount()，什么都不改；FAILED：某个类的描述符块
+   *         非法、配置描述符总长超限或接口号溢出，已回到未配置；其他：WriteDescriptors
+   *         或 BindEndpoints 错。
+   *         OK; ARG_ERR: value exceeds ConfigCount() and nothing changes; FAILED:
+   *         invalid class block, configuration total-length overflow, or interface
+   *         overflow (back to unconfigured); otherwise a class's WriteDescriptors or
+   *         BindEndpoints error.
    * @note 依次：检查 value；当前配置的每个类 UnbindEndpoints，记为未配置；value 非 0 时
    *       对新配置的每个类按接口号顺序 WriteDescriptors(speed) 再 BindEndpoints；全部
    *       成功才记为 value。同一个 value 也重新解绑和绑定。调用者：设备核心，处理
@@ -115,8 +119,10 @@ class DeviceComposition
    *        Output: the descriptor in this object's buffer, valid until the next call;
    *        the device core rewrites its type byte when answering
    *        OTHER_SPEED_CONFIGURATION.
-   * @return OK；ARG_ERR：index 越界；其他：某个类 WriteDescriptors 的错误。
-   *         OK; ARG_ERR: index out of range; otherwise a class's WriteDescriptors error.
+   * @return OK；ARG_ERR：index 越界；FAILED：类块非法/越界或配置描述符超长；其他：
+   *         某个类 WriteDescriptors 的错误。
+   *         OK; ARG_ERR: index out of range; FAILED: invalid/oversized class block or
+   *         configuration overflow; otherwise a class's WriteDescriptors error.
    * @note 不分配内存，不改配置状态。调用者：设备核心，GET_DESCRIPTOR(CONFIGURATION /
    *       OTHER_SPEED_CONFIGURATION)。
    *       Allocates nothing and does not change the configuration state. Caller: the
@@ -130,7 +136,7 @@ class DeviceComposition
    * @param index 字符串号 / String index
    * @param lang 语言 ID / Language ID
    * @param data 输出：到下一次调用前有效 / Output: valid until the next call
-   * @return OK 或 NOT_FOUND / OK or NOT_FOUND
+   * @return OK、NOT_FOUND 或编码溢出时的 FAILED / OK, NOT_FOUND, or FAILED on overflow
    * @note 调用者：设备核心，GET_DESCRIPTOR(STRING) / Caller: the device core on
    *       GET_DESCRIPTOR(STRING)
    */
