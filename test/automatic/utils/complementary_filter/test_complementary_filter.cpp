@@ -95,4 +95,23 @@ void test_complementary_filter()
                 1e-12);
     TEST_ASSERT(filter.GetBias().norm() < 1e-12);
   }
+
+  // 5. 倒置上电且静止（accel = (0, 0, -1), gyro = 0）时直接对齐倒置姿态，不卡在水平。
+  // Check: upside-down stationary startup aligns immediately instead of reporting level.
+  {
+    Filter filter;
+    const Vec3 upside_down_accel(0.0, 0.0, -1.0);
+    filter.Update(Vec3::Zero(), upside_down_accel, 0.01);
+
+    const Vec3 predicted_up = filter.GetQuaternion().conjugate() * Vec3::UnitZ();
+    TEST_ASSERT((predicted_up - upside_down_accel).norm() < 1e-12);
+    TEST_ASSERT(std::abs(std::abs(filter.GetEuler()(0)) - M_PI) < 1e-6 ||
+                std::abs(std::abs(filter.GetEuler()(1)) - M_PI * 0.5) < 1e-6);
+
+    // Reset() 后再次倒置上电仍能重新对齐。
+    filter.Reset();
+    filter.Update(Vec3::Zero(), upside_down_accel, 0.01);
+    TEST_ASSERT((filter.GetQuaternion().conjugate() * Vec3::UnitZ() - upside_down_accel)
+                    .norm() < 1e-12);
+  }
 }

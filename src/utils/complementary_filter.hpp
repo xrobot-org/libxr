@@ -59,6 +59,7 @@ class ComplementaryFilter
     q_ = Eigen::Quaternion<Scalar>(static_cast<Scalar>(1), static_cast<Scalar>(0),
                                    static_cast<Scalar>(0), static_cast<Scalar>(0));
     bias_.setZero();
+    tilt_initialized_ = false;
   }
 
   /// @brief 设置修正增益 / Set the correction gain.
@@ -91,7 +92,7 @@ class ComplementaryFilter
     }
 
     Eigen::Matrix<Scalar, 3, 1> rate = gyro - bias_;
-    const Scalar accel_norm = accel.norm();
+    const Scalar accel_norm = accel.allFinite() ? accel.norm() : static_cast<Scalar>(0);
 
     // 加速度计只在“有可信重力方向”时参与修正：自由落体或剧烈机动时 |a| 远离 1g。
     // The accelerometer only corrects when it carries a believable gravity direction: in
@@ -104,12 +105,29 @@ class ComplementaryFilter
     if (accel_valid)
     {
       const Eigen::Matrix<Scalar, 3, 1> measured = accel / accel_norm;
-      // 预测的“上”方向：把世界系的 +Z 转到机体系再比 / predicted up in body frame
-      const Eigen::Matrix<Scalar, 3, 1> predicted = q_.conjugate() * UpVector();
-      const Eigen::Matrix<Scalar, 3, 1> error = measured.cross(predicted);
+      if (!tilt_initialized_)
+      {
+        // 首帧有效重力直接对齐倾角，避免倒置上电（180° 反向）时叉积为零而卡死在水平。
+        // Align tilt from the first valid gravity sample so upside-down startup (180 deg)
+        // does not get stuck at identity with a zero cross product.
+        q_ = Eigen::Quaternion<Scalar>::FromTwoVectors(measured, UpVector());
+        q_.normalize();
+        tilt_initialized_ = true;
+      }
+      else
+      {
+        // 预测的“上”方向：把世界系的 +Z 转到机体系再比 / predicted up in body frame
+        const Eigen::Matrix<Scalar, 3, 1> predicted = q_.conjugate() * UpVector();
+        Eigen::Matrix<Scalar, 3, 1> error = measured.cross(predicted);
+        if (measured.dot(predicted) < static_cast<Scalar>(-0.999) &&
+            error.norm() < static_cast<Scalar>(1e-3))
+        {
+          error = measured.unitOrthogonal();
+        }
 
-      rate += param_.gain * error;
-      bias_ -= param_.bias_gain * error * dt;
+        rate += param_.gain * error;
+        bias_ -= param_.bias_gain * error * dt;
+      }
     }
 
     Integrate(rate, dt);
@@ -161,6 +179,7 @@ class ComplementaryFilter
   Eigen::Quaternion<Scalar> q_{static_cast<Scalar>(1), static_cast<Scalar>(0),
                                static_cast<Scalar>(0), static_cast<Scalar>(0)};
   Eigen::Matrix<Scalar, 3, 1> bias_{Eigen::Matrix<Scalar, 3, 1>::Zero()};
+  bool tilt_initialized_ = false;
 };
 
 }  // namespace LibXR
