@@ -79,6 +79,7 @@ void test_double_buffer();
 void test_type();
 void test_string();
 void test_cycle_value();
+void test_complementary_filter();
 void test_pid();
 void test_pipe();
 void test_print();
@@ -297,6 +298,8 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"motion_tests", {"kinematic", &RunVoidEntry<test_kinematic>, false}},
     {"motion_tests", {"transform", &RunVoidEntry<test_transform>, false}},
 
+    {"control_tests",
+     {"complementary_filter", &RunVoidEntry<test_complementary_filter>, false}},
     {"control_tests", {"pid", &RunVoidEntry<test_pid>, false}},
 
     {"system_tests", {"ramfs", &RunVoidEntry<test_ramfs>, false}},

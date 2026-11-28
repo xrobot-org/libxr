@@ -297,6 +297,7 @@ add_executable(
   system/mutex/test_mutex.cpp
   system/semaphore/test_semaphore.cpp
   system/timer/test_timer.cpp
+  utils/complementary_filter/test_complementary_filter.cpp
   utils/crc/test_crc.cpp
   utils/cycle_value/test_cycle_value.cpp
   utils/flag/test_flag.cpp
