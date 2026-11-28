@@ -612,6 +612,10 @@ ErrorCode DeviceCore::SendDescriptor(bool in_isr)
       break;
     }
   }
+  if (data.size_ != 0U && data.addr_ == nullptr)
+  {
+    return ErrorCode::ARG_ERR;
+  }
   StartIn(in_isr, data);
   return ErrorCode::OK;
 }
@@ -644,6 +648,10 @@ ErrorCode DeviceCore::HandleClassOrVendor(bool in_isr)
       return ErrorCode::OK;
     }
     if (!IsIn(setup_))
+    {
+      return ErrorCode::ARG_ERR;
+    }
+    if (bos.in_data.size_ != 0U && bos.in_data.addr_ == nullptr)
     {
       return ErrorCode::ARG_ERR;
     }

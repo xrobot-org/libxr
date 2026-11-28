@@ -170,9 +170,11 @@ ConstRawData BuildWinUsbSet(const WinUsbFunction* functions, size_t count,
   {
     const bool new_config = i == 0U || functions[i].configuration_index !=
                                            functions[i - 1U].configuration_index;
-    total += device_level ? FEATURES
-                          : (new_config ? sizeof(ConfigHeader) : 0U) +
-                                sizeof(FunctionHeader) + FEATURES;
+    const size_t entry = device_level ? FEATURES
+                                      : (new_config ? sizeof(ConfigHeader) : 0U) +
+                                            sizeof(FunctionHeader) + FEATURES;
+    REQUIRE(entry <= UINT16_MAX - total);
+    total += entry;
   }
 
   auto* out = new uint8_t[total];
@@ -307,7 +309,7 @@ DeviceComposition::DeviceComposition(
   }
   if (functions != 0U)
   {
-    auto* info = new WinUsbFunction[functions];
+    auto* info = new WinUsbFunction[functions]();
     size_t n = 0;
     for (size_t c = 0; c < config_count_; ++c)
     {
@@ -317,12 +319,14 @@ DeviceComposition::DeviceComposition(
         DeviceClass* item = configs_[c].classes[i];
         if (const char* guid = item->GetWinUsbInterfaceGuid())
         {
+          REQUIRE(n < functions);
           info[n++] = {static_cast<uint8_t>(c), static_cast<uint8_t>(first_interface),
                        guid};
         }
         first_interface += item->GetInterfaceCount();
       }
     }
+    REQUIRE(n == functions);
     winusb_cap_ = new WinUsb::MsOs20BosCapability(BuildWinUsbSet(
         info, functions, !composite_ && config_count_ == 1U && functions == 1U));
     delete[] info;

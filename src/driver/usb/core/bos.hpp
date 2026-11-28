@@ -223,7 +223,7 @@ class BosManager
 
       if (p[2] == DEV_CAPABILITY_TYPE_USB20EXT)
       {
-        if (blk.size_ != USB2_EXT_CAP_SIZE)
+        if (has_usb2_ext || blk.size_ != USB2_EXT_CAP_SIZE)
         {
           return {nullptr, 0};
         }
@@ -291,6 +291,10 @@ class BosManager
       }
       if (tmp.handled)
       {
+        if (tmp.in_data.size_ != 0U && tmp.in_data.addr_ == nullptr)
+        {
+          return ErrorCode::FAILED;
+        }
         result = tmp;
         return ErrorCode::OK;
       }

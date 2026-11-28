@@ -169,6 +169,8 @@ class TestClass final : public DeviceClass
   size_t custom_max_config_size = 0U;
   ConstRawData bad_config_block{nullptr, 0};
   bool use_bad_config_block = false;
+  bool use_bad_class_desc = false;
+  ConstRawData bad_class_desc{nullptr, 0};
   uint8_t alt = 0;
   uint8_t class_desc[4] = {4U, 0x21U, 0xaaU, 0xbbU};
   std::atomic<int>* owner_check = nullptr;  ///< 回调不并发 / Callbacks never overlap
@@ -332,6 +334,11 @@ class TestClass final : public DeviceClass
     if ((setup.wValue >> 8U) != 0x21U)
     {
       return ErrorCode::NOT_SUPPORT;
+    }
+    if (use_bad_class_desc)
+    {
+      data = bad_class_desc;
+      return ErrorCode::OK;
     }
     data = {class_desc, sizeof(class_desc)};
     return ErrorCode::OK;
@@ -1849,6 +1856,88 @@ void TestBosAndCompositionEdgeCases()
     TEST_ASSERT(cfg.size() == 9U + 23U);
     ControlNone(dev, hw, Make(0x00U, 9U, 1U, 0U, 0U));
     TEST_ASSERT(Configuration(dev, hw) == 1U);
+  }
+
+  // 13) 两个能力都返回 USB 2.0 Extension 时，BosManager 与 EP0 GET_DESCRIPTOR(BOS) 拒绝。
+  // 13) Duplicate USB 2.0 Extension capabilities are rejected by BosManager and EP0 BOS.
+  {
+    const uint8_t ext[7] = {7U, 0x10U, 0x02U, 0x02U, 0U, 0U, 0U};
+    RawBosCap cap1(ext, sizeof(ext));
+    RawBosCap cap2(ext, sizeof(ext));
+    LibXR::USB::BosManager mgr(64U, 2U);
+    TEST_ASSERT(mgr.AddCapability(&cap1) && mgr.AddCapability(&cap2));
+    const ConstRawData bad = mgr.GetBosDescriptor();
+    TEST_ASSERT(bad.addr_ == nullptr && bad.size_ == 0U);
+
+    Hw hw;
+    TestClass c1(EPNumber::EP1, EPNumber::EP2);
+    TestClass c2(EPNumber::EP3, EPNumber::EP4);
+    c1.bos_cap = &cap1;
+    c2.bos_cap = &cap2;
+    FakeUsb dev(hw, {{&c1, &c2}}, Speed::FULL, DeviceDescriptor::PacketSize0::SIZE_64,
+                USBSpec::USB_2_1);
+    dev.Init(false);
+    dev.Reset();
+    Refused(dev, hw, Make(0x80U, 6U, 0x0F00U, 0U, 255U));
+  }
+
+  // 14) BOS Vendor IN 与接口 OnGetDescriptor 拒绝 {nullptr, size>0}，
+  //     保留 {nullptr, 0} ZLP。
+  // 14) BOS vendor IN and interface OnGetDescriptor reject {nullptr, size>0} and
+  //     keep {nullptr, 0} ZLP semantics.
+  {
+    class VendorBosCap final : public LibXR::USB::BosCapability
+    {
+     public:
+      ConstRawData vendor_in_data{nullptr, 0};
+
+      ConstRawData GetCapabilityDescriptor() const override { return {nullptr, 0U}; }
+
+      ErrorCode OnVendorRequest(bool, const SetupPacket* setup,
+                                LibXR::USB::BosVendorResult& result) override
+      {
+        if (setup == nullptr || setup->bRequest != 0x55U)
+        {
+          return ErrorCode::NOT_SUPPORT;
+        }
+        result.handled = true;
+        result.in_data = vendor_in_data;
+        result.write_zlp = false;
+        result.early_read_zlp = true;
+        return ErrorCode::OK;
+      }
+    };
+
+    VendorBosCap vcap;
+    LibXR::USB::BosManager mgr(64U, 1U);
+    TEST_ASSERT(mgr.AddCapability(&vcap));
+    const SetupPacket vendor_setup = Make(0xC0U, 0x55U, 0U, 0U, 8U);
+    LibXR::USB::BosVendorResult vres{};
+    vcap.vendor_in_data = {nullptr, 8U};
+    TEST_ASSERT(mgr.ProcessVendorRequest(false, &vendor_setup, vres) ==
+                ErrorCode::FAILED);
+    vcap.vendor_in_data = {nullptr, 0U};
+    TEST_ASSERT(mgr.ProcessVendorRequest(false, &vendor_setup, vres) == ErrorCode::OK);
+
+    Hw hw;
+    TestClass cls(EPNumber::EP1, EPNumber::EP2);
+    cls.bos_cap = &vcap;
+    FakeUsb dev(hw, {{&cls}}, Speed::FULL, DeviceDescriptor::PacketSize0::SIZE_64,
+                USBSpec::USB_2_1);
+    dev.Init(false);
+    dev.Reset();
+
+    vcap.vendor_in_data = {nullptr, 8U};
+    Refused(dev, hw, Make(0xC0U, 0x55U, 0U, 0U, 8U));
+    vcap.vendor_in_data = {nullptr, 0U};
+    TEST_ASSERT(ControlIn(dev, hw, Make(0xC0U, 0x55U, 0U, 0U, 8U)).empty());
+
+    ControlNone(dev, hw, Make(0x00U, 9U, 1U, 0U, 0U));
+    cls.use_bad_class_desc = true;
+    cls.bad_class_desc = {nullptr, 8U};
+    Refused(dev, hw, Make(0x81U, 6U, 0x2100U, 0U, 8U));
+    cls.bad_class_desc = {nullptr, 0U};
+    TEST_ASSERT(ControlIn(dev, hw, Make(0x81U, 6U, 0x2100U, 0U, 8U)).empty());
   }
 }
 
