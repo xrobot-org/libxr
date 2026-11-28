@@ -319,7 +319,7 @@ void STM32UART::HandleTxService(uint32_t events, bool in_isr)
 
 void STM32UART::FillTx(bool in_isr)
 {
-  if (!tx_busy_.IsSet())
+  if (!tx_busy_)
   {
     if (dma_buff_tx_.HasPending())
     {
@@ -368,7 +368,7 @@ void STM32UART::FillTx(bool in_isr)
     }
   }
 
-  if (tx_busy_.IsSet() && !dma_buff_tx_.HasPending() &&
+  if (tx_busy_ && !dma_buff_tx_.HasPending() &&
       config_state_.load(std::memory_order_acquire) == ConfigState::EMPTY)
   {
     auto queue = _write_port.GetWriteQueue(in_isr);
@@ -386,12 +386,12 @@ void STM32UART::FillTx(bool in_isr)
 void STM32UART::HandleTxDone(bool in_isr)
 {
   UNUSED(in_isr);
-  if (!tx_busy_.IsSet())
+  if (!tx_busy_)
   {
     return;
   }
 
-  tx_busy_.Clear();
+  tx_busy_ = false;
   dma_buff_tx_.SetActiveLength(0U);
 }
 
@@ -534,7 +534,7 @@ void STM32UART::TryApplyConfig(bool in_isr)
     return;
   }
 
-  if (tx_busy_.IsSet())
+  if (tx_busy_)
   {
     return;
   }
@@ -748,7 +748,7 @@ void STM32UART::StartTxDma(bool in_isr)
   DEV_ASSERT_FROM_CALLBACK(size != 0U && size <= dma_buff_tx_.Size(), in_isr);
 
   STM32_CleanDCacheByAddr(dma_buff_tx_.ActiveBuffer(), size);
-  tx_busy_.Set();
+  tx_busy_ = true;
   const HAL_StatusTypeDef status = HAL_UART_Transmit_DMA(
       uart_handle_, static_cast<uint8_t*>(dma_buff_tx_.ActiveBuffer()), size);
   REQUIRE_FROM_CALLBACK(status == HAL_OK, in_isr);

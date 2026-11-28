@@ -82,19 +82,19 @@ correspond as follows:
 | 驱动层 Driver layer | `driver/st`：`STM32UART`、`STM32SPI` 实现抽象类 `LibXR::UART`、`LibXR::SPI`，应用代码只使用抽象类 | `driver/st`: `STM32UART` and `STM32SPI` implement the abstract classes `LibXR::UART` and `LibXR::SPI`; application code uses only the abstract classes |
 | 时基与平台初始化 Timebase and platform init | `STM32TimerTimebase` 提供毫秒与微秒时间，随后 `PlatformInit()` 完成系统层的初始化，并设置软件定时器线程的优先级和栈大小 | `STM32TimerTimebase` provides millisecond and microsecond time, then `PlatformInit()` initializes the system layer and sets the priority and stack size of the software timer thread |
 | 读写操作 Read/write operation | 串口读写时传入 `ReadOperation` 或 `WriteOperation`，决定调用阻塞等待、轮询状态还是完成时回调 | UART reads and writes take a `ReadOperation` or `WriteOperation`, which selects blocking, polling or a completion callback |
-| Topic | IMU 线程把数据发布到名为 `imu` 的 Topic，订阅者以回调、队列或等待的方式接收 | The IMU thread publishes to a Topic named `imu`; subscribers receive by callback, queue or waiting |
+| Topic | IMU 线程把数据发布到名为 `imu` 的 Topic，订阅者以回调、同步等待或异步拉取的方式接收 | The IMU thread publishes to a Topic named `imu`; subscribers receive by callback, synchronous waiting or asynchronous polling |
 | 终端 Terminal | `LibXR::Terminal` 在 USART1 上提供命令行，命令是 `RamFS` 中的可执行文件 | `LibXR::Terminal` provides a command line on USART1; the commands are executable files in `RamFS` |
 
 ---
 
 ## 🧵 系统层 / System Layer
 
-系统层提供线程、互斥锁、信号量、软件定时器和异步任务（`ASync`），已有 None（裸机）、FreeRTOS、ThreadX、
+系统层提供线程、互斥锁、信号量和软件定时器，已有 None（裸机）、FreeRTOS、ThreadX、
 Linux、Webots 和 WebAssembly 六种实现。软件定时器的任务在一个管理线程中按毫秒周期运行；None 和
 WebAssembly 没有多线程，定时器在空闲等待时刷新。以下程序在 Linux 上创建一个 10 ms 周期的定时器任务：
 
-The system layer provides threads, mutexes, semaphores, software timers and asynchronous jobs
-(`ASync`), with six implementations: None (bare metal), FreeRTOS, ThreadX, Linux, Webots and
+The system layer provides threads, mutexes, semaphores and software timers, with six
+implementations: None (bare metal), FreeRTOS, ThreadX, Linux, Webots and
 WebAssembly. Software timer tasks run with millisecond periods in one management thread; None
 and WebAssembly have no threads, and the timer is refreshed while waiting. The program below
 creates a timer task with a 10 ms period on Linux:
@@ -102,13 +102,15 @@ creates a timer task with a 10 ms period on Linux:
 ```cpp
 LibXR::PlatformInit();
 
-static int ticks = 0;
-auto task = LibXR::Timer::CreateTask<int*>([](int* count) { ++*count; }, &ticks, 10);
-LibXR::Timer::Add(task);
+static std::atomic<uint32_t> ticks{0};
+auto task = LibXR::Timer::CreateTask<std::atomic<uint32_t>*>(
+    [](std::atomic<uint32_t>* count) { count->fetch_add(1U, std::memory_order_release); },
+    &ticks, 10);
 LibXR::Timer::Start(task);
+LibXR::Timer::Add(task);
 
 LibXR::Thread::Sleep(500);
-std::printf("timer ticks after 500 ms: %d\n", ticks);
+std::printf("timer ticks after 500 ms: %u\n", ticks.load(std::memory_order_acquire));
 ```
 
 ```text
@@ -183,13 +185,13 @@ The support matrix is in [XRUSB](src/driver/usb/README.md), and usage is describ
 
 ## 📨 中间件 / Middleware
 
-`Topic` 是进程内按类型检查的发布订阅通道，订阅者以回调、队列、异步或同步等待的方式接收；Linux 上另有
+`Topic` 是进程内按类型检查的发布订阅通道，订阅者以回调、异步或同步等待的方式接收；Linux 上另有
 跨进程的 `LinuxSharedTopic`。其余中间件包括事件（`Event`）、内存文件系统 `RamFS` 与命令行终端 `Terminal`、
 保存在 Flash 上的键值数据库（`DatabaseRaw`、`DatabaseRawSequential`）以及日志（`XR_LOG_INFO` 等宏）。下例
 由一个线程发布三次温度，回调订阅者逐次打印：
 
 `Topic` is an in-process publish-subscribe channel with type checking, and subscribers receive by
-callback, queue, asynchronous or synchronous waiting; Linux also has the inter-process
+callback, asynchronous or synchronous waiting; Linux also has the inter-process
 `LinuxSharedTopic`. The other middleware components are events (`Event`), the in-memory file
 system `RamFS` with the command-line `Terminal`, key-value databases stored in Flash
 (`DatabaseRaw`, `DatabaseRawSequential`) and logging (`XR_LOG_INFO` and related macros). In the
@@ -233,15 +235,15 @@ Each component is described in [Middleware](https://xrobot.work/en/docs/basic_co
 
 ## 🧮 数据结构与工具 / Data Structures and Utilities
 
-数据结构包括链表（`List`、`LockFreeList`）、栈、红黑树、队列（`Queue`、`SPSCQueue`、`MPMCQueue`）、对象池和
+数据结构包括无锁链表（`LockFreeList`）、红黑树、队列（`Queue`、`SPSCQueue`、`MPMCQueue`）、对象池和
 双缓冲。工具包括 CRC8/16/32/64、周期值、PID 控制器、正逆运动学、位姿与姿态变换（`Position`、`EulerAngle`、
-`RotationMatrix`、`Quaternion`）、惯量、浮点编码和标志位。核心组件提供 `RawData`、回调、`Pipe`、格式化输出以及
+`RotationMatrix`、`Quaternion`）、惯量和浮点编码。核心组件提供 `RawData`、回调、`Pipe`、格式化输出以及
 `ReadPort`/`WritePort` 读写端口。
 
-The data structures are linked lists (`List`, `LockFreeList`), a stack, a red-black tree, queues
+The data structures are a lock-free list (`LockFreeList`), a red-black tree, queues
 (`Queue`, `SPSCQueue`, `MPMCQueue`), object pools and double buffers. The utilities are CRC8/16/32/64,
 cyclic values, a PID controller, forward and inverse kinematics, pose and attitude transforms
-(`Position`, `EulerAngle`, `RotationMatrix`, `Quaternion`), inertia, float encoding and flags. The
+(`Position`, `EulerAngle`, `RotationMatrix`, `Quaternion`), inertia and float encoding. The
 core provides `RawData`, callbacks, `Pipe`, formatted output and the `ReadPort`/`WritePort` I/O
 ports.
 

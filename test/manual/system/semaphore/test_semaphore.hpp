@@ -2,28 +2,29 @@
  * @file test_semaphore.hpp
  * @brief 实际系统的信号量测试 / Semaphore tests on the target system.
  *
- * 检查计数、空等待超时、线程上下文的回调接口及跨任务通知；协作任务使用传入的 ASync。
- * Check counts, empty-wait timeout, thread-context callback posting and cross-task
- * notification.
+ * 检查计数、空等待超时、线程上下文的回调接口及跨任务通知；协作任务使用传入的
+ * ManualWorker。 Check counts, empty-wait timeout, thread-context callback posting and
+ * cross-task notification.
  */
 #pragma once
 
-#include "../async_wait.hpp"
+#include "../../test_worker.hpp"
 
+#if !defined(LIBXR_NOT_SUPPORT_MUTI_THREAD)
 namespace LibXR::Test
 {
 /**
  * @brief 检查信号量计数与任务间通知 / Check counting and task-to-task notification.
- * @param worker 独占借用的 READY 状态 ASync / Exclusively borrowed READY ASync.
+ * @param worker 独占借用的空闲 ManualWorker / Exclusively borrowed idle ManualWorker.
  * @param tick_ms 调度 tick 的毫秒数，向上取整 / Scheduler tick duration rounded up to
  * milliseconds.
  * @param timeout_ms 每次协作等待的上限 / Deadline for each cooperating wait.
  * @param iterations 通知批次数 / Number of notification batches.
  */
-inline void TestSemaphore(ASync& worker, uint32_t tick_ms, uint32_t timeout_ms = 1000,
-                          uint32_t iterations = 1000)
+inline void TestSemaphore(ManualWorker& worker, uint32_t tick_ms,
+                          uint32_t timeout_ms = 1000, uint32_t iterations = 1000)
 {
-  TEST_ASSERT(worker.GetStatus() == ASync::Status::READY);
+  TEST_ASSERT(worker.IsIdle());
   TEST_ASSERT(iterations > 0);
   TEST_ASSERT(tick_ms > 0 && tick_ms <= timeout_ms / 16U);
   Semaphore count(0);
@@ -53,30 +54,29 @@ inline void TestSemaphore(ASync& worker, uint32_t tick_ms, uint32_t timeout_ms =
     uint32_t timeout_ms;
     uint32_t iterations;
   } context{{0}, {0}, {0}, timeout_ms, iterations};
-  auto job = ASync::Job::Create(
-      [](bool, Context* context, ASync*)
+  auto job = [](void* arg)
+  {
+    auto* context = static_cast<Context*>(arg);
+    for (uint32_t round = 0; round < context->iterations; ++round)
+    {
+      TEST_ASSERT(context->release.Wait(context->timeout_ms) == ErrorCode::OK);
+      const uint32_t batch = 1U + round % 8U;
+      for (uint32_t item = 0; item < batch; ++item)
       {
-        for (uint32_t round = 0; round < context->iterations; ++round)
+        if (item % 2U == 0)
         {
-          TEST_ASSERT(context->release.Wait(context->timeout_ms) == ErrorCode::OK);
-          const uint32_t batch = 1U + round % 8U;
-          for (uint32_t item = 0; item < batch; ++item)
-          {
-            if (item % 2U == 0)
-            {
-              context->notified.Post();
-            }
-            else
-            {
-              context->notified.PostFromCallback(false);
-            }
-            Thread::Yield();
-          }
-          context->batch_ready.Post();
+          context->notified.Post();
         }
-      },
-      &context);
-  TEST_ASSERT(worker.AssignJob(job) == ErrorCode::OK);
+        else
+        {
+          context->notified.PostFromCallback(false);
+        }
+        Thread::Yield();
+      }
+      context->batch_ready.Post();
+    }
+  };
+  worker.Submit(job, &context);
   for (uint32_t round = 0; round < iterations; ++round)
   {
     const uint32_t batch = 1U + round % 8U;
@@ -99,7 +99,8 @@ inline void TestSemaphore(ASync& worker, uint32_t tick_ms, uint32_t timeout_ms =
     }
     TEST_ASSERT(context.notified.Wait(0) == ErrorCode::TIMEOUT);
   }
-  Detail::WaitForJob(worker, timeout_ms);
+  worker.WaitDone(timeout_ms);
   TEST_ASSERT(context.batch_ready.Wait(0) == ErrorCode::TIMEOUT);
 }
 }  // namespace LibXR::Test
+#endif

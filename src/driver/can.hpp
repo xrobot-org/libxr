@@ -214,6 +214,16 @@ class CAN
    * @param mode 过滤器模式 / Filter mode.
    * @param start_id_mask 起始 ID 或掩码 / Start ID or mask.
    * @param end_id_mask 结束 ID 或匹配值 / End ID or match value.
+   * @note 当后端与中断配置保证同一 CAN 实例的数据帧接收路径不发生嵌套抢占或并发分发时，
+   *       单条数据帧注册回调串行执行；错误帧的执行上下文（如 MCU 后端的独立错误中断或
+   *       Linux SocketCAN 的共用接收线程）由具体后端决定。若同一回调对象被复用在多条
+   *       注册或错误路径上，调用方须自行保证其并发安全。
+   *       Data-frame callbacks for a single registration execute serially only when the
+   *       backend and IRQ configuration prevent nested or concurrent RX dispatch on that
+   *       CAN instance. Error-frame execution context (for example, a dedicated error IRQ
+   *       on MCU backends or a shared RX thread on Linux SocketCAN) is backend-defined;
+   *       reusing one callback object across registrations or error paths requires
+   *       caller-side synchronization.
    */
   void Register(Callback cb, Type type, FilterMode mode = FilterMode::ID_RANGE,
                 uint32_t start_id_mask = 0, uint32_t end_id_mask = UINT32_MAX);
@@ -355,6 +365,16 @@ class FDCAN : public CAN
    * @param mode 过滤器模式 / Filter mode.
    * @param start_id_mask 起始 ID 或掩码 / Start ID or mask.
    * @param end_id_mask 结束 ID 或匹配值 / End ID or match value.
+   * @note 当后端与中断配置保证同一 FDCAN 实例的数据帧接收路径不发生嵌套抢占或并发分发时，
+   *       单条数据帧注册回调串行执行；错误帧的执行上下文（如 MCU 后端的独立错误中断或
+   *       Linux SocketCAN 的共用接收线程）由具体后端决定。若同一回调对象被复用在多条
+   *       注册或错误路径上，调用方须自行保证其并发安全。
+   *       Data-frame callbacks for a single registration execute serially only when the
+   *       backend and IRQ configuration prevent nested or concurrent RX dispatch on that
+   *       FDCAN instance. Error-frame execution context (for example, a dedicated error
+   *       IRQ on MCU backends or a shared RX thread on Linux SocketCAN) is
+   * backend-defined; reusing one callback object across registrations or error paths
+   * requires caller-side synchronization.
    */
   void Register(CallbackFD cb, Type type, FilterMode mode = FilterMode::ID_RANGE,
                 uint32_t start_id_mask = 0, uint32_t end_id_mask = UINT32_MAX);

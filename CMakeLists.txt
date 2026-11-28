@@ -71,7 +71,9 @@ if(LIBXR_DEV_ASSERT_BUILD)
   target_compile_definitions(${PROJECT_NAME} PUBLIC LIBXR_DEV_ASSERT_BUILD)
 endif()
 
-target_compile_definitions(${PROJECT_NAME} PUBLIC LIBXR_SINGLE_CORE=$<BOOL:${LIBXR_SINGLE_CORE}>)
+target_compile_definitions(
+  ${PROJECT_NAME} PUBLIC LIBXR_SINGLE_CORE=$<BOOL:${LIBXR_SINGLE_CORE}>
+)
 
 file(GLOB ${PROJECT_NAME}_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
@@ -150,38 +152,60 @@ list(SORT _xr_force_os_sources)
 
 if(_xr_force_o3_sources)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    set_property(SOURCE ${_xr_force_o3_sources} APPEND PROPERTY COMPILE_OPTIONS "/O2")
-  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
-         CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
-         CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
-    set_property(SOURCE ${_xr_force_o3_sources} APPEND PROPERTY COMPILE_OPTIONS "-O3")
+    set_property(
+      SOURCE ${_xr_force_o3_sources}
+      APPEND
+      PROPERTY COMPILE_OPTIONS "/O2"
+    )
+  elseif(
+    CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+    OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
+    OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"
+  )
+    set_property(
+      SOURCE ${_xr_force_o3_sources}
+      APPEND
+      PROPERTY COMPILE_OPTIONS "-O3"
+    )
   else()
-    message(WARNING
-            "LibXR file-level optimized sources are not configured for compiler: "
-            "${CMAKE_CXX_COMPILER_ID}")
+    message(WARNING "LibXR file-level optimized sources are not configured for compiler: "
+                    "${CMAKE_CXX_COMPILER_ID}"
+    )
   endif()
 endif()
 
 if(_xr_force_os_sources)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-    set_property(SOURCE ${_xr_force_os_sources} APPEND PROPERTY COMPILE_OPTIONS "/O1")
-  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
-         CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
-         CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
-    set_property(SOURCE ${_xr_force_os_sources} APPEND PROPERTY COMPILE_OPTIONS "-Os")
+    set_property(
+      SOURCE ${_xr_force_os_sources}
+      APPEND
+      PROPERTY COMPILE_OPTIONS "/O1"
+    )
+  elseif(
+    CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+    OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
+    OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"
+  )
+    set_property(
+      SOURCE ${_xr_force_os_sources}
+      APPEND
+      PROPERTY COMPILE_OPTIONS "-Os"
+    )
   else()
-    message(WARNING
-            "LibXR file-level size-optimized sources are not configured for compiler: "
-            "${CMAKE_CXX_COMPILER_ID}")
+    message(
+      WARNING "LibXR file-level size-optimized sources are not configured for compiler: "
+              "${CMAKE_CXX_COMPILER_ID}"
+    )
   endif()
 endif()
 
 # 底层内存函数对任意类型缓冲区做字宽别名访问；禁用严格别名以防 LTO 跨 TU 内联误优化。
 # Low-level memory routines alias arbitrary buffers as words; disable strict
 # aliasing so LTO cross-TU inlining cannot misoptimize caller loads/stores.
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
-   CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
-   CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+   OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
+   OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"
+)
   set_property(
     SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/core/libxr_mem_o3.cpp"
            "${CMAKE_CURRENT_SOURCE_DIR}/src/core/libxr_mem_cmp.cpp"
@@ -205,24 +229,31 @@ set(_xr_public_include_dirs
     ${CMAKE_CURRENT_SOURCE_DIR}/system/${_xr_system}
 )
 
-file(GLOB _xr_core_SUBDIRS CONFIGURE_DEPENDS LIST_DIRECTORIES true
-     "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*"
+file(
+  GLOB _xr_core_SUBDIRS CONFIGURE_DEPENDS
+  LIST_DIRECTORIES true
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*"
 )
 foreach(_xr_core_SUBDIR IN LISTS _xr_core_SUBDIRS)
   if(IS_DIRECTORY "${_xr_core_SUBDIR}")
     get_filename_component(_xr_core_NAME "${_xr_core_SUBDIR}" NAME)
-    if(EXISTS "${_xr_core_SUBDIR}/${_xr_core_NAME}.hpp" OR
-       EXISTS "${_xr_core_SUBDIR}/libxr_${_xr_core_NAME}.hpp")
+    if(EXISTS "${_xr_core_SUBDIR}/${_xr_core_NAME}.hpp"
+       OR EXISTS "${_xr_core_SUBDIR}/libxr_${_xr_core_NAME}.hpp"
+    )
       list(APPEND _xr_public_include_dirs "${_xr_core_SUBDIR}")
     endif()
   endif()
 endforeach()
 
-file(GLOB _xr_middleware_SUBDIRS CONFIGURE_DEPENDS LIST_DIRECTORIES true
-     "${CMAKE_CURRENT_SOURCE_DIR}/src/middleware/*"
+file(
+  GLOB _xr_middleware_SUBDIRS CONFIGURE_DEPENDS
+  LIST_DIRECTORIES true
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/middleware/*"
 )
-file(GLOB _xr_structure_SUBDIRS CONFIGURE_DEPENDS LIST_DIRECTORIES true
-     "${CMAKE_CURRENT_SOURCE_DIR}/src/structure/*"
+file(
+  GLOB _xr_structure_SUBDIRS CONFIGURE_DEPENDS
+  LIST_DIRECTORIES true
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/structure/*"
 )
 foreach(_xr_structure_SUBDIR IN LISTS _xr_structure_SUBDIRS)
   if(IS_DIRECTORY "${_xr_structure_SUBDIR}")
@@ -245,8 +276,6 @@ endforeach()
 target_include_directories(${PROJECT_NAME} PUBLIC ${_xr_public_include_dirs})
 
 if(_xr_driver)
-  target_sources(${PROJECT_NAME} PRIVATE ${${PROJECT_NAME}_DRIVER_C_SOURCES})
-
   target_include_directories(
     ${PROJECT_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/driver/${_xr_driver}
   )

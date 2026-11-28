@@ -54,13 +54,14 @@ struct TerminalDisplayFixture
 
 void FillInputLine(LibXR::Terminal<>& terminal, const char* text)
 {
-  terminal.input_line_.Reset();
   const size_t len = std::strlen(text);
-  for (size_t i = 0; i < len; ++i)
+  TEST_ASSERT(len < terminal.input_line_.size());
+  if (len > 0)
   {
-    terminal.input_line_.Push(text[i]);
+    std::memcpy(terminal.input_line_.data(), text, len);
   }
-  terminal.input_line_[terminal.input_line_.Size()] = '\0';
+  terminal.input_len_ = len;
+  terminal.input_line_[len] = '\0';
 }
 
 void TestHistoryDisplayAndRestore()
@@ -88,7 +89,7 @@ void TestHistoryDisplayAndRestore()
   fixture.terminal.CopyHistoryToInputLine();
   TEST_ASSERT(fixture.terminal.history_index_ == -1);
   TEST_ASSERT(fixture.terminal.offset_ == 0);
-  TEST_ASSERT(fixture.terminal.input_line_.Size() == 5);
+  TEST_ASSERT(fixture.terminal.input_len_ == 5);
   TEST_ASSERT(std::strcmp(&fixture.terminal.input_line_[0], "alpha") == 0);
 }
 

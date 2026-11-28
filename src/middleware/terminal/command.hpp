@@ -258,7 +258,7 @@ void AutoComplete()
   }
 
   /* return if not need complete */
-  if (tmp - &input_line_[0] != static_cast<int>(input_line_.Size() + offset_))
+  if (tmp - &input_line_[0] != static_cast<int>(input_len_) + offset_)
   {
     return;
   }
@@ -371,7 +371,7 @@ void AutoComplete()
     dir->Foreach(foreach_fun_show);
 
     ShowHeader();
-    write_stream_ << ConstRawData(&input_line_[0], input_line_.Size());
+    write_stream_ << ConstRawData(input_line_.data(), input_len_);
 
     for (size_t i = 0; i < shared_prefix_len - prefix_len; i++)
     {

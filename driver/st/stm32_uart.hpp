@@ -12,7 +12,6 @@
 #endif
 
 #include "double_buffer.hpp"
-#include "flag.hpp"
 #include "libxr_def.hpp"
 #include "libxr_rw.hpp"
 #include "serialized_service.hpp"
@@ -193,7 +192,7 @@ class STM32UART : public UART
   UART_HandleTypeDef* uart_handle_;  ///< HAL UART 句柄 / HAL UART handle.
 
   /// 发送半区是否在使用，仅后端处理器访问 / TX half in use; service-only access.
-  Flag::Plain tx_busy_;
+  bool tx_busy_ = false;
 
   stm32_uart_id_t id_ =
       STM32_UART_ID_ERROR;  ///< STM32 UART 实例编号 / STM32 UART instance ID.

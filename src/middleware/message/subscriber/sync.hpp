@@ -187,12 +187,7 @@ class Topic::SyncSubscriber
     DEV_ASSERT(data.wait_state.load(std::memory_order_acquire) ==
                SyncBlock::WAIT_CLAIMED);
 
-    ErrorCode finish_wait_ans;
-    do
-    {
-      finish_wait_ans = data.sem.Wait(UINT32_MAX);
-    } while (finish_wait_ans == ErrorCode::TIMEOUT);
-    REQUIRE(finish_wait_ans == ErrorCode::OK);
+    Detail::WaitClaimedNotification(data.sem);
     data.wait_state.store(SyncBlock::WAIT_IDLE, std::memory_order_release);
     return ErrorCode::OK;
   }

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <utility>
 
 #include "esp_attr.h"
 #include "esp_clk_tree.h"
@@ -340,7 +341,7 @@ bool IRAM_ATTR ESP32UART::TryApplyPublishedConfig(bool in_isr)
     return false;
   }
 
-  bool tx_idle = !tx_busy_.IsSet() && !tx_active_valid_
+  bool tx_idle = !tx_busy_ && !tx_active_valid_
 #if SOC_GDMA_SUPPORTED && SOC_UHCI_SUPPORTED
                  && !tx_dma_buffer_.HasPending()
 #endif
@@ -674,7 +675,7 @@ ErrorCode IRAM_ATTR ESP32UART::TryStartTx(bool in_isr)
 #if SOC_GDMA_SUPPORTED && SOC_UHCI_SUPPORTED
   if (dma_backend_enabled_)
   {
-    if (!tx_busy_.IsSet())
+    if (!tx_busy_)
     {
       if (!tx_active_valid_ && config_state_.load(std::memory_order_acquire) !=
                                    static_cast<uint8_t>(ConfigState::EMPTY))
@@ -690,7 +691,7 @@ ErrorCode IRAM_ATTR ESP32UART::TryStartTx(bool in_isr)
         return ErrorCode::PENDING;
       }
     }
-    if (tx_busy_.IsSet() && !tx_dma_buffer_.HasPending() &&
+    if (tx_busy_ && !tx_dma_buffer_.HasPending() &&
         config_state_.load(std::memory_order_acquire) ==
             static_cast<uint8_t>(ConfigState::EMPTY))
     {
@@ -802,7 +803,7 @@ bool IRAM_ATTR ESP32UART::StartActiveTransfer(bool)
     return false;
   }
 
-  if (tx_busy_.TestAndSet())
+  if (std::exchange(tx_busy_, true))
   {
     return true;
   }
@@ -815,7 +816,7 @@ bool IRAM_ATTR ESP32UART::StartActiveTransfer(bool)
       return true;
     }
 
-    tx_busy_.Clear();
+    tx_busy_ = false;
     return false;
   }
 #endif
@@ -855,7 +856,7 @@ void IRAM_ATTR ESP32UART::PushRxBytes(const uint8_t* data, size_t size, bool in_
 // Release finished transfer storage and advance halves without completing again.
 void IRAM_ATTR ESP32UART::OnTxTransferDone(bool in_isr, ErrorCode result)
 {
-  tx_busy_.Clear();
+  tx_busy_ = false;
 
   ClearActiveTx();
 
@@ -887,7 +888,7 @@ void IRAM_ATTR ESP32UART::OnTxTransferDone(bool in_isr, ErrorCode result)
       REQUIRE_FROM_CALLBACK(start_and_report_active_result, in_isr);
     }
 
-    if (tx_busy_.IsSet() && !tx_dma_buffer_.HasPending() &&
+    if (tx_busy_ && !tx_dma_buffer_.HasPending() &&
         config_state_.load(std::memory_order_acquire) ==
             static_cast<uint8_t>(ConfigState::EMPTY))
     {

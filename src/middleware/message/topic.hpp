@@ -223,10 +223,9 @@ class Topic
    */
   enum class SuberType : uint8_t
   {
-    SYNC,      ///< 同步等待型订阅者 / Synchronous wait-based subscriber.
-    ASYNC,     ///< 异步本地缓冲型订阅者 / Asynchronous local-buffer subscriber.
-    QUEUE,     ///< 队列转发型订阅者 / Queue-forwarding subscriber.
-    CALLBACK,  ///< 回调执行型订阅者 / Callback-executing subscriber.
+    SYNC = 0,      ///< 同步等待型订阅者 / Synchronous wait-based subscriber.
+    ASYNC = 1,     ///< 异步本地缓冲型订阅者 / Asynchronous local-buffer subscriber.
+    CALLBACK = 3,  ///< 回调执行型订阅者 / Callback-executing subscriber.
   };
 
   /**
@@ -275,19 +274,6 @@ class Topic
    */
   template <typename Data>
   class ASyncSubscriber;
-
-  /**
-   * @struct QueueBlock
-   * @brief 队列订阅者挂在 topic 链表里的数据块 / Subscriber block used by one queued
-   *        subscriber inside the topic list
-   */
-  struct QueueBlock;
-
-  /**
-   * @class QueuedSubscriber
-   * @brief 把每次发布推入队列的订阅者 / Subscriber that pushes each publish into a queue
-   */
-  class QueuedSubscriber;
 
   /**
    * @class Callback
@@ -869,5 +855,4 @@ class Topic
 #include "server/server.hpp"
 #include "subscriber/async.hpp"
 #include "subscriber/callback.hpp"
-#include "subscriber/queue.hpp"
 #include "subscriber/sync.hpp"

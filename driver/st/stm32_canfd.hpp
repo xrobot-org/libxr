@@ -14,6 +14,7 @@
 #endif
 
 #include "can.hpp"
+#include "serialized_service.hpp"
 #include "slot_pool.hpp"
 
 #ifndef FDCAN_MESSAGE_RAM_WORDS_MAX
@@ -70,6 +71,11 @@ namespace LibXR
 {
 /**
  * @brief STM32 FDCAN 驱动实现 / STM32 FDCAN driver implementation
+ * @note 若同一 FDCAN 实例同时使能 IT0 与 IT1 中断线，CubeMX/NVIC 配置须为两者分配相同
+ *       抢占优先级，防止 HAL 在两线入口共享 RX/错误标志时嵌套重入同一注册回调。
+ *       When both IT0 and IT1 are enabled for one FDCAN instance, configure them with
+ *       the same NVIC preemption priority so HAL's shared IT0/IT1 IRQ handler cannot
+ *       nest and reenter a registration callback.
  */
 class STM32CANFD : public FDCAN
 {
@@ -281,15 +287,18 @@ class STM32CANFD : public FDCAN
   static inline void BuildTxHeader(const FDPack& p, FDCAN_TxHeaderTypeDef& h);
 
   /**
+   * @brief 返回当前实例分配的 RX FIFO 中断掩码 / Return the assigned RX FIFO notification
+   *        mask for this instance.
+   */
+  uint32_t AssignedRxFifoNotification() const;
+
+  /**
    * @brief 从发送队列提取待发帧并提交到 HAL FDCAN FIFO / Drain TX queues into HAL FDCAN
    *        TX FIFO.
    */
   void TxService();
 
-  std::atomic<uint32_t> tx_lock_{
-      0};  ///< 发送服务并发互斥标志 / TX service concurrency lock.
-  std::atomic<uint32_t> tx_pend_{
-      0};  ///< 挂起重调度发送标记 / Pending TX reschedule flag.
+  SerializedService tx_service_;  ///< 发送服务串行化调度器 / TX service serializer.
 
   FDCAN_HandleTypeDef* hcan_;  ///< STM32 HAL FDCAN 句柄 / STM32 HAL FDCAN handle.
 

@@ -13,8 +13,10 @@
 #include <semaphore>
 #include <thread>
 #include <type_traits>
+#include <vector>
 
 #include "serialized_service.hpp"
+#include "slot_pool.hpp"
 #include "test.hpp"
 #include "test_assert.hpp"
 
@@ -166,6 +168,180 @@ void TestConcurrentReleaseAndPayloadPublication()
   }
   TEST_ASSERT(active.load(std::memory_order_relaxed) == 0U);
 }
+
+void TestCanTxSerializedServicePattern()
+{
+  // 模拟 CAN/FDCAN 发送服务模型：验证 FD 优先、邮箱满重试槽、完成中断排空以及
+  // bus-off/重配置后的恢复 kick 语义。
+  // Model the CAN/FDCAN TX service pattern: FD priority, full-mailbox retry slots,
+  // completion-IRQ drain, and bus-off / reconfig restart kicks.
+  constexpr uint32_t TX_EVENT = 1U;
+  struct MockCanTx
+  {
+    LibXR::SerializedService tx_service;
+    LibXR::SlotPool<uint32_t> tx_fd_queue{8};
+    LibXR::SlotPool<uint32_t> tx_classic_queue{8};
+    uint32_t tx_fd_retry_pack = 0U;
+    bool tx_fd_retry_valid = false;
+    uint32_t tx_classic_retry_pack = 0U;
+    bool tx_classic_retry_valid = false;
+    std::atomic<uint32_t> hw_free_slots{0U};
+    std::atomic<uint32_t> bus_off{0U};
+    std::atomic<uint32_t> active_owners{0U};
+    std::vector<uint32_t> sent_order;
+
+    bool TryHwSubmit(uint32_t pack)
+    {
+      if (bus_off.load(std::memory_order_acquire) != 0U)
+      {
+        return false;
+      }
+      uint32_t free_slots = hw_free_slots.load(std::memory_order_acquire);
+      while (free_slots > 0U)
+      {
+        if (hw_free_slots.compare_exchange_weak(free_slots, free_slots - 1U,
+                                                std::memory_order_acq_rel,
+                                                std::memory_order_acquire))
+        {
+          sent_order.push_back(pack);
+          return true;
+        }
+      }
+      return false;
+    }
+
+    void TxService()
+    {
+      tx_service.Invoke(
+          TX_EVENT, false,
+          [this](uint32_t, bool)
+          {
+            TEST_ASSERT(active_owners.fetch_add(1U, std::memory_order_relaxed) == 0U);
+            while (hw_free_slots.load(std::memory_order_acquire) != 0U)
+            {
+              uint32_t fd_pack = 0U;
+              bool has_fd = tx_fd_retry_valid;
+              if (has_fd)
+              {
+                fd_pack = tx_fd_retry_pack;
+              }
+              else
+              {
+                has_fd = (tx_fd_queue.Get(fd_pack) == LibXR::ErrorCode::OK);
+              }
+              if (has_fd)
+              {
+                if (!TryHwSubmit(fd_pack))
+                {
+                  tx_fd_retry_pack = fd_pack;
+                  tx_fd_retry_valid = true;
+                  break;
+                }
+                tx_fd_retry_valid = false;
+                continue;
+              }
+
+              uint32_t classic_pack = 0U;
+              bool has_classic = tx_classic_retry_valid;
+              if (has_classic)
+              {
+                classic_pack = tx_classic_retry_pack;
+              }
+              else
+              {
+                has_classic =
+                    (tx_classic_queue.Get(classic_pack) == LibXR::ErrorCode::OK);
+              }
+              if (has_classic)
+              {
+                if (!TryHwSubmit(classic_pack))
+                {
+                  tx_classic_retry_pack = classic_pack;
+                  tx_classic_retry_valid = true;
+                  break;
+                }
+                tx_classic_retry_valid = false;
+                continue;
+              }
+              break;
+            }
+            TEST_ASSERT(active_owners.fetch_sub(1U, std::memory_order_relaxed) == 1U);
+          });
+    }
+  };
+
+  // 1. FD 优先 + 邮箱满转入重试槽 + 完成中断续发 + bus-off 恢复。
+  // FD priority, full-mailbox retry slot, completion-IRQ drain, and bus-off recovery.
+  {
+    MockCanTx can;
+    TEST_ASSERT(can.tx_classic_queue.Put(100U) == LibXR::ErrorCode::OK);
+    TEST_ASSERT(can.tx_classic_queue.Put(101U) == LibXR::ErrorCode::OK);
+    TEST_ASSERT(can.tx_fd_queue.Put(200U) == LibXR::ErrorCode::OK);
+    TEST_ASSERT(can.tx_fd_queue.Put(201U) == LibXR::ErrorCode::OK);
+
+    // 硬件仅 1 槽且处于 bus-off：首帧 FD 进入重试槽，不丢帧。
+    // Hardware reports 1 free slot while bus-off: first FD frame parks in retry slot.
+    can.hw_free_slots.store(1U, std::memory_order_release);
+    can.bus_off.store(1U, std::memory_order_release);
+    can.TxService();
+    TEST_ASSERT(can.sent_order.empty());
+    TEST_ASSERT(can.tx_fd_retry_valid && can.tx_fd_retry_pack == 200U);
+
+    // 恢复 bus-off 并重触发：优先发 200（仅 1 槽）。
+    // Clear bus-off and restart kick: drains 200 into the single free slot.
+    can.bus_off.store(0U, std::memory_order_release);
+    can.TxService();
+    TEST_ASSERT(can.sent_order.size() == 1U && can.sent_order[0] == 200U);
+    TEST_ASSERT(!can.tx_fd_retry_valid);
+
+    // 完成中断释放 3 槽：先发剩余 FD 201，再按序发 classic 100、101。
+    // Completion IRQ frees 3 slots: sends FD 201 first, then classic 100 and 101.
+    can.hw_free_slots.fetch_add(3U, std::memory_order_acq_rel);
+    can.TxService();
+    TEST_ASSERT(can.sent_order.size() == 4U);
+    TEST_ASSERT(can.sent_order[0] == 200U && can.sent_order[1] == 201U &&
+                can.sent_order[2] == 100U && can.sent_order[3] == 101U);
+  }
+
+  // 2. 并发入队 kick 与完成中断交错：全部帧必须发出且不重叠。
+  // Concurrent producer kicks interleaved with completion-IRQ kicks drain every frame.
+  {
+    constexpr uint32_t TOTAL_FRAMES = 500U;
+    MockCanTx can;
+    std::atomic<uint32_t> producer_done{0U};
+    std::thread irq_sim(
+        [&]
+        {
+          while (producer_done.load(std::memory_order_acquire) == 0U ||
+                 can.sent_order.size() < TOTAL_FRAMES)
+          {
+            if (can.hw_free_slots.load(std::memory_order_acquire) < 3U)
+            {
+              can.hw_free_slots.fetch_add(1U, std::memory_order_acq_rel);
+            }
+            can.TxService();
+            std::this_thread::yield();
+          }
+        });
+
+    for (uint32_t seq = 1U; seq <= TOTAL_FRAMES; ++seq)
+    {
+      while (can.tx_classic_queue.Put(seq) != LibXR::ErrorCode::OK)
+      {
+        can.TxService();
+        std::this_thread::yield();
+      }
+      can.TxService();
+    }
+    producer_done.store(1U, std::memory_order_release);
+    irq_sim.join();
+    TEST_ASSERT(can.sent_order.size() == TOTAL_FRAMES);
+    for (uint32_t i = 0U; i < TOTAL_FRAMES; ++i)
+    {
+      TEST_ASSERT(can.sent_order[i] == i + 1U);
+    }
+  }
+}
 }  // namespace
 
 void test_serialized_service()
@@ -173,4 +349,5 @@ void test_serialized_service()
   TestDeferredAndRecursiveEvents();
   TestCompetingCallableLifetime();
   TestConcurrentReleaseAndPayloadPublication();
+  TestCanTxSerializedServicePattern();
 }

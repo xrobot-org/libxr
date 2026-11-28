@@ -33,7 +33,7 @@ class Thread
    * @brief  默认构造函数，初始化空线程
    *         Default constructor initializing an empty thread
    */
-  Thread() : thread_handle_(nullptr) {};
+  constexpr Thread() noexcept = default;
 
   /**
    * @brief  通过 ThreadX 线程句柄创建线程对象
@@ -141,6 +141,6 @@ class Thread
   operator TX_THREAD*() { return thread_handle_; }
 
  private:
-  libxr_thread_handle thread_handle_;
+  libxr_thread_handle thread_handle_{};
 };
 }  // namespace LibXR

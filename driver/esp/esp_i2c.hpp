@@ -1,13 +1,13 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
 #include "driver/gpio.h"
 #include "esp_def.hpp"
 #include "esp_intr_alloc.h"
-#include "flag.hpp"
 #include "hal/i2c_hal.h"
 #include "hal/i2c_types.h"
 #include "i2c.hpp"
@@ -111,7 +111,7 @@ class ESP32I2C : public I2C
   Configuration config_{};
   i2c_hal_context_t hal_ = {};
   uint32_t source_clock_hz_ = 0U;
-  Flag::Atomic busy_{};
+  std::atomic<uint32_t> busy_{0U};
   intr_handle_t intr_handle_ = nullptr;
   bool intr_installed_ = false;
 

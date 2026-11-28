@@ -7,8 +7,9 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/..")
 
 add_library(
   test_assert_disabled OBJECT
-  core/assert/libxr_assert/assert_disabled_headers.cpp ../../src/core/rw/read_port.cpp
-  ../../src/core/rw/write_port.cpp ../../src/core/rw/write_stream.cpp
+  core/assert/libxr_assert/assert_disabled_headers.cpp ../../src/core/rw/operation.cpp
+  ../../src/core/rw/read_port.cpp ../../src/core/rw/write_port.cpp
+  ../../src/core/rw/write_stream.cpp
 )
 target_include_directories(
   test_assert_disabled PRIVATE $<TARGET_PROPERTY:xr,INTERFACE_INCLUDE_DIRECTORIES>
@@ -52,9 +53,10 @@ string(
 )
 check_cxx_source_compiles("${_xr_unaligned_probe_src}" _xr_has_fast_unaligned_word)
 
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR
-   CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR
-   CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+   OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
+   OR CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang"
+)
   set_property(
     SOURCE ../../src/core/libxr_mem_o3.cpp ../../src/core/libxr_mem_cmp.cpp
     APPEND
@@ -83,8 +85,8 @@ set(_xr_mem_policy_matrix
 if(_xr_has_fast_unaligned_word)
   list(
     APPEND
-      _xr_mem_policy_matrix
-      "unaligned_word|LIBXR_FASTCOPY_POLICY_UNALIGNED_WORD|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|DEFAULT"
+    _xr_mem_policy_matrix
+    "unaligned_word|LIBXR_FASTCOPY_POLICY_UNALIGNED_WORD|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|LIBXR_MEM_POLICY_BUILTIN|DEFAULT"
   )
 endif()
 foreach(_xr_mem_case IN LISTS _xr_mem_policy_matrix)
@@ -97,30 +99,23 @@ foreach(_xr_mem_case IN LISTS _xr_mem_policy_matrix)
   list(GET _xr_mem_parts 5 _xr_mem_word_size)
   set(_xr_mem_target "test_mem_policy_${_xr_mem_name}")
   add_executable(
-    ${_xr_mem_target}
-    core/libxr_mem/test_mem_policy.cpp
-    ../../src/core/libxr_mem_o3.cpp
-    ../../src/core/libxr_mem_cmp.cpp
+    ${_xr_mem_target} core/libxr_mem/test_mem_policy.cpp ../../src/core/libxr_mem_o3.cpp
+                      ../../src/core/libxr_mem_cmp.cpp
   )
-  target_include_directories(
-    ${_xr_mem_target} PRIVATE .. ../../src/core
-  )
+  target_include_directories(${_xr_mem_target} PRIVATE .. ../../src/core)
   target_compile_features(${_xr_mem_target} PRIVATE cxx_std_20)
   target_compile_definitions(
     ${_xr_mem_target}
     PRIVATE LIBXR_FASTCOPY_POLICY=${_xr_copy_policy}
             LIBXR_FASTMOVE_POLICY=${_xr_move_policy}
-            LIBXR_FASTSET_POLICY=${_xr_set_policy}
-            LIBXR_FASTCMP_POLICY=${_xr_cmp_policy}
+            LIBXR_FASTSET_POLICY=${_xr_set_policy} LIBXR_FASTCMP_POLICY=${_xr_cmp_policy}
   )
   if(NOT "${_xr_mem_word_size}" STREQUAL "DEFAULT")
     target_compile_definitions(
       ${_xr_mem_target} PRIVATE LIBXR_MEM_WORD_SIZE=${_xr_mem_word_size}
     )
   endif()
-  target_compile_options(
-    ${_xr_mem_target} PRIVATE -O3 -Wall -Wextra -Werror
-  )
+  target_compile_options(${_xr_mem_target} PRIVATE -O3 -Wall -Wextra -Werror)
   add_test(NAME ${_xr_mem_target} COMMAND ${_xr_mem_target})
   set_tests_properties(${_xr_mem_target} PROPERTIES TIMEOUT 10)
 endforeach()
@@ -135,13 +130,10 @@ if(_xr_mem_supports_lto)
     set(_xr_mem_lto_target "test_mem_policy_lto_${_xr_mem_lto_bits}")
     add_executable(
       ${_xr_mem_lto_target}
-      core/libxr_mem/test_mem_policy.cpp
-      ../../src/core/libxr_mem_o3.cpp
+      core/libxr_mem/test_mem_policy.cpp ../../src/core/libxr_mem_o3.cpp
       ../../src/core/libxr_mem_cmp.cpp
     )
-    target_include_directories(
-      ${_xr_mem_lto_target} PRIVATE .. ../../src/core
-    )
+    target_include_directories(${_xr_mem_lto_target} PRIVATE .. ../../src/core)
     target_compile_features(${_xr_mem_lto_target} PRIVATE cxx_std_20)
     target_compile_definitions(
       ${_xr_mem_lto_target}
@@ -151,40 +143,126 @@ if(_xr_mem_supports_lto)
               LIBXR_FASTCMP_POLICY=LIBXR_MEM_POLICY_BUILTIN
               LIBXR_MEM_WORD_SIZE=${_xr_mem_lto_word_size}
     )
-    target_compile_options(
-      ${_xr_mem_lto_target} PRIVATE -O3 -flto -Wall -Wextra -Werror
-    )
+    target_compile_options(${_xr_mem_lto_target} PRIVATE -O3 -flto -Wall -Wextra -Werror)
     target_link_options(${_xr_mem_lto_target} PRIVATE -O3 -flto)
     add_test(NAME ${_xr_mem_lto_target} COMMAND ${_xr_mem_lto_target})
     set_tests_properties(${_xr_mem_lto_target} PROPERTIES TIMEOUT 10)
   endforeach()
 endif()
 
-# 用实际裸机后端验证协作式 ASync；时钟由测试控制，不链接 Linux xr 库。
-# Test cooperative ASync with the actual bare-metal backend and a controlled clock.
+# 用实际裸机后端验证 Semaphore 的 atomic_ref 计数与空闲定时刷新；时钟由测试控制，不链接 Linux xr 库。
+# Test bare-metal Semaphore atomic_ref counting and idle timer refresh with a controlled clock.
 add_executable(
-  test_async_cooperative
-  system/async/test_async_cooperative.cpp
-  ../../src/system/async.cpp
-  ../../src/system/timer.cpp
+  test_none_semaphore
+  system/semaphore/test_none_semaphore.cpp ../../src/system/timer.cpp
+  ../../src/structure/lockfree_list.cpp ../../system/none/libxr_system.cpp
+  ../../system/none/semaphore.cpp ../../system/none/thread.cpp
+)
+target_include_directories(
+  test_none_semaphore PRIVATE . .. ../../system/none
+                              $<TARGET_PROPERTY:xr,INTERFACE_INCLUDE_DIRECTORIES>
+)
+get_target_property(_xr_none_sem_test_definitions xr INTERFACE_COMPILE_DEFINITIONS)
+list(FILTER _xr_none_sem_test_definitions EXCLUDE REGEX
+     "^LIBXR_SYSTEM_|^LIBXR_SINGLE_CORE="
+)
+target_compile_definitions(
+  test_none_semaphore PRIVATE ${_xr_none_sem_test_definitions}
+                              LIBXR_NOT_SUPPORT_MUTI_THREAD=1 LIBXR_SINGLE_CORE=1
+)
+target_compile_features(test_none_semaphore PRIVATE cxx_std_20)
+find_package(Threads REQUIRED)
+target_link_libraries(test_none_semaphore PRIVATE Threads::Threads)
+add_test(NAME test_none_semaphore COMMAND test_none_semaphore)
+set_tests_properties(test_none_semaphore PROPERTIES TIMEOUT 10)
+
+# 用可脚本化的确定性 Semaphore 覆盖全部 5 处 WaitClaimedNotification 回收与 REQUIRE 分支。
+# Deterministically test all 5 WaitClaimedNotification call sites, ThreadX FAILED, and REQUIRE.
+add_executable(
+  test_wait_claimed_notification
+  core/rw/operation/test_wait_claimed_notification.cpp
+  ../../src/core/libxr_mem_cmp.cpp
+  ../../src/core/libxr_mem_o3.cpp
+  ../../src/core/rw/operation.cpp
+  ../../src/core/rw/read_port.cpp
+  ../../src/core/rw/write_port.cpp
+  ../../src/middleware/message/publish.cpp
+  ../../src/middleware/message/topic.cpp
   ../../src/structure/lockfree_list.cpp
+  ../../src/structure/queue/queue_base.cpp
+  ../../src/system/timer.cpp
+  ../../src/utils/crc_o3.cpp
   ../../system/none/libxr_system.cpp
-  ../../system/none/semaphore.cpp
+  ../../system/none/mutex.cpp
   ../../system/none/thread.cpp
 )
 target_include_directories(
-  test_async_cooperative PRIVATE . .. ../../system/none
+  test_wait_claimed_notification
+  PRIVATE . .. ../../system/none $<TARGET_PROPERTY:xr,INTERFACE_INCLUDE_DIRECTORIES>
+)
+target_compile_definitions(
+  test_wait_claimed_notification
+  PRIVATE ${_xr_none_sem_test_definitions} LIBXR_NOT_SUPPORT_MUTI_THREAD=1
+          LIBXR_SINGLE_CORE=1
+)
+target_compile_features(test_wait_claimed_notification PRIVATE cxx_std_20)
+target_link_libraries(test_wait_claimed_notification PRIVATE Threads::Threads)
+add_test(NAME test_wait_claimed_notification COMMAND test_wait_claimed_notification)
+set_tests_properties(test_wait_claimed_notification PROPERTIES TIMEOUT 10)
+
+# 直接编译生产 STM32CANFD / STM32CAN / CH32CAN 驱动验证 TX 串行化、重配与 Bus-Off 恢复。
+# Compile real production STM32CANFD / STM32CAN / CH32CAN drivers to test TX recovery paths.
+add_library(
+  test_can_prod_stm32_canfd OBJECT ../../driver/st/stm32_canfd.cpp
+                                   driver/can/test_stm32_canfd_prod.cpp
+)
+target_include_directories(
+  test_can_prod_stm32_canfd PRIVATE driver/can/hal_stubs/stm32_canfd ../../driver/st . ..
+                                    $<TARGET_PROPERTY:xr,INTERFACE_INCLUDE_DIRECTORIES>
+)
+target_compile_definitions(
+  test_can_prod_stm32_canfd PRIVATE $<TARGET_PROPERTY:xr,INTERFACE_COMPILE_DEFINITIONS>
+)
+target_compile_features(test_can_prod_stm32_canfd PRIVATE cxx_std_20)
+
+add_library(
+  test_can_prod_stm32_can OBJECT ../../driver/st/stm32_can.cpp
+                                 driver/can/test_stm32_can_prod.cpp
+)
+target_include_directories(
+  test_can_prod_stm32_can PRIVATE driver/can/hal_stubs/stm32_can ../../driver/st . ..
+                                  $<TARGET_PROPERTY:xr,INTERFACE_INCLUDE_DIRECTORIES>
+)
+target_compile_definitions(
+  test_can_prod_stm32_can PRIVATE $<TARGET_PROPERTY:xr,INTERFACE_COMPILE_DEFINITIONS>
+)
+target_compile_features(test_can_prod_stm32_can PRIVATE cxx_std_20)
+
+add_library(
+  test_can_prod_ch32_can OBJECT
+  ../../driver/ch/ch32_can.cpp ../../driver/ch/ch32_can_def.cpp
+  ../../driver/ch/ch32_usbcan_shared.cpp driver/can/test_ch32_can_prod.cpp
+)
+target_include_directories(
+  test_can_prod_ch32_can PRIVATE driver/can/hal_stubs/ch32_can ../../driver/ch . ..
                                  $<TARGET_PROPERTY:xr,INTERFACE_INCLUDE_DIRECTORIES>
 )
-get_target_property(_xr_async_test_definitions xr INTERFACE_COMPILE_DEFINITIONS)
-list(FILTER _xr_async_test_definitions EXCLUDE REGEX "^LIBXR_SYSTEM_|^LIBXR_SINGLE_CORE=")
 target_compile_definitions(
-  test_async_cooperative PRIVATE ${_xr_async_test_definitions}
-                                 LIBXR_NOT_SUPPORT_MUTI_THREAD=1 LIBXR_SINGLE_CORE=1
+  test_can_prod_ch32_can PRIVATE $<TARGET_PROPERTY:xr,INTERFACE_COMPILE_DEFINITIONS>
+                                 LIBXR_CH32_CONFIG_FILE=ch32_can_test_conf.h
 )
-target_compile_features(test_async_cooperative PRIVATE cxx_std_20)
-add_test(NAME test_async_cooperative COMMAND test_async_cooperative)
-set_tests_properties(test_async_cooperative PROPERTIES TIMEOUT 10)
+target_compile_options(test_can_prod_ch32_can PRIVATE -Wno-attributes)
+target_compile_features(test_can_prod_ch32_can PRIVATE cxx_std_20)
+
+add_executable(
+  test_can_tx_recovery
+  driver/can/test_can_tx_recovery.cpp $<TARGET_OBJECTS:test_can_prod_stm32_canfd>
+  $<TARGET_OBJECTS:test_can_prod_stm32_can> $<TARGET_OBJECTS:test_can_prod_ch32_can>
+)
+target_link_libraries(test_can_tx_recovery PRIVATE xr Threads::Threads)
+target_compile_features(test_can_tx_recovery PRIVATE cxx_std_20)
+add_test(NAME test_can_tx_recovery COMMAND test_can_tx_recovery)
+set_tests_properties(test_can_tx_recovery PROPERTIES TIMEOUT 20)
 
 # 可控时钟 DFU 运行时防 ABA 与弱内存序验证；不链接 Linux xr 库。
 # Controlled-clock DFU runtime ABA prevention and weak-memory test; standalone link.
@@ -272,6 +350,7 @@ add_executable(
   core/print/print_api/test_print_api.cpp
   core/print/printf/printf_frontend_parser/test_printf_frontend.cpp
   core/print/writer/test_print_failure.cpp
+  core/rw/operation/test_operation.cpp
   core/rw/read_port/test_read_port.cpp
   core/rw/stdio/test_linux_stdio_print.cpp
   core/rw/write_port/test_write_port.cpp
@@ -321,7 +400,6 @@ add_executable(
   middleware/terminal/terminal/test_integration.cpp
   structure/double_buffer/test_double_buffer.cpp
   structure/latest_snapshot/test_latest_snapshot.cpp
-  structure/list/test_list.cpp
   structure/lockfree_list/test_lockfree_list.cpp
   structure/object_pool/test_object_pool.cpp
   structure/queue/mpmc_queue/test_mpmc_queue.cpp
@@ -330,15 +408,12 @@ add_executable(
   structure/queue/spsc_queue/test_spsc_queue.cpp
   structure/rbt/test_rbt.cpp
   structure/slot_pool/test_slot_pool.cpp
-  structure/stack/test_stack.cpp
-  system/async/test_async.cpp
   system/thread/test_thread.cpp
   system/mutex/test_mutex.cpp
   system/semaphore/test_semaphore.cpp
   system/timer/test_timer.cpp
   utils/crc/test_crc.cpp
   utils/cycle_value/test_cycle_value.cpp
-  utils/flag/test_flag.cpp
   utils/float_encoder/test_encoder.cpp
   utils/inertia/test_inertia.cpp
   utils/kinematic/test_kinematic.cpp
@@ -363,26 +438,6 @@ add_test(NAME libxr_automatic COMMAND "${XR_TEST_SCRIPT_EXECUTABLE}" -q -e -c
 set_tests_properties(
   libxr_automatic PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE WORKING_DIRECTORY
                              "${PROJECT_SOURCE_DIR}"
-)
-
-# Stack::Insert 对不可平凡复制的元素类型必须编译失败。目标不参与默认构建，由测试单独构建，
-# 并检查输出中有 static_assert 的报错文字。
-# Stack::Insert must not compile for an element type that is not trivially copyable. The
-# target is left out of the default build; the test builds it and checks the output for
-# the static_assert message.
-add_library(
-  test_stack_insert_nontrivial OBJECT EXCLUDE_FROM_ALL
-                                      structure/stack/stack_insert_nontrivial.cpp
-)
-target_link_libraries(test_stack_insert_nontrivial PRIVATE xr)
-add_test(NAME stack_insert_nontrivial
-         COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --config $<CONFIG>
-                 --target test_stack_insert_nontrivial
-)
-set_tests_properties(
-  stack_insert_nontrivial
-  PROPERTIES PASS_REGULAR_EXPRESSION "requires a trivially copyable element type" TIMEOUT
-             120
 )
 
 add_library(

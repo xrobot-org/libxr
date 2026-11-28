@@ -369,115 +369,116 @@ ErrorCode CH32CAN::SetConfig(const CAN::Configuration& cfg_in)
     return ErrorCode::ARG_ERR;
   }
 
-  // 保证所有返回路径都会恢复 IRQ 状态。
-  // Ensure IRQ state restoration on all return paths.
-  struct IrqGuard
-  {
-    CH32CAN* self;
-    explicit IrqGuard(CH32CAN* s) : self(s) { self->DisableIRQs(); }
-    ~IrqGuard() { self->EnableIRQs(); }
-  } guard(this);
-
   ErrorCode ec = ErrorCode::OK;
-  bool entered_init = false;
-
-  // 构造实际使用的时序参数；为 0 的字段复用缓存配置。
-  // Build effective timing values; zero fields reuse cached configuration.
-  CAN::Configuration cfg = cfg_in;
-
-  if (!fill_keep_zero_from_cache(cfg.bit_timing, cfg_cache_.bit_timing))
+  bool kick_tx = false;
   {
-    return ErrorCode::ARG_ERR;
-  }
+    // 保证所有返回路径都会恢复 IRQ 状态。
+    // Ensure IRQ state restoration on all return paths.
+    struct IrqGuard
+    {
+      CH32CAN* self;
+      explicit IrqGuard(CH32CAN* s) : self(s) { self->DisableIRQs(); }
+      ~IrqGuard() { self->EnableIRQs(); }
+    } guard(this);
 
-  // 校验 bxCAN 时序约束。
-  // Validate bxCAN timing constraints.
-  const CAN::BitTiming& bt = cfg.bit_timing;
+    // 构造实际使用的时序参数；为 0 的字段复用缓存配置。
+    // Build effective timing values; zero fields reuse cached configuration.
+    CAN::Configuration cfg = cfg_in;
 
-  // BRP: 1..1024.
-  if (bt.brp < 1u || bt.brp > 1024u)
-  {
-    return ErrorCode::ARG_ERR;
-  }
+    bool args_valid = fill_keep_zero_from_cache(cfg.bit_timing, cfg_cache_.bit_timing);
+    const CAN::BitTiming& bt = cfg.bit_timing;
+    const uint32_t bs1 = bt.prop_seg + bt.phase_seg1;
 
-  // BS1 = PROP_SEG + PHASE_SEG1: 1..16.
-  const uint32_t BS1 = bt.prop_seg + bt.phase_seg1;
-  if (BS1 < 1u || BS1 > 16u)
-  {
-    return ErrorCode::ARG_ERR;
-  }
+    // 校验 bxCAN 时序约束（保持基线参数与错误语义）。
+    // Validate bxCAN timing constraints (preserving baseline parameter semantics).
+    if (args_valid)
+    {
+      if (bt.brp < 1u || bt.brp > 1024u || bs1 < 1u || bs1 > 16u || bt.phase_seg2 < 1u ||
+          bt.phase_seg2 > 8u || bt.sjw < 1u || bt.sjw > 4u || bt.sjw > bt.phase_seg2)
+      {
+        args_valid = false;
+      }
+    }
 
-  // BS2: 1..8.
-  if (bt.phase_seg2 < 1u || bt.phase_seg2 > 8u)
-  {
-    return ErrorCode::ARG_ERR;
-  }
-
-  // SJW: 1..4 and SJW <= BS2.
-  if (bt.sjw < 1u || bt.sjw > 4u || bt.sjw > bt.phase_seg2)
-  {
-    return ErrorCode::ARG_ERR;
-  }
-
-  // 进入初始化模式。
-  // Enter initialization mode.
-  if (CAN_OperatingModeRequest(instance_, CAN_OperatingMode_Initialization) ==
-      CAN_ModeStatus_Failed)
-  {
-    return ErrorCode::FAILED;
-  }
-  entered_init = true;
-
-  // 填充并应用初始化结构体。
-  // Apply the initialization structure.
-  CAN_InitTypeDef init;
-  std::memset(&init, 0, sizeof(init));
-  CAN_StructInit(&init);
-
-  init.CAN_Prescaler = static_cast<uint16_t>(bt.brp);
-  init.CAN_Mode = ch32_can_mode_macro(cfg.mode);
-
-  init.CAN_SJW = static_cast<uint8_t>(bt.sjw - 1u);
-  init.CAN_BS1 = static_cast<uint8_t>(BS1 - 1u);
-  init.CAN_BS2 = static_cast<uint8_t>(bt.phase_seg2 - 1u);
-
-  // 工作模式映射。
-  // Mode mapping.
-  init.CAN_NART = cfg.mode.one_shot ? ENABLE : DISABLE;
-
-  // 控制器默认选项。
-  // Default controller options.
-  init.CAN_TTCM = DISABLE;
-  init.CAN_ABOM = ENABLE;   // auto bus-off management
-  init.CAN_AWUM = DISABLE;  // auto wake-up
-  init.CAN_RFLM = DISABLE;  // FIFO not locked
-  init.CAN_TXFP = ENABLE;   // prioritize by TX request order
-
-  if (CAN_Init(instance_, &init) != CAN_InitStatus_Success)
-  {
-    ec = ErrorCode::FAILED;
-  }
-  else
-  {
-    if (CAN_OperatingModeRequest(instance_, CAN_OperatingMode_Normal) ==
-        CAN_ModeStatus_Failed)
+    if (!args_valid)
+    {
+      ec = ErrorCode::ARG_ERR;
+    }
+    // 进入初始化模式（若超时，WCH SDK 已置位 INRQ，不得启动发送）。
+    // Enter initialization mode (on timeout WCH SDK leaves INRQ set; do not kick TX).
+    else if (CAN_OperatingModeRequest(instance_, CAN_OperatingMode_Initialization) ==
+             CAN_ModeStatus_Failed)
     {
       ec = ErrorCode::FAILED;
     }
     else
     {
-      // 仅在配置成功后更新缓存。
-      // Update the cache only on successful configuration.
-      cfg_cache_ = cfg;
-      ec = ErrorCode::OK;
+      // 填充并应用初始化结构体。
+      // Apply the initialization structure.
+      CAN_InitTypeDef init;
+      std::memset(&init, 0, sizeof(init));
+      CAN_StructInit(&init);
+
+      init.CAN_Prescaler = static_cast<uint16_t>(bt.brp);
+      init.CAN_Mode = ch32_can_mode_macro(cfg.mode);
+
+      init.CAN_SJW = static_cast<uint8_t>(bt.sjw - 1u);
+      init.CAN_BS1 = static_cast<uint8_t>(bs1 - 1u);
+      init.CAN_BS2 = static_cast<uint8_t>(bt.phase_seg2 - 1u);
+
+      // 工作模式映射。
+      // Mode mapping.
+      init.CAN_NART = cfg.mode.one_shot ? ENABLE : DISABLE;
+
+      // 控制器默认选项。
+      // Default controller options.
+      init.CAN_TTCM = DISABLE;
+      init.CAN_ABOM = ENABLE;   // auto bus-off management
+      init.CAN_AWUM = DISABLE;  // auto wake-up
+      init.CAN_RFLM = DISABLE;  // FIFO not locked
+      init.CAN_TXFP = ENABLE;   // prioritize by TX request order
+
+      if (CAN_Init(instance_, &init) != CAN_InitStatus_Success)
+      {
+        ec = ErrorCode::FAILED;
+      }
+      else
+      {
+        if (CAN_OperatingModeRequest(instance_, CAN_OperatingMode_Normal) ==
+            CAN_ModeStatus_Failed)
+        {
+          ec = ErrorCode::FAILED;
+        }
+        else
+        {
+          // 仅在配置成功后更新缓存。
+          // Update the cache only on successful configuration.
+          cfg_cache_ = cfg;
+          kick_tx = true;
+          ec = ErrorCode::OK;
+        }
+      }
+
+      // 如果进入 init 模式后配置失败，则请求回到 normal 模式。
+      // If configuration fails after entering init mode, request normal mode.
+      if (ec != ErrorCode::OK)
+      {
+        if (CAN_OperatingModeRequest(instance_, CAN_OperatingMode_Normal) ==
+            CAN_ModeStatus_Success)
+        {
+          kick_tx = true;
+        }
+      }
     }
   }
 
-  // 如果进入 init 模式后配置失败，则请求回到 normal 模式。
-  // If configuration fails after entering init mode, request normal mode.
-  if (ec != ErrorCode::OK && entered_init)
+  // 仅当本次停机重配或失败恢复已确认切回 Normal 模式时，在恢复 IRQ 后触发 TxService()
+  // 续发挂起帧；ARG_ERR 与进入 Init 失败路径不附加额外发送动作。
+  // Kick TxService() after IRQ restore only when this call confirmed transition back to
+  // Normal mode; ARG_ERR and failed-Init paths add no extra TX side effects.
+  if (kick_tx)
   {
-    (void)CAN_OperatingModeRequest(instance_, CAN_OperatingMode_Normal);
+    TxService();
   }
 
   return ec;
@@ -513,60 +514,39 @@ void CH32CAN::TxService()
     return;
   }
 
-  tx_pend_.store(1u, std::memory_order_release);
+  constexpr uint32_t TX_EVENT = 1U;
 
-  uint32_t expected = 0u;
-  if (!tx_lock_.compare_exchange_strong(expected, 1u, std::memory_order_acquire,
-                                        std::memory_order_relaxed))
-  {
-    return;
-  }
+  tx_service_.Invoke(TX_EVENT, false,
+                     [this](uint32_t, bool)
+                     {
+                       constexpr uint32_t TME_MASK =
+                           (CAN_TSTATR_TME0 | CAN_TSTATR_TME1 | CAN_TSTATR_TME2);
 
-  constexpr uint32_t TME_MASK = (CAN_TSTATR_TME0 | CAN_TSTATR_TME1 | CAN_TSTATR_TME2);
+                       while ((instance_->TSTATR & TME_MASK) != 0u)
+                       {
+                         ClassicPack p{};
+                         if (tx_retry_valid_)
+                         {
+                           p = tx_retry_pack_;
+                         }
+                         else if (tx_queue_.Get(p) != ErrorCode::OK)
+                         {
+                           break;
+                         }
 
-  for (;;)
-  {
-    tx_pend_.store(0u, std::memory_order_release);
+                         BuildTxMsg(p, tx_msg_);
 
-    while ((instance_->TSTATR & TME_MASK) != 0u)
-    {
-      ClassicPack p{};
-      if (tx_retry_valid_)
-      {
-        p = tx_retry_pack_;
-      }
-      else if (tx_queue_.Get(p) != ErrorCode::OK)
-      {
-        break;
-      }
+                         uint8_t mb = CAN_Transmit(instance_, &tx_msg_);
+                         if (mb == CAN_TxStatus_NoMailBox)
+                         {
+                           tx_retry_pack_ = p;
+                           tx_retry_valid_ = true;
+                           break;
+                         }
 
-      BuildTxMsg(p, tx_msg_);
-
-      uint8_t mb = CAN_Transmit(instance_, &tx_msg_);
-      if (mb == CAN_TxStatus_NoMailBox)
-      {
-        tx_retry_pack_ = p;
-        tx_retry_valid_ = true;
-        break;
-      }
-
-      tx_retry_valid_ = false;
-    }
-
-    tx_lock_.store(0u, std::memory_order_release);
-
-    if (tx_pend_.load(std::memory_order_acquire) == 0u)
-    {
-      return;
-    }
-
-    expected = 0u;
-    if (!tx_lock_.compare_exchange_strong(expected, 1u, std::memory_order_acquire,
-                                          std::memory_order_relaxed))
-    {
-      return;
-    }
-  }
+                         tx_retry_valid_ = false;
+                       }
+                     });
 }
 
 ErrorCode CH32CAN::AddMessage(const ClassicPack& pack)

@@ -12,6 +12,7 @@
 #endif
 
 #include "can.hpp"
+#include "serialized_service.hpp"
 #include "slot_pool.hpp"
 
 typedef enum
@@ -79,7 +80,10 @@ class STM32CAN : public CAN
 
   /**
    * @brief 处理错误中断 / Handle error interrupt
-   *
+   * @note 由 `HAL_CAN_ErrorCallback` 触发；在 STM32 bxCAN HAL 中既可能运行于错误中断
+   *       （SCE），也可能因 TX 邮箱错误运行于发送中断上下文中。
+   *       Triggered from `HAL_CAN_ErrorCallback`; in STM32 bxCAN HAL this may execute in
+   *       either the error (SCE) IRQ or a TX IRQ mailbox-error path.
    */
   void ProcessErrorInterrupt();
 
@@ -115,10 +119,7 @@ class STM32CAN : public CAN
   /// 待重试帧 / Pending retry frame.
   ClassicPack tx_retry_pack_{};
 
-  std::atomic<uint32_t> tx_lock_{
-      0};  ///< 发送服务并发互斥标志 / TX service concurrency lock.
-  std::atomic<uint32_t> tx_pend_{
-      0};  ///< 挂起重调度发送标记 / Pending TX reschedule flag.
+  SerializedService tx_service_;  ///< 发送服务串行化调度器 / TX service serializer.
 
   /**
    * @brief 由 ClassicPack 构造 HAL 发送帧头 / Build HAL TX header from a `ClassicPack`.

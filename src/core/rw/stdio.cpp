@@ -81,7 +81,7 @@ int STDIO::WriteCompiledSession(void* context, CompiledWriteFun write_fun)
     return WriteCompiledToStream(*write_stream_, context, write_fun);
   }
 
-  static WriteOperation op;  // NOLINT
+  WriteOperation op;
   WritePort::Stream stream(write_, op);
   return WriteCompiledToStream(stream, context, write_fun);
 }

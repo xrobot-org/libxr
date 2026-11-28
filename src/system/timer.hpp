@@ -97,6 +97,10 @@ class Timer
    * @brief  启动定时任务
    *         Starts a periodic task
    * @param  handle 任务句柄 / Timer handle to start
+   * @pre `Start()` 直接写入普通成员 `enable_`，调用方须在 `Add()` 首次发布前完成配置，
+   *      或与 `Refresh()` 严格串行，避免跨线程数据竞争。
+   *      `Start()` writes the plain `enable_` field; configure before `Add()` publishes
+   *      the task or strictly serialize with `Refresh()` to avoid data races.
    */
   static void Start(TimerHandle handle);
 
@@ -104,6 +108,9 @@ class Timer
    * @brief  停止定时任务
    *         Stops a periodic task
    * @param  handle 任务句柄 / Timer handle to stop
+   * @pre `Stop()` 直接写入普通成员 `enable_`，须与 `Refresh()`
+   * 严格串行，避免跨线程数据竞争。 `Stop()` writes the plain `enable_` field; strictly
+   * serialize with `Refresh()` to avoid data races.
    */
   static void Stop(TimerHandle handle);
 
@@ -112,6 +119,10 @@ class Timer
    *         Sets the cycle of a periodic task
    * @param  handle 任务句柄 / Timer handle to modify
    * @param  cycle 任务周期（毫秒） / New cycle time (milliseconds)
+   * @pre `SetCycle()` 直接写入普通成员 `cycle_`，须在 `Add()` 首次发布前完成配置，
+   *      或与 `Refresh()` 严格串行，避免跨线程数据竞争。
+   *      `SetCycle()` writes the plain `cycle_` field; configure before `Add()` publishes
+   *      the task or strictly serialize with `Refresh()` to avoid data races.
    */
   static void SetCycle(TimerHandle handle, uint32_t cycle);
 
@@ -135,6 +146,11 @@ class Timer
    *         Adds a periodic task
    * @param  handle 任务句柄 / Timer handle to add
    *
+   * @pre 首次调用 `Add()` 负责初始化全局任务列表 `list_` 与定时器线程，调用方须保证首次
+   *      `Add()` 与其他 `Add()` 以及 `Refresh()` 严格串行。
+   *      The first `Add()` initializes the global task list `list_` and timer thread;
+   *      callers must strictly serialize the first `Add()` with other `Add()` calls and
+   *      with `Refresh()`.
    * @note 包含动态内存分配。
    *       Contains dynamic memory allocation.
    */
@@ -164,7 +180,8 @@ class Timer
   static inline LibXR::LockFreeList* list_ =
       nullptr;  ///< 定时任务列表 / List of registered tasks
 
-  static inline Thread thread_handle_;  ///< 定时器管理线程 / Timer management thread
+  static inline constinit Thread
+      thread_handle_;  ///< 定时器管理线程 / Timer management thread
 
   static inline LibXR::Thread::Priority priority_ =
       LibXR::Thread::Priority::MEDIUM;        ///< 线程优先级 / Thread priority

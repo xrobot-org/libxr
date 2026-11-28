@@ -136,6 +136,7 @@ ErrorCode STM32CAN::Init(void)
   HAL_CAN_ActivateNotification(hcan_, CAN_IT_ERROR_WARNING);
   HAL_CAN_ActivateNotification(hcan_, CAN_IT_TX_MAILBOX_EMPTY);
 
+  TxService();
   return ErrorCode::OK;
 }
 
@@ -380,6 +381,7 @@ ErrorCode STM32CAN::SetConfig(const CAN::Configuration& cfg)
   HAL_CAN_ActivateNotification(hcan_, CAN_IT_ERROR_WARNING);
   HAL_CAN_ActivateNotification(hcan_, CAN_IT_TX_MAILBOX_EMPTY);
 
+  TxService();
   return ErrorCode::OK;
 }
 
@@ -412,71 +414,42 @@ void STM32CAN::TxService()
     return;
   }
 
-  // 标记：需要一次 TX 服务（无论本次是否抢到锁）
-  tx_pend_.store(1u, std::memory_order_release);
+  constexpr uint32_t TX_EVENT = 1U;
 
-  // 尝试抢占服务锁：0 -> 1
-  uint32_t expected = 0u;
-  if (!tx_lock_.compare_exchange_strong(expected, 1u, std::memory_order_acquire,
-                                        std::memory_order_relaxed))
-  {
-    // 有别的上下文在服务；PEND 已置位，它会在结束时看到并再服务
-    return;
-  }
-
-  constexpr uint32_t TME_MASK = (CAN_TSR_TME0 | CAN_TSR_TME1 | CAN_TSR_TME2);
-
-  for (;;)
-  {
-    // 本轮服务开始：消费掉 pend（期间如有新 kick，会再次置 1）
-    tx_pend_.store(0u, std::memory_order_release);
-
-    // 尽可能把空 mailbox 填满：一直到队列空或者 AddTxMessage 失败（邮箱满/忙）
-    while ((hcan_->Instance->TSR & TME_MASK) != 0u)
-    {
-      ClassicPack p{};
-      if (tx_retry_valid_)
+  tx_service_.Invoke(
+      TX_EVENT, false,
+      [this](uint32_t, bool)
       {
-        p = tx_retry_pack_;
-      }
-      else if (tx_queue_.Get(p) != ErrorCode::OK)
-      {
-        break;  // 队列空 / Queue empty.
-      }
+        constexpr uint32_t TME_MASK = (CAN_TSR_TME0 | CAN_TSR_TME1 | CAN_TSR_TME2);
 
-      CAN_TxHeaderTypeDef hdr{};
-      BuildTxHeader(p, hdr);
+        // 尽可能把空 mailbox 填满：一直到队列空或者 AddTxMessage 失败（邮箱满/忙）
+        while ((hcan_->Instance->TSR & TME_MASK) != 0u)
+        {
+          ClassicPack p{};
+          if (tx_retry_valid_)
+          {
+            p = tx_retry_pack_;
+          }
+          else if (tx_queue_.Get(p) != ErrorCode::OK)
+          {
+            break;  // 队列空 / Queue empty.
+          }
 
-      uint32_t mailbox = 0u;
-      if (HAL_CAN_AddTxMessage(hcan_, &hdr, p.data, &mailbox) != HAL_OK)
-      {
-        tx_retry_pack_ = p;
-        tx_retry_valid_ = true;
-        break;
-      }
+          CAN_TxHeaderTypeDef hdr{};
+          BuildTxHeader(p, hdr);
 
-      tx_retry_valid_ = false;
-      txMailbox = mailbox;
-    }
+          uint32_t mailbox = 0u;
+          if (HAL_CAN_AddTxMessage(hcan_, &hdr, p.data, &mailbox) != HAL_OK)
+          {
+            tx_retry_pack_ = p;
+            tx_retry_valid_ = true;
+            break;
+          }
 
-    // 先解锁，再检查是否仍有待处理发送请求。
-    // Release lock first, then check whether pending TX work remains.
-    tx_lock_.store(0u, std::memory_order_release);
-
-    // 再看是否还有 pend：若没有，直接退出
-    if (tx_pend_.load(std::memory_order_acquire) == 0u)
-    {
-      return;
-    }
-
-    // 允许出现 PEND=1, LOCK=0 的“无人服务”状态：尝试重新加锁再服务
-    expected = 0u;
-    if (!tx_lock_.compare_exchange_strong(expected, 1u, std::memory_order_acquire,
-                                          std::memory_order_relaxed))
-    {
-      return;
-    }
-  }
+          tx_retry_valid_ = false;
+          txMailbox = mailbox;
+        }
+      });
 }
 
 ErrorCode STM32CAN::AddMessage(const ClassicPack& pack)

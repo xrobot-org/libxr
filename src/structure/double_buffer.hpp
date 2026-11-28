@@ -103,32 +103,11 @@ class DoubleBuffer
   bool HasPending() const;
 
   /**
-   * @brief 向备用缓冲区写入数据（不可重入）
-   *        Fills the pending buffer with data (non-reentrant)
-   *
-   * @param data 数据源指针 / Pointer to the source data
-   * @param len 数据长度（字节） / Data length in bytes
-   * @return 写入成功返回 true，失败（如已占用或溢出）返回 false
-   *         Returns true on success, false if buffer already pending or overflow
-   */
-  bool FillPending(const uint8_t* data, size_t len);
-
-  /**
-   * @brief 向当前使用的缓冲区直接写入数据
-   *        Fills the active buffer directly
-   *
-   * @param data 数据源指针 / Source data pointer
-   * @param len 数据长度 / Length to write
-   * @return 成功返回 true，失败（超出大小）返回 false
-   *         True on success, false if length exceeds buffer size
-   */
-  bool FillActive(const uint8_t* data, size_t len);
-
-  /**
    * @brief 手动启用 pending 状态
    *        Manually sets the pending state to true
    *
-   * 通常与 FillActive() 配合使用，表示下次发送使用 FillActive 写入的缓冲。
+   * 在直接写入备用缓冲区后调用，表示下次切换使用该备用缓冲区。
+   * Call after writing directly into the pending buffer so the next switch consumes it.
    */
   void EnablePending();
 

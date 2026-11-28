@@ -95,7 +95,7 @@ class CH32UART : public UART
   DMA_Channel_TypeDef* dma_tx_channel_;  ///< TX DMA 通道 / TX DMA channel.
 
   /// 发送半区是否在使用，仅后端处理器访问 / TX half in use; service-only access.
-  Flag::Plain tx_busy_;
+  bool tx_busy_ = false;
 
   static CH32UART* map_[CH32_UART_NUMBER];  ///< 按 UART 实例 ID 索引的实例表 / Driver
                                             ///< instance lookup table indexed by UART ID.

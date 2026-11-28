@@ -1,10 +1,8 @@
 #pragma once
 
-#include "async.hpp"
 #include "database.hpp"
 #include "double_buffer.hpp"
 #include "event.hpp"
-#include "flag.hpp"
 #include "inertia.hpp"
 #include "kinematic.hpp"
 #include "latest_snapshot.hpp"
@@ -18,7 +16,6 @@
 #include "libxr_system.hpp"
 #include "libxr_time.hpp"
 #include "libxr_type.hpp"
-#include "list.hpp"
 #include "lockfree_list.hpp"
 #include "logger.hpp"
 #include "message.hpp"
@@ -32,7 +29,6 @@
 #include "ramfs.hpp"
 #include "semaphore.hpp"
 #include "slot_pool.hpp"
-#include "stack.hpp"
 #include "terminal.hpp"
 #include "thread.hpp"
 #include "timebase.hpp"

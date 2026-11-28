@@ -9,7 +9,6 @@
 #include "libxr_def.hpp"
 #include "libxr_rw.hpp"
 #include "libxr_type.hpp"
-#include "list.hpp"
 #include "queue.hpp"
 #include "semaphore.hpp"
 #include "thread.hpp"

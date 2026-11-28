@@ -6,9 +6,9 @@ These tests use LibXR public APIs on the target system. The user selects and cal
 
 ## 使用方法 / Usage
 
-先完成系统初始化，再从普通任务中调用测试。需要协作任务的测试借用用户提供的 `ASync&`，要求它处于 `READY`，测试期间不被其他代码使用。测试不会创建辅助线程，也不会调用 `Join`；返回前会确认任务已经完成。
+先完成系统初始化，再从普通任务中调用测试。需要协作任务的测试借用用户提供的 `LibXR::Test::ManualWorker&`（定义在 `test/manual/test_worker.hpp`），要求它处于空闲状态且测试期间不被其他代码使用。测试不会在每轮创建辅助线程，也不会调用 `Join`；返回前会确认任务已经完成。
 
-Initialize the system, then call the tests from a normal task. Tests that need a cooperating task borrow a caller-provided `ASync&`. It must be `READY` and reserved for the test until it returns. Tests neither create helper threads nor call `Join`; they confirm job completion before returning.
+Initialize the system, then call the tests from a normal task. Tests that need a cooperating task borrow a caller-provided `LibXR::Test::ManualWorker&` (defined in `test/manual/test_worker.hpp`). It must be idle and reserved for the test until it returns. Tests neither create helper threads per round nor call `Join`; they confirm job completion before returning.
 
 把 `test/` 和本目录加入应用的头文件搜索路径，例如：
 
@@ -22,21 +22,21 @@ target_include_directories(app PRIVATE
 ```
 
 ```cpp
-#include "async/test_async.hpp"
 #include "mutex/test_mutex.hpp"
 #include "semaphore/test_semaphore.hpp"
 #include "thread/test_thread.hpp"
 #include "timer/test_timer.hpp"
 
-// 由应用任务调用，传入已经初始化且空闲的 ASync。
-// Call from an application task with an initialized, idle ASync.
-void RunSystemTests(LibXR::ASync& worker)
+// 由应用任务调用；ManualWorker 须常驻（如静态存储期），且处于空闲状态。
+// Call from an application task; ManualWorker must be persistent (e.g. static storage)
+// and idle.
+void RunSystemTests()
 {
+  static LibXR::Test::ManualWorker worker;
   constexpr uint32_t tick_ms = 1;  // 根据实际调度 tick 设置 / Set for the actual scheduler tick.
   LibXR::Test::TestThread(worker, tick_ms);
   LibXR::Test::TestSemaphore(worker, tick_ms);
   LibXR::Test::TestMutex(worker);
-  LibXR::Test::TestASync(worker);
 
   // Timer 没有删除已注册任务的接口；对象须保留到复位，只运行一次。
   // Registered Timer tasks cannot be removed; retain this object until reset and run once.
@@ -45,9 +45,9 @@ void RunSystemTests(LibXR::ASync& worker)
 }
 ```
 
-`worker` 必须是另一个任务中的 ASync，不能从它自己的回调里调用这些测试。前四项可以重复执行。Timer 测试对象的地址必须保持不变，每个对象的 `Run()` 只能调用一次。
+`worker` 必须在另一个任务中运行，不能从它自己的回调里调用这些测试。前三项可以重复执行。Timer 测试对象的地址必须保持不变，每个对象的 `Run()` 只能调用一次。
 
-`worker` must run in another task; do not call these tests from its own callback. The first four tests can be repeated. Each Timer test object must stay at a stable address and its `Run()` may be called only once.
+`worker` must run in another task; do not call these tests from its own callback. The first three tests can be repeated. Each Timer test object must stay at a stable address and its `Run()` may be called only once.
 
 ## 检查内容 / Checks
 
@@ -56,7 +56,6 @@ void RunSystemTests(LibXR::ASync& worker)
 | `TestThread` | 连续变化延时并推进同一周期计划 / Vary delays and advance one continuous schedule |
 | `TestSemaphore` | 交替成批通知和边收边发，检查丢失与多余通知 / Alternate buffered and overlapping batches; check missing or extra notifications |
 | `TestMutex` | 反复争用同一把锁，共享计数每轮增加两次，临界区不能重叠 / Repeated contention, two counter updates per round and no overlapping critical sections |
-| `TestASync` | 交替两个入口与快慢任务，核对每次执行序号 / Alternate submission entries and gated/fast jobs; check every execution sequence |
 | `TimerTest::Run` | 连续执行指定次数后停止，检查进度和多余回调 / Run the requested count, check progress, then stop and watch for extra calls |
 
 延时测试的 `tick_ms` 是调度 tick 的毫秒数，向上取整：例如 1000 Hz 填 1，100 Hz 填 10。测试允许 tick 边界和整数毫秒读数造成的误差。默认每次等待的上限为 1000 ms，可用 `timeout_ms` 调整；Thread 和 Semaphore 要求至少留出 16 个 tick。
@@ -65,15 +64,14 @@ For delay tests, `tick_ms` is the scheduler tick period rounded up to millisecon
 
 ## 调整压测轮数 / Set the run length
 
-默认 Thread 运行 100 轮，Semaphore、Mutex、ASync 各运行 1000 轮，Timer 运行 1000 次回调。最后一个参数控制次数，填 1 可做快速检查。可以把上面的调用改为：
+默认 Thread 运行 100 轮，Semaphore、Mutex 各运行 1000 轮，Timer 运行 1000 次回调。最后一个参数控制次数，填 1 可做快速检查。可以把上面的调用改为：
 
-Thread defaults to 100 rounds; Semaphore, Mutex and ASync to 1000 rounds; Timer to 1000 callbacks. The last argument sets the count. Use 1 for a quick check. For longer runs, replace the calls above with:
+Thread defaults to 100 rounds; Semaphore and Mutex to 1000 rounds; Timer to 1000 callbacks. The last argument sets the count. Use 1 for a quick check. For longer runs, replace the calls above with:
 
 ```cpp
 LibXR::Test::TestThread(worker, tick_ms, 1000, 100);
 LibXR::Test::TestSemaphore(worker, tick_ms, 1000, 10000);
 LibXR::Test::TestMutex(worker, 1000, 10000);
-LibXR::Test::TestASync(worker, 1000, 10000);
 timer_test.Run(10, 1000, 1000);
 ```
 
@@ -93,6 +91,6 @@ Timer reports progress on every callback, stops at the requested count and obser
 
 These tests increase repeated handoffs and contention between two execution contexts; they do not cover every possible interleaving.
 
-所有检查使用共享的 `test/test_assert.hpp`，失败立即打印位置并停止。当前仅检查任务上下文；`PostFromCallback(false)` 和 `AssignJobFromCallback(..., false)` 不代表真实中断测试。
+所有检查使用共享的 `test/test_assert.hpp`，失败立即打印位置并停止。当前仅检查任务上下文；`PostFromCallback(false)` 不代表真实中断测试。
 
 All checks use the shared `test/test_assert.hpp` and stop immediately with the failure location. This set tests task context only; calls with `in_isr=false` do not establish real-interrupt behavior.

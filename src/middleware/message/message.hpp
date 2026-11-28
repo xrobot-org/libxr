@@ -14,6 +14,5 @@
 #include "server/server.hpp"
 #include "subscriber/async.hpp"
 #include "subscriber/callback.hpp"
-#include "subscriber/queue.hpp"
 #include "subscriber/sync.hpp"
 #include "topic.hpp"

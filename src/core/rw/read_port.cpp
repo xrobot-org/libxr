@@ -390,11 +390,7 @@ ErrorCode ReadPort::WaitForBlock(ReadOperation& op)
     break;
   }
 
-  do
-  {
-    wait_result = op.data.sem_info.sem->Wait(UINT32_MAX);
-  } while (wait_result == ErrorCode::TIMEOUT);
-  REQUIRE(wait_result == ErrorCode::OK);
+  Detail::WaitClaimedNotification(*op.data.sem_info.sem);
   const Phase completed_phase = GetPhase(state_.load(std::memory_order_acquire));
   if (completed_phase == Phase::IDLE)
   {

@@ -83,7 +83,7 @@ void HandleAnsiCharacter(char data)
           CopyHistoryToInputLine();
           ShowHistory();
         }
-        if (offset_ + input_line_.Size() > 0)
+        if (offset_ + static_cast<int>(input_len_) > 0)
         {
           offset_--;
           write_stream_ << ConstRawData(KEY_LEFT, sizeof(KEY_LEFT) - 1);
@@ -137,13 +137,13 @@ void HandleControlCharacter(char data)
         ShowTruncatedLineNotice();
         line_truncated_ = false;
       }
-      if (input_line_.Size() > 0)
+      if (input_len_ > 0)
       {
         ExecuteCommand();
         arg_number_ = 0;
       }
       ShowHeader();
-      input_line_.Reset();
+      input_len_ = 0;
       input_line_[0] = '\0';
       offset_ = 0;
       break;

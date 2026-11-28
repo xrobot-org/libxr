@@ -1,12 +1,13 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
 #include "driver/gpio.h"
+#include "esp_attr.h"
 #include "esp_def.hpp"
 #include "esp_intr_alloc.h"
-#include "flag.hpp"
 #include "hal/spi_ll.h"
 #include "hal/spi_types.h"
 #include "soc/soc_caps.h"
@@ -81,7 +82,7 @@ class ESP32SPI : public SPI
 
   bool Acquire();
 
-  void Release();
+  IRAM_ATTR void Release();
 
   ErrorCode InitializeHardware();
 
@@ -129,7 +130,27 @@ class ESP32SPI : public SPI
   int miso_pin_;
   int mosi_pin_;
   uint32_t source_clock_hz_ = 0;
-  Flag::Atomic busy_{};
+  class AtomicFlag
+  {
+   public:
+    LIBXR_ALWAYS_INLINE void Clear() noexcept
+    {
+      value_.store(0U, std::memory_order_release);
+    }
+    [[nodiscard]] LIBXR_ALWAYS_INLINE bool IsSet() const noexcept
+    {
+      return value_.load(std::memory_order_acquire) != 0U;
+    }
+    [[nodiscard]] LIBXR_ALWAYS_INLINE bool TestAndSet() noexcept
+    {
+      return value_.exchange(1U, std::memory_order_acq_rel) != 0U;
+    }
+
+   private:
+    std::atomic<uint32_t> value_{0U};
+  };
+
+  AtomicFlag busy_{};
   bool initialized_ = false;
   uint32_t dma_enable_min_size_ = 3U;
   bool dma_requested_ = true;

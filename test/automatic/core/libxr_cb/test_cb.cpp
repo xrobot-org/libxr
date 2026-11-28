@@ -15,6 +15,9 @@
 
 namespace
 {
+constinit LibXR::Callback<int> g_constinit_callback;
+constinit LibXR::Thread g_constinit_thread;
+
 struct DirectCallbackProbe
 {
   LibXR::Callback<int> cb;
@@ -171,6 +174,9 @@ void TestGuardedAndLambdaCallbacks()
 
 void test_cb()
 {
+  TEST_ASSERT(g_constinit_callback.Empty());
+  g_constinit_callback.Run(false, 42);
+  UNUSED(g_constinit_thread);
   TestEmptyAndDirectCallbacks();
   TestGuardedAndLambdaCallbacks();
 }

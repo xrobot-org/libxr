@@ -2,11 +2,10 @@
  * @file test_topic.cpp
  * @brief Topic 发布与订阅测试 / Topic publication and subscription tests.
  *
- * 检查不同订阅方式收到的数据、时间戳和 ISR 标记，可变回调和队列满时的丢弃，以及初始化期
- * 类型契约冲突在所有构建类型中都是致命错误。
- * Check subscriber data, timestamps and ISR flags, mutable callbacks, drops when a
- * queue is full, and that init-time type contract conflicts are fatal in every build
- * type.
+ * 检查不同订阅方式收到的数据、时间戳和 ISR 标记，可变回调，以及初始化期类型契约冲突在所有
+ * 构建类型中都是致命错误。
+ * Check subscriber data, timestamps and ISR flags, mutable callbacks, and that init-time
+ * type contract conflicts are fatal in every build type.
  */
 
 #include <sys/wait.h>
@@ -36,16 +35,14 @@ void TestTopicSubscriberDispatch()
   // callback ISR flags.
   TEST_ASSERT(LibXR::Topic::Find("missing_default_topic") == nullptr);
 
+  static_assert(static_cast<uint8_t>(LibXR::Topic::SuberType::SYNC) == 0U);
+  static_assert(static_cast<uint8_t>(LibXR::Topic::SuberType::ASYNC) == 1U);
+  static_assert(static_cast<uint8_t>(LibXR::Topic::SuberType::CALLBACK) == 3U);
+
   auto domain = LibXR::Topic::Domain("message_topic_domain");
   auto topic = LibXR::Topic::CreateTopic<double>("message_topic_tp", &domain);
   static double msg[4];
   auto async_suber = LibXR::Topic::ASyncSubscriber<double>(topic);
-  LibXR::SPSCQueue<double> msg_queue(10);
-  auto queue_suber = LibXR::Topic::QueuedSubscriber(topic, msg_queue);
-  LibXR::SPSCQueue<LibXR::Topic::Message<double>> timed_msg_queue(10);
-  auto timed_queue_suber = LibXR::Topic::QueuedSubscriber(topic, timed_msg_queue);
-  UNUSED(queue_suber);
-  UNUSED(timed_queue_suber);
 
   static bool cb_in_isr = false;
   static LibXR::MicrosecondTimestamp cb_timestamp;
@@ -123,15 +120,6 @@ void TestTopicSubscriberDispatch()
   TEST_ASSERT(async_suber.GetData() == msg[0]);
   TEST_ASSERT(TimestampUs(async_suber.GetTimestamp()) == TimestampUs(timestamp0));
   TEST_ASSERT(!async_suber.Available());
-  TEST_ASSERT(msg_queue.Size() == 1);
-  double queue_value = 0.0;
-  msg_queue.Pop(queue_value);
-  TEST_ASSERT(queue_value == msg[0]);
-  TEST_ASSERT(timed_msg_queue.Size() == 1);
-  LibXR::Topic::Message<double> queue_msg;
-  timed_msg_queue.Pop(queue_msg);
-  TEST_ASSERT(queue_msg.data == msg[0]);
-  TEST_ASSERT(TimestampUs(queue_msg.timestamp) == TimestampUs(timestamp0));
   TEST_ASSERT(msg[3] == msg[0]);
   TEST_ASSERT(TimestampUs(cb_timestamp) == TimestampUs(timestamp0));
   TEST_ASSERT(view_cb_value == msg[0]);
@@ -174,13 +162,6 @@ void TestTopicSubscriberDispatch()
   TEST_ASSERT(async_suber.Available());
   TEST_ASSERT(async_suber.GetData() == msg[0]);
   TEST_ASSERT(TimestampUs(async_suber.GetTimestamp()) == TimestampUs(timestamp1));
-  TEST_ASSERT(msg_queue.Size() == 1);
-  msg_queue.Pop(queue_value);
-  TEST_ASSERT(queue_value == msg[0]);
-  TEST_ASSERT(timed_msg_queue.Size() == 1);
-  timed_msg_queue.Pop(queue_msg);
-  TEST_ASSERT(queue_msg.data == msg[0]);
-  TEST_ASSERT(TimestampUs(queue_msg.timestamp) == TimestampUs(timestamp1));
   TEST_ASSERT(msg[3] == msg[0]);
   TEST_ASSERT(TimestampUs(cb_timestamp) == TimestampUs(timestamp1));
   TEST_ASSERT(cb_in_isr);
@@ -196,11 +177,10 @@ void TestTopicSubscriberDispatch()
   TEST_ASSERT(raw_mutable_arg_size == sizeof(double));
 }
 
-void TestTopicMutationAndQueueDrop()
+void TestTopicMutation()
 {
-  // 可变回调修改调用者的数据；订阅队列满时丢弃新消息，保留先前排队的消息。
-  // A mutable callback changes caller data; a full subscriber queue drops the new message
-  // and keeps older ones.
+  // 可变回调修改调用者的数据。
+  // A mutable callback changes caller data.
   auto domain = LibXR::Topic::Domain("message_topic_mutation_domain");
 
   auto mutable_topic = LibXR::Topic::CreateTopic<int>("mutable_payload_tp", &domain);
@@ -210,28 +190,6 @@ void TestTopicMutationAndQueueDrop()
   int mutable_payload = 1234;
   mutable_topic.Publish(mutable_payload, LibXR::MicrosecondTimestamp(7037));
   TEST_ASSERT(mutable_payload == 5678);
-
-  auto queue_drop_topic = LibXR::Topic::CreateTopic<int>("queue_drop_tp", &domain);
-  LibXR::SPSCQueue<int> drop_queue(1);
-  auto drop_suber = LibXR::Topic::QueuedSubscriber(queue_drop_topic, drop_queue);
-  UNUSED(drop_suber);
-  for (size_t i = 0; i < drop_queue.MaxSize(); ++i)
-  {
-    auto value = static_cast<int>(i);
-    queue_drop_topic.Publish(value, LibXR::MicrosecondTimestamp(8000 + i));
-  }
-  TEST_ASSERT(drop_queue.Size() == drop_queue.MaxSize());
-  int dropped_value = -123;
-  queue_drop_topic.Publish(dropped_value, LibXR::MicrosecondTimestamp(9009));
-  TEST_ASSERT(drop_queue.Size() == drop_queue.MaxSize());
-  for (size_t i = 0; i < drop_queue.MaxSize(); ++i)
-  {
-    int value = 0;
-    TEST_ASSERT(drop_queue.Pop(value) == LibXR::ErrorCode::OK);
-    TEST_ASSERT(value == static_cast<int>(i));
-  }
-  int dropped_message = 0;
-  TEST_ASSERT(drop_queue.Pop(dropped_message) == LibXR::ErrorCode::EMPTY);
 }
 
 constexpr int TOPIC_FATAL_EXIT = 42;
@@ -267,7 +225,7 @@ void ExpectTopicFatal(bool expect_fatal, Func&& func)
 void test_message_topic()
 {
   TestTopicSubscriberDispatch();
-  TestTopicMutationAndQueueDrop();
+  TestTopicMutation();
 }
 
 void test_message_topic_contract()

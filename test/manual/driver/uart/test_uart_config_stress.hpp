@@ -2,13 +2,13 @@
  * @file test_uart_config_stress.hpp
  * @brief UART 并发配置压力测试 / UART concurrent configuration stress test.
  *
- * 收发期间借用 ASync 反复提交配置，检查请求完成及停止干扰后的恢复。
- * Use a borrowed ASync to submit configurations during I/O; check completion and
+ * 收发期间借用 ManualWorker 反复提交配置，检查请求完成及停止干扰后的恢复。
+ * Use a borrowed ManualWorker to submit configurations during I/O; check completion and
  * recovery afterward. Payload loss or corruption during switching is allowed.
  */
 #pragma once
 
-#include "async.hpp"
+#include "../../test_worker.hpp"
 #include "test_uart.hpp"
 
 namespace LibXR::Test
@@ -38,7 +38,7 @@ struct UARTConfigStressResult
  * @param uart 已初始化的串口 / Initialized UART.
  * @param semaphore 调用方保留的 BLOCK 完成信号量 / Caller-retained semaphore for BLOCK
  * completion.
- * @param worker 独占借用的 READY 状态 ASync / Exclusively borrowed READY ASync.
+ * @param worker 独占借用的空闲 ManualWorker / Exclusively borrowed idle ManualWorker.
  * @param tx 发送工作区，其大小为每包长度 / TX work buffer; its size is the packet length.
  * @param rx 接收工作区 / RX work buffer.
  * @param configs 每轮轮换起点的合法配置列表，尝试间隔 1 ms / Legal configurations tried
@@ -56,11 +56,11 @@ struct UARTConfigStressResult
  * passes before return.
  */
 inline UARTConfigStressResult TestUARTConfigStress(
-    UART& uart, Semaphore& semaphore, ASync& worker, RawData tx, RawData rx,
+    UART& uart, Semaphore& semaphore, ManualWorker& worker, RawData tx, RawData rx,
     std::initializer_list<UART::Configuration> configs, UART::Configuration stable_config,
     uint32_t quiet_ms, uint32_t timeout_ms = 1000, uint32_t iterations = 100)
 {
-  TEST_ASSERT(worker.GetStatus() == ASync::Status::READY);
+  TEST_ASSERT(worker.IsIdle());
   TEST_ASSERT(iterations > 0 && configs.size() > 0 &&
               configs.size() <= UINT32_MAX / iterations);
   TEST_ASSERT(timeout_ms > 0 && timeout_ms < UINT32_MAX / 2U);
@@ -86,28 +86,27 @@ inline UARTConfigStressResult TestUARTConfigStress(
     size_t first_config = 0;
     std::atomic<uint32_t> reading{0}, tx_calls{0}, tx_failed{0}, bad_result{0};
   } context{uart, configs, {}};
-  auto config_job = ASync::Job::Create(
-      [](bool, Context* self, ASync*)
-      {
-        // 有限任务独立结束；裸机 Timer 中不能等调用线程发出停止信号。
-        // Finish independently; a cooperative Timer job cannot wait for its caller.
-        size_t index = self->first_config;
-        for (size_t i = 0; i < self->configs.size(); ++i)
-        {
-          const bool reading = self->reading.load(std::memory_order_acquire) != 0;
-          const auto ec = self->uart.SetConfig(self->configs.begin()[index]);
-          TEST_ASSERT(ec == ErrorCode::OK || ec == ErrorCode::BUSY);
-          if (ec == ErrorCode::OK)
-            ++self->result.config_ok;
-          else
-            ++self->result.config_busy;
-          if (reading && self->reading.load(std::memory_order_acquire) != 0)
-            ++self->result.during_read;
-          if (++index == self->configs.size()) index = 0;
-          Thread::Sleep(1);
-        }
-      },
-      &context);
+  auto config_job = [](void* arg)
+  {
+    auto* self = static_cast<Context*>(arg);
+    // 有限任务独立结束；裸机 Timer 中不能等调用线程发出停止信号。
+    // Finish independently; a cooperative Timer job cannot wait for its caller.
+    size_t index = self->first_config;
+    for (size_t i = 0; i < self->configs.size(); ++i)
+    {
+      const bool reading = self->reading.load(std::memory_order_acquire) != 0U;
+      const auto ec = self->uart.SetConfig(self->configs.begin()[index]);
+      TEST_ASSERT(ec == ErrorCode::OK || ec == ErrorCode::BUSY);
+      if (ec == ErrorCode::OK)
+        ++self->result.config_ok;
+      else
+        ++self->result.config_busy;
+      if (reading && self->reading.load(std::memory_order_acquire) != 0U)
+        ++self->result.during_read;
+      if (++index == self->configs.size()) index = 0;
+      Thread::Sleep(1);
+    }
+  };
   auto callback = WriteOperation::Callback::Create(
       [](bool, Context* self, ErrorCode ec)
       {
@@ -149,25 +148,21 @@ inline UARTConfigStressResult TestUARTConfigStress(
       ++context.result.write_ok;
     else
       ++context.result.write_rejected;
-    // 轮换起点，避免总由同一配置占住唯一待处理槽。
-    // Rotate the first attempt so the same configuration does not always claim the slot.
+    // 轮换起点，避免总由同一配置占住唯一待处理槽；与原 ASync 基线一致，先提交 worker
+    // 再置 reading=1 包围 uart.Read()，不引入额外睡眠假设。
+    // Rotate the first attempt; keep exact baseline Submit -> reading=1 -> uart.Read ->
+    // reading=0 ordering without extra sleep heuristics.
     context.first_config = round % configs.size();
-    TEST_ASSERT(worker.AssignJob(config_job) == ErrorCode::OK);
-    context.reading.store(1, std::memory_order_release);
+    worker.Submit(config_job, &context);
+    context.reading.store(1U, std::memory_order_release);
     const auto received = uart.Read(rx, read);
-    context.reading.store(0, std::memory_order_release);
+    context.reading.store(0U, std::memory_order_release);
     TEST_ASSERT(received == ErrorCode::OK || received == ErrorCode::TIMEOUT);
     if (received == ErrorCode::OK)
       ++context.result.read_ok;
     else
       ++context.result.read_timeout;
-    wait_until(
-        [&]()
-        {
-          const auto status = worker.GetStatus();
-          TEST_ASSERT(status == ASync::Status::BUSY || status == ASync::Status::DONE);
-          return status == ASync::Status::DONE;
-        });
+    worker.WaitDone(timeout_ms);
     // 发送用回调跟踪到终态；不把 BLOCK Write 超时误当作请求退出。
     // Track TX to terminal completion instead of treating BLOCK timeout as retirement.
     wait_until(check_tx);
