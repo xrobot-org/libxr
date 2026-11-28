@@ -91,8 +91,11 @@ class WebUsbBosCapability final : public LibXR::USB::BosCapability
   bool Enabled() const { return enabled_; }
 
   /**
-   * @brief 更新 GET_URL 使用的 vendor code
-   *        Update the vendor code used by GET_URL.
+   * @brief 更新 GET_URL 使用的 vendor code / Update GET_URL vendor code
+   * @note 必须在 DeviceCore::Init() 之前，或在无 BOS/GET_URL 控制传输在途时在设备
+   *       owner 内调用。
+   *       Must be called before DeviceCore::Init(), or inside the device owner with no
+   *       BOS or GET_URL control transfer in flight.
    */
   void SetVendorCode(uint8_t vendor_code)
   {
@@ -101,12 +104,14 @@ class WebUsbBosCapability final : public LibXR::USB::BosCapability
   }
 
   /**
-   * @brief 解析并缓存 landing page URL
-   *        Parse and cache the landing-page URL.
-   *
-   * 仅接受 `http://` / `https://` 前缀；空字符串表示禁用 WebUSB。
-   * Only `http://` / `https://` prefixes are accepted; an empty string disables
-   * WebUSB.
+   * @brief 解析并缓存 landing page URL / Parse and cache the landing-page URL
+   * @note 仅接受 `http://` / `https://` 前缀，空串禁用；须在 DeviceCore::Init() 前或在
+   *       无 BOS/GET_URL 传输在途时于设备 owner 内调用（应答视图借用至 IN 完成）。初始
+   *       禁用但后续运行期启用的能力，必须已在构造时通过 GetBosCapability() 登记。
+   *       Accepts `http://`/`https://` or empty/null to disable; call before Init() or
+   *       in the device owner with no BOS/GET_URL transfer in flight. A capability
+   *       initialized disabled and enabled later must already be registered via
+   *       GetBosCapability() at construction.
    */
   bool SetLandingPageUrl(const char* landing_page_url)
   {
@@ -161,6 +166,9 @@ class WebUsbBosCapability final : public LibXR::USB::BosCapability
     }
     return {reinterpret_cast<const uint8_t*>(&platform_cap_), sizeof(platform_cap_)};
   }
+
+  /// 返回 WebUSB 能力描述符最大字节数 / Return maximum WebUSB capability bytes
+  size_t GetMaxCapabilityDescriptorSize() const override { return sizeof(platform_cap_); }
 
   /**
    * @brief 处理 WebUSB GET_URL vendor request

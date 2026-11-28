@@ -10,8 +10,8 @@ namespace LibXR::USB
 
 /**
  * @class DfuRuntimeClass
- * @brief 运行时 DFU 类：只处理 DETACH，超时后跳到 bootloader / Runtime DFU class:
- *        handles DETACH only and jumps to the bootloader after the timeout
+ * @brief 运行时 DFU 类：处理 DETACH/GETSTATUS/GETSTATE 并超时跳转 / Runtime DFU class:
+ *        handles DETACH/GETSTATUS/GETSTATE and jumps after timeout
  *
  * 有跳转函数时功能描述符声明 bitWillDetach：主机发 DETACH 后不复位，设备在 DETACH
  * 的状态阶段完成、再过超时之后由 Process() 跳转。没有跳转函数时 DETACH 被拒绝。
@@ -71,7 +71,8 @@ class DfuRuntimeClass : public DfuInterfaceClassBase
   [[nodiscard]] ErrorCode BindEndpoints(EndpointPool& pool, uint8_t first_interface,
                                         bool in_isr) override;
 
-  /// 回到 APP_IDLE，取消还没执行的跳转 / Back to APP_IDLE, cancel a jump not yet run
+  /// 回到 APP_IDLE，取消尚未被 Process() CAS 认领的跳转 / Back to APP_IDLE, cancel
+  /// a jump not yet claimed by Process() CAS
   void UnbindEndpoints(EndpointPool& pool, bool in_isr) override;
 
   /**
@@ -92,8 +93,9 @@ class DfuRuntimeClass : public DfuInterfaceClassBase
   /// @}
 
  private:
-  /// 跳转阶段 / Jump phase
-  static constexpr uint32_t IDLE = 0U, WAITING = 1U;
+  /// 跳转阶段：IDLE 为未等待，非零奇数令牌标识一次具体的 DETACH 等待 / Jump phase:
+  /// IDLE when inactive; a non-zero odd generation token identifies one armed DETACH
+  static constexpr uint32_t IDLE = 0U;
 
   /// @name 构造时固定 / Fixed at construction
   /// @{
@@ -107,6 +109,16 @@ class DfuRuntimeClass : public DfuInterfaceClassBase
   /// APP_IDLE 或 APP_DETACH；DETACH 置 APP_DETACH，中止、绑定、解绑置 APP_IDLE /
   /// APP_IDLE or APP_DETACH; DETACH sets APP_DETACH, abort, bind and unbind APP_IDLE
   DFUState state_ = DFUState::APP_IDLE;
+  /**
+   * @brief 递增奇数等待代数令牌（由 owner 推进） / Monotonic odd generation token
+   * @note 模 2^32 加 2 步进（初值 1，首个发布值 3，经 0xFFFFFFFF 回到 1 并跳过
+   *       IDLE=0），周期为 2^31。受限于 32 位原子存储规则，本协议要求单次 Process()
+   *       在读出令牌后至执行 CAS 前的挂起窗口内，owner 连续重挂不得达到或超过 2^31 次。
+   *       Advances +2 mod 2^32 (starts at 1, first published 3, wraps 0xFFFFFFFF to 1,
+   *       skipping IDLE=0) with a 2^31 period. Under the 32-bit atomic constraint,
+   *       requires fewer than 2^31 re-arms during one Process() pause window.
+   */
+  uint32_t next_token_ = 1U;
   /// GETSTATUS 的应答，到下一个 GETSTATUS 前不变 / GETSTATUS answer, unchanged until
   /// the next GETSTATUS
   DFUStatusResponse status_response_{};
@@ -117,17 +129,19 @@ class DfuRuntimeClass : public DfuInterfaceClassBase
   /// @name owner 与 Process() 之间 / Between the owner and Process()
   /// @{
   /**
-   * @brief 跳转阶段 / Jump phase
-   * @note owner 写 WAITING（DETACH 完成）和 IDLE（中止、绑定、解绑）；Process() 把
-   *       WAITING 换成 IDLE 后跳转。
-   *       The owner writes WAITING (DETACH completed) and IDLE (abort, bind, unbind);
-   *       Process() swaps WAITING for IDLE and then jumps.
+   * @brief 跳转阶段与代数令牌 / Jump phase and generation token
+   * @note owner 写非零奇数令牌（DETACH 完成）和 IDLE（中止、绑定、解绑）；Process()
+   *       仅把与已检超时对应的同一令牌换成 IDLE 后跳转。
+   *       The owner writes a non-zero odd token (DETACH completed) and IDLE (abort, bind,
+   *       unbind); Process() swaps only that same token for IDLE and then jumps.
    */
   std::atomic<uint32_t> launch_phase_{IDLE};
   /**
    * @brief 跳转时刻（毫秒） / Jump time in milliseconds
-   * @note owner 在写 WAITING 之前写，Process() 和 GETSTATUS 读。
-   *       Written by the owner before WAITING, read by Process() and GETSTATUS.
+   * @note owner 在发布奇数令牌前以 release 写；Process() 以 acquire 读，GETSTATUS
+   *       仅在 owner 中以 relaxed 读。
+   *       Release-stored by owner before publishing the token; acquire-loaded by
+   *       Process(), and relaxed-loaded by GETSTATUS inside owner context.
    */
   std::atomic<uint32_t> detach_deadline_ms_{0U};
   /// @}
