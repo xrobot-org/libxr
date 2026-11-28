@@ -364,11 +364,7 @@ ErrorCode WritePort::WaitForRetirement(WriteOperation& op)
     break;
   }
 
-  do
-  {
-    wait_result = op.data.sem_info.sem->Wait(UINT32_MAX);
-  } while (wait_result == ErrorCode::TIMEOUT);
-  REQUIRE(wait_result == ErrorCode::OK);
+  Detail::WaitClaimedNotification(*op.data.sem_info.sem);
   ReleaseProducer(Phase::IDLE, false);
   return ErrorCode::TIMEOUT;
 }
@@ -413,11 +409,7 @@ ErrorCode WritePort::WaitForBlock(WriteOperation& op)
     break;
   }
 
-  do
-  {
-    wait_result = op.data.sem_info.sem->Wait(UINT32_MAX);
-  } while (wait_result == ErrorCode::TIMEOUT);
-  REQUIRE(wait_result == ErrorCode::OK);
+  Detail::WaitClaimedNotification(*op.data.sem_info.sem);
   const ErrorCode result = block_result_;
   observed = state_.load(std::memory_order_acquire);
   for (;;)

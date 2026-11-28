@@ -1,7 +1,5 @@
 #include "double_buffer.hpp"
 
-#include "libxr_mem.hpp"
-
 using namespace LibXR;
 
 // 构造过程委托给 `Init()`，这样直接构造和延迟初始化共用同一套校验路径。
@@ -79,36 +77,6 @@ void DoubleBuffer::Switch()
 // Pending 是否就绪由一个显式有效位表示。
 // Pending readiness is carried by one explicit validity bit.
 bool DoubleBuffer::HasPending() const { return pending_valid_; }
-
-// `FillPending()` 把 payload 拷进非活动半块，并把该半块标记为下次可切换。
-// `FillPending()` copies payload bytes into the non-active half and marks that
-// half ready for the next switch.
-bool DoubleBuffer::FillPending(const uint8_t* data, size_t len)
-{
-  if (pending_valid_ || len > size_)
-  {
-    return false;
-  }
-
-  LibXR::Memory::FastCopy(PendingBuffer(), data, len);
-  pending_len_ = len;
-  pending_valid_ = true;
-  return true;
-}
-
-// `FillActive()` 只原地更新当前活动半块，不会触碰 pending 状态簿记。
-// `FillActive()` updates the currently active half in place without touching
-// pending-state bookkeeping.
-bool DoubleBuffer::FillActive(const uint8_t* data, size_t len)
-{
-  if (len > size_)
-  {
-    return false;
-  }
-
-  LibXR::Memory::FastCopy(ActiveBuffer(), data, len);
-  return true;
-}
 
 // 某些调用方会手动写入字节，因此这里只需要补 state-bit 迁移。
 // Some callers stage bytes manually and only need the state-bit transition.

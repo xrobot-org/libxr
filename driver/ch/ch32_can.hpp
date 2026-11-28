@@ -6,6 +6,7 @@
 
 #include "can.hpp"
 #include "ch32_can_def.hpp"
+#include "serialized_service.hpp"
 #include "slot_pool.hpp"
 
 #include DEF2STR(LIBXR_CH32_CONFIG_FILE)
@@ -70,6 +71,9 @@ class CH32CAN : public CAN
 
   /**
    * @brief 处理错误中断 / Handle error interrupt
+   * @note 错误帧在独立错误中断上下文中分发，与接收中断分属不同中断入口。
+   *       Error frames are dispatched from the dedicated error IRQ context, separate
+   *       from RX IRQ handlers.
    */
   void ProcessErrorInterrupt();
 
@@ -98,8 +102,7 @@ class CH32CAN : public CAN
   /// 待重试帧 / Pending retry frame.
   ClassicPack tx_retry_pack_{};
 
-  std::atomic<uint32_t> tx_lock_{0};
-  std::atomic<uint32_t> tx_pend_{0};
+  SerializedService tx_service_;  ///< 发送服务串行化调度器 / TX service serializer.
 
   /// 缓存配置（用于保留原值语义） / Cached configuration for keep-previous semantics
   CAN::Configuration cfg_cache_{};

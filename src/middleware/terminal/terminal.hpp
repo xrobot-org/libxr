@@ -12,7 +12,6 @@
 #include "libxr_rw.hpp"
 #include "ramfs.hpp"
 #include "semaphore.hpp"
-#include "stack.hpp"
 
 namespace LibXR
 {
@@ -111,7 +110,6 @@ class Terminal
         write_stream_(write_port_, write_op_),
         ramfs_(ramfs),
         current_dir_(current_dir ? current_dir : &ramfs_.root_),
-        input_line_(MAX_LINE_SIZE + 1),
         history_(MAX_HISTORY_NUMBER)
   {
     ASSERT(read_port != nullptr);
@@ -153,10 +151,12 @@ class Terminal
 
   size_t request_read_size_ =
       0;  ///< 本轮计划读取的字节数 / Byte count requested for the current read attempt.
-  RamFS::Dir* current_dir_;        ///< 当前目录 / Current directory
-  uint8_t flag_ansi_ = 0;          ///< ANSI 控制字符状态 / ANSI control character state
-  int offset_ = 0;                 ///< 光标偏移 / Cursor offset
-  Stack<char> input_line_;         ///< 输入行缓冲区 / Input line buffer
+  RamFS::Dir* current_dir_;  ///< 当前目录 / Current directory
+  uint8_t flag_ansi_ = 0;    ///< ANSI 控制字符状态 / ANSI control character state
+  int offset_ = 0;           ///< 光标偏移 / Cursor offset
+  std::array<char, MAX_LINE_SIZE + 1>
+      input_line_{};               ///< 输入行缓冲区 / Input line buffer
+  size_t input_len_ = 0;           ///< 当前输入行有效字符数 / Current input line length
   char* arg_tab_[MAX_ARG_NUMBER];  ///< 命令参数列表 / Command argument list
   size_t arg_number_ = 0;          ///< 参数数量 / Number of arguments
   Queue<HistoryLine> history_;     ///< 历史命令 / History of commands

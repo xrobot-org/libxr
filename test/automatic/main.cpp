@@ -21,7 +21,6 @@
 #include <unistd.h>
 #endif
 
-void test_async();
 void test_assert();
 void test_linux_database_raw();
 void test_linux_database_sequential();
@@ -32,15 +31,14 @@ void test_crc();
 void test_crc_first_call_race();
 void test_float_encoder();
 void test_event();
-void test_flag();
 void test_inertia();
-void test_list();
 void test_lockfree_list();
 void test_lpfilter();
 void test_kinematic();
 void test_latest_snapshot();
 void test_mpmc_queue();
 void test_object_pool();
+void test_operation();
 void test_linux_stdio_print();
 void test_message_packet();
 void test_message_topic();
@@ -56,7 +54,6 @@ void test_semaphore();
 void test_jtag_general_gpio();
 void test_jtag_protocol();
 void test_mutex();
-void test_stack();
 void test_swd_general_gpio();
 void test_swd_protocol();
 void test_terminal_command();
@@ -250,6 +247,7 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"core_tests", {"assert", &RunVoidEntry<test_assert>, true, false}},
     {"core_tests", {"def", &RunVoidEntry<test_def>, false}},
     {"core_tests", {"callback", &RunVoidEntry<test_cb>, false}},
+    {"core_tests", {"operation", &RunVoidEntry<test_operation>, false}},
     {"core_tests", {"pipe", &RunVoidEntry<test_pipe>, false}},
     {"core_tests", {"read_port", &RunVoidEntry<test_read_port>, false}},
     {"core_tests", {"write_port", &RunVoidEntry<test_write_port>, false}},
@@ -260,7 +258,6 @@ constexpr GroupedTestCase kMainTestCases[] = {
 
     {"synchronization_tests", {"semaphore", &RunVoidEntry<test_semaphore>, false}},
     {"synchronization_tests", {"mutex", &RunVoidEntry<test_mutex>, false}},
-    {"synchronization_tests", {"async", &RunVoidEntry<test_async>, false}},
     {"synchronization_tests",
      {"serialized_service", &RunVoidEntry<test_serialized_service>, false}},
 
@@ -270,7 +267,6 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"utility_tests", {"encoder", &RunVoidEntry<test_float_encoder>, false}},
     {"utility_tests", {"cycle_value", &RunVoidEntry<test_cycle_value>, false}},
     {"utility_tests", {"print", &RunVoidEntry<test_print>, false}},
-    {"utility_tests", {"flag", &RunVoidEntry<test_flag>, false}},
     {"utility_tests", {"lpfilter", &RunVoidEntry<test_lpfilter>, false}},
 
     {"data_structure_tests", {"rbt", &RunVoidEntry<test_rbt>, false}},
@@ -279,8 +275,6 @@ constexpr GroupedTestCase kMainTestCases[] = {
     {"data_structure_tests", {"spsc_prefix", &RunVoidEntry<test_spsc_prefix>, false}},
     {"data_structure_tests", {"mpmc_queue", &RunVoidEntry<test_mpmc_queue>, false}},
     {"data_structure_tests", {"object_pool", &RunVoidEntry<test_object_pool>, false}},
-    {"data_structure_tests", {"stack", &RunVoidEntry<test_stack>, false}},
-    {"data_structure_tests", {"list", &RunVoidEntry<test_list>, false}},
     {"data_structure_tests", {"lockfree_list", &RunVoidEntry<test_lockfree_list>, false}},
     {"data_structure_tests", {"double_buffer", &RunVoidEntry<test_double_buffer>, false}},
     {"data_structure_tests",

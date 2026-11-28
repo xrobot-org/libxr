@@ -2,7 +2,6 @@
 
 #include <cmath>
 #include <cstdint>
-#include <stdexcept>
 
 namespace LibXR
 {

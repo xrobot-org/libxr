@@ -176,6 +176,19 @@ STM32CANFD::STM32CANFD(FDCAN_HandleTypeDef* hcan, uint32_t queue_size)
   Init();
 }
 
+uint32_t STM32CANFD::AssignedRxFifoNotification() const
+{
+#if defined(FDCAN2) || defined(FDCAN3)
+  if (id_ == STM32_FDCAN1)
+  {
+    return FDCAN_IT_RX_FIFO0_NEW_MESSAGE;
+  }
+  return FDCAN_IT_RX_FIFO1_NEW_MESSAGE;
+#else
+  return FDCAN_IT_RX_FIFO0_NEW_MESSAGE;
+#endif
+}
+
 ErrorCode STM32CANFD::Init(void)
 {
   FDCAN_FilterTypeDef can_filter = {};
@@ -185,33 +198,10 @@ ErrorCode STM32CANFD::Init(void)
   can_filter.FilterID2 = 0x0000;
   can_filter.FilterIndex = 0;
 
-#ifdef FDCAN3
-  if (id_ == STM32_FDCAN1)
-  {
-    can_filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-  }
-  else if (id_ == STM32_FDCAN2)
-  {
-    can_filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO1;
-  }
-  else if (id_ == STM32_FDCAN3)
-  {
-    can_filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO1;
-  }
-#else
-#ifdef FDCAN2
-  if (id_ == STM32_FDCAN1)
-  {
-    can_filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-  }
-  else if (id_ == STM32_FDCAN2)
-  {
-    can_filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO1;
-  }
-#else
-  can_filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-#endif
-#endif
+  const uint32_t rx_fifo_it = AssignedRxFifoNotification();
+  can_filter.FilterConfig = (rx_fifo_it == FDCAN_IT_RX_FIFO0_NEW_MESSAGE)
+                                ? FDCAN_FILTER_TO_RXFIFO0
+                                : FDCAN_FILTER_TO_RXFIFO1;
 
   if (HAL_FDCAN_ConfigFilter(hcan_, &can_filter) != HAL_OK)
   {
@@ -230,14 +220,7 @@ ErrorCode STM32CANFD::Init(void)
     return ErrorCode::FAILED;
   }
 
-  if (can_filter.FilterConfig == FDCAN_FILTER_TO_RXFIFO0)
-  {
-    HAL_FDCAN_ActivateNotification(hcan_, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0);
-  }
-  else
-  {
-    HAL_FDCAN_ActivateNotification(hcan_, FDCAN_IT_RX_FIFO1_NEW_MESSAGE, 0);
-  }
+  HAL_FDCAN_ActivateNotification(hcan_, rx_fifo_it, 0);
 
   HAL_FDCAN_ActivateNotification(hcan_, FDCAN_IT_ERROR_PASSIVE, 0);
   HAL_FDCAN_ActivateNotification(hcan_, FDCAN_IT_ERROR_WARNING, 0);
@@ -281,6 +264,117 @@ ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
   ASSERT(hcan_ != nullptr && hcan_->Instance != nullptr);
 
   FDCAN_GlobalTypeDef* can = hcan_->Instance;
+
+  const auto& bt = cfg.bit_timing;
+  const auto& dbt = cfg.data_timing;
+
+  // 在停机与关闭通知之前完成全部纯参数校验，非法参数直接返回 ARG_ERR。
+  // Validate all pure timing parameters before deactivating notifications or stopping
+  // FDCAN so invalid arguments return ARG_ERR without disturbing the running controller.
+#ifdef FDCAN_NBTP_NBRP_Msk
+  constexpr uint32_t NBRP_FIELD_MAX = (FDCAN_NBTP_NBRP_Msk >> FDCAN_NBTP_NBRP_Pos);
+  constexpr uint32_t NTSEG1_FIELD_MAX = (FDCAN_NBTP_NTSEG1_Msk >> FDCAN_NBTP_NTSEG1_Pos);
+  constexpr uint32_t NTSEG2_FIELD_MAX = (FDCAN_NBTP_NTSEG2_Msk >> FDCAN_NBTP_NTSEG2_Pos);
+  constexpr uint32_t NSJW_FIELD_MAX = (FDCAN_NBTP_NSJW_Msk >> FDCAN_NBTP_NSJW_Pos);
+
+  constexpr uint32_t NBRP_MAX = NBRP_FIELD_MAX + 1u;
+  constexpr uint32_t NTSEG1_MAX = NTSEG1_FIELD_MAX + 1u;
+  constexpr uint32_t NTSEG2_MAX = NTSEG2_FIELD_MAX + 1u;
+  constexpr uint32_t NSJW_MAX = NSJW_FIELD_MAX + 1u;
+
+  // 0 = 保持原值，非 0 做范围检查
+  if (bt.brp != 0u)
+  {
+    if (bt.brp < 1u || bt.brp > NBRP_MAX)
+    {
+      return ErrorCode::ARG_ERR;
+    }
+  }
+
+  uint32_t tseg1 = 0u;
+  if (bt.prop_seg != 0u || bt.phase_seg1 != 0u)
+  {
+    if (bt.prop_seg > NTSEG1_MAX || bt.phase_seg1 > NTSEG1_MAX - bt.prop_seg)
+    {
+      return ErrorCode::ARG_ERR;
+    }
+    tseg1 = bt.prop_seg + bt.phase_seg1;
+  }
+
+  if (bt.phase_seg2 != 0u)
+  {
+    if (bt.phase_seg2 < 1u || bt.phase_seg2 > NTSEG2_MAX)
+    {
+      return ErrorCode::ARG_ERR;
+    }
+  }
+
+  if (bt.sjw != 0u)
+  {
+    if (bt.sjw < 1u || bt.sjw > NSJW_MAX)
+    {
+      return ErrorCode::ARG_ERR;
+    }
+    if (bt.phase_seg2 != 0u && bt.sjw > bt.phase_seg2)
+    {
+      return ErrorCode::ARG_ERR;
+    }
+  }
+#else
+  (void)bt;
+#endif  // FDCAN_NBTP_NBRP_Msk
+
+#ifdef FDCAN_DBTP_DBRP_Msk
+  constexpr uint32_t DBRP_FIELD_MAX = (FDCAN_DBTP_DBRP_Msk >> FDCAN_DBTP_DBRP_Pos);
+  constexpr uint32_t DTSEG1_FIELD_MAX = (FDCAN_DBTP_DTSEG1_Msk >> FDCAN_DBTP_DTSEG1_Pos);
+  constexpr uint32_t DTSEG2_FIELD_MAX = (FDCAN_DBTP_DTSEG2_Msk >> FDCAN_DBTP_DTSEG2_Pos);
+  constexpr uint32_t DSJW_FIELD_MAX = (FDCAN_DBTP_DSJW_Msk >> FDCAN_DBTP_DSJW_Pos);
+
+  constexpr uint32_t DBRP_MAX = DBRP_FIELD_MAX + 1u;
+  constexpr uint32_t DTSEG1_MAX = DTSEG1_FIELD_MAX + 1u;
+  constexpr uint32_t DTSEG2_MAX = DTSEG2_FIELD_MAX + 1u;
+  constexpr uint32_t DSJW_MAX = DSJW_FIELD_MAX + 1u;
+
+  if (dbt.brp != 0u)
+  {
+    if (dbt.brp < 1u || dbt.brp > DBRP_MAX)
+    {
+      return ErrorCode::ARG_ERR;
+    }
+  }
+
+  uint32_t dtseg1 = 0u;
+  if (dbt.prop_seg != 0u || dbt.phase_seg1 != 0u)
+  {
+    if (dbt.prop_seg > DTSEG1_MAX || dbt.phase_seg1 > DTSEG1_MAX - dbt.prop_seg)
+    {
+      return ErrorCode::ARG_ERR;
+    }
+    dtseg1 = dbt.prop_seg + dbt.phase_seg1;
+  }
+
+  if (dbt.phase_seg2 != 0u)
+  {
+    if (dbt.phase_seg2 < 1u || dbt.phase_seg2 > DTSEG2_MAX)
+    {
+      return ErrorCode::ARG_ERR;
+    }
+  }
+
+  if (dbt.sjw != 0u)
+  {
+    if (dbt.sjw < 1u || dbt.sjw > DSJW_MAX)
+    {
+      return ErrorCode::ARG_ERR;
+    }
+    if (dbt.phase_seg2 != 0u && dbt.sjw > dbt.phase_seg2)
+    {
+      return ErrorCode::ARG_ERR;
+    }
+  }
+#else
+  (void)dbt;
+#endif  // FDCAN_DBTP_DBRP_Msk
 
   // 先关通知：只关本驱动用到的这些
   uint32_t it_mask = 0u;
@@ -359,60 +453,9 @@ ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
   }
 #endif
 
-  // 仲裁相位时序范围校验并写入 NBTP。
-  // Validate nominal timing range and update NBTP.
-  const auto& bt = cfg.bit_timing;
-
-  // 用掩码算出字段最大值，避免硬编码
+  // 写入仲裁相位时序 NBTP。
+  // Apply validated nominal timing to NBTP.
 #ifdef FDCAN_NBTP_NBRP_Msk
-  constexpr uint32_t NBRP_FIELD_MAX = (FDCAN_NBTP_NBRP_Msk >> FDCAN_NBTP_NBRP_Pos);
-  constexpr uint32_t NTSEG1_FIELD_MAX = (FDCAN_NBTP_NTSEG1_Msk >> FDCAN_NBTP_NTSEG1_Pos);
-  constexpr uint32_t NTSEG2_FIELD_MAX = (FDCAN_NBTP_NTSEG2_Msk >> FDCAN_NBTP_NTSEG2_Pos);
-  constexpr uint32_t NSJW_FIELD_MAX = (FDCAN_NBTP_NSJW_Msk >> FDCAN_NBTP_NSJW_Pos);
-
-  constexpr uint32_t NBRP_MAX = NBRP_FIELD_MAX + 1u;
-  constexpr uint32_t NTSEG1_MAX = NTSEG1_FIELD_MAX + 1u;
-  constexpr uint32_t NTSEG2_MAX = NTSEG2_FIELD_MAX + 1u;
-  constexpr uint32_t NSJW_MAX = NSJW_FIELD_MAX + 1u;
-
-  // 0 = 保持原值，非 0 做范围检查
-  if (bt.brp != 0u)
-  {
-    if (bt.brp < 1u || bt.brp > NBRP_MAX)
-    {
-      return ErrorCode::ARG_ERR;
-    }
-  }
-
-  uint32_t tseg1 = bt.prop_seg + bt.phase_seg1;
-  if (bt.prop_seg != 0u || bt.phase_seg1 != 0u)
-  {
-    if (tseg1 < 1u || tseg1 > NTSEG1_MAX)
-    {
-      return ErrorCode::ARG_ERR;
-    }
-  }
-
-  if (bt.phase_seg2 != 0u)
-  {
-    if (bt.phase_seg2 < 1u || bt.phase_seg2 > NTSEG2_MAX)
-    {
-      return ErrorCode::ARG_ERR;
-    }
-  }
-
-  if (bt.sjw != 0u)
-  {
-    if (bt.sjw < 1u || bt.sjw > NSJW_MAX)
-    {
-      return ErrorCode::ARG_ERR;
-    }
-    if (bt.phase_seg2 != 0u && bt.sjw > bt.phase_seg2)
-    {
-      return ErrorCode::ARG_ERR;
-    }
-  }
-
   uint32_t nbtp_old = can->NBTP;
   uint32_t nbtp_new = nbtp_old;
   uint32_t nbtp_mask = 0u;
@@ -465,58 +508,9 @@ ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
   }
 #endif  // FDCAN_NBTP_NBRP_Msk
 
-  // 数据相位时序范围校验并写入 DBTP（仅 CAN FD）。
-  // Validate data-phase timing and update DBTP (CAN FD only).
-  const auto& dbt = cfg.data_timing;
-
+  // 写入数据相位时序 DBTP（仅 CAN FD）。
+  // Apply validated data-phase timing to DBTP (CAN FD only).
 #ifdef FDCAN_DBTP_DBRP_Msk
-  constexpr uint32_t DBRP_FIELD_MAX = (FDCAN_DBTP_DBRP_Msk >> FDCAN_DBTP_DBRP_Pos);
-  constexpr uint32_t DTSEG1_FIELD_MAX = (FDCAN_DBTP_DTSEG1_Msk >> FDCAN_DBTP_DTSEG1_Pos);
-  constexpr uint32_t DTSEG2_FIELD_MAX = (FDCAN_DBTP_DTSEG2_Msk >> FDCAN_DBTP_DTSEG2_Pos);
-  constexpr uint32_t DSJW_FIELD_MAX = (FDCAN_DBTP_DSJW_Msk >> FDCAN_DBTP_DSJW_Pos);
-
-  constexpr uint32_t DBRP_MAX = DBRP_FIELD_MAX + 1u;
-  constexpr uint32_t DTSEG1_MAX = DTSEG1_FIELD_MAX + 1u;
-  constexpr uint32_t DTSEG2_MAX = DTSEG2_FIELD_MAX + 1u;
-  constexpr uint32_t DSJW_MAX = DSJW_FIELD_MAX + 1u;
-
-  if (dbt.brp != 0u)
-  {
-    if (dbt.brp < 1u || dbt.brp > DBRP_MAX)
-    {
-      return ErrorCode::ARG_ERR;
-    }
-  }
-
-  uint32_t dtseg1 = dbt.prop_seg + dbt.phase_seg1;
-  if (dbt.prop_seg != 0u || dbt.phase_seg1 != 0u)
-  {
-    if (dtseg1 < 1u || dtseg1 > DTSEG1_MAX)
-    {
-      return ErrorCode::ARG_ERR;
-    }
-  }
-
-  if (dbt.phase_seg2 != 0u)
-  {
-    if (dbt.phase_seg2 < 1u || dbt.phase_seg2 > DTSEG2_MAX)
-    {
-      return ErrorCode::ARG_ERR;
-    }
-  }
-
-  if (dbt.sjw != 0u)
-  {
-    if (dbt.sjw < 1u || dbt.sjw > DSJW_MAX)
-    {
-      return ErrorCode::ARG_ERR;
-    }
-    if (dbt.phase_seg2 != 0u && dbt.sjw > dbt.phase_seg2)
-    {
-      return ErrorCode::ARG_ERR;
-    }
-  }
-
   uint32_t dbtp_old = can->DBTP;
   uint32_t dbtp_new = dbtp_old;
   uint32_t dbtp_mask = 0u;
@@ -563,8 +557,6 @@ ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
     dbtp_old |= (dbtp_new & dbtp_mask);
     can->DBTP = dbtp_old;
   }
-#else
-  (void)dbt;
 #endif  // FDCAN_DBTP_DBRP_Msk
 
   // 数据相位 FDMode：这里不动寄存器，只保留在上层语义中使用
@@ -579,11 +571,11 @@ ErrorCode STM32CANFD::SetConfig(const FDCAN::Configuration& cfg)
   HAL_FDCAN_ActivateNotification(hcan_, FDCAN_IT_ERROR_PASSIVE, 0);
   HAL_FDCAN_ActivateNotification(hcan_, FDCAN_IT_ERROR_WARNING, 0);
   HAL_FDCAN_ActivateNotification(hcan_, FDCAN_IT_BUS_OFF, 0);
-  HAL_FDCAN_ActivateNotification(hcan_, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0);
-  HAL_FDCAN_ActivateNotification(hcan_, FDCAN_IT_RX_FIFO1_NEW_MESSAGE, 0);
+  HAL_FDCAN_ActivateNotification(hcan_, AssignedRxFifoNotification(), 0);
   HAL_FDCAN_ActivateNotification(hcan_, FDCAN_IT_TX_FIFO_EMPTY, 0);
   HAL_FDCAN_ActivateNotification(hcan_, FDCAN_IT_TX_COMPLETE, 0xFFFFFFFF);
 
+  TxService();
   return ErrorCode::OK;
 }
 
@@ -695,92 +687,71 @@ void STM32CANFD::TxService()
     return;
   }
 
-  tx_pend_.store(1u, std::memory_order_release);
+  constexpr uint32_t TX_EVENT = 1U;
 
-  uint32_t expected = 0u;
-  if (!tx_lock_.compare_exchange_strong(expected, 1u, std::memory_order_acquire,
-                                        std::memory_order_relaxed))
-  {
-    return;
-  }
-
-  for (;;)
-  {
-    tx_pend_.store(0u, std::memory_order_release);
-
-    while (HardwareTxQueueEmptySize() != 0u)
-    {
-      // 保留原有 FD 优先发送策略。
-      // Preserve the existing FD-priority TX policy.
-      FDPack pfd{};
-      bool has_fd = tx_fd_retry_valid_;
-      if (has_fd)
+  tx_service_.Invoke(
+      TX_EVENT, false,
+      [this](uint32_t, bool)
       {
-        pfd = tx_fd_retry_pack_;
-      }
-      else
-      {
-        has_fd = (tx_fd_queue_.Get(pfd) == ErrorCode::OK);
-      }
-
-      if (has_fd)
-      {
-        FDCAN_TxHeaderTypeDef hdr{};
-        BuildTxHeader(pfd, hdr);
-
-        if (HAL_FDCAN_AddMessageToTxFifoQ(hcan_, &hdr, pfd.data) != HAL_OK)
+        while (HardwareTxQueueEmptySize() != 0u)
         {
-          tx_fd_retry_pack_ = pfd;
-          tx_fd_retry_valid_ = true;
-          break;  // 不做立即 retry
+          // 保留原有 FD 优先发送策略。
+          // Preserve the existing FD-priority TX policy.
+          FDPack pfd{};
+          bool has_fd = tx_fd_retry_valid_;
+          if (has_fd)
+          {
+            pfd = tx_fd_retry_pack_;
+          }
+          else
+          {
+            has_fd = (tx_fd_queue_.Get(pfd) == ErrorCode::OK);
+          }
+
+          if (has_fd)
+          {
+            FDCAN_TxHeaderTypeDef hdr{};
+            BuildTxHeader(pfd, hdr);
+
+            if (HAL_FDCAN_AddMessageToTxFifoQ(hcan_, &hdr, pfd.data) != HAL_OK)
+            {
+              tx_fd_retry_pack_ = pfd;
+              tx_fd_retry_valid_ = true;
+              break;  // 不做立即 retry
+            }
+            tx_fd_retry_valid_ = false;
+            continue;
+          }
+
+          ClassicPack pc{};
+          bool has_classic = tx_classic_retry_valid_;
+          if (has_classic)
+          {
+            pc = tx_classic_retry_pack_;
+          }
+          else
+          {
+            has_classic = (tx_queue_.Get(pc) == ErrorCode::OK);
+          }
+
+          if (has_classic)
+          {
+            FDCAN_TxHeaderTypeDef hdr{};
+            BuildTxHeader(pc, hdr);
+
+            if (HAL_FDCAN_AddMessageToTxFifoQ(hcan_, &hdr, pc.data) != HAL_OK)
+            {
+              tx_classic_retry_pack_ = pc;
+              tx_classic_retry_valid_ = true;
+              break;
+            }
+            tx_classic_retry_valid_ = false;
+            continue;
+          }
+
+          break;  // 两个软件队列都空
         }
-        tx_fd_retry_valid_ = false;
-        continue;
-      }
-
-      ClassicPack pc{};
-      bool has_classic = tx_classic_retry_valid_;
-      if (has_classic)
-      {
-        pc = tx_classic_retry_pack_;
-      }
-      else
-      {
-        has_classic = (tx_queue_.Get(pc) == ErrorCode::OK);
-      }
-
-      if (has_classic)
-      {
-        FDCAN_TxHeaderTypeDef hdr{};
-        BuildTxHeader(pc, hdr);
-
-        if (HAL_FDCAN_AddMessageToTxFifoQ(hcan_, &hdr, pc.data) != HAL_OK)
-        {
-          tx_classic_retry_pack_ = pc;
-          tx_classic_retry_valid_ = true;
-          break;
-        }
-        tx_classic_retry_valid_ = false;
-        continue;
-      }
-
-      break;  // 两个软件队列都空
-    }
-
-    tx_lock_.store(0u, std::memory_order_release);
-
-    if (tx_pend_.load(std::memory_order_acquire) == 0u)
-    {
-      return;
-    }
-
-    expected = 0u;
-    if (!tx_lock_.compare_exchange_strong(expected, 1u, std::memory_order_acquire,
-                                          std::memory_order_relaxed))
-    {
-      return;
-    }
-  }
+      });
 }
 
 void STM32CANFD::ProcessErrorStatusInterrupt(uint32_t error_status_its)

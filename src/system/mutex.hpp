@@ -11,8 +11,10 @@ namespace LibXR
  *        Mutex class providing thread synchronization mechanisms.
  *
  * 该类实现了一个互斥锁，用于确保多线程环境下的线程安全，支持加锁、解锁，并对中断服务程序（ISR）进行特殊处理。
+ * 裸机（`system/none`）后端仅用于非 ISR 上下文。
  * This class implements a mutex for thread-safe operations, supporting
  * locking, unlocking, and special handling for interrupt service routines (ISR).
+ * The bare-metal (`system/none`) backend is for non-ISR contexts only.
  */
 class Mutex
 {

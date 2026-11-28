@@ -37,7 +37,7 @@ class Thread
    * @brief  默认构造函数，初始化空线程
    *         Default constructor initializing an empty thread
    */
-  Thread() {};
+  constexpr Thread() noexcept = default;
 
   /**
    * @brief  通过 POSIX 线程句柄创建线程对象
@@ -264,7 +264,7 @@ class Thread
     pthread_attr_setinheritsched(&attr, PTHREAD_INHERIT_SCHED);
   }
 
-  libxr_thread_handle thread_handle_;  ///< POSIX 线程句柄 / POSIX thread handle
+  libxr_thread_handle thread_handle_{};  ///< POSIX 线程句柄 / POSIX thread handle
 };
 
 }  // namespace LibXR

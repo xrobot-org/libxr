@@ -1,36 +1,61 @@
 #include "semaphore.hpp"
 
-#include "libxr.hpp"
+#include <atomic>
+
 #include "libxr_def.hpp"
+#include "timebase.hpp"
 #include "timer.hpp"
 
 using namespace LibXR;
+
+static_assert(alignof(libxr_semaphore_handle) >=
+              std::atomic_ref<uint32_t>::required_alignment);
+
+namespace
+{
+bool TryAcquire(std::atomic_ref<uint32_t> count)
+{
+  uint32_t observed = count.load(std::memory_order_relaxed);
+  while (observed > 0U)
+  {
+    if (count.compare_exchange_weak(observed, observed - 1U, std::memory_order_acquire,
+                                    std::memory_order_relaxed))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+}  // namespace
 
 Semaphore::Semaphore(uint32_t init_count) : semaphore_handle_(init_count) {}
 
 Semaphore::~Semaphore() {}
 
-void Semaphore::Post() { semaphore_handle_++; }
+void Semaphore::Post()
+{
+  std::atomic_ref<uint32_t> count(semaphore_handle_);
+  count.fetch_add(1U, std::memory_order_release);
+}
 
 ErrorCode Semaphore::Wait(uint32_t timeout)
 {
-  if (semaphore_handle_ > 0)
+  std::atomic_ref<uint32_t> count(semaphore_handle_);
+  if (TryAcquire(count))
   {
-    semaphore_handle_--;
     return ErrorCode::OK;
   }
-  else if (timeout == 0)
+  if (timeout == 0U)
   {
     return ErrorCode::TIMEOUT;
   }
 
-  uint32_t now = Timebase::GetMilliseconds();
+  const uint32_t now = Timebase::GetMilliseconds();
 
   while (uint32_t(Timebase::GetMilliseconds()) - now < timeout)
   {
-    if (semaphore_handle_ > 0)
+    if (TryAcquire(count))
     {
-      semaphore_handle_--;
       return ErrorCode::OK;
     }
     Timer::RefreshTimerInIdle();
@@ -44,4 +69,8 @@ void Semaphore::PostFromCallback(bool in_isr)
   Post();
 }
 
-size_t Semaphore::Value() { return semaphore_handle_; }
+size_t Semaphore::Value()
+{
+  std::atomic_ref<uint32_t> count(semaphore_handle_);
+  return count.load(std::memory_order_acquire);
+}

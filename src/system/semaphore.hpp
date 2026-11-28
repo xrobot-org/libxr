@@ -1,5 +1,6 @@
 #pragma once
 
+#include "libxr_assert.hpp"
 #include "libxr_def.hpp"
 #include "libxr_system.hpp"
 
@@ -96,15 +97,32 @@ class Semaphore
    * @return 当前信号量值 / The current semaphore value
    *
    * @details
-   * 该方法返回信号量当前的计数值，表示可用资源的数量。
+   * 该方法返回信号量当前的计数值，仅作为瞬时计数快照；获取资源与建立同步仍须通过
+   * `Wait()`。 裸机/WebAssembly 后端的隐式值复制仅允许在对象静止、无并发访问时进行。
    *
-   * This method returns the current semaphore count, representing
-   * the number of available resources.
+   * This method returns a point-in-time snapshot of the semaphore count; acquiring
+   * resources and establishing synchronization still require `Wait()`. On bare-metal
+   * and WebAssembly backends, implicit value copying is valid only while quiescent.
    */
   size_t Value();
 
  private:
   libxr_semaphore_handle semaphore_handle_;  ///< 信号量句柄 / Semaphore handle
 };
+
+/// \cond
+namespace Detail
+{
+inline void WaitClaimedNotification(Semaphore& sem)
+{
+  ErrorCode wait_ans = ErrorCode::OK;
+  do
+  {
+    wait_ans = sem.Wait(UINT32_MAX);
+  } while (wait_ans == ErrorCode::TIMEOUT);
+  REQUIRE(wait_ans == ErrorCode::OK);
+}
+}  // namespace Detail
+/// \endcond
 
 }  // namespace LibXR

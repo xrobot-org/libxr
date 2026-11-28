@@ -107,27 +107,29 @@ Timing cannot distinguish every frame format: 8E1 and 8N2 both use 11 bits per b
 
 `TestUARTConfigStress()` checks whether repeated configuration changes leave the driver usable. During switching, received data may be lost or changed and reads may time out. After interference stops, the same UART object returns to a fixed configuration and must pass full loopback checks.
 
-仅用于明确支持配置与收发重叠的后端。独占串口，初始没有在途请求和接收残留；TX 接 RX，工作缓冲区独立、等长且不超过两个端口的容量。调用方提供阻塞读取和最终回环所用的信号量，以及一个独占的、处于 READY 状态的 `ASync`，从普通任务调用。
+仅用于明确支持配置与收发重叠的后端。独占串口，初始没有在途请求和接收残留；TX 接 RX，工作缓冲区独立、等长且不超过两个端口的容量。调用方提供阻塞读取和最终回环所用的信号量，以及一个独占且空闲的 `LibXR::Test::ManualWorker`，从普通任务调用。
 
-Use only a backend that explicitly supports configuration overlapping I/O. Reserve the UART with no initial in-flight requests or receive residue. Wire TX to RX and supply separate, equal-size work buffers within both port capacities. The caller supplies the semaphore used by blocking reads and the final loopback, borrows an exclusive READY `ASync`, and invokes the test from a normal task.
+Use only a backend that explicitly supports configuration overlapping I/O. Reserve the UART with no initial in-flight requests or receive residue. Wire TX to RX and supply separate, equal-size work buffers within both port capacities. The caller supplies the semaphore used by blocking reads and the final loopback, borrows an exclusive idle `LibXR::Test::ManualWorker`, and invokes the test from a normal task.
 
 ```cpp
 #include "uart/test_uart_config_stress.hpp"
 
 LibXR::Test::UARTConfigStressResult CheckUARTStress(
-    LibXR::UART& uart, LibXR::Semaphore& semaphore, LibXR::ASync& worker,
-    LibXR::RawData tx, LibXR::RawData rx,
+    LibXR::UART& uart, LibXR::Semaphore& semaphore, LibXR::RawData tx, LibXR::RawData rx,
     std::initializer_list<LibXR::UART::Configuration> configs,
     LibXR::UART::Configuration stable_config, uint32_t quiet_ms)
 {
+  // ManualWorker 须具有静态或进程级存活期，不能作为短生命周期局部变量析构。
+  // ManualWorker must have static or process lifetime; do not destroy an active instance.
+  static LibXR::Test::ManualWorker worker;
   return LibXR::Test::TestUARTConfigStress(uart, semaphore, worker, tx, rx, configs,
                                            stable_config, quiet_ms);
 }
 ```
 
-每轮先提交一次回调方式的发送，再让 ASync 按列表尝试配置，同时进行一次阻塞读取。每轮从列表的下一项开始，避免总由同一配置占住待处理槽。配置尝试相隔 1 ms；任务次数有限，不等待调用线程发出停止信号。最后两个可选参数为 `timeout_ms`（默认 1000 ms）和 `iterations`（默认 100 轮）。每个读取和收敛等待分别使用这个超时，不是整个测试的总时限。
+每轮先提交一次回调方式的发送，再让 `ManualWorker` 按列表尝试配置，同时进行一次阻塞读取。每轮从列表的下一项开始，避免总由同一配置占住待处理槽。配置尝试相隔 1 ms；任务次数有限，不等待调用线程发出停止信号。最后两个可选参数为 `timeout_ms`（默认 1000 ms）和 `iterations`（默认 100 轮）。每个读取和收敛等待分别使用这个超时，不是整个测试的总时限。
 
-Each round submits a callback write, starts an ASync job that tries the configuration list, and performs one blocking read. Rotate the starting entry so the same configuration does not always claim the pending slot. Attempts are 1 ms apart. The finite job does not wait for a stop signal from its caller. The final optional arguments are `timeout_ms` (1000 ms) and `iterations` (100 rounds). Each read and convergence wait has its own timeout; this is not a whole-test deadline.
+Each round submits a callback write, starts a `ManualWorker` job that tries the configuration list, and performs one blocking read. Rotate the starting entry so the same configuration does not always claim the pending slot. Attempts are 1 ms apart. The finite job does not wait for a stop signal from its caller. The final optional arguments are `timeout_ms` (1000 ms) and `iterations` (100 rounds). Each read and convergence wait has its own timeout; this is not a whole-test deadline.
 
 配置只允许返回 `OK` 或 `BUSY`，发送提交允许 `OK`、`BUSY` 或 `FULL`。已接纳发送必须完成，回调结果允许 `OK` 或 `FAILED`，但不能重复通知；读取允许 `OK` 或 `TIMEOUT`，压力阶段不比较接收内容。返回统计包含这些结果，并要求至少接纳一次发送、一次配置，且观测到配置尝试发生在读取调用期间。
 
@@ -137,10 +139,10 @@ Configuration returns must be `OK` or `BUSY`; write submission may return `OK`, 
 
 TX completion means backend acceptance; bytes may remain on the wire. After configuration jobs and TX notifications finish, the test submits the fixed configuration within a bounded wait, waits `quiet_ms`, then discards receive residue once. Choose this delay to cover backend buffers draining at the slowest configuration and configuration application. It then checks blocking, polling and callback loopback using the fixed 8-bit configuration, which remains active. Corruption or timeouts fail the recovery phase.
 
-有线程的平台由 ASync 工作线程制造交错；裸机通过普通上下文的 Timer 推进任务，可与正在运行的 DMA／中断交错。统计中的 `during_read` 只表示读取调用区间重叠，不独立证明硬件当时仍在发送。具体板级验证应另记录 DMA 或线路忙状态。
+有线程的平台由 `ManualWorker` 工作线程制造交错；裸机通过普通上下文的 Timer 推进任务，可与正在运行的 DMA／中断交错。统计中的 `during_read` 只表示读取调用区间重叠，不独立证明硬件当时仍在发送。具体板级验证应另记录 DMA 或线路忙状态。
 
-Threaded systems use the ASync worker; bare-metal systems advance the job through a Timer in normal context, overlapping active DMA/interrupts. `during_read` records overlap with the read-call interval, not independent proof of active hardware transmission. Board-specific validation should also record DMA or line-busy state.
+Threaded systems use the `ManualWorker` thread; bare-metal systems advance the job through a Timer in normal context, overlapping active DMA/interrupts. `during_read` records overlap with the read-call interval, not independent proof of active hardware transmission. Board-specific validation should also record DMA or line-busy state.
 
-测试保留通知对象到配置任务和发送完成，结束后再交还 ASync。它检查已观测的重复通知，不能保证返回后任意时刻都没有错误回调。若驱动卡死在同步调用中，函数内的超时无法强行打断，板级程序或外部测试工具还需设置整体执行上限。
+测试保留通知对象到配置任务和发送完成，结束后再交还 `ManualWorker`。它检查已观测的重复通知，不能保证返回后任意时刻都没有错误回调。若驱动卡死在同步调用中，函数内的超时无法强行打断，板级程序或外部测试工具还需设置整体执行上限。
 
-Notification objects remain alive until configuration jobs and TX finish, then the ASync is returned to the caller. The test checks observed duplicate notifications, not the absence of faulty callbacks at arbitrary times after return. Internal timeouts cannot preempt a driver stuck inside a synchronous call; the board application or external test tool also needs an overall execution limit.
+Notification objects remain alive until configuration jobs and TX finish, then the `ManualWorker` is returned to the caller. The test checks observed duplicate notifications, not the absence of faulty callbacks at arbitrary times after return. Internal timeouts cannot preempt a driver stuck inside a synchronous call; the board application or external test tool also needs an overall execution limit.

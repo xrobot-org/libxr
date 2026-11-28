@@ -346,7 +346,7 @@ void CH32UART::HandleTxService(uint32_t events, bool in_isr)
 
 void CH32UART::FillTx(bool in_isr)
 {
-  if (!tx_busy_.IsSet())
+  if (!tx_busy_)
   {
     if (dma_buff_tx_.HasPending())
     {
@@ -394,7 +394,7 @@ void CH32UART::FillTx(bool in_isr)
     }
   }
 
-  if (tx_busy_.IsSet() && !dma_buff_tx_.HasPending() &&
+  if (tx_busy_ && !dma_buff_tx_.HasPending() &&
       config_state_.load(std::memory_order_acquire) == ConfigState::EMPTY)
   {
     auto queue = _write_port.GetWriteQueue(in_isr);
@@ -412,12 +412,12 @@ void CH32UART::FillTx(bool in_isr)
 void CH32UART::HandleTxDone(bool in_isr)
 {
   UNUSED(in_isr);
-  if (!tx_busy_.IsSet())
+  if (!tx_busy_)
   {
     return;
   }
 
-  tx_busy_.Clear();
+  tx_busy_ = false;
   dma_buff_tx_.SetActiveLength(0U);
 }
 
@@ -428,7 +428,7 @@ void CH32UART::TryApplyConfig(bool in_isr)
     return;
   }
 
-  if (tx_busy_.IsSet())
+  if (tx_busy_)
   {
     return;
   }
@@ -464,7 +464,7 @@ void CH32UART::StartTxDma(bool in_isr)
   DMA_Cmd(dma_tx_channel_, DISABLE);
   dma_tx_channel_->MADDR = reinterpret_cast<uint32_t>(dma_buff_tx_.ActiveBuffer());
   dma_tx_channel_->CNTR = size;
-  tx_busy_.Set();
+  tx_busy_ = true;
   DMA_Cmd(dma_tx_channel_, ENABLE);
   UNUSED(in_isr);
 }

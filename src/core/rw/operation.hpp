@@ -200,46 +200,7 @@ class AsyncBlockWait
    * @note 完成方已认领时，须等对应通知后才返回，可能超过指定时间。
    *       A claimed completion must post before return, possibly exceeding the timeout.
    */
-  ErrorCode Wait(uint32_t timeout)
-  {
-    DEV_ASSERT(sem_ != nullptr);
-    auto wait_ans = sem_->Wait(timeout);
-    if (wait_ans == ErrorCode::OK)
-    {
-      DEV_ASSERT(state_.load(std::memory_order_acquire) == State::CLAIMED);
-      state_.store(State::IDLE, std::memory_order_release);
-      return result_;
-    }
-
-    State expected = State::PENDING;
-    if (state_.compare_exchange_strong(expected, State::DETACHED,
-                                       std::memory_order_acq_rel,
-                                       std::memory_order_acquire))
-    {
-      return ErrorCode::TIMEOUT;
-    }
-
-    DEV_ASSERT(expected == State::CLAIMED || expected == State::DETACHED ||
-               expected == State::IDLE);
-    if (expected == State::DETACHED)
-    {
-      state_.store(State::IDLE, std::memory_order_release);
-      return ErrorCode::TIMEOUT;
-    }
-    if (expected == State::IDLE)
-    {
-      return ErrorCode::TIMEOUT;
-    }
-
-    ErrorCode finish_wait_ans;
-    do
-    {
-      finish_wait_ans = sem_->Wait(UINT32_MAX);
-    } while (finish_wait_ans == ErrorCode::TIMEOUT);
-    REQUIRE(finish_wait_ans == ErrorCode::OK);
-    state_.store(State::IDLE, std::memory_order_release);
-    return result_;
-  }
+  ErrorCode Wait(uint32_t timeout);
 
   /**
    * @brief 尝试认领完成并唤醒调用者 / Try to claim completion and wake the caller.

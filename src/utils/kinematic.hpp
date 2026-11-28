@@ -2,11 +2,12 @@
 
 #include <Eigen/Core>
 #include <Eigen/Dense>
+#include <utility>
 
 #include "Eigen/src/Core/Matrix.h"
 #include "Eigen/src/Geometry/Quaternion.h"
 #include "inertia.hpp"
-#include "list.hpp"
+#include "libxr_assert.hpp"
 #include "transform.hpp"
 
 namespace LibXR
@@ -96,17 +97,67 @@ class Joint
    * @param this2child 该关节到子坐标系的变换。
    * Transform from this joint to the child frame.
    *
-   * @note 包含动态内存分配。
-   *       Contains dynamic memory allocation.
+   * @pre 拓扑构建与遍历须在同一执行上下文中串行执行；`Joint` 与 `Object`
+   *      须在整棵运动学树使用期间保持地址稳定且存活。
+   *      Topology construction and traversal must be serialized; `Joint` and `Object`
+   *      instances must remain alive at stable addresses while the tree is in use.
    */
   Joint(Axis<Scalar> axis, Object<Scalar>* parent, Transform<Scalar>& parent2this,
         Object<Scalar>* child, Transform<Scalar>& this2child)
       : parent(parent), child(child), param_({parent2this, this2child, axis, 1.0})
   {
+    runtime_.state_angle = Eigen::AngleAxis<Scalar>(Scalar(0), axis);
+    runtime_.target_angle = Eigen::AngleAxis<Scalar>(Scalar(0), axis);
     runtime_.inertia = Eigen::Matrix<Scalar, 3, 3>::Zero();
-    auto link = new typename Object<Scalar>::Link(this);
-    parent->joints.Add(*link);
+    parent->AddJoint(*this);
     child->parent = this;
+  }
+
+  /**
+   * @brief 复制构造脱离拓扑的关节值（`parent`/`child` 置空，不加入任何父对象链表） /
+   *        Copy-constructs detached joint values (`parent`/`child` null; not attached to
+   *        any tree).
+   */
+  Joint(const Joint& other) : runtime_(other.runtime_), param_(other.param_) {}
+
+  /**
+   * @brief 移动构造脱离拓扑的关节值（`parent`/`child` 置空，不加入任何父对象链表） /
+   *        Move-constructs detached joint values (`parent`/`child` null; not attached to
+   *        any tree).
+   */
+  Joint(Joint&& other) noexcept
+      : runtime_(std::move(other.runtime_)), param_(std::move(other.param_))
+  {
+  }
+
+  /**
+   * @brief 复制赋值关节值（保留当前对象的全部图边 `parent`/`child`/`next_`/`attached_`）
+   * / Copy-assigns joint values while preserving all graph edges (`parent`, `child`,
+   *        `next_`, `attached_`).
+   */
+  Joint& operator=(const Joint& other)
+  {
+    if (this != &other)
+    {
+      runtime_ = other.runtime_;
+      param_ = other.param_;
+    }
+    return *this;
+  }
+
+  /**
+   * @brief 移动赋值关节值（保留当前对象的全部图边 `parent`/`child`/`next_`/`attached_`）
+   * / Move-assigns joint values while preserving all graph edges (`parent`, `child`,
+   *        `next_`, `attached_`).
+   */
+  Joint& operator=(Joint&& other) noexcept
+  {
+    if (this != &other)
+    {
+      runtime_ = std::move(other.runtime_);
+      param_ = std::move(other.param_);
+    }
+    return *this;
   }
 
   /**
@@ -166,6 +217,13 @@ class Joint
    * @param mult 逆向运动学步长系数 / The step size coefficient.
    */
   void SetBackwardMult(Scalar mult) { param_.ik_mult = mult; }
+
+ private:
+  friend class Object<Scalar>;
+  Joint<Scalar>* next_ = nullptr;  ///< 同一父对象下下一个侵入式关节指针 / Next intrusive
+                                   ///< sibling joint pointer.
+  bool attached_ =
+      false;  ///< 是否已挂接到父对象链表 / Whether attached to a parent list.
 };
 
 /**
@@ -183,8 +241,6 @@ template <typename Scalar>
 class Object
 {
  public:
-  typedef List::Node<Joint<Scalar>*> Link;  ///< 关节链接类型 / Type for linking joints.
-
   /**
    * @brief 物体参数结构体，存储物体的惯性参数。
    *        Structure storing inertia parameters of the object.
@@ -206,18 +262,85 @@ class Object
         target;  ///< 物体的目标状态变换矩阵 / Transformation matrix of the target state.
   } Runtime;
 
-  List joints;  ///< 物体的关节列表 / List of joints associated with the object.
-
   Joint<Scalar>* parent = nullptr;  ///< 指向父关节的指针 / Pointer to the parent joint.
 
   Param param_;      ///< 物体参数 / Object parameters.
   Runtime runtime_;  ///< 物体运行时状态 / Object runtime data.
 
   /**
+   * @brief 复制构造脱离拓扑的物体值（`parent` 与子关节链表置空） /
+   *        Copy-constructs detached object values (`parent` and child joint list empty).
+   */
+  Object(const Object& other) : param_(other.param_), runtime_(other.runtime_) {}
+
+  /**
+   * @brief 移动构造脱离拓扑的物体值（`parent` 与子关节链表置空） /
+   *        Move-constructs detached object values (`parent` and child joint list empty).
+   */
+  Object(Object&& other) noexcept
+      : param_(std::move(other.param_)), runtime_(std::move(other.runtime_))
+  {
+  }
+
+  /**
+   * @brief 复制赋值物体值（保留当前对象的全部图边 `parent` 与 `joints_head_`） /
+   *        Copy-assigns object values while preserving all graph edges (`parent` and
+   *        `joints_head_`).
+   */
+  Object& operator=(const Object& other)
+  {
+    if (this != &other)
+    {
+      param_ = other.param_;
+      runtime_ = other.runtime_;
+    }
+    return *this;
+  }
+
+  /**
+   * @brief 移动赋值物体值（保留当前对象的全部图边 `parent` 与 `joints_head_`） /
+   *        Move-assigns object values while preserving all graph edges (`parent` and
+   *        `joints_head_`).
+   */
+  Object& operator=(Object&& other) noexcept
+  {
+    if (this != &other)
+    {
+      param_ = std::move(other.param_);
+      runtime_ = std::move(other.runtime_);
+    }
+    return *this;
+  }
+
+  /**
+   * @brief 按头插顺序遍历挂接在该物体下的所有关节 / Traverse attached joints in prepend
+   *        order.
+   * @tparam Func 访问函数类型，签名为 `ErrorCode(Joint<Scalar>*)` / Visitor returning
+   *         `ErrorCode`.
+   * @param func 访问函数 / Visitor callable.
+   * @return 首个非 `OK` 错误码或 `ErrorCode::OK` / First non-`OK` error or
+   * `ErrorCode::OK`.
+   */
+  template <typename Func>
+  ErrorCode ForeachJoint(Func&& func) const
+  {
+    for (auto* joint = joints_head_; joint != nullptr; joint = joint->next_)
+    {
+      if (auto res = func(joint); res != ErrorCode::OK)
+      {
+        return res;
+      }
+    }
+    return ErrorCode::OK;
+  }
+
+  /**
    * @brief 使用惯性参数构造 `Object` 对象。
    *        Constructs an `Object` using inertia parameters.
    *
    * @param inertia 物体的惯性参数 / The inertia parameters of the object.
+   * @pre `Object` 实例须在运动学树使用期间保持地址稳定且存活。
+   *      `Object` instances must remain alive at stable addresses while the tree is used.
    */
   Object(Inertia<Scalar>& inertia) : param_({inertia}) {}
 
@@ -252,6 +375,20 @@ class Object
    *        overridden by derived nodes.
    */
   virtual void CalcBackward() {}
+
+ private:
+  friend class Joint<Scalar>;
+
+  void AddJoint(Joint<Scalar>& joint)
+  {
+    ASSERT(!joint.attached_ && joint.next_ == nullptr);
+    joint.next_ = joints_head_;
+    joint.attached_ = true;
+    joints_head_ = &joint;
+  }
+
+  Joint<Scalar>* joints_head_ =
+      nullptr;  ///< 物体的侵入式关节链表头 / Head of the intrusive joint list.
 };
 
 /**
@@ -300,6 +437,72 @@ class EndPoint : public Object<Scalar>
    * @param inertia 物体的惯性参数 / The inertia parameters of the object.
    */
   EndPoint(Inertia<Scalar>& inertia) : Object<Scalar>(inertia) {}
+
+  /**
+   * @brief 复制构造脱离拓扑的末端点（重置逆运动学缓存，仅复制目标与权重参数） /
+   *        Copy-constructs a detached `EndPoint` with cleared IK caches.
+   */
+  EndPoint(const EndPoint& other)
+      : Object<Scalar>(other),
+        err_weight_(other.err_weight_),
+        target_quat_(other.target_quat_),
+        target_pos_(other.target_pos_),
+        max_angular_velocity_(other.max_angular_velocity_),
+        max_line_velocity_(other.max_line_velocity_)
+  {
+  }
+
+  /**
+   * @brief 移动构造脱离拓扑的末端点（重置逆运动学缓存，仅移动目标与权重参数） /
+   *        Move-constructs a detached `EndPoint` with cleared IK caches.
+   */
+  EndPoint(EndPoint&& other) noexcept
+      : Object<Scalar>(std::move(other)),
+        err_weight_(std::move(other.err_weight_)),
+        target_quat_(std::move(other.target_quat_)),
+        target_pos_(std::move(other.target_pos_)),
+        max_angular_velocity_(other.max_angular_velocity_),
+        max_line_velocity_(other.max_line_velocity_)
+  {
+  }
+
+  /**
+   * @brief 复制赋值末端点目标与参数（保留自身拓扑边及对应的雅可比/关节数缓存） /
+   *        Copy-assigns target/weights while preserving graph edges and topology-bound
+   *        IK caches (`jacobian_matrix_`, `delta_theta_`, `joint_num_`).
+   */
+  EndPoint& operator=(const EndPoint& other)
+  {
+    if (this != &other)
+    {
+      Object<Scalar>::operator=(other);
+      err_weight_ = other.err_weight_;
+      target_quat_ = other.target_quat_;
+      target_pos_ = other.target_pos_;
+      max_angular_velocity_ = other.max_angular_velocity_;
+      max_line_velocity_ = other.max_line_velocity_;
+    }
+    return *this;
+  }
+
+  /**
+   * @brief 移动赋值末端点目标与参数（保留自身拓扑边及对应的雅可比/关节数缓存） /
+   *        Move-assigns target/weights while preserving graph edges and topology-bound
+   *        IK caches (`jacobian_matrix_`, `delta_theta_`, `joint_num_`).
+   */
+  EndPoint& operator=(EndPoint&& other) noexcept
+  {
+    if (this != &other)
+    {
+      Object<Scalar>::operator=(std::move(other));
+      err_weight_ = std::move(other.err_weight_);
+      target_quat_ = std::move(other.target_quat_);
+      target_pos_ = std::move(other.target_pos_);
+      max_angular_velocity_ = other.max_angular_velocity_;
+      max_line_velocity_ = other.max_line_velocity_;
+    }
+    return *this;
+  }
 
   /**
    * @brief 设置目标四元数方向。
@@ -586,7 +789,7 @@ class StartPoint : public Object<Scalar>
   {
     this->runtime_.target = this->runtime_.state;
     auto fun = [&](Joint<Scalar>* joint) { return ForwardForeachFunLoop(joint, *this); };
-    this->joints.template Foreach<Joint<Scalar>*>(fun);
+    this->ForeachJoint(fun);
   }
 
   /**
@@ -602,7 +805,7 @@ class StartPoint : public Object<Scalar>
     this->runtime_.target = this->runtime_.state;
     auto fun = [&](Joint<Scalar>* joint)
     { return TargetForwardForeachFunLoop(joint, *this); };
-    this->joints.template Foreach<Joint<Scalar>*>(fun);
+    this->ForeachJoint(fun);
   }
 
   /**
@@ -618,21 +821,38 @@ class StartPoint : public Object<Scalar>
     Joint<Scalar>* res = nullptr;
     auto fun = [&](Joint<Scalar>* joint)
     { return InertiaForeachFunLoopStart(joint, res); };
-    this->joints.template Foreach<Joint<Scalar>*>(fun);
+    this->ForeachJoint(fun);
   }
 
   /**
    * @brief 计算机器人系统的质心。
    *        Computes the center of mass (CoM) of the robotic system.
    *
-   * 该函数遍历所有关节，并利用惯性计算系统整体质心位置。
-   * This function traverses all joints and uses inertia calculations
-   * to determine the overall center of mass.
+   * 该函数遍历所有关节并先累加总质量与一阶质量矩，最后统一归一化；当整棵树总质量为
+   * 0 时返回零质量及根节点当前位置，避免零质量中间连杆导致 `0 / 0` NaN。
+   * Traverses all joints accumulating total mass and first mass moment before dividing
+   * once at the end; if total mass is zero, returns zero mass at the root's position so
+   * zero-mass intermediate links never produce `0 / 0` NaN.
    */
   void CalcCenterOfMass()
   {
-    this->cog = CenterOfMass<Scalar>(this->param_.inertia, this->runtime_.state);
-    this->joints.Foreach(CenterOfMassForeachFunLoop, *this);
+    Scalar total_mass = this->param_.inertia.mass;
+    Eigen::Matrix<Scalar, 3, 1> weighted_pos =
+        static_cast<const Eigen::Matrix<Scalar, 3, 1>&>(
+            this->runtime_.state.translation) *
+        this->param_.inertia.mass;
+    auto fun = [&](Joint<Scalar>* joint)
+    { return CenterOfMassForeachFunLoop(joint, total_mass, weighted_pos); };
+    this->ForeachJoint(fun);
+    if (total_mass > Scalar(0))
+    {
+      this->cog =
+          CenterOfMass<Scalar>(total_mass, Position<Scalar>(weighted_pos / total_mass));
+    }
+    else
+    {
+      this->cog = CenterOfMass<Scalar>(Scalar(0), this->runtime_.state.translation);
+    }
   }
 
   /**
@@ -657,8 +877,8 @@ class StartPoint : public Object<Scalar>
     auto fun_start = [&](Joint<Scalar>* child_joint)
     { return InertiaForeachFunLoopStart(child_joint, joint); };
 
-    joint->child->joints.template Foreach<Joint<Scalar>*>(fun_loop);
-    joint->child->joints.template Foreach<Joint<Scalar>*>(fun_start);
+    joint->child->ForeachJoint(fun_loop);
+    joint->child->ForeachJoint(fun_start);
 
     return ErrorCode::OK;
   }
@@ -680,7 +900,7 @@ class StartPoint : public Object<Scalar>
     auto fun_loop = [&](Joint<Scalar>* child_joint)
     { return InertiaForeachFunLoop(child_joint, joint); };
 
-    joint->child->joints.template Foreach<Joint<Scalar>*>(fun_loop);
+    joint->child->ForeachJoint(fun_loop);
 
     return ErrorCode::OK;
   }
@@ -712,7 +932,7 @@ class StartPoint : public Object<Scalar>
     auto fun = [&](Joint<Scalar>* child_joint)
     { return ForwardForeachFunLoop(child_joint, start); };
 
-    joint->child->joints.template Foreach<Joint<Scalar>*>(fun);
+    joint->child->ForeachJoint(fun);
 
     return ErrorCode::OK;
   }
@@ -740,24 +960,27 @@ class StartPoint : public Object<Scalar>
     auto fun = [&](Joint<Scalar>* child_joint)
     { return TargetForwardForeachFunLoop(child_joint, start); };
 
-    joint->child->joints.template Foreach<Joint<Scalar>*>(fun);
+    joint->child->ForeachJoint(fun);
 
     return ErrorCode::OK;
   }
 
   /**
-   * @brief 计算系统的质心。
-   *        Computes the center of mass of the system.
+   * @brief 累加子树质量与一阶质量矩 / Accumulate subtree mass and first mass moment.
    */
-  static ErrorCode CenterOfMassForeachFunLoop(Joint<Scalar>* joint,
-                                              StartPoint<Scalar>& start)
+  static ErrorCode CenterOfMassForeachFunLoop(Joint<Scalar>* joint, Scalar& total_mass,
+                                              Eigen::Matrix<Scalar, 3, 1>& weighted_pos)
   {
-    CenterOfMass<Scalar> child_cog(joint->child->param_.inertia,
-                                   joint->child->runtime_.state);
+    const Scalar child_mass = joint->child->param_.inertia.mass;
+    total_mass += child_mass;
+    weighted_pos += static_cast<const Eigen::Matrix<Scalar, 3, 1>&>(
+                        joint->child->runtime_.state.translation) *
+                    child_mass;
 
-    start.cog += child_cog;
+    auto fun = [&](Joint<Scalar>* child_joint)
+    { return CenterOfMassForeachFunLoop(child_joint, total_mass, weighted_pos); };
 
-    joint->child->joints.Foreach(TargetForwardForeachFunLoop, start);
+    joint->child->ForeachJoint(fun);
 
     return ErrorCode::OK;
   }

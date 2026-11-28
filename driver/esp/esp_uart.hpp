@@ -9,7 +9,6 @@
 #include "esp_def.hpp"
 #include "esp_intr_alloc.h"
 #include "esp_private/critical_section.h"
-#include "flag.hpp"
 #include "hal/uart_hal.h"
 #include "hal/uart_types.h"
 #include "serialized_service.hpp"
@@ -365,7 +364,7 @@ class ESP32UART : public UART
   DoubleBuffer tx_dma_buffer_{};   ///< DMA 发送双缓冲 / DMA TX double buffer.
   size_t tx_active_length_ = 0U;   ///< 当前发送字节数 / Active TX byte count.
   bool tx_active_valid_ = false;  ///< 当前半区是否含有效数据 / Active half contains data.
-  Flag::Plain tx_busy_;           ///< 发送硬件是否忙 / Whether TX hardware is busy.
+  bool tx_busy_ = false;          ///< 发送硬件是否忙 / Whether TX hardware is busy.
 
   bool uart_hw_enabled_ = false;              ///< UART 是否已初始化 / UART initialized.
   uart_hal_context_t uart_hal_ = {};          ///< UART HAL 上下文 / UART HAL context.

@@ -79,9 +79,9 @@ void LineFeed()
  */
 void UpdateDisplayPosition()
 {
+  const size_t cursor = static_cast<size_t>(static_cast<int>(input_len_) + offset_);
   write_stream_ << ConstRawData(KEY_SAVE) << ConstRawData(CLEAR_BEHIND)
-                << ConstRawData(&input_line_[input_line_.Size() + offset_], -offset_)
-                << ConstRawData(KEY_LOAD);
+                << ConstRawData(&input_line_[cursor], -offset_) << ConstRawData(KEY_LOAD);
 }
 
 /**
@@ -89,14 +89,14 @@ void UpdateDisplayPosition()
  *         Checks if a character can be displayed
  * @return bool 是否可以显示字符 / Whether the character can be displayed
  */
-bool CanDisplayChar() { return input_line_.EmptySize() > 1; }
+bool CanDisplayChar() { return input_len_ < MAX_LINE_SIZE; }
 
 /**
  * @brief  检查是否可以删除字符
  *         Checks if a character can be deleted
  * @return bool 是否可以删除字符 / Whether the character can be deleted
  */
-bool CanDeleteChar() { return input_line_.Size() + offset_ > 0; }
+bool CanDeleteChar() { return static_cast<int>(input_len_) + offset_ > 0; }
 
 /**
  * @brief  向输入行中添加字符，支持在光标位置插入
@@ -105,15 +105,19 @@ bool CanDeleteChar() { return input_line_.Size() + offset_ > 0; }
  */
 void AddCharToInputLine(char data)
 {
+  DEV_ASSERT(input_len_ < MAX_LINE_SIZE);
   if (offset_ == 0)
   {
-    input_line_.Push(data);
+    input_line_[input_len_++] = data;
   }
   else
   {
-    input_line_.Insert(data, input_line_.Size() + offset_);
+    const size_t pos = static_cast<size_t>(static_cast<int>(input_len_) + offset_);
+    std::memmove(&input_line_[pos + 1], &input_line_[pos], input_len_ - pos);
+    input_line_[pos] = data;
+    input_len_++;
   }
-  input_line_[input_line_.Size()] = '\0';
+  input_line_[input_len_] = '\0';
 }
 
 /**
@@ -141,7 +145,8 @@ void DisplayChar(char data)
     }
     else
     {
-      write_stream_ << ConstRawData(input_line_[input_line_.Size() - 1 + offset_]);
+      const size_t pos = static_cast<size_t>(static_cast<int>(input_len_) - 1 + offset_);
+      write_stream_ << ConstRawData(input_line_[pos]);
     }
     if (offset_ != 0)
     {
@@ -161,15 +166,18 @@ void DisplayChar(char data)
  */
 void RemoveCharFromInputLine()
 {
+  DEV_ASSERT(CanDeleteChar());
   if (offset_ == 0)
   {
-    input_line_.Pop();
+    input_len_--;
   }
   else
   {
-    input_line_.Delete(input_line_.Size() + offset_ - 1);
+    const size_t pos = static_cast<size_t>(static_cast<int>(input_len_) + offset_ - 1);
+    std::memmove(&input_line_[pos], &input_line_[pos + 1], input_len_ - pos - 1);
+    input_len_--;
   }
-  input_line_[input_line_.Size()] = '\0';
+  input_line_[input_len_] = '\0';
 }
 
 /**
@@ -282,7 +290,7 @@ void ShowHistory()
   }
   else
   {
-    write_stream_ << ConstRawData(&input_line_[0], input_line_.Size());
+    write_stream_ << ConstRawData(input_line_.data(), input_len_);
   }
 }
 
@@ -293,13 +301,13 @@ void ShowHistory()
  */
 void CopyHistoryToInputLine()
 {
-  input_line_.Reset();
   const auto& line = HistoryFromNewest(history_index_);
-  for (size_t i = 0; i < HistoryLineSize(line); i++)
+  input_len_ = HistoryLineSize(line);
+  if (input_len_ > 0)
   {
-    input_line_.Push(line[i]);
+    std::memcpy(input_line_.data(), line.data(), input_len_);
   }
-  input_line_[input_line_.Size()] = '\0';
+  input_line_[input_len_] = '\0';
   history_index_ = -1;
   offset_ = 0;
   line_truncated_ = false;
@@ -316,12 +324,11 @@ void CopyHistoryToInputLine()
 void AddHistory()
 {
   HistoryLine line{};
-  const size_t line_size =
-      LibXR::min(static_cast<size_t>(input_line_.Size()), MAX_LINE_SIZE);
-  input_line_.Push('\0');
+  const size_t line_size = LibXR::min(input_len_, MAX_LINE_SIZE);
+  input_line_[line_size] = '\0';
   if (line_size > 0)
   {
-    std::memcpy(line.data(), &input_line_[0], line_size);
+    std::memcpy(line.data(), input_line_.data(), line_size);
   }
   line[line_size] = '\0';
 

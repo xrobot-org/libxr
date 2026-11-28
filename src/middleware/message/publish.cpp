@@ -2,7 +2,6 @@
 
 #include "subscriber/async.hpp"
 #include "subscriber/callback.hpp"
-#include "subscriber/queue.hpp"
 #include "subscriber/sync.hpp"
 #include "timebase.hpp"
 #include "topic.hpp"
@@ -49,12 +48,6 @@ void Topic::DispatchSubscriber(SuberBlock& block, MicrosecondTimestamp timestamp
         async->timestamp = timestamp;
         async->state.store(ASyncSubscriberState::DATA_READY, std::memory_order_release);
       }
-      break;
-    }
-    case SuberType::QUEUE:
-    {
-      auto queue_block = static_cast<QueueBlock*>(&block);
-      queue_block->fun(timestamp, payload_addr, *queue_block);
       break;
     }
     case SuberType::CALLBACK:

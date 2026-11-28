@@ -80,7 +80,8 @@ class CallbackBlock : public CallbackBlockHeader<Args...>
    */
   static void InvokeThunk(void* cb_block, bool in_isr, Args... args)
   {
-    auto* cb = static_cast<CallbackBlock<ArgType, Args...>*>(cb_block);
+    auto* header = static_cast<CallbackBlockHeader<Args...>*>(cb_block);
+    auto* cb = static_cast<CallbackBlock<ArgType, Args...>*>(header);
     cb->Invoke(in_isr, std::forward<Args>(args)...);
   }
 
@@ -135,7 +136,8 @@ class GuardedCallbackBlock : public CallbackBlock<ArgType, Args...>
    */
   static void InvokeThunk(void* cb_block, bool in_isr, Args... args)
   {
-    auto* cb = static_cast<GuardedCallbackBlock<ArgType, Args...>*>(cb_block);
+    auto* header = static_cast<CallbackBlockHeader<Args...>*>(cb_block);
+    auto* cb = static_cast<GuardedCallbackBlock<ArgType, Args...>*>(header);
 
     if (!cb->running_)
     {
@@ -177,7 +179,8 @@ template <typename... Args>
 class Callback
 {
   static void FunctionDefault(void*, bool, Args...) {}
-  inline static CallbackBlockHeader<Args...> empty_cb_block_ = {&FunctionDefault};
+  inline static constinit CallbackBlockHeader<Args...> empty_cb_block_ = {
+      &FunctionDefault};
 
  public:
   /**
@@ -233,7 +236,7 @@ class Callback
   /**
    * @brief 默认构造函数，创建空回调对象 / Default constructor creating an empty callback
    */
-  Callback() : cb_block_(&empty_cb_block_) {}
+  constexpr Callback() noexcept = default;
 
   /**
    * @brief 默认拷贝构造函数 / Default copy constructor

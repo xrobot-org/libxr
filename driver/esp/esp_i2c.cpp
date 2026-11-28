@@ -157,9 +157,9 @@ ESP32I2C::ESP32I2C(i2c_port_t port_num, int scl_pin, int sda_pin, uint32_t clock
   }
 }
 
-bool ESP32I2C::Acquire() { return !busy_.TestAndSet(); }
+bool ESP32I2C::Acquire() { return busy_.exchange(1U, std::memory_order_acq_rel) == 0U; }
 
-void ESP32I2C::Release() { busy_.Clear(); }
+void ESP32I2C::Release() { busy_.store(0U, std::memory_order_release); }
 
 bool ESP32I2C::IsValid7BitAddr(uint16_t addr) { return addr <= 0x7FU; }
 
